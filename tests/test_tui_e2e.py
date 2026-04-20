@@ -1161,7 +1161,8 @@ class TestCatalogInteractions:
 
                 ctas = list(app.screen.query(SearchHFCtaItem))
                 assert len(ctas) == 1
-                assert ctas[0].term == "testchat"
+                # User's casing is preserved for display.
+                assert ctas[0].term == "TestChat"
 
     async def test_search_cta_survives_view_toggle(self, _mock_resolve):
         """Toggling list→grid with a pending search must mount the grid-view CTA."""
@@ -1183,8 +1184,60 @@ class TestCatalogInteractions:
                 await pilot.press("v")  # back to grid view
                 await pilot.pause()
 
-                grid_ctas = list(app.screen.query("#grid-search-hf-cta"))
+                grid_ctas = list(app.screen.query("#catalog-grid > .search-hf-cta"))
                 assert len(grid_ctas) == 1, "grid-view CTA missing after toggle"
+
+    async def test_grid_cta_removed_when_search_cleared(self, _mock_resolve):
+        """Grid-view CTA unmounts once the user wipes the search input."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                search = app.screen.query_one("#catalog-search")
+                search.value = "anything"
+                await pilot.pause()
+                assert len(list(app.screen.query("#catalog-grid > .search-hf-cta"))) == 1
+
+                search.value = ""
+                await pilot.pause()
+                assert not list(app.screen.query("#catalog-grid > .search-hf-cta"))
+
+    async def test_grid_cta_tracks_live_search_value(self, _mock_resolve):
+        """Editing the search text updates the CTA so stale text never lingers."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                search = app.screen.query_one("#catalog-search")
+                search.value = "foo"
+                await pilot.pause()
+                # Roundtrip through list view and back: the staleness bug
+                # surfaced when the grid cache hit on (rows, bool(search))
+                # and skipped re-mounting the CTA with fresh text.
+                await pilot.press("v")
+                await pilot.pause()
+                search.value = "bar"
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.pause()
+
+                from lilbee.cli.tui import messages as msg
+
+                cta = app.screen.query_one("#catalog-grid > .search-hf-cta")
+                expected = msg.CATALOG_SEARCH_HF_CTA.format(query="bar")
+                assert expected in str(cta.render())
+                stale = msg.CATALOG_SEARCH_HF_CTA.format(query="foo")
+                assert stale not in str(cta.render())
 
     async def test_search_cta_fires_hf_worker_on_select(self, _mock_resolve):
         """Selecting the CTA fires the HF worker and merges results into the list."""

@@ -44,12 +44,6 @@ class SearchHFCtaItem(containers.VerticalGroup, can_focus=True):
     def term(self) -> str:
         return self._term
 
-    def update_term(self, term: str) -> None:
-        self._term = term
-        self.query_one("#cta-label", widgets.Static).update(
-            msg.CATALOG_SEARCH_HF_CTA.format(query=term)
-        )
-
     def action_select(self) -> None:
         self.post_message(self.Selected(self))
 

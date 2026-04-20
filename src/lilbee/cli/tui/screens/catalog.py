@@ -115,7 +115,7 @@ class CatalogScreen(Screen[None]):
         self._grid_view: bool = True
         self._hf_fetched: bool = False
         self._loading_more: bool = False
-        self._grid_cache_key: tuple[tuple[tuple[str, bool], ...], bool] | tuple = ()
+        self._grid_cache_key: tuple[tuple[tuple[str, bool], ...], str] | tuple = ()
         self._search_in_flight: bool = False
 
     def compose(self) -> ComposeResult:
@@ -331,7 +331,9 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
 
     def _get_search_text(self) -> str:
-        return self.query_one("#catalog-search", Input).value.strip().lower()
+        # Preserve the user's casing for display (e.g. the CTA label); matching
+        # callers normalize via _normalize_for_search.
+        return self.query_one("#catalog-search", Input).value.strip()
 
     def _build_rows(self) -> list[TableRow]:
         """Build all table rows from current data sources."""
@@ -405,11 +407,11 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows("")
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
-        # Include search-presence so toggling back into grid view with a
-        # pending search forces a rebuild that mounts the HF CTA.
+        # Include the full search text so toggle-back + value-change combinations
+        # rebuild the grid (and therefore the CTA) with the current query.
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
-            bool(self._get_search_text()),
+            self._get_search_text(),
         )
         if self._grid_cache_key == row_key:
             return
@@ -437,7 +439,6 @@ class CatalogScreen(Screen[None]):
                 Static(
                     msg.CATALOG_SEARCH_HF_CTA.format(query=search),
                     classes="grid-cta search-hf-cta",
-                    id="grid-search-hf-cta",
                 )
             )
         widgets_to_mount.append(
@@ -451,7 +452,7 @@ class CatalogScreen(Screen[None]):
     def _sync_grid_search_cta(self) -> None:
         """Mount/remove/update the grid-view search-HF CTA in response to typing."""
         search = self._get_search_text()
-        existing = self.query("#grid-search-hf-cta")
+        existing = self.query("#catalog-grid > .search-hf-cta")
         if not search:
             for w in existing:
                 w.remove()
@@ -463,7 +464,7 @@ class CatalogScreen(Screen[None]):
                     w.update(cta_text)
             return
         container = self.query_one("#catalog-grid", VerticalScroll)
-        container.mount(Static(cta_text, classes="grid-cta search-hf-cta", id="grid-search-hf-cta"))
+        container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
         """Filter visible cards by search text without recreating widgets."""
