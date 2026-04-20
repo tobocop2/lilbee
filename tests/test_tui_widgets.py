@@ -2673,7 +2673,9 @@ class TestEnsureChromium:
         app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=True):
+            with mock.patch(
+                "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True
+            ):
                 fired = _threading.Event()
                 app.task_bar.ensure_chromium(fired.set)
                 assert fired.is_set()
@@ -2682,34 +2684,31 @@ class TestEnsureChromium:
                 assert not any(t.task_type == TaskType.SETUP.value for t in all_tasks)
 
     async def test_enqueues_setup_task_when_missing(self) -> None:
-        """bb-wq8g happy path: SETUP task lands in the queue when missing."""
-        import threading as _threading
+        """bb-wq8g happy path: SETUP task calls start_task with the right args.
 
+        Asserts against ``start_task`` directly instead of spawning a real
+        worker thread — running an actual ``asyncio.run`` inside the
+        daemon worker leaves thread-local state that later pilot tests
+        trip over.
+        """
         from lilbee.cli.tui.task_queue import TaskType
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-
-            async def _fake_bootstrap(on_progress=None):
-                return None
-
+            on_ready = mock.Mock()
             with (
-                mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=False),
-                mock.patch("lilbee.crawler.bootstrap_chromium", new=_fake_bootstrap),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=False
+                ),
+                mock.patch.object(app.task_bar, "start_task") as mock_start,
             ):
-                fired = _threading.Event()
-                app.task_bar.ensure_chromium(fired.set)
-                # Wait for the worker thread to finish + on_success to run.
-                for _ in range(40):
-                    if fired.is_set():
-                        break
-                    await pilot.pause(delay=0.05)
-                assert fired.is_set()
-                queued = app.task_bar.queue
-                all_tasks = queued.active_tasks + queued.queued_tasks + queued.history
-                setup_tasks = [t for t in all_tasks if t.task_type == TaskType.SETUP.value]
-                assert len(setup_tasks) == 1
+                app.task_bar.ensure_chromium(on_ready)
+            mock_start.assert_called_once()
+            args, kwargs = mock_start.call_args
+            assert args[1] == TaskType.SETUP
+            assert kwargs.get("on_success") is on_ready
+            on_ready.assert_not_called()
 
 
 class TestTaskBarIndeterminate:

@@ -43,7 +43,8 @@ from lilbee.cli.helpers import (
     sync_result_to_json,
 )
 from lilbee.config import cfg
-from lilbee.crawler import is_url
+from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed, is_url
+from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
 
@@ -816,11 +817,7 @@ def setup_crawler_cmd() -> None:
     readout; use '--json' mode on the top-level 'lilbee' command to get
     a single JSON blob with the final install state instead.
     """
-    import asyncio as _asyncio
-
-    from lilbee.crawler import bootstrap_chromium, playwright_chromium_installed
-
-    if playwright_chromium_installed():
+    if chromium_installed():
         if cfg.json_mode:
             typer.echo(json.dumps({"component": "chromium", "already_installed": True}))
         else:
@@ -830,10 +827,7 @@ def setup_crawler_cmd() -> None:
     last_pct: list[int] = [-1]
 
     def _on_progress(event_type: object, data: object) -> None:
-        from lilbee.progress import EventType as _ET
-        from lilbee.progress import SetupProgressEvent
-
-        if event_type != _ET.SETUP_PROGRESS or not isinstance(data, SetupProgressEvent):
+        if event_type != EventType.SETUP_PROGRESS or not isinstance(data, SetupProgressEvent):
             return
         total = data.total_bytes or 0
         pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
@@ -842,8 +836,8 @@ def setup_crawler_cmd() -> None:
             typer.echo(f"  chromium: {pct}%", err=True)
 
     try:
-        _asyncio.run(bootstrap_chromium(on_progress=_on_progress))
-    except Exception as exc:
+        asyncio.run(bootstrap_chromium(on_progress=_on_progress))
+    except CrawlerBrowserMissing as exc:
         if cfg.json_mode:
             typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))
         else:

@@ -66,7 +66,7 @@ class RoutingProvider(LLMProvider):
         """Return True if the model resolves natively via the local registry.
 
         Treats registry / path lookup failures as 'not native' so routing
-        falls through to litellm when the ref isn't a local GGUF — this
+        falls through to litellm when the ref isn't a local GGUF. This
         keeps Ollama-backed refs like ``nomic-embed-text:v1.5`` from
         crashing in llama-cpp when no native copy is installed (bb-0ud4).
         Any other exception (services-container bootstrap errors, etc.)

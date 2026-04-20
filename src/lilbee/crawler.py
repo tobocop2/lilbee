@@ -7,8 +7,10 @@ import io
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -41,7 +43,7 @@ def crawler_available() -> bool:
         return False
 
 
-class PlaywrightBrowserMissing(RuntimeError):
+class CrawlerBrowserMissing(RuntimeError):
     """Playwright is installed but its Chromium browser binary is not.
 
     Raised early by ``_open_crawler`` so task workers route to FAILED with
@@ -50,11 +52,8 @@ class PlaywrightBrowserMissing(RuntimeError):
     """
 
 
-def _playwright_browsers_path() -> Path:
+def _browsers_cache_path() -> Path:
     """Return the root path where Playwright stores browser binaries."""
-    import os
-    import sys
-
     override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
     if override:
         return Path(override).expanduser()
@@ -66,20 +65,39 @@ def _playwright_browsers_path() -> Path:
     return Path.home() / ".cache" / "ms-playwright"
 
 
-def playwright_chromium_installed() -> bool:
+def chromium_installed() -> bool:
     """Return True if at least one chromium-* install directory exists."""
-    root = _playwright_browsers_path()
+    root = _browsers_cache_path()
     if not root.exists():
         return False
     return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
+
+
+def crawler_browsers_path() -> Path:
+    """Public accessor for the crawler browser cache root.
+
+    Used by the HTTP status endpoint to tell plugins where Chromium
+    lives. The underlying resolver stays private because callers should
+    not depend on the Playwright-specific directory layout.
+    """
+    return _browsers_cache_path()
 
 
 _CHROMIUM_COMPONENT = "chromium"
 # Rough size estimate for the Chromium download; Playwright bundles vary
 # slightly per platform but this gives the UI a decent denominator before
 # 'Total bytes' parses out of stdout.
-_CHROMIUM_SIZE_ESTIMATE_BYTES = 180 * 1024 * 1024
+_CHROMIUM_ESTIMATE_MB = 180
+_CHROMIUM_SIZE_ESTIMATE_BYTES = _CHROMIUM_ESTIMATE_MB * 1024 * 1024
 
+# Unit -> bytes scale for Playwright stdout progress lines.
+_BYTE_UNIT_SCALE: dict[str, int] = {
+    "b": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 * 1024,
+    "mib": 1024 * 1024,
+}
 
 _PROGRESS_LINE_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(MiB|Mb|MB|KiB|KB|B)\s*\[[^\]]*\]\s*(\d+)%",
@@ -100,16 +118,74 @@ def _bytes_from_stdout(line: str) -> tuple[int, int | None] | None:
     raw = float(match.group(1))
     unit = match.group(2).lower()
     pct = int(match.group(3))
-    scale = {
-        "b": 1,
-        "kb": 1024,
-        "kib": 1024,
-        "mb": 1024 * 1024,
-        "mib": 1024 * 1024,
-    }.get(unit, 1)
+    scale = _BYTE_UNIT_SCALE.get(unit, 1)
     downloaded = int(raw * scale)
     total = int(downloaded * 100 / pct) if pct > 0 else None
     return downloaded, total
+
+
+def _emit_setup_start(on_progress: DetailedProgressCallback | None) -> None:
+    if on_progress is None:
+        return
+    from lilbee.progress import SetupStartEvent
+
+    on_progress(
+        EventType.SETUP_START,
+        SetupStartEvent(
+            component=_CHROMIUM_COMPONENT,
+            size_estimate_bytes=_CHROMIUM_SIZE_ESTIMATE_BYTES,
+        ),
+    )
+
+
+def _emit_setup_done(
+    on_progress: DetailedProgressCallback | None,
+    *,
+    success: bool,
+    error: str | None,
+) -> None:
+    if on_progress is None:
+        return
+    from lilbee.progress import SetupDoneEvent
+
+    on_progress(
+        EventType.SETUP_DONE,
+        SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=success, error=error),
+    )
+
+
+async def _drain_stdout_to_progress(
+    stream: asyncio.StreamReader,
+    on_progress: DetailedProgressCallback | None,
+) -> None:
+    from lilbee.progress import SetupProgressEvent
+
+    while True:
+        line_bytes = await stream.readline()
+        if not line_bytes:
+            return
+        line = line_bytes.decode(errors="replace").rstrip()
+        parsed = _bytes_from_stdout(line)
+        if parsed is None or on_progress is None:
+            continue
+        downloaded, total = parsed
+        on_progress(
+            EventType.SETUP_PROGRESS,
+            SetupProgressEvent(
+                component=_CHROMIUM_COMPONENT,
+                downloaded_bytes=downloaded,
+                total_bytes=total,
+                detail=line,
+            ),
+        )
+
+
+async def _drain_stderr(stream: asyncio.StreamReader, tail: list[str]) -> None:
+    while True:
+        line_bytes = await stream.readline()
+        if not line_bytes:
+            return
+        tail.append(line_bytes.decode(errors="replace").rstrip())
 
 
 async def bootstrap_chromium(
@@ -117,37 +193,22 @@ async def bootstrap_chromium(
 ) -> None:
     """Run ``playwright install chromium`` as a subprocess, emitting events.
 
-    Short-circuits when ``playwright_chromium_installed()`` is already True.
-    Emits ``setup_start`` before spawning, ``setup_progress`` for each
-    recognizable progress line on stdout, and ``setup_done`` on exit (with
-    ``success=False`` + the subprocess stderr tail on failure). Raises
-    :class:`PlaywrightBrowserMissing` with the tail so task workers route
+    Short-circuits when ``chromium_installed()`` is already True. Emits
+    ``setup_start`` before spawning, ``setup_progress`` for each
+    recognizable progress line on stdout, and ``setup_done`` on exit
+    (``success=False`` + the subprocess stderr tail on failure). Raises
+    :class:`CrawlerBrowserMissing` with the tail so task workers route
     to FAILED cleanly.
 
-    The subprocess uses the current Python interpreter's ``playwright``
-    module so this works under ``uv tool install`` and bundled installs
-    alike without relying on a globally-installed ``playwright`` CLI.
+    Uses the current Python interpreter's ``playwright`` module so this
+    works under ``uv tool install`` and bundled installs alike without
+    relying on a globally-installed ``playwright`` CLI.
     """
-    from lilbee.progress import SetupDoneEvent, SetupProgressEvent, SetupStartEvent
-
-    if playwright_chromium_installed():
-        if on_progress is not None:
-            on_progress(
-                EventType.SETUP_DONE,
-                SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=True, error=None),
-            )
+    if chromium_installed():
+        _emit_setup_done(on_progress, success=True, error=None)
         return
 
-    if on_progress is not None:
-        on_progress(
-            EventType.SETUP_START,
-            SetupStartEvent(
-                component=_CHROMIUM_COMPONENT,
-                size_estimate_bytes=_CHROMIUM_SIZE_ESTIMATE_BYTES,
-            ),
-        )
-
-    import sys
+    _emit_setup_start(on_progress)
 
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -158,55 +219,22 @@ async def bootstrap_chromium(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
 
     stderr_tail: list[str] = []
-
-    async def _drain_stdout() -> None:
-        assert proc.stdout is not None
-        while True:
-            line_bytes = await proc.stdout.readline()
-            if not line_bytes:
-                return
-            line = line_bytes.decode(errors="replace").rstrip()
-            parsed = _bytes_from_stdout(line)
-            if parsed is None or on_progress is None:
-                continue
-            downloaded, total = parsed
-            on_progress(
-                EventType.SETUP_PROGRESS,
-                SetupProgressEvent(
-                    component=_CHROMIUM_COMPONENT,
-                    downloaded_bytes=downloaded,
-                    total_bytes=total,
-                    detail=line,
-                ),
-            )
-
-    async def _drain_stderr() -> None:
-        assert proc.stderr is not None
-        while True:
-            line_bytes = await proc.stderr.readline()
-            if not line_bytes:
-                return
-            stderr_tail.append(line_bytes.decode(errors="replace").rstrip())
-
-    await asyncio.gather(_drain_stdout(), _drain_stderr())
+    await asyncio.gather(
+        _drain_stdout_to_progress(proc.stdout, on_progress),
+        _drain_stderr(proc.stderr, stderr_tail),
+    )
     returncode = await proc.wait()
 
     if returncode != 0:
         tail = "\n".join(stderr_tail[-10:]) or f"exit code {returncode}"
-        if on_progress is not None:
-            on_progress(
-                EventType.SETUP_DONE,
-                SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=False, error=tail),
-            )
-        raise PlaywrightBrowserMissing(f"Chromium bootstrap failed (exit {returncode}): {tail}")
+        _emit_setup_done(on_progress, success=False, error=tail)
+        raise CrawlerBrowserMissing(f"Chromium bootstrap failed (exit {returncode}): {tail}")
 
-    if on_progress is not None:
-        on_progress(
-            EventType.SETUP_DONE,
-            SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=True, error=None),
-        )
+    _emit_setup_done(on_progress, success=True, error=None)
 
 
 class CrawlerState:
@@ -461,12 +489,12 @@ def update_metadata(results: list[CrawlResult]) -> None:
 async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
     """Open an AsyncWebCrawler, suppressing stdout when quiet.
 
-    Raises :class:`PlaywrightBrowserMissing` early if the Chromium binary
+    Raises :class:`CrawlerBrowserMissing` early if the Chromium binary
     hasn't been downloaded. Without this guard Playwright prints a full
     ASCII install banner that leaks into the TUI.
     """
-    if not playwright_chromium_installed():
-        raise PlaywrightBrowserMissing(
+    if not chromium_installed():
+        raise CrawlerBrowserMissing(
             "Playwright Chromium browser not installed. "
             "Run 'uv run playwright install chromium' to enable /crawl."
         )
@@ -499,7 +527,7 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
             success=False,
             error=result.error_message or "No content extracted",
         )
-    except PlaywrightBrowserMissing:
+    except CrawlerBrowserMissing:
         raise
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
@@ -556,7 +584,7 @@ async def crawl_recursive(
                         error=cr.error_message or "Unknown error",
                     )
                 )
-    except PlaywrightBrowserMissing:
+    except CrawlerBrowserMissing:
         raise
     except Exception as exc:
         log.warning("Recursive crawl of %s failed: %s", url, exc)
@@ -619,7 +647,7 @@ async def crawl_and_save(
     # short-circuits when Chromium is already installed. Any progress is
     # forwarded through the same on_progress callback so downstream UIs
     # surface a 'setup' stage before the crawl events.
-    if not playwright_chromium_installed():
+    if not chromium_installed():
         await bootstrap_chromium(on_progress=on_progress)
 
     sem = _get_crawl_semaphore()

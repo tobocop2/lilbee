@@ -1,4 +1,4 @@
-"""Setup routes — status and bootstrap for optional runtime components.
+"""Setup routes: status and bootstrap for optional runtime components.
 
 Currently exposes Playwright Chromium bootstrap (needed for /crawl). The
 bb-wq8g contract mirrors what the TUI does in ``TaskBarController.ensure_chromium``
@@ -20,9 +20,9 @@ from litestar import get, post
 from litestar.response import Stream
 
 from lilbee.crawler import (
-    _playwright_browsers_path,
     bootstrap_chromium,
-    playwright_chromium_installed,
+    chromium_installed,
+    crawler_browsers_path,
 )
 from lilbee.server.handlers import SseStream, sse_done, sse_error
 
@@ -31,9 +31,9 @@ from lilbee.server.handlers import SseStream, sse_done, sse_error
 async def setup_crawler_status_route() -> dict[str, Any]:
     """Return whether the Chromium browser is installed."""
     return {
-        "installed": playwright_chromium_installed(),
+        "installed": chromium_installed(),
         "component": "chromium",
-        "browsers_path": str(_playwright_browsers_path()),
+        "browsers_path": str(crawler_browsers_path()),
     }
 
 

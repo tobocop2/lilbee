@@ -18,6 +18,7 @@ State ownership is split so the bar can render on every screen:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import threading
@@ -33,6 +34,9 @@ from lilbee.cancellation import TaskCancelled
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.crawler import bootstrap_chromium, chromium_installed
+from lilbee.progress import EventType as _ProgressEventType
+from lilbee.progress import SetupProgressEvent
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -50,10 +54,6 @@ _DOWNLOAD_CONCURRENCY = 2
 # matching the active-row rail pulse in the Task Center.
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
-
-
-# Back-compat alias: legacy tests/imports still reference this name.
-_DownloadCancelled = TaskCancelled
 
 
 class TaskOutcome(StrEnum):
@@ -106,6 +106,32 @@ class ProgressReporter:
 
 
 TaskTarget = Callable[[ProgressReporter], None]
+
+
+_BYTES_PER_MB = 1024 * 1024
+
+
+def _chromium_bootstrap_target(reporter: ProgressReporter) -> None:
+    """Worker target for the SETUP task: run bootstrap_chromium with progress forwarding.
+
+    Module-level so ``TaskBarController.ensure_chromium`` stays short and
+    tests can stub the target in isolation.
+    """
+
+    def _forward(event_type: _ProgressEventType, data: Any) -> None:
+        if event_type != _ProgressEventType.SETUP_PROGRESS:
+            return
+        if not isinstance(data, SetupProgressEvent):
+            return
+        total = data.total_bytes or 0
+        pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
+        mb = data.downloaded_bytes // _BYTES_PER_MB
+        if total > 0:
+            reporter.update(pct, f"chromium: {mb}/{total // _BYTES_PER_MB} MB")
+        else:
+            reporter.update(pct, f"chromium: {mb} MB")
+
+    asyncio.run(bootstrap_chromium(on_progress=_forward))
 
 
 class TaskBarController:
@@ -193,45 +219,25 @@ class TaskBarController:
     def ensure_chromium(self, on_ready: Callable[[], None]) -> None:
         """Kick off a Chromium bootstrap if missing, then call ``on_ready``.
 
-        If Playwright's Chromium binary is already installed, ``on_ready``
-        runs immediately on the caller's thread. Otherwise a single SETUP
-        task is enqueued that runs ``bootstrap_chromium`` — on success the
-        controller invokes ``on_ready`` on the worker thread via the
-        task's ``on_success`` hook; on failure the SETUP task surfaces as
-        FAILED and ``on_ready`` is NOT called (the follow-up work shouldn't
+        If Chromium is already installed, ``on_ready`` runs immediately on
+        the caller's thread. Otherwise a single SETUP task is enqueued
+        that runs ``bootstrap_chromium``; on success the controller
+        invokes ``on_ready`` on the worker thread via the task's
+        ``on_success`` hook. On failure the SETUP task surfaces as FAILED
+        and ``on_ready`` is NOT called (the follow-up work shouldn't
         proceed against a missing browser).
 
         bb-wq8g: the on_ready hook is how callers like ``_do_crawl`` chain
         their real work behind the one-time bootstrap.
         """
-        from lilbee.crawler import bootstrap_chromium, playwright_chromium_installed
-        from lilbee.progress import EventType as _ProgressEventType
-        from lilbee.progress import SetupProgressEvent
-
-        if playwright_chromium_installed():
+        if chromium_installed():
             on_ready()
             return
-
-        def _target(reporter: ProgressReporter) -> None:
-            def _forward(event_type: _ProgressEventType, data: Any) -> None:
-                if event_type != _ProgressEventType.SETUP_PROGRESS:
-                    return
-                if not isinstance(data, SetupProgressEvent):
-                    return
-                total = data.total_bytes or 0
-                pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
-                mb = data.downloaded_bytes // (1024 * 1024)
-                total_mb = (total // (1024 * 1024)) if total else "?"
-                reporter.update(pct, f"chromium: {mb}/{total_mb} MB")
-
-            import asyncio as _asyncio
-
-            _asyncio.run(bootstrap_chromium(on_progress=_forward))
 
         self.start_task(
             msg.SETUP_CHROMIUM_NAME,
             TaskType.SETUP,
-            _target,
+            _chromium_bootstrap_target,
             indeterminate=False,
             on_success=on_ready,
         )
@@ -443,10 +449,11 @@ class TaskBar(Static):
 
     def on_mount(self) -> None:
         self._refresh_display()
-        # Capture the handle so we can cancel the poll on unmount — otherwise
-        # a screen push/pop cycle leaves the previous TaskBar's interval
-        # firing against a detached widget, racing with the new TaskBar and
-        # occasionally setting ``display=False`` on the live instance (bb-3uzp).
+        # Capture the handle so we can cancel the poll on unmount. Without
+        # this, a screen push/pop cycle leaves the previous TaskBar's
+        # interval firing against a detached widget, racing with the new
+        # TaskBar and occasionally setting ``display=False`` on the live
+        # instance (bb-3uzp).
         self._interval: Timer | None = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
 
     def on_unmount(self) -> None:

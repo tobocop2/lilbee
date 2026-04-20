@@ -104,7 +104,9 @@ async def test_poll_updates_counts_strip() -> None:
         assert "1 running" in counts
         # bb-18y3: counts strip carries a rotating spinner glyph while any
         # task is active so the header visibly moves.
-        assert any(frame in counts for frame in ("◐", "◓", "◑", "◒"))
+        from lilbee.cli.tui.screens.task_center import _COUNTS_SPINNER_FRAMES
+
+        assert any(frame in counts for frame in _COUNTS_SPINNER_FRAMES)
 
 
 @pytest.mark.asyncio
@@ -120,7 +122,9 @@ async def test_poll_counts_strip_has_no_spinner_when_idle() -> None:
         counts = str(
             screen.query_one("#task-center-counts")._Static__content  # type: ignore[attr-defined]
         )
-        assert not any(frame in counts for frame in ("◐", "◓", "◑", "◒"))
+        from lilbee.cli.tui.screens.task_center import _COUNTS_SPINNER_FRAMES
+
+        assert not any(frame in counts for frame in _COUNTS_SPINNER_FRAMES)
 
 
 @pytest.mark.asyncio

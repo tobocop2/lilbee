@@ -380,7 +380,7 @@ class ChatScreen(Screen[None]):
 
         sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
         if sync_result.failed:
-            raise RuntimeError(f"Sync failed for {', '.join(sync_result.failed)}")
+            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -430,7 +430,7 @@ class ChatScreen(Screen[None]):
     def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
         """Enqueue a crawl task and run it in the background.
 
-        Bootstrap Chromium first via the controller helper — if the
+        Bootstrap Chromium first via the controller helper. If the
         browser isn't installed yet, a SETUP task renders in the Task
         Center and the crawl kicks off from its on_success hook. On a
         machine where Chromium is already present this is a synchronous
@@ -864,7 +864,7 @@ class ChatScreen(Screen[None]):
             self._auto_sync = False
             raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
         if result.failed:
-            raise RuntimeError(f"Sync failed for {', '.join(result.failed)}")
+            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

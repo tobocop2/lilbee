@@ -160,7 +160,7 @@ class TaskCenter(Screen[None]):
         """Top-right status strip: N running · M queued · K done.
 
         Prepends a rotating spinner glyph when any task is active so
-        the header visibly moves — the rail pulse alone is too subtle
+        the header visibly moves. The rail pulse alone is too subtle
         to communicate 'work in progress' at a glance (bb-18y3).
         """
         counts_label = self.query_one("#task-center-counts", Label)

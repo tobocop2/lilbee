@@ -1132,7 +1132,7 @@ class TestCrawlStream:
     @pytest.fixture(autouse=True)
     def _skip_chromium_bootstrap(self):
         """Treat Chromium as installed so crawl_stream doesn't subprocess out."""
-        with patch("lilbee.crawler.playwright_chromium_installed", return_value=True):
+        with patch("lilbee.crawler.chromium_installed", return_value=True):
             yield
 
     @patch("lilbee.crawler.crawl_and_save")

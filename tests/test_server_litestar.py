@@ -613,7 +613,7 @@ class TestCrawlRoute:
 class TestSetupCrawlerRoutes:
     """bb-wq8g: GET /setup/crawler/status + POST /setup/crawler."""
 
-    @mock.patch("lilbee.server.routes.setup.playwright_chromium_installed", return_value=True)
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=True)
     def test_status_when_installed(self, _mock, client):
         resp = client.get("/setup/crawler/status")
         assert resp.status_code == 200
@@ -622,7 +622,7 @@ class TestSetupCrawlerRoutes:
         assert body["component"] == "chromium"
         assert "browsers_path" in body
 
-    @mock.patch("lilbee.server.routes.setup.playwright_chromium_installed", return_value=False)
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=False)
     def test_status_when_missing(self, _mock, client):
         resp = client.get("/setup/crawler/status")
         assert resp.status_code == 200
@@ -644,8 +644,21 @@ class TestSetupCrawlerRoutes:
             resp = client.post("/setup/crawler")
             assert resp.status_code == 201
             assert "text/event-stream" in resp.headers["content-type"]
-            assert b"setup_start" in resp.content
-            assert b"setup_done" in resp.content
+            assert b"event: setup_start" in resp.content
+            assert b"event: setup_done" in resp.content
+
+    def test_post_setup_crawler_emits_error_when_bootstrap_raises(self, client):
+        """Non-zero-exit bootstrap routes through sse_error before done."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        async def _fake_bootstrap(on_progress=None):
+            raise CrawlerBrowserMissing("network unreachable")
+
+        with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
+            resp = client.post("/setup/crawler")
+            assert resp.status_code == 201
+            assert b"event: error" in resp.content
+            assert b"network unreachable" in resp.content
 
 
 class TestCreateAppReexport:
