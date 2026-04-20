@@ -186,12 +186,44 @@ class CatalogScreen(Screen[None]):
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Return focus to the visible view on Enter."""
+        """Enter in the search box installs the first visible match.
+
+        Users filter specifically to narrow to the model they want, so
+        Enter should queue the install directly instead of requiring a
+        second press to pick the already-filtered card. If no model
+        matches, falls through silently (Esc cancels the search).
+        """
         if self._grid_view:
-            with contextlib.suppress(Exception):
-                self.query_one("#catalog-grid GridSelect", GridSelect).focus()
+            self._select_first_visible_grid_card()
         else:
-            self._focus_list_item(0)
+            self._select_first_visible_list_item()
+
+    def _select_first_visible_grid_card(self) -> None:
+        """Focus the first grid with a visible match and trigger its install.
+
+        Without the "first visible" walk, focusing any grid with
+        ``highlighted = 0`` could land on a card the filter just hid,
+        and Enter would install the wrong model. Setting
+        ``highlighted`` to the first visible index guarantees the
+        install fires on what the user can actually see.
+        """
+        with contextlib.suppress(Exception):
+            for grid in self.query(GridSelect):
+                visible = [i for i, card in enumerate(grid.children) if card.display]
+                if visible:
+                    grid.focus()
+                    grid.highlighted = visible[0]
+                    grid.action_select()
+                    return
+
+    def _select_first_visible_list_item(self) -> None:
+        """List-view counterpart: focus + install the first visible row."""
+        with contextlib.suppress(Exception):
+            for item in self.query(ModelListItem):
+                if item.display:
+                    item.focus()
+                    item.action_select()
+                    return
 
     def _fetch_hf_page(self) -> list[CatalogModel]:
         """Fetch one page of HF models for all task types (runs in worker thread)."""

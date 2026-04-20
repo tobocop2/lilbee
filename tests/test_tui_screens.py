@@ -7075,6 +7075,78 @@ async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
             assert screen._sort_column == "Name"
 
 
+async def test_catalog_search_submit_installs_first_visible_match():
+    """Single Enter in search filters + queues install on the first visible card.
+
+    Regression test: previously Enter from the search Input only
+    refocused the grid (landing on the hidden default card), so users
+    had to press Enter twice — and the second press queued the wrong
+    (invisible) model.
+    """
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            grids = list(screen.query(GridSelect))
+            assert grids, "catalog should mount at least one GridSelect"
+            grid = grids[0]
+            assert len(grid.children) >= 2
+            # Simulate a filter hiding all cards except the second one —
+            # the old handler would install the first (now-hidden) card
+            # via highlighted=0; the fix must land on the visible one.
+            for card in grid.children:
+                card.display = False
+            target_card = grid.children[1]
+            target_card.display = True
+            with patch.object(screen, "_select_row") as install:
+                screen._select_first_visible_grid_card()
+                # action_select posts a message; drain the loop so
+                # _on_grid_selected dispatches through to our patched
+                # _select_row.
+                for _ in range(5):
+                    await _pilot.pause()
+                assert install.called
+                row_arg = install.call_args.args[0]
+                assert row_arg is target_card.row
+
+
+async def test_catalog_select_first_visible_list_item_installs_match():
+    """List-view counterpart: Enter in search installs the first visible row."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._refresh_list()
+            items = list(screen.query(ModelListItem))
+            if len(items) < 2:
+                return  # Not enough rows to exercise the visible-match walk
+            for item in items:
+                item.display = False
+            target = items[1]
+            target.display = True
+            with patch.object(screen, "_select_row") as install:
+                screen._select_first_visible_list_item()
+                for _ in range(5):
+                    await _pilot.pause()
+                assert install.called
+                assert install.call_args.args[0] is target.row
+
+
 async def test_catalog_focus_list_item_empty_is_noop():
     """_focus_list_item leaves focus unchanged when there are no list items."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
