@@ -943,7 +943,13 @@ def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:
         """
     ).strip()
 
-    subprocess.run([sys.executable, "-c", script], timeout=30, check=True)
+    subprocess.run(
+        [sys.executable, "-c", script],
+        timeout=30,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     body = json.loads(verdict.read_text())
     assert body["stdout_name"] == body["devnull"]
     assert body["stderr_name"] == body["devnull"]
