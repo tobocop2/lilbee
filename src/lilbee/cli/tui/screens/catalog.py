@@ -203,6 +203,10 @@ class CatalogScreen(Screen[None]):
         self._pending_search_query = query
         self._search_in_flight = True
         self._update_sort_label()
+        # The sort label is hidden by CSS in grid view; a notification
+        # gives the user feedback that the search is in flight regardless
+        # of which view they're in.
+        self.notify(msg.CATALOG_SEARCHING_HF, timeout=4)
         self._fetch_hf_search(query)
 
     @on(Input.Submitted, "#catalog-search")

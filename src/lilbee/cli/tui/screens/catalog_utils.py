@@ -160,13 +160,24 @@ def _param_sort_value(params: str) -> float:
 
 
 def matches_search(row: TableRow, search: str) -> bool:
-    """Return True if the row matches the search text."""
+    """Return True if the row matches the search text.
+
+    Hyphens and underscores in both the query and the row fields are
+    normalized to spaces before the substring check so that a query like
+    ``deepseek-r1-distill`` (the form HF model ids use) matches the
+    display name ``Deepseek R1 Distill Llama 70B`` (which `clean_display_name`
+    converts to spaces). Without this, the HF-fallback would fetch the
+    matching repos but the post-fetch filter would hide them again.
+    """
     if not search:
         return True
-    return (
-        search in row.name.lower()
-        or search in row.task.lower()
-        or search in row.params.lower()
-        or search in row.quant.lower()
-        or search in row.backend.lower()
+    needle = _normalize_for_search(search)
+    return any(
+        needle in _normalize_for_search(field)
+        for field in (row.name, row.task, row.params, row.quant, row.backend)
     )
+
+
+def _normalize_for_search(value: str) -> str:
+    """Lower-case and collapse ``-`` / ``_`` to spaces for matching."""
+    return value.lower().replace("-", " ").replace("_", " ")
