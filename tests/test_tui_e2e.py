@@ -1296,6 +1296,82 @@ class TestCatalogInteractions:
                 names = [item.row.name for item in app.screen.query(ModelListItem)]
                 assert "zzz_remote" in names
 
+    async def test_submit_with_zero_local_matches_fires_hf_search(self, _mock_resolve):
+        """Enter on a query that filters the list empty should fire HF itself."""
+        from lilbee.catalog import CatalogResult
+        from lilbee.cli.tui.app import LilbeeApp
+
+        empty = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
+        call_log: list[str] = []
+
+        def fake_get_catalog(**kwargs: Any) -> CatalogResult:
+            term = kwargs.get("search", "")
+            if term:
+                call_log.append(term)
+            return empty
+
+        with (
+            _mock_catalog_deps(),
+            _mock_remote_models(),
+            mock.patch("lilbee.cli.tui.screens.catalog.get_catalog", side_effect=fake_get_catalog),
+        ):
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.pause()
+
+                search = app.screen.query_one("#catalog-search")
+                search.value = "no-such-model-anywhere"
+                await pilot.pause()
+                await search.action_submit()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+                assert "no-such-model-anywhere" in call_log
+
+    async def test_trigger_remote_search_blocked_while_in_flight(self, _mock_resolve):
+        """A second _trigger_remote_search while one is in flight is a no-op."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                screen = app.screen
+                screen._search_in_flight = True
+                screen._trigger_remote_search("anything")
+                assert screen._search_in_flight is True
+
+                screen._search_in_flight = False
+                screen._trigger_remote_search("")
+                assert screen._search_in_flight is False
+
+    async def test_grid_cta_click_fires_hf_search(self, _mock_resolve):
+        """Clicking the grid-view CTA Static is equivalent to selecting it."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                search = app.screen.query_one("#catalog-search")
+                search.value = "some-query"
+                await pilot.pause()
+
+                triggered: list[str] = []
+                app.screen._trigger_remote_search = triggered.append  # type: ignore[method-assign]
+                app.screen._on_search_hf_cta_clicked()
+                assert triggered == ["some-query"]
+
     async def test_search_cta_clears_in_flight_on_worker_error(self, _mock_resolve):
         """A failed worker must clear _search_in_flight so the CTA stays usable."""
         from lilbee.catalog import CatalogResult
