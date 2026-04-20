@@ -42,6 +42,7 @@ from lilbee.cli.helpers import (
     render_status,
     sync_result_to_json,
 )
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
 from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed, is_url
 from lilbee.progress import EventType, SetupProgressEvent
@@ -833,7 +834,7 @@ def setup_crawler_cmd() -> None:
         pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
         if pct != last_pct[0] and not cfg.json_mode:
             last_pct[0] = pct
-            typer.echo(f"  chromium: {pct}%", err=True)
+            typer.echo(msg.SETUP_CHROMIUM_CLI_PROGRESS.format(pct=pct), err=True)
 
     try:
         asyncio.run(bootstrap_chromium(on_progress=_on_progress))

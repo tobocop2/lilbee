@@ -35,8 +35,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
-from lilbee.progress import EventType as _ProgressEventType
-from lilbee.progress import SetupProgressEvent
+from lilbee.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -118,8 +117,8 @@ def _chromium_bootstrap_target(reporter: ProgressReporter) -> None:
     tests can stub the target in isolation.
     """
 
-    def _forward(event_type: _ProgressEventType, data: Any) -> None:
-        if event_type != _ProgressEventType.SETUP_PROGRESS:
+    def _forward(event_type: EventType, data: Any) -> None:
+        if event_type != EventType.SETUP_PROGRESS:
             return
         if not isinstance(data, SetupProgressEvent):
             return
@@ -127,9 +126,10 @@ def _chromium_bootstrap_target(reporter: ProgressReporter) -> None:
         pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
         mb = data.downloaded_bytes // _BYTES_PER_MB
         if total > 0:
-            reporter.update(pct, f"chromium: {mb}/{total // _BYTES_PER_MB} MB")
+            detail = msg.SETUP_CHROMIUM_DETAIL.format(done=mb, total=total // _BYTES_PER_MB)
         else:
-            reporter.update(pct, f"chromium: {mb} MB")
+            detail = msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(done=mb)
+        reporter.update(pct, detail)
 
     asyncio.run(bootstrap_chromium(on_progress=_forward))
 

@@ -27,6 +27,9 @@ from lilbee.progress import (
     CrawlStartEvent,
     DetailedProgressCallback,
     EventType,
+    SetupDoneEvent,
+    SetupProgressEvent,
+    SetupStartEvent,
 )
 from lilbee.security import validate_path_within
 
@@ -108,11 +111,13 @@ _PROGRESS_LINE_RE = re.compile(
 )
 
 
-def _bytes_from_stdout(line: str) -> tuple[int, int | None] | None:
+def _bytes_from_stdout(line: str) -> tuple[int, int] | None:
     """Extract (downloaded_bytes, total_bytes) from a Playwright stdout line.
 
     Matches the ``NN% of N.N MiB`` shape Playwright 1.58+ emits for the
-    Chromium download. Returns None when the line doesn't match.
+    Chromium download. Returns None when the line doesn't match. The
+    percent and total both parse out of the same line so callers never
+    have to handle a missing total.
     """
     match = _PROGRESS_LINE_RE.search(line)
     if match is None:
@@ -129,8 +134,6 @@ def _bytes_from_stdout(line: str) -> tuple[int, int | None] | None:
 def _emit_setup_start(on_progress: DetailedProgressCallback | None) -> None:
     if on_progress is None:
         return
-    from lilbee.progress import SetupStartEvent
-
     on_progress(
         EventType.SETUP_START,
         SetupStartEvent(
@@ -148,8 +151,6 @@ def _emit_setup_done(
 ) -> None:
     if on_progress is None:
         return
-    from lilbee.progress import SetupDoneEvent
-
     on_progress(
         EventType.SETUP_DONE,
         SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=success, error=error),
@@ -160,8 +161,6 @@ async def _drain_stdout_to_progress(
     stream: asyncio.StreamReader,
     on_progress: DetailedProgressCallback | None,
 ) -> None:
-    from lilbee.progress import SetupProgressEvent
-
     while True:
         line_bytes = await stream.readline()
         if not line_bytes:
