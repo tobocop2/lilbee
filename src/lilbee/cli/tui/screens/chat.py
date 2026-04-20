@@ -378,7 +378,9 @@ class ChatScreen(Screen[None]):
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
 
-        asyncio.run(sync(quiet=True, on_progress=on_progress))
+        result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        if result.failed:
+            raise RuntimeError(f"Sync failed for {', '.join(result.failed)}")
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -847,10 +849,12 @@ class ChatScreen(Screen[None]):
                 reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
 
         try:
-            asyncio.run(sync(quiet=True, on_progress=on_progress))
+            result = asyncio.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
             self._auto_sync = False
             raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
+        if result.failed:
+            raise RuntimeError(f"Sync failed for {', '.join(result.failed)}")
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

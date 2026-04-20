@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3616,6 +3617,54 @@ async def test_cmd_add_error_in_background(tmp_path):
             while app.screen.workers:
                 await _pilot.pause()
             assert app.screen._sync_active is False
+
+
+async def test_do_add_raises_on_sync_failed(tmp_path):
+    """bb-vb28: _do_add raises when sync returns SyncResult with failed files.
+
+    Without this, embedding/extract failures inside the sync pipeline are
+    silently swallowed and the Task Center marks the task DONE. The worker's
+    except-Exception needs to see a raise so the row routes to FAILED.
+
+    Runs _do_add on a worker thread because it uses asyncio.run() internally
+    and can't be invoked from within the pilot's event loop.
+    """
+    import threading
+
+    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.ingest import SyncResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        fake_result = SyncResult(failed=["doc.txt"])
+
+        async def fake_sync(**kwargs):
+            return fake_result
+
+        reporter = ProgressReporter(app.task_bar, "fake-id")
+        captured: dict[str, BaseException] = {}
+
+        def _run_worker() -> None:
+            try:
+                app.screen._do_add(test_file, reporter)
+            except BaseException as exc:
+                captured["exc"] = exc
+
+        with (
+            patch("lilbee.cli.helpers.copy_files") as mock_copy,
+            patch("lilbee.ingest.sync", new=fake_sync),
+        ):
+            mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
+            thread = threading.Thread(target=_run_worker)
+            thread.start()
+            thread.join(timeout=5)
+
+        assert "exc" in captured
+        assert isinstance(captured["exc"], RuntimeError)
+        assert "doc.txt" in str(captured["exc"])
 
 
 async def test_sync_called_with_quiet_true():
