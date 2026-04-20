@@ -192,11 +192,17 @@ class CatalogScreen(Screen[None]):
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Enter in the search box installs the first visible match."""
+        """Enter installs the first visible match; falls through to the HF CTA
+        when nothing matches locally so the obvious intent ('search for this')
+        doesn't require the user to Tab over to the CTA row first."""
         if self._grid_view:
-            self._select_first_visible_grid_card()
-        else:
+            if any(card.display for card in self.query(ModelCard)):
+                self._select_first_visible_grid_card()
+                return
+        elif any(item.display for item in self.query(ModelListItem)):
             self._select_first_visible_list_item()
+            return
+        self._trigger_remote_search(self._get_search_text())
 
     def _trigger_remote_search(self, query: str) -> None:
         """Fire the HF search worker, unless one is already in flight."""
