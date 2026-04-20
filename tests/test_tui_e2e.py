@@ -1406,7 +1406,10 @@ class TestCatalogInteractions:
                 cta = screen.query_one(SearchHFCtaItem)
                 cta.action_select()
                 await app.workers.wait_for_complete()
-                await pilot.pause()
+                for _ in range(20):
+                    await pilot.pause(delay=0.1)
+                    if screen._search_in_flight is False:
+                        break
 
                 assert screen._search_in_flight is False
 
