@@ -1249,8 +1249,8 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "1.11.0.dev0"
-source = { git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety#cb1cb66d2421d0b6b2ca4787e7aba71e02e65a8d" }
+version = "1.11.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
@@ -1261,6 +1261,10 @@ dependencies = [
     { name = "tqdm" },
     { name = "typer" },
     { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dc/89/e7aa12d8a6b9259bed10671abb25ae6fa437c0f88a86ecbf59617bae7759/huggingface_hub-1.11.0.tar.gz", hash = "sha256:15fb3713c7f9cdff7b808a94fd91664f661ab142796bb48c9cd9493e8d166278", size = 761749 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/02/4f3f8997d1ea7fe0146b343e5e14bd065fa87af790d07e5576d31b31cc18/huggingface_hub-1.11.0-py3-none-any.whl", hash = "sha256:42a6de0afbfeb5e022222d36398f029679db4eb4778801aafda32257ae9131ab", size = 645499 },
 ]
 
 [[package]]
@@ -1647,7 +1651,7 @@ requires-dist = [
     { name = "filelock" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
-    { name = "huggingface-hub", git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety" },
+    { name = "huggingface-hub" },
     { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
     { name = "litellm", marker = "extra == 'litellm'" },
