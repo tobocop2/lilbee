@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from textual.app import ComposeResult
 from textual.widgets import Label, Static
 
+from lilbee.cancellation import TaskCancelled
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -48,16 +49,6 @@ _DOWNLOAD_CONCURRENCY = 2
 # matching the active-row rail pulse in the Task Center.
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
-
-
-class TaskCancelled(Exception):
-    """Raised inside a ``ProgressReporter.update`` call to abort the task.
-
-    The worker's target function receives a ``ProgressReporter`` whose
-    ``check_cancelled()`` / ``update()`` both raise ``TaskCancelled`` when
-    the task has been cancelled from the UI. The worker can let the
-    exception propagate and the controller handles it uniformly.
-    """
 
 
 # Back-compat alias: legacy tests/imports still reference this name.

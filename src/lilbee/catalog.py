@@ -26,6 +26,8 @@ from huggingface_hub.utils import HFValidationError, validate_repo_id
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
+from lilbee.cancellation import TaskCancelled
+
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.registry import DEFAULT_TAG, ModelManifest, ModelRef, ModelRegistry
@@ -765,6 +767,8 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         # Setting it here is too late — huggingface_hub.constants already
         # captured the value when this module first imported it.
         cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+    except TaskCancelled:
+        raise
     except GatedRepoError:
         raise PermissionError(
             f"{entry.name} requires HuggingFace authentication. "
