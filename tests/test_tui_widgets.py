@@ -3641,17 +3641,6 @@ def _make_list_row(
     )
 
 
-class _ListItemApp(App[None]):
-    def __init__(self, row: TableRow) -> None:
-        super().__init__()
-        self._row = row
-
-    def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
-
-        yield ModelListItem(self._row)
-
-
 class TestModelListItem:
     """Cover selection, click, and build_specs fallback paths.
 
@@ -3692,6 +3681,8 @@ class TestModelListItem:
             shift=False,
             meta=False,
             ctrl=False,
+            screen_x=0,
+            screen_y=0,
         )
         item.on_click(click)
         item.focus.assert_called_once()
