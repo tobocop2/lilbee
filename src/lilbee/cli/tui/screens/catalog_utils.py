@@ -163,11 +163,15 @@ def matches_search(row: TableRow, search: str) -> bool:
     """Return True if the row matches the search text.
 
     Hyphens and underscores in both the query and the row fields are
-    normalized to spaces before the substring check so that a query like
-    ``deepseek-r1-distill`` (the form HF model ids use) matches the
-    display name ``Deepseek R1 Distill Llama 70B`` (which `clean_display_name`
-    converts to spaces). Without this, the HF-fallback would fetch the
-    matching repos but the post-fetch filter would hide them again.
+    normalized to spaces before the substring check. The hyphen half
+    fixes the HF-fallback case: a query like ``deepseek-r1-distill``
+    (the form HF model ids use) needs to match the display name
+    ``Deepseek R1 Distill Llama 70B`` (which `clean_display_name`
+    converts to spaces). The underscore half preserves an existing
+    behavior: quant searches like ``q4_k_m`` still match the
+    ``Q4_K_M`` quant field after normalization. Without normalization,
+    the HF-fallback would fetch the matching repos but the post-fetch
+    filter would hide them again.
     """
     if not search:
         return True

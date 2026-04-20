@@ -47,6 +47,10 @@ _HF_PAGE_SIZE = 25
 # auto-fetch the next page. Small enough that the request is already
 # in flight by the time the user reaches the bottom.
 _HF_LOAD_MORE_TRIGGER = 5
+# Notification timeout for the transient "Searching HuggingFace…" toast.
+# Long enough to register, short enough to clear before the worker
+# typically completes on a warm cache.
+_NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
 _WORKER_FETCH_HF = "fetch_hf_models"
@@ -206,7 +210,7 @@ class CatalogScreen(Screen[None]):
         # The sort label is hidden by CSS in grid view; a notification
         # gives the user feedback that the search is in flight regardless
         # of which view they're in.
-        self.notify(msg.CATALOG_SEARCHING_HF, timeout=4)
+        self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
         self._fetch_hf_search(query)
 
     @on(Input.Submitted, "#catalog-search")
