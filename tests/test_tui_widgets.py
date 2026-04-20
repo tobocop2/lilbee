@@ -3703,8 +3703,28 @@ class TestModelListItem:
         assert str(content.plain) == "--"
 
 
-# SearchHFCtaItem behavior is covered end-to-end in
-# tests/test_tui_e2e.py::TestCatalogInteractions. The class-isolated
-# mini-App pattern used by TestModelListItem currently hangs on textual's
-# run_test in this environment, so widget-level unit tests for the CTA
-# live with the integration tests.
+class TestSearchHFCtaItem:
+    """Direct-construction pattern (no run_test) — same rationale as TestModelListItem."""
+
+    def test_action_select_posts_message_with_term(self) -> None:
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        item = SearchHFCtaItem("qwen3")
+        received: list[SearchHFCtaItem.Selected] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.action_select()
+        assert len(received) == 1
+        assert received[0].term == "qwen3"
+        assert received[0].control is item
+
+    def test_on_click_focuses_and_posts(self) -> None:
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        item = SearchHFCtaItem("phi-3")
+        received: list[SearchHFCtaItem.Selected] = []
+        focus_calls: list[bool] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.focus = lambda: focus_calls.append(True)  # type: ignore[method-assign]
+        item.on_click(_make_click(item))
+        assert focus_calls == [True]
+        assert received and received[0].term == "phi-3"
