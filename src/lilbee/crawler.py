@@ -291,15 +291,85 @@ def update_metadata(results: list[CrawlResult]) -> None:
     save_crawl_metadata(meta)
 
 
+def _build_rate_limited_dispatcher() -> Any:
+    """Build a SemaphoreDispatcher + RateLimiter from cfg, or None when disabled.
+
+    BFSDeepCrawlStrategy calls crawler.arun_many() without a dispatcher kwarg,
+    so per-domain rate limiting is only reachable by threading a dispatcher
+    through AsyncWebCrawler itself. This helper centralizes the cfg read so the
+    TUI / CLI / server all get identical behavior.
+    """
+    if not cfg.crawl_retry_on_rate_limit:
+        return None
+    from crawl4ai.async_dispatcher import RateLimiter, SemaphoreDispatcher
+
+    rate_limiter = RateLimiter(
+        base_delay=(cfg.crawl_retry_base_delay_min, cfg.crawl_retry_base_delay_max),
+        max_delay=cfg.crawl_retry_max_backoff,
+        max_retries=cfg.crawl_retry_max_attempts,
+    )
+    return SemaphoreDispatcher(
+        semaphore_count=cfg.crawl_concurrent_requests,
+        rate_limiter=rate_limiter,
+    )
+
+
+class _LilbeeAsyncCrawler:
+    """AsyncWebCrawler wrapper that injects a default dispatcher on arun_many.
+
+    crawl4ai's BFSDeepCrawlStrategy hard-codes crawler.arun_many(urls, config)
+    without a dispatcher kwarg, so per-domain rate limiting and 429/503 retries
+    can't be wired via CrawlerRunConfig. By giving the crawler a default
+    dispatcher, every strategy-originated arun_many picks it up. An explicit
+    dispatcher= on the call still wins.
+    """
+
+    def __init__(self, *, verbose: bool, dispatcher: Any) -> None:
+        from crawl4ai import AsyncWebCrawler
+
+        self._inner = AsyncWebCrawler(verbose=verbose)
+        self._dispatcher = dispatcher
+
+    async def __aenter__(self) -> "_LilbeeAsyncCrawler":
+        await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        return await self._inner.__aexit__(exc_type, exc, tb)
+
+    async def arun(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._inner.arun(*args, **kwargs)
+
+    async def arun_many(
+        self, urls: Any, config: Any = None, dispatcher: Any = None, **kwargs: Any
+    ) -> Any:
+        return await self._inner.arun_many(
+            urls,
+            config=config,
+            dispatcher=dispatcher if dispatcher is not None else self._dispatcher,
+            **kwargs,
+        )
+
+
 @contextlib.asynccontextmanager
-async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
-    """Open an AsyncWebCrawler, suppressing stdout when quiet."""
+async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
+    """Open a crawler.
+
+    When *dispatcher* is provided, wrap AsyncWebCrawler in _LilbeeAsyncCrawler
+    so every strategy-originated arun_many call picks it up. The single-URL
+    path (crawl_single) doesn't need a dispatcher because arun() doesn't accept
+    one, so it passes None and gets a bare AsyncWebCrawler.
+    """
     from crawl4ai import AsyncWebCrawler
 
     stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     with stdout_ctx:
-        async with AsyncWebCrawler(verbose=not quiet) as crawler:
-            yield crawler
+        if dispatcher is not None:
+            async with _LilbeeAsyncCrawler(verbose=not quiet, dispatcher=dispatcher) as crawler:
+                yield crawler
+        else:
+            async with AsyncWebCrawler(verbose=not quiet) as crawler:
+                yield crawler
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
@@ -371,43 +441,94 @@ async def crawl_recursive(
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
         max_pages=pages,
+        should_cancel=_should_cancel,
     )
     config = CrawlerRunConfig(
         deep_crawl_strategy=strategy,
         page_timeout=cfg.crawl_timeout * 1000,
+        mean_delay=cfg.crawl_mean_delay,
+        max_range=cfg.crawl_max_delay_range,
+        semaphore_count=cfg.crawl_concurrent_requests,
         stream=True,
     )
 
     results: list[CrawlResult] = []
     counter = 0
+    dispatcher = _build_rate_limited_dispatcher()
+    stream: Any = None
     try:
-        async with _open_crawler(quiet=quiet) as crawler:
+        async with _open_crawler(quiet=quiet, dispatcher=dispatcher) as crawler:
             stream = await crawler.arun(url=url, config=config)
-            async for cr in _iter_crawl_stream(stream):
-                if _should_cancel():
-                    break
-                counter += 1
-                if on_progress:
-                    on_progress(
-                        EventType.CRAWL_PAGE,
-                        CrawlPageEvent(url=cr.url, current=counter, total=CRAWL_TOTAL_UNKNOWN),
-                    )
-                if cr.success:
-                    results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
-                else:
-                    results.append(
-                        CrawlResult(
-                            url=cr.url,
-                            success=False,
-                            error=cr.error_message or "Unknown error",
+            try:
+                async for cr in _iter_crawl_stream(stream):
+                    if _should_cancel():
+                        _safe_strategy_cancel(strategy)
+                        break
+                    counter += 1
+                    if on_progress:
+                        on_progress(
+                            EventType.CRAWL_PAGE,
+                            CrawlPageEvent(url=cr.url, current=counter, total=CRAWL_TOTAL_UNKNOWN),
                         )
-                    )
+                    if cr.success:
+                        results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
+                    else:
+                        results.append(
+                            CrawlResult(
+                                url=cr.url,
+                                success=False,
+                                error=cr.error_message or "Unknown error",
+                            )
+                        )
+            finally:
+                # Close the async generator (if it is one) before the crawler
+                # context exits, so Playwright tears down in-flight URLs in
+                # order. Skipping this is what produced the "BrowserContext.
+                # new_page: Connection closed" spam on cancel.
+                await _safe_aclose(stream)
     except Exception as exc:
-        log.warning("Recursive crawl of %s failed: %s", url, exc)
-        if not results:
-            results.append(CrawlResult(url=url, success=False, error=str(exc)))
+        # After cancel, crawl4ai may raise BrowserContext teardown errors as
+        # in-flight URLs bail. That's expected noise, not a failure worth
+        # surfacing. Log at debug and drop the synthetic error result.
+        if _should_cancel():
+            log.debug("Recursive crawl of %s ended during cancel teardown: %s", url, exc)
+        else:
+            log.warning("Recursive crawl of %s failed: %s", url, exc)
+            if not results:
+                results.append(CrawlResult(url=url, success=False, error=str(exc)))
 
     return results
+
+
+def _safe_strategy_cancel(strategy: Any) -> None:
+    """Call strategy.cancel() if available, swallowing if the method is missing.
+
+    BFSDeepCrawlStrategy has .cancel() in crawl4ai 0.8.6. Older versions or
+    third-party strategies may not. Belt-and-suspenders: should_cancel already
+    gates between BFS levels, but cancel() also short-circuits arun_many.
+    """
+    cancel_method = getattr(strategy, "cancel", None)
+    if callable(cancel_method):
+        try:
+            cancel_method()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("strategy.cancel() raised: %s", exc)
+
+
+async def _safe_aclose(stream: Any) -> None:
+    """Close an async generator stream if that is what it is.
+
+    _iter_crawl_stream normalizes over async-generator / list / single-result
+    shapes; only the generator shape has an aclose() to call. A list or single
+    object is a no-op.
+    """
+    import inspect
+
+    if stream is None:
+        return
+    if inspect.isasyncgen(stream):
+        with contextlib.suppress(Exception):
+            await stream.aclose()
 
 
 async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:

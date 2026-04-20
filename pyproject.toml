@@ -49,7 +49,7 @@ dependencies = [
 litellm = ["litellm"]
 reranker = ["sentence-transformers"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
-crawler = ["crawl4ai>=0.8.0"]
+crawler = ["crawl4ai>=0.8.6"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"

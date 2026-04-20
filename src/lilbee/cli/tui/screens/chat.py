@@ -123,6 +123,10 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
+        # threading.Event for the currently-running crawl so /cancel can
+        # actually stop it (worker.cancel() alone only kills the textual
+        # worker; the asyncio.run inside it keeps going).
+        self._active_crawl_cancel: threading.Event | None = None
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -386,6 +390,13 @@ class ChatScreen(Screen[None]):
             self._sync_active = False
 
     def _cmd_cancel(self, _args: str) -> None:
+        # Signal the crawl cancel event BEFORE killing the worker: the event
+        # lets the crawl loop unwind cleanly (closing the stream, tearing down
+        # Playwright in order). worker.cancel() is the hard stop for anything
+        # that doesn't check the event.
+        active_cancel = self._active_crawl_cancel
+        if active_cancel is not None:
+            active_cancel.set()
         for worker in self.workers:
             worker.cancel()
         self.notify(msg.CMD_CANCEL)
@@ -467,6 +478,11 @@ class ChatScreen(Screen[None]):
         call_from_thread(
             self, task_bar.update_task, task_id, 0, msg.CMD_CRAWL_STARTED.format(url=url)
         )
+        # Fresh cancel event per crawl so /cancel can signal THIS run without
+        # affecting a future one that starts after. Stored on the screen so
+        # _cmd_cancel can reach it from the TUI thread.
+        cancel_event = threading.Event()
+        self._active_crawl_cancel = cancel_event
 
         try:
 
@@ -482,7 +498,13 @@ class ChatScreen(Screen[None]):
                     call_from_thread(self, task_bar.update_task, task_id, pct, detail)
 
             paths = asyncio.run(
-                crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
+                crawl_and_save(
+                    url,
+                    depth=depth,
+                    max_pages=max_pages,
+                    on_progress=on_progress,
+                    cancel=cancel_event,
+                )
             )
             call_from_thread(self, task_bar.complete_task, task_id)
             call_from_thread(
@@ -495,6 +517,11 @@ class ChatScreen(Screen[None]):
                     self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
                 )
             return
+        finally:
+            # Clear only if it still refers to OUR event; a later crawl may
+            # have replaced it while we were running.
+            if self._active_crawl_cancel is cancel_event:
+                self._active_crawl_cancel = None
 
         if not worker.is_cancelled:
             call_from_thread(self, self._run_sync)

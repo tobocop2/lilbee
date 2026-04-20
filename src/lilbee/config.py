@@ -256,6 +256,32 @@ class Config(BaseSettings):
     # Seconds between periodic syncs during crawl (0 = sync only at end).
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
+    # Uniform delay between in-flight requests within a single crawl.
+    # crawl4ai's own defaults are 0.1 / 0.3; ours are friendlier to hosts.
+    crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, writable=True)
+
+    # Random jitter added to crawl_mean_delay (seconds).
+    crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, writable=True)
+
+    # Concurrent in-flight requests within a single crawl. crawl4ai default
+    # is 5; we use 3 by default to be gentler.
+    crawl_concurrent_requests: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Enable the per-domain RateLimiter that backs off on HTTP 429/503 and
+    # retries. Set False to disable the dispatcher entirely.
+    crawl_retry_on_rate_limit: bool = ConfigField(default=True, writable=True)
+
+    # Randomized base-delay range the RateLimiter picks from on rate-limit
+    # responses (seconds). Pair: (min, max).
+    crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, writable=True)
+    crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, writable=True)
+
+    # Upper bound on any single backoff wait (seconds).
+    crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, writable=True)
+
+    # Retry count per URL when rate-limit codes come back.
+    crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
+
     # Fraction of GPU/unified memory available for loaded models.
     # 0.75 leaves headroom for the OS and other processes.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)

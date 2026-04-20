@@ -1647,7 +1647,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.8.0" },
+    { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.8.6" },
     { name = "filelock" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },

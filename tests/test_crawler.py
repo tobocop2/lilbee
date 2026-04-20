@@ -487,9 +487,16 @@ class TestCrawlRecursive:
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
         mock_deep = MagicMock()
         mock_deep.BFSDeepCrawlStrategy = mock_bfs
+        # Recursive crawls build a SemaphoreDispatcher + RateLimiter when
+        # cfg.crawl_retry_on_rate_limit is True (default). Stub both so
+        # `from crawl4ai.async_dispatcher import ...` succeeds.
+        mock_dispatcher_mod = MagicMock()
+        mock_dispatcher_mod.RateLimiter = MagicMock()
+        mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
         return {
             "crawl4ai": mock_mod,
             "crawl4ai.deep_crawling": mock_deep,
+            "crawl4ai.async_dispatcher": mock_dispatcher_mod,
         }
 
     async def test_returns_multiple_results(self):
@@ -966,3 +973,249 @@ class TestCrawlAndSaveSemaphore:
         assert sem is not None
         assert sem._value == 2
         crawler_mod._state.semaphore = None
+
+
+class TestCrawlCancel:
+    """Cancel path: the three stitches that were broken on the first pass."""
+
+    def _setup_crawl4ai(self, mock_instance):
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+        mock_bfs_cls = MagicMock()
+        mock_deep = MagicMock()
+        mock_deep.BFSDeepCrawlStrategy = mock_bfs_cls
+        mock_dispatcher_mod = MagicMock()
+        mock_dispatcher_mod.RateLimiter = MagicMock()
+        mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        return {
+            "crawl4ai": mock_mod,
+            "crawl4ai.deep_crawling": mock_deep,
+            "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+        }, mock_bfs_cls
+
+    async def test_strategy_should_cancel_wired(self):
+        """crawl_recursive passes should_cancel= to BFSDeepCrawlStrategy."""
+        import threading as _threading
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        modules, bfs_cls = self._setup_crawl4ai(mock_instance)
+        evt = _threading.Event()
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, cancel=evt)
+
+        kwargs = bfs_cls.call_args.kwargs
+        assert "should_cancel" in kwargs
+        cb = kwargs["should_cancel"]
+        assert cb() is False
+        evt.set()
+        assert cb() is True
+
+    async def test_strategy_cancel_called_on_event(self):
+        """When cancel fires mid-stream, strategy.cancel() is invoked."""
+        import asyncio as _asyncio
+        import threading as _threading
+
+        cancel = _threading.Event()
+
+        async def _gen():
+            for i in range(1, 5):
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}")
+                if i == 1:
+                    cancel.set()
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        modules, bfs_cls = self._setup_crawl4ai(mock_instance)
+        strategy_instance = MagicMock()
+        strategy_instance.cancel = MagicMock()
+        bfs_cls.return_value = strategy_instance
+
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=10, cancel=cancel)
+
+        strategy_instance.cancel.assert_called_once()
+
+    async def test_stream_aclose_called_on_async_gen(self):
+        """The async-generator stream is aclose()'d before the crawler context exits."""
+        import threading as _threading
+
+        aclose_called = []
+
+        async def _gen():
+            try:
+                for i in range(1, 4):
+                    yield _make_crawl4ai_result(url=f"https://example.com/p{i}")
+            finally:
+                aclose_called.append(True)
+
+        gen = _gen()
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=gen)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        modules, _ = self._setup_crawl4ai(mock_instance)
+        cancel = _threading.Event()
+        cancel.set()  # cancel immediately so the loop breaks after first result
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=10, cancel=cancel)
+        # The generator's finally ran, proving aclose completed
+        assert aclose_called == [True]
+
+    async def test_stream_aclose_noop_for_list(self):
+        """List-mode arun return (batch shape) doesn't trigger aclose."""
+        mock_results = [_make_crawl4ai_result(url="https://example.com", markdown="# H")]
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=mock_results)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        modules, _ = self._setup_crawl4ai(mock_instance)
+        with patch.dict("sys.modules", modules):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        assert len(results) == 1
+
+    async def test_post_cancel_teardown_errors_logged_at_debug(self, caplog):
+        """After cancel, BrowserContext-closed errors log at DEBUG, not WARNING."""
+        import logging as _logging
+        import threading as _threading
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(side_effect=RuntimeError("BrowserContext.new_page: boom"))
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        modules, _ = self._setup_crawl4ai(mock_instance)
+        cancel = _threading.Event()
+        cancel.set()  # cancel fired before the exception happens
+        caplog.set_level(_logging.DEBUG, logger="lilbee.crawler")
+        with patch.dict("sys.modules", modules):
+            results = await crawl_recursive("https://example.com", cancel=cancel)
+
+        # No synthetic failure entry on the cancel path
+        assert results == []
+        # The teardown error is at DEBUG, not WARNING
+        warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+        assert not warnings
+
+    async def test_safe_strategy_cancel_missing_method(self):
+        """_safe_strategy_cancel tolerates strategies without a cancel() method."""
+        from lilbee.crawler import _safe_strategy_cancel
+
+        _safe_strategy_cancel(object())  # object() has no cancel; must not raise
+
+
+class TestCrawlDispatcher:
+    """Rate-limit dispatcher wiring for the recursive path."""
+
+    def _setup_crawl4ai(self, mock_instance):
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+        mock_deep = MagicMock()
+        mock_deep.BFSDeepCrawlStrategy = MagicMock()
+        mock_dispatcher_mod = MagicMock()
+        mock_rl = MagicMock()
+        mock_sd = MagicMock()
+        mock_dispatcher_mod.RateLimiter = mock_rl
+        mock_dispatcher_mod.SemaphoreDispatcher = mock_sd
+        return (
+            {
+                "crawl4ai": mock_mod,
+                "crawl4ai.deep_crawling": mock_deep,
+                "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+            },
+            mock_rl,
+            mock_sd,
+        )
+
+    async def test_uniform_knobs_on_crawler_run_config(self):
+        """mean_delay / max_range / semaphore_count come from cfg."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        modules, _, _ = self._setup_crawl4ai(mock_instance)
+        crc = modules["crawl4ai"].CrawlerRunConfig
+
+        cfg.crawl_mean_delay = 2.0
+        cfg.crawl_max_delay_range = 1.0
+        cfg.crawl_concurrent_requests = 7
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+
+        kwargs = crc.call_args.kwargs
+        assert kwargs["mean_delay"] == 2.0
+        assert kwargs["max_range"] == 1.0
+        assert kwargs["semaphore_count"] == 7
+
+    async def test_rate_limiter_built_when_flag_on(self):
+        """crawl_retry_on_rate_limit=True instantiates RateLimiter + SemaphoreDispatcher."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
+
+        cfg.crawl_retry_on_rate_limit = True
+        cfg.crawl_retry_base_delay_min = 1.0
+        cfg.crawl_retry_base_delay_max = 3.0
+        cfg.crawl_retry_max_backoff = 30.0
+        cfg.crawl_retry_max_attempts = 3
+        cfg.crawl_concurrent_requests = 3
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+
+        rl_kwargs = mock_rl.call_args.kwargs
+        assert rl_kwargs["base_delay"] == (1.0, 3.0)
+        assert rl_kwargs["max_delay"] == 30.0
+        assert rl_kwargs["max_retries"] == 3
+        sd_kwargs = mock_sd.call_args.kwargs
+        assert sd_kwargs["semaphore_count"] == 3
+        assert sd_kwargs["rate_limiter"] is mock_rl.return_value
+
+    async def test_rate_limiter_disabled_when_flag_off(self):
+        """crawl_retry_on_rate_limit=False skips the dispatcher entirely."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
+
+        cfg.crawl_retry_on_rate_limit = False
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+
+        mock_rl.assert_not_called()
+        mock_sd.assert_not_called()
+
+    async def test_lilbee_async_crawler_forwards_default_dispatcher(self):
+        """_LilbeeAsyncCrawler threads its default dispatcher into arun_many."""
+        from lilbee.crawler import _LilbeeAsyncCrawler
+
+        inner = MagicMock()
+        inner.arun_many = AsyncMock()
+        mock_awc = MagicMock(return_value=inner)
+        with patch.dict("sys.modules", {"crawl4ai": MagicMock(AsyncWebCrawler=mock_awc)}):
+            crawler = _LilbeeAsyncCrawler(verbose=False, dispatcher="DEFAULT")
+            await crawler.arun_many(["u"], config="C")
+        inner.arun_many.assert_awaited_once_with(["u"], config="C", dispatcher="DEFAULT")
+
+    async def test_lilbee_async_crawler_explicit_dispatcher_wins(self):
+        """An explicit dispatcher= on arun_many beats the default."""
+        from lilbee.crawler import _LilbeeAsyncCrawler
+
+        inner = MagicMock()
+        inner.arun_many = AsyncMock()
+        mock_awc = MagicMock(return_value=inner)
+        with patch.dict("sys.modules", {"crawl4ai": MagicMock(AsyncWebCrawler=mock_awc)}):
+            crawler = _LilbeeAsyncCrawler(verbose=False, dispatcher="DEFAULT")
+            await crawler.arun_many(["u"], dispatcher="EXPLICIT")
+        inner.arun_many.assert_awaited_once_with(["u"], config=None, dispatcher="EXPLICIT")
