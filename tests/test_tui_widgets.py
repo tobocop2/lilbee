@@ -2283,6 +2283,43 @@ class TestSyncSelectPrepend:
         # value should not have been reassigned beyond the mock default
         assert sel.value == _DISABLED
 
+    async def test_not_installed_label_renders_in_collapsed_select(self) -> None:
+        """Live Select shows the (not installed) suffix after _sync_select runs.
+
+        Regression test for bb-6jpp: Textual's ``set_options`` doesn't
+        refresh the closed-state label when the existing value still
+        matches — ``_sync_select`` now forces that refresh via
+        ``_refresh_select_label``.
+        """
+        from textual.app import App, ComposeResult
+        from textual.widgets import Select
+        from textual.widgets._select import SelectCurrent
+
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Select(
+                    options=[("fake-ref", "fake-ref")],
+                    prompt="pick",
+                    allow_blank=False,
+                )
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sel = app.query_one(Select)
+            sel.value = "fake-ref"
+            await pilot.pause()
+            # Simulate what _populate does once scan finishes: opts list
+            # doesn't contain the current value; _sync_select should
+            # prepend "(not installed)" AND refresh the collapsed label.
+            _sync_select(sel, [ModelOption("(none)", "")], default="fake-ref")
+            await pilot.pause()
+            current = sel.query_one(SelectCurrent)
+            rendered = str(current.label)
+            assert "not installed" in rendered, rendered
+
 
 class TestCollectNativeModelsError:
     def test_exception_suppressed(self, tmp_path) -> None:

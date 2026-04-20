@@ -146,6 +146,42 @@ async def test_clear_history_action_drops_finished_rows() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_state_visibility_follows_queue() -> None:
+    """Empty headline shows when the queue is empty; #task-rows hides.
+
+    Regression test for bb-xd7m: the empty-state Label and the row
+    scroll share the same 1fr slot. Toggling ``display`` on both so
+    exactly one is visible keeps the headline centred instead of
+    floating under a ghost scroll.
+    """
+    from textual.containers import VerticalScroll
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        rows = screen.query_one("#task-rows", VerticalScroll)
+        empty = screen.query_one("#task-center-empty")
+
+        # Empty queue: rows hidden, empty state visible.
+        assert empty.display is True
+        assert rows.display is False
+
+        tid = app.task_bar.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        for _ in range(5):
+            await pilot.pause(delay=0.1)
+            if tid in screen._rows:
+                break
+        # With a task: rows shown, empty state hidden.
+        assert empty.display is False
+        assert rows.display is True
+
+
+@pytest.mark.asyncio
 async def test_refresh_action_is_safe_on_empty_queue() -> None:
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:

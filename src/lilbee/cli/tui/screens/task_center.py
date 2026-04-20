@@ -140,8 +140,16 @@ class TaskCenter(Screen[None]):
                 except Exception:
                     log.debug("Row %s already removed", tid, exc_info=True)
         self._update_counts(tasks)
+        # Swap which widget occupies the 1fr row slot: scroll when
+        # there are tasks, headline when the list is empty. Hiding one
+        # of the pair (not both) keeps the empty-state headline centred
+        # in the available height instead of crowded under a ghost
+        # scroll that still claims the space.
         empty = self.query_one("#task-center-empty", Label)
-        empty.display = not tasks
+        rows = self.query_one("#task-rows", VerticalScroll)
+        has_tasks = bool(tasks)
+        empty.display = not has_tasks
+        rows.display = has_tasks
 
     def _update_counts(self, tasks: list[Task]) -> None:
         """Top-right status strip: N running · M queued · K done."""

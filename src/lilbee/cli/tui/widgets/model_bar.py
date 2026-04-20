@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import NamedTuple
 
@@ -10,6 +11,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Label, Select
+from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -134,6 +136,27 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     sel.set_options(opts)
     if default:
         sel.value = default
+    _refresh_select_label(sel, opts, default)
+
+
+def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> None:
+    """Push the matching option's label into ``SelectCurrent``.
+
+    Textual's ``Select.set_options`` updates the option list but doesn't
+    re-render ``SelectCurrent`` if the existing ``value`` still matches
+    an option — the reactive watcher short-circuits on ``old == new``.
+    That meant a freshly-labelled option (e.g. ``"<ref> (not installed)"``)
+    kept the compose-time bare-ref label on screen. Poke the inner
+    widget directly so the visible label matches what tests assert.
+    """
+    if not value:
+        return
+    with contextlib.suppress(Exception):
+        current = sel.query_one(SelectCurrent)
+        for label, ref_value in opts:
+            if ref_value == value:
+                current.update(label)
+                return
 
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select")

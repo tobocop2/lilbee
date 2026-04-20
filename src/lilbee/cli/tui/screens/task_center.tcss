@@ -22,16 +22,17 @@ TaskCenter {
         padding: 0 1;
     }
 
+    /* Empty-state Label and the row scroll share the 1fr slot; the
+     * screen's poll toggles their ``display`` so exactly one is
+     * visible. Without the matching 1fr here the Label would stack
+     * beneath an empty scroll and render in the top-left corner. */
     #task-center-empty {
-        width: auto;
-        height: auto;
-        padding: 2 3;
-        margin: 4 0;
-        offset: 0 0;
-        align: center middle;
+        width: 1fr;
+        height: 1fr;
+        content-align: center middle;
         text-align: center;
         color: $text-muted;
-        border: round $surface-lighten-2;
+        text-style: italic;
     }
 
     #task-center-hint {
