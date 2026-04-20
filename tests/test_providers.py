@@ -645,6 +645,17 @@ class TestRoutingProvider:
         ):
             assert rp._native_has("missing-model") is False
 
+    def test_native_has_false_on_unexpected_exception(self) -> None:
+        """bb-0ud4: unexpected errors during the probe fall through to False
+        with a debug log, not an uncaught exception.
+        """
+        rp = self._make_provider()
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            side_effect=RuntimeError("services bootstrap blew up"),
+        ):
+            assert rp._native_has("any-model") is False
+
     def test_list_models_native_only_when_litellm_unavailable(self) -> None:
         rp = self._make_provider()
         rp._use_litellm = False

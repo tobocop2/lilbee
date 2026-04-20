@@ -498,6 +498,9 @@ class TestCrawlSingle:
         """
         from lilbee.crawler import CrawlerBrowserMissing
 
+        # Stub crawl4ai so the test runs even when the `crawler` extra
+        # isn't installed in the unit-test env.
+        monkeypatch.setitem(__import__("sys").modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
         monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_single("https://example.com")
@@ -669,6 +672,20 @@ class TestPlaywrightBrowserCheck:
         assert _browsers_cache_path() == Path("/tmp/localappdata/ms-playwright")
 
 
+class TestSetupEventHelpers:
+    """bb-wq8g: _emit_setup_start / _emit_setup_done no-op when callback is None."""
+
+    def test_emit_start_no_op_when_on_progress_none(self) -> None:
+        from lilbee.crawler import _emit_setup_start
+
+        _emit_setup_start(None)  # must not raise
+
+    def test_emit_done_no_op_when_on_progress_none(self) -> None:
+        from lilbee.crawler import _emit_setup_done
+
+        _emit_setup_done(None, success=True, error=None)  # must not raise
+
+
 class TestCrawlRecursive:
     def _setup_crawl4ai(self, mock_instance):
         """Create a fake crawl4ai module with the given crawler instance."""
@@ -780,6 +797,14 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1, quiet=True)
         mock_crawler_cls.assert_called_once_with(verbose=False)
 
+    async def test_propagates_crawler_browser_missing(self, monkeypatch):
+        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+            await crawl_recursive("https://example.com", max_depth=1)
+
 
 class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
@@ -788,6 +813,22 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com")
         assert len(paths) == 1
         assert paths[0].exists()
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_triggers_bootstrap_when_chromium_missing(
+        self, mock_crawl_single, isolated_env, monkeypatch
+    ):
+        """bb-wq8g: crawl_and_save kicks off bootstrap_chromium on first use."""
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        called: list[object] = []
+
+        async def _fake_bootstrap(on_progress=None):
+            called.append(on_progress)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap_chromium", _fake_bootstrap)
+        await crawl_and_save("https://example.com")
+        assert called == [None]
 
     @patch("lilbee.crawler.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):

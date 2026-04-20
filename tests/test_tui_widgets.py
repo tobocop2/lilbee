@@ -2711,6 +2711,53 @@ class TestEnsureChromium:
             on_ready.assert_not_called()
 
 
+class TestChromiumBootstrapTarget:
+    """bb-wq8g: directly drive _chromium_bootstrap_target's body."""
+
+    def test_forwards_setup_progress_with_known_total(self) -> None:
+        """With total_bytes set, the target formats 'chromium: N/M MB'."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets import task_bar
+        from lilbee.progress import EventType, SetupDoneEvent, SetupProgressEvent
+
+        reporter = mock.MagicMock()
+
+        async def _fake_bootstrap(on_progress=None):
+            on_progress(
+                EventType.SETUP_DONE,  # ignored by the forward filter
+                SetupDoneEvent(component="chromium", success=True, error=None),
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                "not a SetupProgressEvent",  # type: ignore[arg-type]
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=10 * 1024 * 1024,
+                    total_bytes=40 * 1024 * 1024,
+                    detail="...",
+                ),
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=5 * 1024 * 1024,
+                    total_bytes=None,
+                    detail="...",
+                ),
+            )
+
+        with mock.patch.object(task_bar, "bootstrap_chromium", new=_fake_bootstrap):
+            task_bar._chromium_bootstrap_target(reporter)
+
+        pct_detail_calls = [call.args for call in reporter.update.call_args_list]
+        assert (25, msg.SETUP_CHROMIUM_DETAIL.format(done=10, total=40)) in pct_detail_calls
+        assert (0, msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(done=5)) in pct_detail_calls
+
+
 class TestTaskBarIndeterminate:
     """Tests for indeterminate task flag propagation."""
 

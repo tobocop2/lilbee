@@ -379,6 +379,37 @@ def test_do_sync_done_event_reports_completion() -> None:
     assert str(last.args[1]) == msg.SYNC_STATUS_DONE.format(count=4)
 
 
+def test_do_sync_raises_on_sync_failed() -> None:
+    """bb-vb28 parallel: auto-sync worker raises when SyncResult.failed is non-empty."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.ingest import SyncResult
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen._auto_sync = True  # type: ignore[attr-defined]
+    reporter = MagicMock(spec=ProgressReporter)
+
+    async def fake_sync(*, quiet, on_progress):
+        return SyncResult(failed=["broken.pdf"])
+
+    captured: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+                screen._do_sync(reporter)
+        except BaseException as e:
+            captured.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert captured, "worker should have raised"
+    assert isinstance(captured[0], RuntimeError)
+    assert "broken.pdf" in str(captured[0])
+
+
 def test_do_sync_translates_cancellation() -> None:
     """asyncio.CancelledError becomes a RuntimeError the controller can surface."""
     import threading
@@ -647,7 +678,13 @@ async def test_cmd_add_rejects_when_sync_active(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_start_crawl_submits_task_to_controller() -> None:
-    """_start_crawl routes through TaskBarController.start_task with CRAWL type."""
+    """_start_crawl routes through TaskBarController.start_task with CRAWL type.
+
+    After bb-wq8g, _start_crawl first calls ensure_chromium which may
+    spawn a SETUP task. This test patches chromium_installed=True so
+    ensure_chromium short-circuits and the subsequent start_task call
+    lands with the CRAWL type.
+    """
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
@@ -655,7 +692,12 @@ async def test_start_crawl_submits_task_to_controller() -> None:
         await pilot.pause()
         screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
         assert screen is not None
-        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+        with (
+            patch(
+                "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True
+            ),
+            patch.object(app.task_bar, "start_task", return_value="tid") as mock_start,
+        ):
             screen._start_crawl("https://x", 0, 5)
         assert mock_start.called
         assert mock_start.call_args.args[1] == TaskType.CRAWL
