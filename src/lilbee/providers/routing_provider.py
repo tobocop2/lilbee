@@ -62,11 +62,43 @@ class RoutingProvider(LLMProvider):
             return self._get_litellm()
         return self._get_llama_cpp()
 
+    def _native_has(self, name: str) -> bool:
+        """Return True if the model resolves natively via the local registry.
+
+        Swallows registry lookup errors so routing falls through to litellm
+        when the ref isn't a local GGUF — this is the escape hatch that
+        keeps Ollama-backed refs like ``nomic-embed-text:v1.5`` from
+        crashing in llama-cpp when no native copy is installed (bb-0ud4).
+        """
+        import contextlib
+
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
+
+        with contextlib.suppress(Exception):
+            resolve_model_path(name)
+            return True
+        return False
+
+    def _pick_backend(self, ref: Any) -> LLMProvider:
+        """Choose litellm vs llama-cpp for a parsed ref.
+
+        Remote (API or Ollama-prefixed) refs always go to litellm. Bare
+        refs prefer llama-cpp when a native copy exists, and fall through
+        to litellm otherwise so litellm can try to reach them via Ollama
+        (it auto-prefixes bare refs with ``ollama/`` when configured
+        against an Ollama base URL).
+        """
+        if ref.is_api or ref.provider == "ollama":
+            return self._get_litellm()
+        if self._native_has(ref.name):
+            return self._get_llama_cpp()
+        if self._should_use_litellm():
+            return self._get_litellm()
+        return self._get_llama_cpp()
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         ref = parse_model_ref(cfg.embedding_model)
-        if ref.is_api or ref.provider == "ollama":
-            return self._get_litellm().embed(texts)
-        return self._get_llama_cpp().embed(texts)
+        return self._pick_backend(ref).embed(texts)
 
     def chat(
         self,
@@ -77,9 +109,9 @@ class RoutingProvider(LLMProvider):
         model: str | None = None,
     ) -> str | Iterator[str]:
         ref = parse_model_ref(model or cfg.chat_model)
-        if ref.is_api or ref.provider == "ollama":
-            return self._get_litellm().chat(messages, stream=stream, options=options, model=model)
-        return self._get_llama_cpp().chat(messages, stream=stream, options=options, model=model)
+        return self._pick_backend(ref).chat(
+            messages, stream=stream, options=options, model=model
+        )
 
     def list_models(self) -> list[str]:
         """Return models from the active provider."""
