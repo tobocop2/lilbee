@@ -203,7 +203,13 @@ def _crawl_urls_blocking(
     Without --crawl, each URL is fetched as a single page (depth=0).
     With --crawl, the default is whole-site unbounded (depth=None, pages=None).
     Explicit --depth / --max-pages override both.
+
+    Installs a SIGINT handler on the event loop that sets a threading.Event
+    passed to crawl_and_save, so Ctrl-C stops the crawl cleanly instead of
+    racing playwright's subprocess tree (which otherwise swallows the signal).
     """
+    import threading
+
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
@@ -215,6 +221,8 @@ def _crawl_urls_blocking(
     else:
         effective_depth = 0
         effective_pages = None
+
+    cancel_event = threading.Event()
 
     from rich.console import Console as RichConsole
 
@@ -228,6 +236,8 @@ def _crawl_urls_blocking(
         disable=cfg.json_mode,
     ) as progress:
         for url in urls:
+            if cancel_event.is_set():
+                break
             ptask = progress.add_task(f"Crawling {url}...", total=None)
 
             def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
@@ -243,18 +253,61 @@ def _crawl_urls_blocking(
 
                 return on_progress
 
-            paths = asyncio.run(
-                crawl_and_save(
-                    url,
-                    depth=effective_depth,
-                    max_pages=effective_pages,
-                    on_progress=_make_callback(),
-                    quiet=cfg.json_mode,
-                )
+            paths = _run_crawl_with_signal_cancel(
+                url,
+                depth=effective_depth,
+                max_pages=effective_pages,
+                on_progress=_make_callback(),
+                cancel_event=cancel_event,
+                crawl_and_save=crawl_and_save,
             )
             all_paths.extend(paths)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
     return all_paths
+
+
+def _run_crawl_with_signal_cancel(
+    url: str,
+    *,
+    depth: int | None,
+    max_pages: int | None,
+    on_progress: object,
+    cancel_event: object,
+    crawl_and_save: object,
+) -> list[Path]:
+    """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
+
+    asyncio.run() installs its own SIGINT handler that raises
+    KeyboardInterrupt, which tears the crawl down ungracefully. Using
+    loop.add_signal_handler routes SIGINT straight to our cancel event so
+    crawl_recursive can unwind cleanly (close the stream, stop dispatch).
+    """
+    import signal
+
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(_signum: int, _frame: object) -> None:
+        # Set the cancel event that crawl_recursive polls between pages, so
+        # a Ctrl-C flows through as a clean cancel instead of asyncio.run's
+        # default KeyboardInterrupt-raising dance.
+        cancel_event.set()  # type: ignore[attr-defined]
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        coro = crawl_and_save(  # type: ignore[operator]
+            url,
+            depth=depth,
+            max_pages=max_pages,
+            on_progress=on_progress,
+            cancel=cancel_event,
+            quiet=cfg.json_mode,
+        )
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        signal.signal(signal.SIGINT, previous_handler)
 
 
 @app.command()
