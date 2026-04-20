@@ -2590,6 +2590,28 @@ async def test_catalog_worker_non_success_ignored():
             assert len(screen._hf_models) == before_hf
 
 
+async def test_catalog_worker_more_hf_error_releases_latch():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            from textual.worker import WorkerState
+
+            screen._loading_more = True
+            mock_worker = MagicMock()
+            mock_worker.name = _WORKER_FETCH_MORE_HF
+            mock_event = MagicMock()
+            mock_event.state = WorkerState.ERROR
+            mock_event.worker = mock_worker
+            screen.on_worker_state_changed(mock_event)
+            assert screen._loading_more is False
+
+
 async def test_catalog_select_catalog_row():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
