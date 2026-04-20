@@ -1141,7 +1141,7 @@ class TestCatalogInteractions:
                 assert grid.has_focus
 
     async def test_search_falls_back_to_hf_when_local_filter_empty(self, _mock_resolve):
-        """A non-matching local filter triggers the HF fallback worker."""
+        """Pressing Enter on a non-matching local filter triggers the HF fallback worker."""
         from lilbee.catalog import CatalogModel, CatalogResult
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -1182,6 +1182,10 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "zzz_remote"
+                await pilot.pause()
+                # Submit triggers the HF fallback (Changed only filters locally,
+                # to avoid a 3-task fan-out per keystroke).
+                await search.action_submit()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
                 await pilot.pause()
@@ -1218,15 +1222,70 @@ class TestCatalogInteractions:
                 screen = app.screen
                 search = screen.query_one("#catalog-search")
                 search.value = "boom-query"
+                await pilot.pause()
+                await search.action_submit()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
 
                 # The transient "Searching HuggingFace…" hint must clear so
                 # the user isn't left staring at a stuck progress label.
                 assert screen._search_in_flight is False
+                # The failed query must NOT linger in the gate set, so the
+                # user can press Enter again to retry after a transient
+                # network failure.
+                assert "boom-query" not in screen._searched_remote
+
+    async def test_search_fallback_retries_after_transient_failure(self, _mock_resolve):
+        """A failed HF fetch must release the per-query gate so the user can retry."""
+        from lilbee.catalog import CatalogResult
+        from lilbee.cli.tui.app import LilbeeApp
+
+        empty_result = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
+        attempts: list[str] = []
+
+        # Fail once, then succeed on retry; proves the gate clears on failure
+        # AND that the second attempt actually reaches get_catalog.
+        def fake_get_catalog(**kwargs: Any) -> CatalogResult:
+            term = kwargs.get("search", "")
+            if not term:
+                return empty_result
+            attempts.append(term)
+            if len([a for a in attempts if a == term]) <= 3:  # first pass: 3 task calls
+                raise RuntimeError("simulated transient outage")
+            return empty_result
+
+        with (
+            _mock_catalog_deps(),
+            _mock_remote_models(),
+            mock.patch("lilbee.cli.tui.screens.catalog.get_catalog", side_effect=fake_get_catalog),
+        ):
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                screen = app.screen
+                search = screen.query_one("#catalog-search")
+                search.value = "transient-fail"
+                await pilot.pause()
+                await search.action_submit()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+                # First pass failed on the very first task; gate cleared.
+                assert "transient-fail" not in screen._searched_remote
+
+                # Retry: this time the worker succeeds.
+                await search.action_submit()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+                # Two attempts made it through the gate (one failed, one not).
+                assert attempts.count("transient-fail") >= 2
 
     async def test_search_fallback_does_not_refetch_same_query(self, _mock_resolve):
-        """Typing the same empty-local query twice only fires one HF fetch."""
+        """Submitting the same empty-result query twice only fires one HF fetch."""
         from lilbee.catalog import CatalogResult
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -1252,13 +1311,12 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "no-such-model"
+                await pilot.pause()
+                await search.action_submit()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
 
-                # Clear then re-type the same query; gate must prevent a second fetch.
-                search.value = ""
-                await pilot.pause()
-                search.value = "no-such-model"
+                await search.action_submit()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
 
