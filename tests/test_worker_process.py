@@ -911,13 +911,24 @@ class TestLoadVisionModel:
 
 
 class TestRedirectStdio:
-    """Test _redirect_stdio without the autouse mock (override the fixture)."""
+    """Test _redirect_stdio without the autouse mock (override the fixture).
+
+    Skipped: ``_redirect_stdio`` closes fds 1 and 2, which pytest-xdist
+    uses to talk to its workers. Running the real function in the test
+    process deadlocks the xdist pipe under some scheduling orders and
+    hangs CI for the full 60 min. The subprocess path that actually uses
+    this function (``_worker_main``) is covered indirectly by the
+    WorkerProcess integration flow. See bb-7w37.
+    """
 
     @pytest.fixture(autouse=True)
     def _no_stdio_redirect(self):
-        """Override the module-level autouse fixture — let _redirect_stdio run."""
+        """Override the module-level autouse fixture so _redirect_stdio runs."""
         yield
 
+    @pytest.mark.skip(
+        reason="Closes stdio fds that xdist needs; deadlocks under some schedules (bb-7w37)."
+    )
     def test_redirects_stdout_stderr_to_devnull(self) -> None:
         """_redirect_stdio points sys.stdout/stderr to devnull."""
         import os

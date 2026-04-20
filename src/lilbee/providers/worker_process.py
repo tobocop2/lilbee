@@ -254,10 +254,16 @@ class WorkerProcess:
         self._request_queue.put(LoadModelRequest(model=model, model_type=model_type))
 
 
-def _redirect_stdio() -> None:
+def _redirect_stdio() -> None:  # pragma: no cover
     """Redirect stdout/stderr to /dev/null for the worker subprocess.
+
     Suppresses llama-cpp's C-level prints that would corrupt the parent TUI.
     Queues use pipes, not stdout.
+
+    Not covered by tests: running this in the pytest process closes fds
+    1 and 2 that pytest-xdist uses to communicate with its workers,
+    deadlocking the suite. The real call path (``_worker_main`` in a
+    subprocess) is covered by the WorkerProcess integration flow.
     """
     import os
     import sys

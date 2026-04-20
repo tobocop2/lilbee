@@ -3653,39 +3653,49 @@ class _ListItemApp(App[None]):
 
 
 class TestModelListItem:
-    """Cover selection, click, and build_specs fallback paths."""
+    """Cover selection, click, and build_specs fallback paths.
 
-    async def test_action_select_posts_message(self) -> None:
+    Previously used ``app.run_test()`` pilot harness, which tripped a
+    known pytest-asyncio + Textual hang on this branch and stalled CI
+    indefinitely. These tests don't need a mounted app to verify the
+    action_select / on_click message-posting contract; constructing the
+    widget directly and monkey-patching ``post_message`` is enough.
+    """
+
+    def test_action_select_posts_message(self) -> None:
         from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
-        app = _ListItemApp(_make_list_row())
+        item = ModelListItem(_make_list_row())
         received: list[ModelListItem.Selected] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.action_select()
+        assert len(received) == 1
+        assert received[0].item is item
+        assert received[0].control is item
 
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            item = app.query_one(ModelListItem)
-            item.post_message = received.append  # type: ignore[method-assign]
-            item.action_select()
-            assert len(received) == 1
-            assert received[0].item is item
-            assert received[0].control is item
-
-    async def test_on_click_focuses_and_posts(self) -> None:
+    def test_on_click_posts_selected_message(self) -> None:
         from textual.events import Click
-        from textual.geometry import Offset
 
         from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
-        app = _ListItemApp(_make_list_row())
+        item = ModelListItem(_make_list_row())
         received: list[ModelListItem.Selected] = []
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            item = app.query_one(ModelListItem)
-            item.post_message = received.append  # type: ignore[method-assign]
-            item.on_click(Click(widget=item, widget_offset=Offset(0, 0), button=1))
-            assert item.has_focus
-            assert received and received[0].item is item
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.focus = mock.Mock()  # type: ignore[method-assign]
+        click = Click(
+            widget=item,
+            x=0,
+            y=0,
+            delta_x=0,
+            delta_y=0,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+        )
+        item.on_click(click)
+        item.focus.assert_called_once()
+        assert received and received[0].item is item
 
     def test_build_specs_all_placeholders_renders_dashes(self) -> None:
         from lilbee.cli.tui.widgets.model_list_item import _build_specs
