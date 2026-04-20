@@ -21,8 +21,10 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.task_queue import Task, TaskStatus, TaskType
 from lilbee.cli.tui.widgets.progress_cell import indeterminate_cell, progress_cell
 
-# 1 Hz rail pulse at a 10 Hz poll cadence = 5 ticks on, 5 off.
-_PULSE_HALF_TICKS = 5
+# ~1.7 Hz rail pulse at a 10 Hz poll cadence = 3 ticks on, 3 off.
+# Faster cadence than the original 1 Hz makes 'something is happening'
+# visibly obvious at a glance (bb-18y3).
+_PULSE_HALF_TICKS = 3
 
 _STATUS_CLASS: dict[TaskStatus, str] = {
     TaskStatus.QUEUED: "-queued",

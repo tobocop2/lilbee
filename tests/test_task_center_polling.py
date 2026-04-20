@@ -102,6 +102,25 @@ async def test_poll_updates_counts_strip() -> None:
             screen.query_one("#task-center-counts")._Static__content  # type: ignore[attr-defined]
         )
         assert "1 running" in counts
+        # bb-18y3: counts strip carries a rotating spinner glyph while any
+        # task is active so the header visibly moves.
+        assert any(frame in counts for frame in ("◐", "◓", "◑", "◒"))
+
+
+@pytest.mark.asyncio
+async def test_poll_counts_strip_has_no_spinner_when_idle() -> None:
+    """bb-18y3: spinner only shows while tasks are active, not when idle."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        counts = str(
+            screen.query_one("#task-center-counts")._Static__content  # type: ignore[attr-defined]
+        )
+        assert not any(frame in counts for frame in ("◐", "◓", "◑", "◒"))
 
 
 @pytest.mark.asyncio

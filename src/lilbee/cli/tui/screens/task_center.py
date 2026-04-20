@@ -34,6 +34,11 @@ log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SECONDS = 0.1
 
+# Quarter-circle rotation cycles every 4 ticks (~0.4 s). Visible motion
+# in the counts strip confirms background work is live when rows are
+# running (bb-18y3).
+_COUNTS_SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
+
 
 class TaskCenter(Screen[None]):
     """Live view of active + queued + recently completed tasks."""
@@ -152,9 +157,19 @@ class TaskCenter(Screen[None]):
         rows.display = has_tasks
 
     def _update_counts(self, tasks: list[Task]) -> None:
-        """Top-right status strip: N running · M queued · K done."""
+        """Top-right status strip: N running · M queued · K done.
+
+        Prepends a rotating spinner glyph when any task is active so
+        the header visibly moves — the rail pulse alone is too subtle
+        to communicate 'work in progress' at a glance (bb-18y3).
+        """
         counts_label = self.query_one("#task-center-counts", Label)
         active = sum(1 for t in tasks if t.status == TaskStatus.ACTIVE)
         queued = sum(1 for t in tasks if t.status == TaskStatus.QUEUED)
         done = sum(1 for t in tasks if t.status == TaskStatus.DONE)
-        counts_label.update(msg.TASK_CENTER_COUNTS.format(active=active, queued=queued, done=done))
+        body = msg.TASK_CENTER_COUNTS.format(active=active, queued=queued, done=done)
+        if active > 0:
+            spinner = _COUNTS_SPINNER_FRAMES[self._tick % len(_COUNTS_SPINNER_FRAMES)]
+            counts_label.update(f"{spinner}  {body}")
+        else:
+            counts_label.update(body)
