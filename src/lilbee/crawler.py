@@ -99,8 +99,11 @@ _BYTE_UNIT_SCALE: dict[str, int] = {
     "mib": 1024 * 1024,
 }
 
+# Playwright 1.58 prints lines like
+# ``|■■■■■■■■                                  |  10% of 162.3 MiB`` during
+# the chromium download. The percent comes first, then "of <total> <unit>".
 _PROGRESS_LINE_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(MiB|Mb|MB|KiB|KB|B)\s*\[[^\]]*\]\s*(\d+)%",
+    r"(\d+)\s*%\s*of\s*(\d+(?:\.\d+)?)\s*(MiB|Mb|MB|KiB|KB|B)",
     re.IGNORECASE,
 )
 
@@ -108,19 +111,18 @@ _PROGRESS_LINE_RE = re.compile(
 def _bytes_from_stdout(line: str) -> tuple[int, int | None] | None:
     """Extract (downloaded_bytes, total_bytes) from a Playwright stdout line.
 
-    Playwright prints progress lines like ``12.3 MiB [=====      ] 25%``.
-    Translate the 'size' half into bytes and infer ``total`` from the
-    percentage. Returns None when the line doesn't match the expected shape.
+    Matches the ``NN% of N.N MiB`` shape Playwright 1.58+ emits for the
+    Chromium download. Returns None when the line doesn't match.
     """
     match = _PROGRESS_LINE_RE.search(line)
     if match is None:
         return None
-    raw = float(match.group(1))
-    unit = match.group(2).lower()
-    pct = int(match.group(3))
+    pct = int(match.group(1))
+    raw_total = float(match.group(2))
+    unit = match.group(3).lower()
     scale = _BYTE_UNIT_SCALE.get(unit, 1)
-    downloaded = int(raw * scale)
-    total = int(downloaded * 100 / pct) if pct > 0 else None
+    total = int(raw_total * scale)
+    downloaded = int(total * pct / 100)
     return downloaded, total
 
 

@@ -529,11 +529,12 @@ class TestBootstrapChromium:
 
         monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
 
+        _bar = "\xe2\x96\xa0".encode("latin-1")  # three-byte UTF-8 for ■
         stdout_lines = [
-            b"Downloading Chromium 132.0 ...\n",
-            b"10.0 MiB [====      ] 25%\n",
-            b"20.0 MiB [========  ] 50%\n",
-            b"40.0 MiB [==========] 100%\n",
+            b"Downloading Chromium 145.0 ...\n",
+            b"|" + _bar * 2 + b"        |  25% of 162.3 MiB\n",
+            b"|" + _bar * 4 + b"    |  50% of 162.3 MiB\n",
+            b"|" + _bar * 8 + b"| 100% of 162.3 MiB\n",
             b"",  # EOF
         ]
 
