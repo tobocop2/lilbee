@@ -385,16 +385,24 @@ class TestModelBar:
             assert embed_sel is not None
 
     async def test_labels_rendered(self) -> None:
-        from textual.widgets import Label
+        """bb-ec3q: Chat/Embed labels render as pills, not plain text.
+
+        Each pill is a Static carrying a pill() Content with half-block
+        ends around the label text. Assert the text survives, wrapped
+        by the PILL_LEFT/RIGHT half-block glyphs.
+        """
+        from textual.widgets import Static
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            labels = [str(lbl.render()) for lbl in app.query(Label)]
-            assert "Chat:" in labels
-            assert "Embed:" in labels
+            pills = [
+                str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes
+            ]
+            assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
+            assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
 
 
 class TestIsMmproj:

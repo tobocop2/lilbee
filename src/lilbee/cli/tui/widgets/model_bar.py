@@ -10,10 +10,11 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
-from textual.widgets import Label, Select
+from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
+from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
 from lilbee.models import ModelTask
@@ -175,10 +176,9 @@ class ModelBar(Widget, can_focus=False):
         height: 3;
         width: 100%;
     }
-    ModelBar Label {
+    ModelBar .model-bar-pill {
         width: auto;
         padding: 1 1 0 0;
-        text-style: bold;
     }
     ModelBar Select {
         width: 1fr;
@@ -194,14 +194,14 @@ class ModelBar(Widget, can_focus=False):
         chat_opts = [(cfg.chat_model, cfg.chat_model)] if cfg.chat_model else []
         embed_opts = [(cfg.embedding_model, cfg.embedding_model)] if cfg.embedding_model else []
         with Horizontal():
-            yield Label("Chat:")
+            yield Static(pill("Chat", "$primary", "$text"), classes="model-bar-pill")
             yield Select[str](
                 options=chat_opts,
                 prompt="Chat model",
                 id="chat-model-select",
                 allow_blank=False,
             )
-            yield Label("Embed:")
+            yield Static(pill("Embed", "$secondary", "$text"), classes="model-bar-pill")
             yield Select[str](
                 options=embed_opts,
                 prompt="Embed model",
