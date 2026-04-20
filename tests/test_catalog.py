@@ -1573,9 +1573,7 @@ class TestHfSearchValue:
 class TestFetchHfModelsSearchForwarding:
     """User search text reaches HF as one space-joined ``search=`` value."""
 
-    def test_search_value_sent_as_single_query_param(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_search_value_sent_as_single_query_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured_params: list[httpx.QueryParams] = []
         mock_resp = httpx.Response(200, json=[])
 
