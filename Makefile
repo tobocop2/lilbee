@@ -32,6 +32,9 @@ check: lint format-check typecheck test  ## Run all checks (same as CI)
 install:
 	uv tool install . --force --reinstall --compile-bytecode
 
+crawl-setup:  ## Download Playwright Chromium for /crawl
+	uv run playwright install chromium
+
 demo:  ## Record all demo GIFs via VHS
 	vhs demos/chat.tape
 	vhs demos/code-search.tape

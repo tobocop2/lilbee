@@ -1,6 +1,7 @@
 """Tests for the web crawling module."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,14 +29,24 @@ from lilbee.crawler import (
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
-    """Redirect config paths for all crawler tests."""
+def isolated_env(tmp_path, monkeypatch, request):
+    """Redirect config paths for all crawler tests.
+
+    Also stubs :func:`playwright_chromium_installed` to return True so the
+    pre-flight guard in ``_open_crawler`` doesn't trip in CI envs where
+    Playwright's Chromium binary is absent. Tests marked
+    ``real_browser_check`` (or in :class:`TestPlaywrightBrowserCheck`) get
+    the real function so they can drive the check directly.
+    """
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cls = request.cls.__name__ if request.cls else ""
+    if cls != "TestPlaywrightBrowserCheck":
+        monkeypatch.setattr("lilbee.crawler.playwright_chromium_installed", lambda: True)
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -476,6 +487,83 @@ class TestCrawlSingle:
         with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
             await crawl_single("https://example.com", quiet=True)
         mock_crawler_cls.assert_called_once_with(verbose=False)
+
+    async def test_missing_chromium_raises_playwright_browser_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without Chromium installed, crawl_single raises a clean exception.
+
+        Regression test for bb-60mj: without this guard Playwright prints
+        a raw ASCII install banner into the TUI and the task lands as DONE.
+        """
+        from lilbee.crawler import PlaywrightBrowserMissing
+
+        monkeypatch.setattr("lilbee.crawler.playwright_chromium_installed", lambda: False)
+        with pytest.raises(PlaywrightBrowserMissing, match="Chromium"):
+            await crawl_single("https://example.com")
+
+
+class TestPlaywrightBrowserCheck:
+    def test_detects_missing_browsers(self, tmp_path, monkeypatch):
+        """Empty browsers path reports as not installed."""
+        from lilbee.crawler import playwright_chromium_installed
+
+        monkeypatch.setattr(
+            "lilbee.crawler._playwright_browsers_path", lambda: tmp_path / "empty"
+        )
+        assert not playwright_chromium_installed()
+
+    def test_nonexistent_root_reports_missing(self, tmp_path, monkeypatch):
+        """A root path that doesn't exist reports as missing (not a crash)."""
+        from lilbee.crawler import playwright_chromium_installed
+
+        monkeypatch.setattr(
+            "lilbee.crawler._playwright_browsers_path",
+            lambda: tmp_path / "does" / "not" / "exist",
+        )
+        assert not playwright_chromium_installed()
+
+    def test_detects_installed_chromium(self, tmp_path, monkeypatch):
+        """A chromium-* subdirectory counts as installed."""
+        from lilbee.crawler import playwright_chromium_installed
+
+        browsers = tmp_path / "ms-playwright"
+        browsers.mkdir()
+        (browsers / "chromium-1234").mkdir()
+        monkeypatch.setattr("lilbee.crawler._playwright_browsers_path", lambda: browsers)
+        assert playwright_chromium_installed()
+
+    def test_path_respects_env_override(self, tmp_path, monkeypatch):
+        """PLAYWRIGHT_BROWSERS_PATH overrides the platform default."""
+        from lilbee.crawler import _playwright_browsers_path
+
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "custom"))
+        assert _playwright_browsers_path() == tmp_path / "custom"
+
+    def test_path_darwin_default(self, monkeypatch):
+        from lilbee.crawler import _playwright_browsers_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr("sys.platform", "darwin")
+        assert _playwright_browsers_path().name == "ms-playwright"
+        assert "Library/Caches" in str(_playwright_browsers_path())
+
+    def test_path_linux_default(self, monkeypatch):
+        from lilbee.crawler import _playwright_browsers_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr("sys.platform", "linux")
+        path = _playwright_browsers_path()
+        assert path.name == "ms-playwright"
+        assert ".cache" in str(path)
+
+    def test_path_win32_default(self, monkeypatch):
+        from lilbee.crawler import _playwright_browsers_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", "/tmp/localappdata")
+        monkeypatch.setattr("sys.platform", "win32")
+        assert _playwright_browsers_path() == Path("/tmp/localappdata/ms-playwright")
 
 
 class TestCrawlRecursive:

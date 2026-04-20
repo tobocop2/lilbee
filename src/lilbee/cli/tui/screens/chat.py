@@ -466,7 +466,13 @@ class ChatScreen(Screen[None]):
                 reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
 
         paths = asyncio.run(
-            crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
+            crawl_and_save(
+                url,
+                depth=depth,
+                max_pages=max_pages,
+                on_progress=on_progress,
+                quiet=True,
+            )
         )
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 

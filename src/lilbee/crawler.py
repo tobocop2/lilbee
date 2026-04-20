@@ -41,6 +41,39 @@ def crawler_available() -> bool:
         return False
 
 
+class PlaywrightBrowserMissing(RuntimeError):
+    """Playwright is installed but its Chromium browser binary is not.
+
+    Raised early by ``_open_crawler`` so task workers route to FAILED with
+    an actionable message instead of letting Playwright print its raw
+    ASCII install banner into the TUI.
+    """
+
+
+def _playwright_browsers_path() -> Path:
+    """Return the root path where Playwright stores browser binaries."""
+    import os
+    import sys
+
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(local) / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def playwright_chromium_installed() -> bool:
+    """Return True if at least one chromium-* install directory exists."""
+    root = _playwright_browsers_path()
+    if not root.exists():
+        return False
+    return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
+
+
 class CrawlerState:
     """Per-process mutable state for the crawler (semaphore, periodic sync tracking).
     Encapsulates state that would otherwise live as bare module-level globals.
@@ -291,11 +324,23 @@ def update_metadata(results: list[CrawlResult]) -> None:
 
 @contextlib.asynccontextmanager
 async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
-    """Open an AsyncWebCrawler, suppressing stdout when quiet."""
+    """Open an AsyncWebCrawler, suppressing stdout when quiet.
+
+    Raises :class:`PlaywrightBrowserMissing` early if the Chromium binary
+    hasn't been downloaded. Without this guard Playwright prints a full
+    ASCII install banner that leaks into the TUI.
+    """
+    if not playwright_chromium_installed():
+        raise PlaywrightBrowserMissing(
+            "Playwright Chromium browser not installed. "
+            "Run 'uv run playwright install chromium' to enable /crawl."
+        )
+
     from crawl4ai import AsyncWebCrawler
 
     stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
-    with stdout_ctx:
+    stderr_ctx = contextlib.redirect_stderr(io.StringIO()) if quiet else contextlib.nullcontext()
+    with stdout_ctx, stderr_ctx:
         async with AsyncWebCrawler(verbose=not quiet) as crawler:
             yield crawler
 
@@ -319,6 +364,8 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
             success=False,
             error=result.error_message or "No content extracted",
         )
+    except PlaywrightBrowserMissing:
+        raise
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
         return CrawlResult(url=url, success=False, error=str(exc))
@@ -374,6 +421,8 @@ async def crawl_recursive(
                         error=cr.error_message or "Unknown error",
                     )
                 )
+    except PlaywrightBrowserMissing:
+        raise
     except Exception as exc:
         log.warning("Recursive crawl of %s failed: %s", url, exc)
         if not results:
