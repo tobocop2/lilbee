@@ -651,8 +651,10 @@ class TestPlaywrightBrowserCheck:
 
         monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
         monkeypatch.setattr("sys.platform", "darwin")
-        assert _browsers_cache_path().name == "ms-playwright"
-        assert "Library/Caches" in str(_browsers_cache_path())
+        parts = _browsers_cache_path().parts
+        assert parts[-1] == "ms-playwright"
+        assert "Library" in parts
+        assert "Caches" in parts
 
     def test_path_linux_default(self, monkeypatch):
         from lilbee.crawler import _browsers_cache_path
