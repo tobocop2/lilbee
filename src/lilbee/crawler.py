@@ -480,6 +480,15 @@ async def crawl_recursive(
                                 error=cr.error_message or "Unknown error",
                             )
                         )
+                    # Hard cap on visible progress. crawl4ai's BFS uses
+                    # max_pages to count successful pages, so failed /
+                    # redirected pages can push our per-result counter past
+                    # the cap even after crawl4ai has stopped dispatching.
+                    # Break explicitly so the user-visible count never
+                    # exceeds the number they asked for.
+                    if counter >= pages:
+                        _safe_strategy_cancel(strategy)
+                        break
             finally:
                 # Close the async generator (if it is one) before the crawler
                 # context exits, so Playwright tears down in-flight URLs in

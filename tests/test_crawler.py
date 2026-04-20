@@ -1118,6 +1118,48 @@ class TestCrawlCancel:
 
         await _safe_aclose(None)  # must not raise
 
+    async def test_hard_cap_on_visible_counter(self):
+        """counter never exceeds the resolved max_pages, even if crawl4ai yields more.
+
+        crawl4ai's BFS only counts successful pages toward max_pages, so failed
+        or redirected pages can push our per-result counter past the cap. We
+        break the loop explicitly when counter hits the cap.
+        """
+        import asyncio as _asyncio
+
+        async def _gen():
+            # yield 10 results even though cap will be 3
+            for i in range(1, 11):
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        modules, bfs_cls = self._setup_crawl4ai(mock_instance)
+        strategy_instance = MagicMock()
+        strategy_instance.cancel = MagicMock()
+        bfs_cls.return_value = strategy_instance
+
+        events = []
+
+        def on_progress(event_type, data):
+            if event_type == EventType.CRAWL_PAGE:
+                events.append(data.current)
+
+        with patch.dict("sys.modules", modules):
+            results = await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=3, on_progress=on_progress
+            )
+
+        # User-visible counter stops at 3; no event announces current=4.
+        assert events == [1, 2, 3]
+        assert len(results) == 3
+        # Strategy was asked to stop once the cap hit.
+        strategy_instance.cancel.assert_called_once()
+
 
 class TestCrawlDispatcher:
     """Rate-limit dispatcher wiring for the recursive path."""
