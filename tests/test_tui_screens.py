@@ -3171,17 +3171,17 @@ class TestParseCrawlFlags:
     def test_empty(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags([]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags([]) == (None, None)
 
     def test_depth_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, 0)
+        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, None)
 
     def test_max_pages_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (0, 20)
+        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (None, 20)
 
     def test_both(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -3191,17 +3191,17 @@ class TestParseCrawlFlags:
     def test_invalid_values(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None)
 
     def test_missing_value(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth"]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags(["--depth"]) == (None, None)
 
     def test_unknown_flags_skipped(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None)
 
 
 async def test_chat_run_crawl_background_success():

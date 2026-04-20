@@ -198,14 +198,23 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
 def _crawl_urls_blocking(
     urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
 ) -> list[Path]:
-    """Crawl URLs synchronously (for CLI), returning paths written."""
+    """Crawl URLs synchronously (for CLI), returning paths written.
+
+    Without --crawl, each URL is fetched as a single page (depth=0).
+    With --crawl, the default is whole-site unbounded (depth=None, pages=None).
+    Explicit --depth / --max-pages override both.
+    """
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
     from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
 
-    effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
-    effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
+    if crawl:
+        effective_depth = depth
+        effective_pages = max_pages
+    else:
+        effective_depth = 0
+        effective_pages = None
 
     from rich.console import Console as RichConsole
 
@@ -226,8 +235,10 @@ def _crawl_urls_blocking(
                     if event_type == EventType.CRAWL_PAGE:
                         if not isinstance(data, CrawlPageEvent):
                             raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
+                        total_str = str(data.total) if data.total > 0 else "?"
                         progress.update(
-                            _t, description=f"Crawled {data.current}/{data.total}: {data.url}"
+                            _t,
+                            description=f"Crawled {data.current}/{total_str}: {data.url}",
                         )
 
                 return on_progress

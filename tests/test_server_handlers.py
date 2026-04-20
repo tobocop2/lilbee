@@ -1175,7 +1175,7 @@ class TestCrawlStream:
 
         mock_crawl.side_effect = blocking_crawl
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        gen = handlers.crawl_stream("https://example.com")
+        gen = handlers.crawl_stream("https://example.com", depth=1)
         async for event in gen:
             if event and "crawl_start" in event:
                 await gen.aclose()

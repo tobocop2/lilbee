@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import re
 import socket
 import threading
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 
 from lilbee.config import cfg
 from lilbee.progress import (
+    CRAWL_TOTAL_UNKNOWN,
     CrawlDoneEvent,
     CrawlPageEvent,
     CrawlStartEvent,
@@ -324,24 +326,47 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
         return CrawlResult(url=url, success=False, error=str(exc))
 
 
+def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> float:
+    """Resolve a caller-provided crawl limit to the number crawl4ai consumes.
+
+    None    -> cfg_ceiling (itself may be None, which collapses to math.inf)
+    n > 0   -> n (explicit caller intent; cfg is not a ceiling here)
+    n <= 0  -> ValueError (use None for unbounded, not 0)
+    """
+    effective = value if value is not None else cfg_ceiling
+    if effective is None:
+        return math.inf
+    if effective <= 0:
+        raise ValueError("crawl limit must be a positive int or None")
+    return effective
+
+
 async def crawl_recursive(
     url: str,
-    max_depth: int = 0,
-    max_pages: int = 0,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
+    cancel: threading.Event | None = None,
     *,
     quiet: bool = False,
 ) -> list[CrawlResult]:
-    """Crawl a URL recursively using BFS, returning results for all pages.
-    Uses crawl4ai's deep crawl strategy for link discovery.
-    Falls back to cfg defaults when max_depth/max_pages are 0.
+    """Crawl a URL recursively using BFS, streaming per-page progress.
+
+    None values for max_depth / max_pages mean unbounded (constrained only by
+    whatever ceiling the user has set in cfg.crawl_max_{depth,pages}, if any).
+    Positive ints are explicit caps. CRAWL_PAGE events fire as each page
+    completes; total is CRAWL_TOTAL_UNKNOWN since BFS doesn't know the final
+    page count up front.
     """
     validate_crawl_url(url)
+    depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
+    pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+
     from crawl4ai import CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 
-    depth = max_depth if max_depth > 0 else cfg.crawl_max_depth
-    pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
+    def _should_cancel() -> bool:
+        return cancel is not None and cancel.is_set()
 
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
@@ -350,36 +375,60 @@ async def crawl_recursive(
     config = CrawlerRunConfig(
         deep_crawl_strategy=strategy,
         page_timeout=cfg.crawl_timeout * 1000,
+        stream=True,
     )
 
     results: list[CrawlResult] = []
+    counter = 0
     try:
         async with _open_crawler(quiet=quiet) as crawler:
-            crawl_results = await crawler.arun(url=url, config=config)
-        if not isinstance(crawl_results, list):
-            crawl_results = [crawl_results]
-        for i, cr in enumerate(crawl_results):
-            if on_progress:
-                on_progress(
-                    EventType.CRAWL_PAGE,
-                    CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
-                )
-            if cr.success:
-                results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
-            else:
-                results.append(
-                    CrawlResult(
-                        url=cr.url,
-                        success=False,
-                        error=cr.error_message or "Unknown error",
+            stream = await crawler.arun(url=url, config=config)
+            async for cr in _iter_crawl_stream(stream):
+                if _should_cancel():
+                    break
+                counter += 1
+                if on_progress:
+                    on_progress(
+                        EventType.CRAWL_PAGE,
+                        CrawlPageEvent(url=cr.url, current=counter, total=CRAWL_TOTAL_UNKNOWN),
                     )
-                )
+                if cr.success:
+                    results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
+                else:
+                    results.append(
+                        CrawlResult(
+                            url=cr.url,
+                            success=False,
+                            error=cr.error_message or "Unknown error",
+                        )
+                    )
     except Exception as exc:
         log.warning("Recursive crawl of %s failed: %s", url, exc)
         if not results:
             results.append(CrawlResult(url=url, success=False, error=str(exc)))
 
     return results
+
+
+async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:
+    """Normalize crawl4ai's arun() return to an async iterator.
+
+    With stream=True on CrawlerRunConfig, crawl4ai 0.8 returns an async
+    generator. Older call sites and some crawl4ai code paths return a list
+    (batch mode) or a single CrawlResult. Accept all three shapes so tests
+    that mock arun() with a plain list keep working.
+    """
+    import inspect
+
+    if inspect.isasyncgen(stream):
+        async for item in stream:
+            yield item
+        return
+    if isinstance(stream, list):
+        for item in stream:
+            yield item
+        return
+    yield stream
 
 
 async def _maybe_periodic_sync() -> None:
@@ -417,35 +466,45 @@ async def _maybe_periodic_sync() -> None:
 async def crawl_and_save(
     url: str,
     *,
-    depth: int = 0,
-    max_pages: int = 0,
+    depth: int | None = None,
+    max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
     quiet: bool = False,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
-    Uses hash-based change detection: always fetches, but only saves files
-    whose content has changed (or is new).
-    When *cancel* is set, returns early with an empty list.
-    """
-    max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
+    depth: None = whole-site unbounded recursion (default). 0 = single URL, no
+    recursion. N > 0 = max link-follow depth. max_pages: None = no limit.
+    Positive int = cap. cfg.crawl_max_{depth,pages} act as user-opted-in
+    ceilings applied only when depth/max_pages are None.
+
+    Uses hash-based change detection: always fetches, but only saves files
+    whose content has changed (or is new). When *cancel* is set, returns
+    early with an empty list.
+    """
     sem = _get_crawl_semaphore()
     if sem is not None:
         await sem.acquire()
     try:
         if on_progress:
-            on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=depth))
+            start_depth = depth if depth is not None else 0
+            on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
 
-        if depth > 0:
-            results = await crawl_recursive(
-                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress, quiet=quiet
-            )
-        else:
+        if depth == 0:
             result = await crawl_single(url, quiet=quiet)
             results = [result]
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+        else:
+            results = await crawl_recursive(
+                url,
+                max_depth=depth,
+                max_pages=max_pages,
+                on_progress=on_progress,
+                cancel=cancel,
+                quiet=quiet,
+            )
 
         if cancel and cancel.is_set():
             return []

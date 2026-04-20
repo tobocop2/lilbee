@@ -126,11 +126,16 @@ class ConfigUpdateResponse(BaseModel):
 
 
 class CrawlRequest(BaseModel):
-    """Request body for /api/crawl."""
+    """Request body for /api/crawl.
+
+    depth: null / omitted = whole-site unbounded recursion. 0 = single URL
+    only. Positive int = max depth. max_pages: null / omitted = no cap.
+    Positive int = explicit page cap.
+    """
 
     url: str
-    depth: int = Field(default=0, le=10)
-    max_pages: int = Field(default=50, le=1000)
+    depth: int | None = Field(default=None, ge=0)
+    max_pages: int | None = Field(default=None, ge=1)
 
 
 class DocumentInfo(BaseModel):

@@ -9,23 +9,27 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Checkbox, Collapsible, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
-from lilbee.config import cfg
 
 
 @dataclass(frozen=True)
 class CrawlParams:
-    """Validated crawl parameters returned by CrawlDialog."""
+    """Validated crawl parameters returned by CrawlDialog.
+
+    depth: None = whole-site unbounded. 0 = single URL only. Positive int =
+    explicit link-follow depth cap. max_pages: None = no cap. Positive int =
+    explicit page cap.
+    """
 
     url: str
-    depth: int
-    max_pages: int
+    depth: int | None
+    max_pages: int | None
 
 
 class CrawlDialog(ModalScreen[CrawlParams | None]):
-    """Modal dialog that collects URL, depth, and max-pages for a crawl."""
+    """Modal dialog that collects URL, recursion toggle, and optional caps."""
 
     CSS_PATH = "crawl_dialog.tcss"
     AUTO_FOCUS = "#crawl-url-input"
@@ -42,18 +46,22 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
                 placeholder=msg.CRAWL_DIALOG_URL_PLACEHOLDER,
                 id="crawl-url-input",
             )
-            yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
-            yield Input(
-                value=str(cfg.crawl_max_depth),
-                placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
-                id="crawl-depth-input",
+            yield Checkbox(
+                msg.CRAWL_DIALOG_RECURSIVE_LABEL,
+                value=True,
+                id="crawl-recursive-checkbox",
             )
-            yield Label(msg.CRAWL_DIALOG_MAX_PAGES_LABEL, classes="crawl-field-label")
-            yield Input(
-                value=str(cfg.crawl_max_pages),
-                placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
-                id="crawl-max-pages-input",
-            )
+            with Collapsible(title=msg.CRAWL_DIALOG_ADVANCED_TITLE, id="crawl-advanced"):
+                yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
+                yield Input(
+                    placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
+                    id="crawl-depth-input",
+                )
+                yield Label(msg.CRAWL_DIALOG_MAX_PAGES_LABEL, classes="crawl-field-label")
+                yield Input(
+                    placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
+                    id="crawl-max-pages-input",
+                )
             yield Static("", id="crawl-error")
             with Center():
                 yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
@@ -69,15 +77,16 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         self._try_submit()
 
     @staticmethod
-    def _parse_non_negative_int(value: str, default: int) -> int:
-        """Parse a non-negative integer, returning *default* for empty strings.
+    def _parse_optional_positive_int(value: str) -> int | None:
+        """Parse a positive integer from *value*; empty string returns None.
 
-        Raises ValueError on non-numeric or negative input.
+        None means "no cap" in the crawl API. Raises ValueError on non-numeric
+        input or non-positive integers.
         """
         if not value:
-            return default
+            return None
         n = int(value)
-        if n < 0:
+        if n <= 0:
             raise ValueError
         return n
 
@@ -86,6 +95,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         from lilbee.crawler import is_url, require_valid_crawl_url
 
         url = self.query_one("#crawl-url-input", Input).value.strip()
+        recursive = self.query_one("#crawl-recursive-checkbox", Checkbox).value
         depth_str = self.query_one("#crawl-depth-input", Input).value.strip()
         max_pages_str = self.query_one("#crawl-max-pages-input", Input).value.strip()
 
@@ -100,13 +110,16 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         except ValueError as exc:
             return msg.CRAWL_DIALOG_INVALID_URL.format(error=exc)
 
+        if not recursive:
+            return CrawlParams(url=url, depth=0, max_pages=None)
+
         try:
-            depth = self._parse_non_negative_int(depth_str, cfg.crawl_max_depth)
+            depth = self._parse_optional_positive_int(depth_str)
         except ValueError:
             return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
 
         try:
-            max_pages = self._parse_non_negative_int(max_pages_str, cfg.crawl_max_pages)
+            max_pages = self._parse_optional_positive_int(max_pages_str)
         except ValueError:
             return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
 

@@ -427,7 +427,7 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
-    def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
+    def _start_crawl(self, url: str, depth: int | None, max_pages: int | None) -> None:
         """Enqueue a crawl task and run it in the background."""
         task_bar = self._task_bar
         task_id = task_bar.add_task(msg.TASK_NAME_CRAWL.format(url=url), "crawl")
@@ -436,10 +436,14 @@ class ChatScreen(Screen[None]):
         self._run_crawl_background(url, depth, max_pages, task_id)
 
     @staticmethod
-    def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
-        """Extract --depth and --max-pages from argument tokens."""
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None]:
+        """Extract --depth and --max-pages from argument tokens.
+
+        Returns None for either when the flag is absent, so the caller
+        inherits the unbounded-by-default crawl_and_save semantics.
+        """
         flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
-        parsed: dict[str, int] = {"depth": 0, "max_pages": 0}
+        parsed: dict[str, int | None] = {"depth": None, "max_pages": None}
         i = 0
         while i < len(tokens):
             key = flag_map.get(tokens[i])
@@ -452,7 +456,9 @@ class ChatScreen(Screen[None]):
         return parsed["depth"], parsed["max_pages"]
 
     @work(thread=True)
-    def _run_crawl_background(self, url: str, depth: int, max_pages: int, task_id: str) -> None:
+    def _run_crawl_background(
+        self, url: str, depth: int | None, max_pages: int | None, task_id: str
+    ) -> None:
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
@@ -471,7 +477,8 @@ class ChatScreen(Screen[None]):
                     if not isinstance(data, CrawlPageEvent):
                         raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
                     pct = int(data.current * 100 / data.total) if data.total > 0 else 50
-                    detail = f"[{data.current}/{data.total}]: {data.url}"
+                    total_str = str(data.total) if data.total > 0 else "?"
+                    detail = f"[{data.current}/{total_str}]: {data.url}"
                     call_from_thread(self, task_bar.update_task, task_id, pct, detail)
 
             paths = asyncio.run(

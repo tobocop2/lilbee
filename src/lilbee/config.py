@@ -240,11 +240,12 @@ class Config(BaseSettings):
     show_reasoning: bool = ConfigField(default=False, writable=True)
 
     # Web crawling settings
-    # Maximum link-following depth for recursive crawls.
-    crawl_max_depth: int = ConfigField(default=2, ge=0, writable=True)
+    # Optional global ceiling on recursion depth. None (default) = no ceiling;
+    # callers decide. Set a positive int in config.toml as a safety cap.
+    crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
 
-    # Maximum pages to fetch in a single crawl operation.
-    crawl_max_pages: int = ConfigField(default=50, ge=1, writable=True)
+    # Optional global ceiling on total pages per crawl. None (default) = no ceiling.
+    crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
 
     # Per-page timeout in seconds for fetching a URL.
     crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)

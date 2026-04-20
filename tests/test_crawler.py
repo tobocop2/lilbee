@@ -25,6 +25,7 @@ from lilbee.crawler import (
     url_to_filename,
     validate_crawl_url,
 )
+from lilbee.progress import EventType
 
 
 @pytest.fixture(autouse=True)
@@ -514,6 +515,69 @@ class TestCrawlRecursive:
         assert results[0].url == "https://example.com"
         assert results[1].url == "https://example.com/about"
         assert len(progress_calls) == 2
+        # Streaming semantics: total is unknown during BFS, counter advances per page.
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        assert [c[1].current for c in progress_calls] == [1, 2]
+        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in progress_calls)
+
+    async def test_emits_events_before_stream_exhausted(self):
+        """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
+        import asyncio as _asyncio
+
+        observations: list[tuple[str, int]] = []
+
+        async def _gen():
+            for i in range(1, 4):
+                await _asyncio.sleep(0)
+                observations.append(("yielded", i))
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        def on_progress(event_type, data):
+            if event_type == EventType.CRAWL_PAGE:
+                observations.append(("progress", data.current))
+
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            await crawl_recursive(
+                "https://example.com", max_depth=2, max_pages=100, on_progress=on_progress
+            )
+
+        # Each page's progress event must appear immediately after its yield,
+        # before any subsequent yield. Pattern: yielded=1, progress=1, yielded=2, progress=2, ...
+        for i in range(3):
+            assert observations[2 * i] == ("yielded", i + 1)
+            assert observations[2 * i + 1] == ("progress", i + 1)
+
+    async def test_cancel_stops_mid_stream(self):
+        """Setting the cancel event mid-stream stops further result collection."""
+        import asyncio as _asyncio
+        import threading
+
+        cancel = threading.Event()
+
+        async def _gen():
+            for i in range(1, 6):
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+                if i == 2:
+                    cancel.set()
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive(
+                "https://example.com", max_depth=2, max_pages=100, cancel=cancel
+            )
+
+        assert len(results) <= 2
 
     async def test_single_result_not_list(self):
         """When deep crawl returns a single result (not a list), it's handled."""
@@ -553,27 +617,57 @@ class TestCrawlRecursive:
         assert len(results) == 1
         assert not results[0].success
 
-    async def test_uses_config_defaults(self):
-        """When depth/pages are 0, falls back to cfg defaults."""
+    async def test_defaults_to_unbounded(self):
+        """With no max_depth / max_pages and no cfg ceiling, strategy gets math.inf."""
+        import math
+
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
-            await crawl_recursive("https://example.com", max_depth=0, max_pages=0)
-        mock_instance.arun.assert_awaited_once()
+        cfg.crawl_max_depth = None
+        cfg.crawl_max_pages = None
+        modules = self._setup_crawl4ai(mock_instance)
+        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com")
+        kwargs = bfs.call_args.kwargs
+        assert kwargs["max_depth"] == math.inf
+        assert kwargs["max_pages"] == math.inf
 
-    async def test_max_pages_capped_by_config(self):
-        """max_pages is capped at cfg.crawl_max_pages even when caller passes more."""
+    async def test_explicit_cap_overrides_cfg_ceiling(self):
+        """An explicit int wins even when cfg sets a lower ceiling."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         cfg.crawl_max_pages = 10
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        modules = self._setup_crawl4ai(mock_instance)
+        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
+        with patch.dict("sys.modules", modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
+        assert bfs.call_args.kwargs["max_pages"] == 999
+
+    async def test_cfg_ceiling_applied_when_none_passed(self):
+        """cfg.crawl_max_pages acts as ceiling when caller passes None."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        cfg.crawl_max_pages = 10
+        modules = self._setup_crawl4ai(mock_instance)
+        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=None)
+        assert bfs.call_args.kwargs["max_pages"] == 10
+
+    async def test_zero_max_pages_raises(self):
+        """max_pages=0 is invalid (callers should pass None for unbounded)."""
+        with pytest.raises(ValueError, match="positive"):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=0)
 
     async def test_quiet_passes_verbose_false(self):
         """quiet=True passes verbose=False to AsyncWebCrawler."""
@@ -594,7 +688,7 @@ class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
-        paths = await crawl_and_save("https://example.com")
+        paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
 
@@ -607,11 +701,21 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
 
+    @patch("lilbee.crawler.crawl_recursive")
+    async def test_default_depth_is_recursive(self, mock_crawl_recursive, isolated_env):
+        """No depth kwarg means recursive (whole-site) crawl, not single page."""
+        mock_crawl_recursive.return_value = [
+            CrawlResult(url="https://example.com", markdown="# Home"),
+        ]
+        await crawl_and_save("https://example.com")
+        mock_crawl_recursive.assert_awaited_once()
+        assert mock_crawl_recursive.await_args.kwargs["max_depth"] is None
+
     @patch("lilbee.crawler.crawl_single")
     async def test_quiet_forwarded_to_crawl_single(self, mock_crawl_single, isolated_env):
-        """quiet=True is forwarded to crawl_single."""
+        """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
-        await crawl_and_save("https://example.com", quiet=True)
+        await crawl_and_save("https://example.com", depth=0, quiet=True)
         mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
 
     @patch("lilbee.crawler.crawl_recursive")
@@ -622,6 +726,16 @@ class TestCrawlAndSave:
         call_kwargs = mock_crawl_recursive.call_args[1]
         assert call_kwargs["quiet"] is True
 
+    @patch("lilbee.crawler.crawl_recursive")
+    async def test_cancel_threaded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
+        """The cancel event is threaded through to crawl_recursive for BFS abort."""
+        import threading
+
+        mock_crawl_recursive.return_value = []
+        cancel = threading.Event()
+        await crawl_and_save("https://example.com", depth=2, cancel=cancel)
+        assert mock_crawl_recursive.call_args[1]["cancel"] is cancel
+
     @patch("lilbee.crawler.crawl_single")
     async def test_single_page_with_progress(self, mock_crawl_single, isolated_env):
         """Progress callback receives crawl_start, crawl_page, crawl_done for single page."""
@@ -631,7 +745,7 @@ class TestCrawlAndSave:
         def on_progress(event_type, data):
             events.append((str(event_type), data))
 
-        await crawl_and_save("https://example.com", on_progress=on_progress)
+        await crawl_and_save("https://example.com", depth=0, on_progress=on_progress)
         event_types = [e[0] for e in events]
         assert "crawl_start" in event_types
         assert "crawl_page" in event_types
@@ -642,7 +756,7 @@ class TestCrawlAndSave:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
         )
-        await crawl_and_save("https://example.com/page")
+        await crawl_and_save("https://example.com/page", depth=0)
         meta = load_crawl_metadata()
         assert "https://example.com/page" in meta
 
@@ -653,7 +767,7 @@ class TestCrawlAndSave:
             url="https://example.com/dup", markdown="# Dup"
         )
         # First crawl saves the file
-        paths1 = await crawl_and_save("https://example.com/dup")
+        paths1 = await crawl_and_save("https://example.com/dup", depth=0)
         assert len(paths1) == 1
         mock_crawl_single.reset_mock()
 
@@ -661,7 +775,7 @@ class TestCrawlAndSave:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Dup"
         )
-        paths2 = await crawl_and_save("https://example.com/dup")
+        paths2 = await crawl_and_save("https://example.com/dup", depth=0)
         assert paths2 == []
         mock_crawl_single.assert_awaited_once()
 
@@ -671,23 +785,15 @@ class TestCrawlAndSave:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Dup"
         )
-        await crawl_and_save("https://example.com/dup")
+        await crawl_and_save("https://example.com/dup", depth=0)
         mock_crawl_single.reset_mock()
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Updated"
         )
 
-        paths = await crawl_and_save("https://example.com/dup")
+        paths = await crawl_and_save("https://example.com/dup", depth=0)
         assert len(paths) == 1
         mock_crawl_single.assert_awaited_once()
-
-    @patch("lilbee.crawler.crawl_single")
-    async def test_max_pages_capped_by_config(self, mock_crawl_single, isolated_env):
-        """max_pages in crawl_and_save is capped by cfg.crawl_max_pages."""
-        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Test")
-        cfg.crawl_max_pages = 5
-        await crawl_and_save("https://example.com", max_pages=999)
-        # Single page mode: no assertion on max_pages since depth=0 uses crawl_single
 
     async def test_semaphore_limits_concurrency(self, isolated_env):
         """The semaphore limits concurrent crawls based on config."""
@@ -730,7 +836,7 @@ class TestCrawlAndSave:
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cancel = threading.Event()
         cancel.set()
-        paths = await crawl_and_save("https://example.com", cancel=cancel)
+        paths = await crawl_and_save("https://example.com", depth=0, cancel=cancel)
         assert paths == []
 
 
@@ -852,7 +958,7 @@ class TestCrawlAndSaveSemaphore:
         cfg.crawl_max_concurrent = 2
         crawler_mod._state.semaphore = None
 
-        paths = await crawl_and_save("https://example.com")
+        paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
 
         # Verify semaphore was created and is still available (released)
