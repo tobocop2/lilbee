@@ -2663,6 +2663,61 @@ class TestTaskBarAdditional:
             bar._refresh_display()
 
 
+class TestEnsureChromium:
+    """bb-wq8g: TaskBarController.ensure_chromium short-circuits or spawns SETUP."""
+
+    async def test_short_circuits_when_installed(self) -> None:
+        """No SETUP task enqueued; on_ready fires immediately."""
+        import threading as _threading
+
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=True):
+                fired = _threading.Event()
+                app.task_bar.ensure_chromium(fired.set)
+                assert fired.is_set()
+                queued = app.task_bar.queue
+                all_tasks = queued.active_tasks + queued.queued_tasks + queued.history
+                assert not any(t.task_type == TaskType.SETUP.value for t in all_tasks)
+
+    async def test_enqueues_setup_task_when_missing(self) -> None:
+        """bb-wq8g happy path: SETUP task lands in the queue when missing."""
+        import threading as _threading
+
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_bootstrap(on_progress=None):
+                return None
+
+            with (
+                mock.patch(
+                    "lilbee.crawler.playwright_chromium_installed", return_value=False
+                ),
+                mock.patch("lilbee.crawler.bootstrap_chromium", new=_fake_bootstrap),
+            ):
+                fired = _threading.Event()
+                app.task_bar.ensure_chromium(fired.set)
+                # Wait for the worker thread to finish + on_success to run.
+                for _ in range(40):
+                    if fired.is_set():
+                        break
+                    await pilot.pause(delay=0.05)
+                assert fired.is_set()
+                queued = app.task_bar.queue
+                all_tasks = queued.active_tasks + queued.queued_tasks + queued.history
+                setup_tasks = [
+                    t for t in all_tasks if t.task_type == TaskType.SETUP.value
+                ]
+                assert len(setup_tasks) == 1
+
+
 class TestTaskBarIndeterminate:
     """Tests for indeterminate task flag propagation."""
 

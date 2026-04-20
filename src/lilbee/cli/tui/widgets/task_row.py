@@ -46,6 +46,7 @@ _TASK_TYPE_BG: dict[str, str] = {
     TaskType.REMOVE.value: "$secondary",
     TaskType.CRAWL.value: "$primary",
     TaskType.WIKI.value: "$warning",
+    TaskType.SETUP.value: "$warning-darken-1",
 }
 _TASK_TYPE_BG_FALLBACK = "$primary"
 

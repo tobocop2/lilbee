@@ -36,6 +36,7 @@ class TaskType(StrEnum):
     WIKI = "wiki"
     ADD = "add"
     REMOVE = "remove"
+    SETUP = "setup"
 
 
 STATUS_ICONS: dict[TaskStatus, str] = {

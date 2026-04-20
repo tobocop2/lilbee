@@ -503,6 +503,112 @@ class TestCrawlSingle:
             await crawl_single("https://example.com")
 
 
+class TestBootstrapChromium:
+    """bb-wq8g: the subprocess wrapper that installs Playwright's Chromium."""
+
+    async def test_short_circuits_when_already_installed(self, monkeypatch):
+        """No subprocess, no stream events, when Chromium is already present."""
+        from lilbee.crawler import bootstrap_chromium
+        from lilbee.progress import EventType, SetupDoneEvent
+
+        monkeypatch.setattr("lilbee.crawler.playwright_chromium_installed", lambda: True)
+        events: list[tuple[EventType, object]] = []
+        await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+        # Only a single setup_done (success) — no start/progress when we
+        # short-circuit.
+        assert len(events) == 1
+        evt, payload = events[0]
+        assert evt == EventType.SETUP_DONE
+        assert isinstance(payload, SetupDoneEvent)
+        assert payload.success is True
+
+    async def test_parses_progress_from_fake_subprocess(self, monkeypatch):
+        """Feed canned stdout through the subprocess to drive progress events."""
+        from lilbee.crawler import bootstrap_chromium
+        from lilbee.progress import EventType, SetupProgressEvent, SetupStartEvent
+
+        monkeypatch.setattr("lilbee.crawler.playwright_chromium_installed", lambda: False)
+
+        stdout_lines = [
+            b"Downloading Chromium 132.0 ...\n",
+            b"10.0 MiB [====      ] 25%\n",
+            b"20.0 MiB [========  ] 50%\n",
+            b"40.0 MiB [==========] 100%\n",
+            b"",  # EOF
+        ]
+
+        class _Stream:
+            def __init__(self, lines: list[bytes]) -> None:
+                self._lines = list(lines)
+
+            async def readline(self) -> bytes:
+                return self._lines.pop(0) if self._lines else b""
+
+        class _Proc:
+            def __init__(self) -> None:
+                self.stdout = _Stream(stdout_lines)
+                self.stderr = _Stream([b""])
+
+            async def wait(self) -> int:
+                return 0
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+        events: list[tuple[EventType, object]] = []
+        await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+
+        types = [e for e, _ in events]
+        assert types[0] == EventType.SETUP_START
+        assert types[-1] == EventType.SETUP_DONE
+        progress_events = [d for e, d in events if e == EventType.SETUP_PROGRESS]
+        assert len(progress_events) >= 1
+        assert isinstance(events[0][1], SetupStartEvent)
+        assert isinstance(progress_events[0], SetupProgressEvent)
+
+    async def test_raises_playwright_browser_missing_on_subprocess_failure(
+        self, monkeypatch
+    ):
+        """Non-zero exit → PlaywrightBrowserMissing with stderr tail."""
+        from lilbee.crawler import PlaywrightBrowserMissing, bootstrap_chromium
+        from lilbee.progress import EventType, SetupDoneEvent
+
+        monkeypatch.setattr("lilbee.crawler.playwright_chromium_installed", lambda: False)
+
+        class _Stream:
+            def __init__(self, lines: list[bytes]) -> None:
+                self._lines = list(lines)
+
+            async def readline(self) -> bytes:
+                return self._lines.pop(0) if self._lines else b""
+
+        class _Proc:
+            def __init__(self) -> None:
+                self.stdout = _Stream([b""])
+                self.stderr = _Stream(
+                    [b"error: network unreachable\n", b"cannot bind socket\n", b""]
+                )
+
+            async def wait(self) -> int:
+                return 42
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+        events: list[tuple[EventType, object]] = []
+        with pytest.raises(PlaywrightBrowserMissing, match="exit 42"):
+            await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+        final = events[-1]
+        assert final[0] == EventType.SETUP_DONE
+        assert isinstance(final[1], SetupDoneEvent)
+        assert final[1].success is False
+        assert "network unreachable" in (final[1].error or "")
+
+
 class TestPlaywrightBrowserCheck:
     def test_detects_missing_browsers(self, tmp_path, monkeypatch):
         """Empty browsers path reports as not installed."""

@@ -743,20 +743,28 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     Emits crawl_start, crawl_page, crawl_done events, then a final done event
     with the list of files written. On error emits crawl_error.
     Sets a cancel event on client disconnect so the crawl stops between pages.
+
+    On first use, Chromium isn't installed yet — the stream inlines
+    setup_start/progress/done events before the crawl begins so the
+    Obsidian plugin's Task Center renders a matching 'setup' pill (bb-wq8g).
     """
+    from lilbee.crawler import bootstrap_chromium, playwright_chromium_installed
+
     sse = SseStream()
 
-    async def _run_crawl() -> list[Path]:
+    async def _run_bootstrap_then_crawl() -> list[Path]:
         from lilbee.crawler import crawl_and_save
 
         try:
+            if not playwright_chromium_installed():
+                await bootstrap_chromium(on_progress=sse.callback)
             return await crawl_and_save(
                 url, depth=depth, max_pages=max_pages, on_progress=sse.callback, cancel=sse.cancel
             )
         finally:
             sse.queue.put_nowait(None)
 
-    task = asyncio.create_task(_run_crawl())
+    task = asyncio.create_task(_run_bootstrap_then_crawl())
     async for event in sse.drain(task, "Crawl stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():

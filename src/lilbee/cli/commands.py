@@ -804,6 +804,58 @@ def mcp_cmd() -> None:
     main()
 
 
+setup_app = typer.Typer(help="One-time setup for optional runtime components.")
+app.add_typer(setup_app, name="setup")
+
+
+@setup_app.command(name="crawler")
+def setup_crawler_cmd() -> None:
+    """Install Playwright's Chromium browser, needed for /crawl.
+
+    No-op when Chromium is already present. Emits a simple progress
+    readout; use '--json' mode on the top-level 'lilbee' command to get
+    a single JSON blob with the final install state instead.
+    """
+    import asyncio as _asyncio
+
+    from lilbee.crawler import bootstrap_chromium, playwright_chromium_installed
+
+    if playwright_chromium_installed():
+        if cfg.json_mode:
+            typer.echo(json.dumps({"component": "chromium", "already_installed": True}))
+        else:
+            typer.echo("Chromium already installed.")
+        return
+
+    last_pct: list[int] = [-1]
+
+    def _on_progress(event_type: object, data: object) -> None:
+        from lilbee.progress import EventType as _ET
+        from lilbee.progress import SetupProgressEvent
+
+        if event_type != _ET.SETUP_PROGRESS or not isinstance(data, SetupProgressEvent):
+            return
+        total = data.total_bytes or 0
+        pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
+        if pct != last_pct[0] and not cfg.json_mode:
+            last_pct[0] = pct
+            typer.echo(f"  chromium: {pct}%", err=True)
+
+    try:
+        _asyncio.run(bootstrap_chromium(on_progress=_on_progress))
+    except Exception as exc:  # noqa: BLE001 — surfacing any subprocess failure
+        if cfg.json_mode:
+            typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))
+        else:
+            typer.secho(f"Install failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    if cfg.json_mode:
+        typer.echo(json.dumps({"component": "chromium", "installed": True}))
+    else:
+        typer.echo("Chromium installed.")
+
+
 wiki_app = typer.Typer(help="Wiki layer commands: lint, citations, status.")
 app.add_typer(wiki_app, name="wiki")
 

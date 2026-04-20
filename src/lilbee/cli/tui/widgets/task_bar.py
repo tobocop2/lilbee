@@ -189,6 +189,55 @@ class TaskBarController:
         while self.queue.advance() is not None:
             pass
 
+    def ensure_chromium(self, on_ready: Callable[[], None]) -> None:
+        """Kick off a Chromium bootstrap if missing, then call ``on_ready``.
+
+        If Playwright's Chromium binary is already installed, ``on_ready``
+        runs immediately on the caller's thread. Otherwise a single SETUP
+        task is enqueued that runs ``bootstrap_chromium`` — on success the
+        controller invokes ``on_ready`` on the worker thread via the
+        task's ``on_success`` hook; on failure the SETUP task surfaces as
+        FAILED and ``on_ready`` is NOT called (the follow-up work shouldn't
+        proceed against a missing browser).
+
+        bb-wq8g: the on_ready hook is how callers like ``_do_crawl`` chain
+        their real work behind the one-time bootstrap.
+        """
+        from lilbee.crawler import bootstrap_chromium, playwright_chromium_installed
+        from lilbee.progress import EventType as _ProgressEventType
+        from lilbee.progress import SetupProgressEvent
+
+        if playwright_chromium_installed():
+            on_ready()
+            return
+
+        def _target(reporter: ProgressReporter) -> None:
+            def _forward(event_type: _ProgressEventType, data: Any) -> None:
+                if event_type != _ProgressEventType.SETUP_PROGRESS:
+                    return
+                if not isinstance(data, SetupProgressEvent):
+                    return
+                total = data.total_bytes or 0
+                if total > 0:
+                    pct = int(data.downloaded_bytes * 100 / total)
+                else:
+                    pct = 0
+                mb = data.downloaded_bytes // (1024 * 1024)
+                total_mb = (total // (1024 * 1024)) if total else "?"
+                reporter.update(pct, f"chromium: {mb}/{total_mb} MB")
+
+            import asyncio as _asyncio
+
+            _asyncio.run(bootstrap_chromium(on_progress=_forward))
+
+        self.start_task(
+            msg.SETUP_CHROMIUM_NAME,
+            TaskType.SETUP,
+            _target,
+            indeterminate=False,
+            on_success=on_ready,
+        )
+
     def start_task(
         self,
         name: str,

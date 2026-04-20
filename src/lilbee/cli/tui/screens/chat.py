@@ -428,16 +428,26 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
     def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
-        """Enqueue a crawl task and run it in the background."""
+        """Enqueue a crawl task and run it in the background.
+
+        Bootstrap Chromium first via the controller helper — if the
+        browser isn't installed yet, a SETUP task renders in the Task
+        Center and the crawl kicks off from its on_success hook. On a
+        machine where Chromium is already present this is a synchronous
+        no-op and the crawl starts immediately (bb-wq8g).
+        """
         from lilbee.cli.tui.task_queue import TaskType
 
+        def _kick_off_crawl() -> None:
+            self._task_bar.start_task(
+                msg.TASK_NAME_CRAWL.format(url=url),
+                TaskType.CRAWL,
+                lambda reporter: self._do_crawl(url, depth, max_pages, reporter),
+                on_success=lambda: call_from_thread(self, self._run_sync),
+            )
+
         self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
-        self._task_bar.start_task(
-            msg.TASK_NAME_CRAWL.format(url=url),
-            TaskType.CRAWL,
-            lambda reporter: self._do_crawl(url, depth, max_pages, reporter),
-            on_success=lambda: call_from_thread(self, self._run_sync),
-        )
+        self._task_bar.ensure_chromium(_kick_off_crawl)
 
     @staticmethod
     def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
