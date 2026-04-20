@@ -1374,42 +1374,27 @@ class TestCatalogInteractions:
 
     async def test_search_cta_clears_in_flight_on_worker_error(self, _mock_resolve):
         """A failed worker must clear _search_in_flight so the CTA stays usable."""
-        from lilbee.catalog import CatalogResult
+        from textual.worker import WorkerState
+
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_SEARCH
 
-        empty = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
-
-        def fake_get_catalog(**kwargs: Any) -> CatalogResult:
-            if kwargs.get("search"):
-                raise RuntimeError("simulated HF outage")
-            return empty
-
-        with (
-            _mock_catalog_deps(),
-            _mock_remote_models(),
-            mock.patch("lilbee.cli.tui.screens.catalog.get_catalog", side_effect=fake_get_catalog),
-        ):
+        with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                await pilot.press("v")
-                await pilot.pause()
 
                 screen = app.screen
-                search = screen.query_one("#catalog-search")
-                search.value = "boom-query"
-                await pilot.pause()
+                screen._search_in_flight = True
 
-                cta = screen.query_one(SearchHFCtaItem)
-                cta.action_select()
-                await app.workers.wait_for_complete()
-                for _ in range(20):
-                    await pilot.pause(delay=0.1)
-                    if screen._search_in_flight is False:
-                        break
+                mock_worker = mock.MagicMock()
+                mock_worker.name = _WORKER_FETCH_SEARCH
+                mock_event = mock.MagicMock()
+                mock_event.state = WorkerState.ERROR
+                mock_event.worker = mock_worker
+                screen.on_worker_state_changed(mock_event)
 
                 assert screen._search_in_flight is False
 

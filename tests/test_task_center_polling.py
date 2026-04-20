@@ -158,16 +158,11 @@ async def test_clear_history_action_drops_finished_rows() -> None:
         done_id = app.task_bar.queue.enqueue(lambda: None, "done", TaskType.SYNC.value)
         app.task_bar.queue.advance(TaskType.SYNC.value)
         app.task_bar.queue.complete_task(done_id)
-        for _ in range(20):
-            await pilot.pause(delay=0.1)
-            if done_id in screen._rows:
-                break
+        screen._poll()
+        await pilot.pause()
         assert done_id in screen._rows
         screen.action_clear_history()
-        for _ in range(5):
-            await pilot.pause(delay=0.1)
-            if done_id not in screen._rows:
-                break
+        await pilot.pause()
         assert done_id not in screen._rows
 
 
