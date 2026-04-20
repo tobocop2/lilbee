@@ -176,10 +176,20 @@ def rebuild(
 
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
-_crawl_option = typer.Option(False, "--crawl", help="Recursively crawl URLs (follow links).")
-_depth_option = typer.Option(None, "--depth", help="Maximum crawl depth (default: from config).")
+_crawl_option = typer.Option(
+    False,
+    "--crawl",
+    help="Recursively crawl URLs (whole site by default; see --depth and --max-pages).",
+)
+_depth_option = typer.Option(
+    None,
+    "--depth",
+    help="Cap link-follow depth for --crawl. Unset = unbounded; 0 = single URL only.",
+)
 _max_pages_option = typer.Option(
-    None, "--max-pages", help="Maximum pages to crawl (default: from config)."
+    None,
+    "--max-pages",
+    help="Cap total pages for --crawl. Unset = no limit; positive int = hard cap.",
 )
 
 
@@ -204,9 +214,11 @@ def _crawl_urls_blocking(
     With --crawl, the default is whole-site unbounded (depth=None, pages=None).
     Explicit --depth / --max-pages override both.
 
-    Installs a SIGINT handler on the event loop that sets a threading.Event
-    passed to crawl_and_save, so Ctrl-C stops the crawl cleanly instead of
-    racing playwright's subprocess tree (which otherwise swallows the signal).
+    Ctrl-C is handled by running the crawl through _run_crawl_with_signal_cancel,
+    which installs a signal.signal handler that sets a threading.Event passed
+    into crawl_and_save. crawl_recursive polls the event between pages so the
+    signal flows through as a clean cancel instead of asyncio.run's default
+    KeyboardInterrupt-raising (which left browser contexts mid-teardown).
     """
     import threading
 
@@ -278,9 +290,11 @@ def _run_crawl_with_signal_cancel(
     """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
 
     asyncio.run() installs its own SIGINT handler that raises
-    KeyboardInterrupt, which tears the crawl down ungracefully. Using
-    loop.add_signal_handler routes SIGINT straight to our cancel event so
-    crawl_recursive can unwind cleanly (close the stream, stop dispatch).
+    KeyboardInterrupt, which tears the crawl down ungracefully. Registering a
+    plain signal.signal handler on the main thread AND running the crawl on a
+    loop we own (instead of asyncio.run) lets Ctrl-C set our threading.Event,
+    which crawl_recursive polls between pages so it can close the stream and
+    stop dispatch cleanly.
     """
     import signal
 

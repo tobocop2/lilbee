@@ -308,11 +308,14 @@ Index web pages alongside your local documents. Crawl single pages or follow lin
 **Usage:**
 
 ```bash
-# Single page
+# Single page (no --crawl)
 lilbee add https://docs.example.com/guide
 
-# Recursive crawl (follows links up to depth 2)
-lilbee add https://docs.example.com --depth 2
+# Whole-site crawl (recursive, unbounded by default)
+lilbee add https://docs.example.com --crawl
+
+# Cap depth or page count
+lilbee add https://docs.example.com --crawl --depth 2 --max-pages 200
 
 # Multiple URLs
 lilbee add https://docs.example.com https://wiki.example.com
@@ -320,13 +323,28 @@ lilbee add https://docs.example.com https://wiki.example.com
 
 Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI (`/crawl`).
 
-**Configuration:**
+**Configuration (all optional):**
 
 ```bash
-export LILBEE_CRAWL_MAX_DEPTH=2          # max link-following depth
-export LILBEE_CRAWL_MAX_PAGES=50         # max pages per crawl
+# Global ceilings. Unset = no cap. Explicit --depth/--max-pages always win.
+export LILBEE_CRAWL_MAX_DEPTH=3          # cap link-following depth
+export LILBEE_CRAWL_MAX_PAGES=1000       # cap total pages
+
+# Pacing within a single crawl.
+export LILBEE_CRAWL_MEAN_DELAY=0.5       # seconds between requests
+export LILBEE_CRAWL_MAX_DELAY_RANGE=0.5  # random jitter on top
+export LILBEE_CRAWL_CONCURRENT_REQUESTS=3
+
+# Per-domain rate-limit + retries on HTTP 429/503.
+export LILBEE_CRAWL_RETRY_ON_RATE_LIMIT=true
+export LILBEE_CRAWL_RETRY_BASE_DELAY_MIN=1.0
+export LILBEE_CRAWL_RETRY_BASE_DELAY_MAX=3.0
+export LILBEE_CRAWL_RETRY_MAX_BACKOFF=30.0
+export LILBEE_CRAWL_RETRY_MAX_ATTEMPTS=3
+
+# Other.
 export LILBEE_CRAWL_TIMEOUT=30           # per-page timeout (seconds)
-export LILBEE_CRAWL_MAX_CONCURRENT=0     # 0 = CPU count (default)
+export LILBEE_CRAWL_MAX_CONCURRENT=0     # 0 = CPU count (top-level concurrency)
 export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during crawl
 ```
 
