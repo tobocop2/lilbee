@@ -1557,6 +1557,86 @@ class TestHfModelsSearchFilter:
         assert len(models) == 2
 
 
+class TestHfSearchTerms:
+    """Helper that splits the user's query into AND-combined HF search terms."""
+
+    def test_empty_query_returns_only_gguf_filter(self) -> None:
+        assert catalog._hf_search_terms("") == ["GGUF"]
+
+    def test_single_term_appended_after_gguf(self) -> None:
+        assert catalog._hf_search_terms("qwen3") == ["GGUF", "qwen3"]
+
+    def test_whitespace_split_into_multiple_terms(self) -> None:
+        assert catalog._hf_search_terms("qwen3 8b  instruct") == [
+            "GGUF",
+            "qwen3",
+            "8b",
+            "instruct",
+        ]
+
+
+class TestFetchHfModelsSearchForwarding:
+    """The user's search text is forwarded to the HF API as multi-value search params."""
+
+    def test_search_terms_sent_as_multi_value_query_param(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each whitespace-split token becomes its own search= param AND-combined with GGUF."""
+        captured_params: list[httpx.QueryParams] = []
+        mock_resp = httpx.Response(200, json=[])
+
+        def capture_get(url: str, **kwargs: Any) -> httpx.Response:
+            captured_params.append(kwargs["params"])
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models(search="qwen3 8b")
+        assert captured_params[0].get_list("search") == ["GGUF", "qwen3", "8b"]
+
+    def test_empty_search_still_sends_gguf_term(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Back-compat: no search query must still filter to GGUF repos."""
+        captured_params: list[httpx.QueryParams] = []
+        mock_resp = httpx.Response(200, json=[])
+
+        def capture_get(url: str, **kwargs: Any) -> httpx.Response:
+            captured_params.append(kwargs["params"])
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models()
+        assert captured_params[0].get_list("search") == ["GGUF"]
+
+    def test_different_search_terms_do_not_collide_in_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cache key must include the search terms so distinct queries aren't aliased."""
+        calls = 0
+
+        def capture_get(*a: object, **kw: object) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models(search="qwen")
+        catalog._fetch_hf_models(search="llama")
+        # A third call with the first term should be served from cache.
+        catalog._fetch_hf_models(search="qwen")
+        assert calls == 2
+
+    def test_get_catalog_forwards_search_to_hf_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The top-level catalog API must pass search through to the HF fetcher."""
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_fetch(**kwargs: Any) -> catalog._HfPage:
+            captured_kwargs.update(kwargs)
+            return _EMPTY_HF_PAGE
+
+        monkeypatch.setattr(catalog, "_fetch_hf_models", fake_fetch)
+        get_catalog(search="llama3", featured=False)
+        assert captured_kwargs.get("search") == "llama3"
+
+
 class TestGatedRepoShowsLoginMessage:
     def test_permission_error_mentions_login(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

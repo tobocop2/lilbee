@@ -52,6 +52,7 @@ _ALL_TASKS = tuple(ModelTask)
 _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
+_WORKER_FETCH_SEARCH = "fetch_hf_search"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -112,6 +113,8 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
         self._loading_more: bool = False
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
+        self._searched_remote: set[str] = set()
+        self._search_in_flight: bool = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -181,8 +184,23 @@ class CatalogScreen(Screen[None]):
         """Filter models when search input changes."""
         if self._grid_view:
             self._filter_grid()
+            visible_count = sum(1 for card in self.query(ModelCard) if card.display)
         else:
             self._filter_list()
+            visible_count = sum(1 for item in self.query(ModelListItem) if item.display)
+        self._maybe_fetch_remote_search(visible_count)
+
+    def _maybe_fetch_remote_search(self, visible_count: int) -> None:
+        """Fall back to the HF API when the local filter yields no matches."""
+        if visible_count > 0 or self._search_in_flight:
+            return
+        query = self._get_search_text()
+        if not query or query in self._searched_remote:
+            return
+        self._searched_remote.add(query)
+        self._search_in_flight = True
+        self._update_sort_label()
+        self._fetch_hf_search(query)
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
@@ -262,12 +280,36 @@ class CatalogScreen(Screen[None]):
         """Fetch next page of HF models for all task types (extends current list)."""
         return self._fetch_hf_page()
 
+    @work(thread=True, name=_WORKER_FETCH_SEARCH, exit_on_error=False)
+    def _fetch_hf_search(self, query: str) -> list[CatalogModel]:
+        """Fetch HF models matching the user's search term (runs in worker thread)."""
+        existing_repos = {m.hf_repo for m in self._hf_models}
+        new_models: list[CatalogModel] = []
+        for task in _ALL_TASKS:
+            result = get_catalog(
+                task=task,
+                featured=False,
+                search=query,
+                limit=_HF_PAGE_SIZE,
+                offset=0,
+            )
+            for m in result.models:
+                if not m.featured and m.hf_repo not in existing_repos:
+                    existing_repos.add(m.hf_repo)
+                    new_models.append(m)
+        return new_models
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
             # Release the load-more latch on failure so the user can retry
             # with ``n`` instead of being stuck at the current page forever.
             if event.worker.name == _WORKER_FETCH_MORE_HF:
                 self._loading_more = False
+            # An HF search failure must clear the in-flight flag, otherwise
+            # the "Searching HuggingFace…" hint is stuck on the sort label.
+            if event.worker.name == _WORKER_FETCH_SEARCH:
+                self._search_in_flight = False
+                self._update_sort_label()
             return
         result = event.worker.result
         if not isinstance(result, list):
@@ -278,11 +320,21 @@ class CatalogScreen(Screen[None]):
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
             self._loading_more = False
+        elif name == _WORKER_FETCH_SEARCH:
+            self._hf_fetched = True
+            self._hf_models.extend(result)
+            self._search_in_flight = False
+            self._update_sort_label()
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         else:
             return
         self._refresh_view()
+        if name == _WORKER_FETCH_SEARCH:
+            # _refresh_grid / _refresh_list mount widgets asynchronously, so
+            # the filter has to run after the compositor flushes — otherwise
+            # query(...) misses the cards/items that were just scheduled.
+            self.call_after_refresh(self._filter_grid if self._grid_view else self._filter_list)
 
     def _get_search_text(self) -> str:
         return self.query_one("#catalog-search", Input).value.strip().lower()
@@ -457,9 +509,9 @@ class CatalogScreen(Screen[None]):
             count = f"{n_total} models · press [b]n[/b] for more"
         else:
             count = f"{n_total} models"
+        hint = msg.CATALOG_SEARCHING_HF if self._search_in_flight else msg.CATALOG_VIEW_TOGGLE_LIST
         self.query_one("#sort-label", Static).update(
-            f"Sort: {self._sort_column} ({direction})  |  "
-            f"{count}  |  {msg.CATALOG_VIEW_TOGGLE_LIST}"
+            f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}"
         )
 
     def action_cycle_sort(self) -> None:

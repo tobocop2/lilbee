@@ -423,6 +423,21 @@ _hf_cache_lock = threading.Lock()
 
 _EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
+# HuggingFace ``/api/models?search=`` is a plain substring match against the
+# model id (no globs, no regex). Multiple ``search=`` query params AND-together
+# (each must be a substring of the id), so we always include ``GGUF`` as one
+# term and append the user's whitespace-split query as additional terms.
+_HF_GGUF_SEARCH_TERM = "GGUF"
+
+
+def _hf_search_terms(search: str) -> list[str]:
+    """Return the list of search terms to AND-combine on the HF API.
+
+    Always begins with the ``GGUF`` filter; the user's query is split on
+    whitespace and each token becomes an additional substring constraint.
+    """
+    return [_HF_GGUF_SEARCH_TERM, *search.split()]
+
 
 def _fetch_hf_models(
     pipeline_tag: str = "text-generation",
@@ -430,6 +445,7 @@ def _fetch_hf_models(
     limit: int = 50,
     offset: int = 0,
     library: str | None = None,
+    search: str = "",
 ) -> _HfPage:
     """Fetch GGUF models from HuggingFace API with 5-minute cache.
 
@@ -437,7 +453,8 @@ def _fetch_hf_models(
     ``Link: <...>; rel="next"`` response header (RFC 5988), the same
     mechanism the ``huggingface_hub`` library uses internally.
     """
-    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}"
+    search_terms = _hf_search_terms(search)
+    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{' '.join(search_terms)}"
     now = time.monotonic()
     with _hf_cache_lock:
         expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -450,12 +467,13 @@ def _fetch_hf_models(
 
     params = httpx.QueryParams(
         pipeline_tag=pipeline_tag,
-        search="GGUF",
         sort=sort,
         limit=limit,
         skip=offset,
         expand=_HF_EXPAND_FIELDS,
     )
+    for term in search_terms:
+        params = params.add("search", term)
     if library:
         params = params.add("library", library)
     try:
@@ -550,6 +568,7 @@ def get_catalog(
             limit=limit,
             offset=offset,
             library=hf_library,
+            search=search,
         )
         hf_has_more = hf_page.has_more
         # Deduplicate: skip HF models whose repo matches a featured model
