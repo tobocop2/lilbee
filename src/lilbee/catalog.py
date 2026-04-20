@@ -424,6 +424,17 @@ _hf_cache_lock = threading.Lock()
 
 _EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
+# HF ``?search=`` is a single space-tokenized substring match on the model id.
+# Multiple ``search=`` params are silently ignored, so the user's query is
+# space-joined onto the GGUF filter into one param value.
+_HF_GGUF_SEARCH_TERM = "GGUF"
+
+
+def _hf_search_value(search: str) -> str:
+    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
+    tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
+    return " ".join(tokens)
+
 
 def _fetch_hf_models(
     pipeline_tag: str = "text-generation",
@@ -431,6 +442,7 @@ def _fetch_hf_models(
     limit: int = 50,
     offset: int = 0,
     library: str | None = None,
+    search: str = "",
 ) -> _HfPage:
     """Fetch GGUF models from HuggingFace API with 5-minute cache.
 
@@ -438,7 +450,8 @@ def _fetch_hf_models(
     ``Link: <...>; rel="next"`` response header (RFC 5988), the same
     mechanism the ``huggingface_hub`` library uses internally.
     """
-    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}"
+    search_value = _hf_search_value(search)
+    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{search_value}"
     now = time.monotonic()
     with _hf_cache_lock:
         expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -451,7 +464,7 @@ def _fetch_hf_models(
 
     params = httpx.QueryParams(
         pipeline_tag=pipeline_tag,
-        search="GGUF",
+        search=search_value,
         sort=sort,
         limit=limit,
         skip=offset,
@@ -551,6 +564,7 @@ def get_catalog(
             limit=limit,
             offset=offset,
             library=hf_library,
+            search=search,
         )
         hf_has_more = hf_page.has_more
         # Deduplicate: skip HF models whose repo matches a featured model

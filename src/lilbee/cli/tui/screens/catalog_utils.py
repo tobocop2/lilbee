@@ -160,13 +160,15 @@ def _param_sort_value(params: str) -> float:
 
 
 def matches_search(row: TableRow, search: str) -> bool:
-    """Return True if the row matches the search text."""
+    """Return True if the row matches the search text (hyphen/underscore-insensitive)."""
     if not search:
         return True
-    return (
-        search in row.name.lower()
-        or search in row.task.lower()
-        or search in row.params.lower()
-        or search in row.quant.lower()
-        or search in row.backend.lower()
+    needle = _normalize_for_search(search)
+    return any(
+        needle in _normalize_for_search(field)
+        for field in (row.name, row.task, row.params, row.quant, row.backend)
     )
+
+
+def _normalize_for_search(value: str) -> str:
+    return value.lower().replace("-", " ").replace("_", " ")

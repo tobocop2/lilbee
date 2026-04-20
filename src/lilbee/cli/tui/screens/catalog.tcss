@@ -80,3 +80,12 @@ GridSelect {
     background: $surface;
     border: tall $primary;
 }
+
+.search-hf-cta {
+    color: $accent;
+}
+
+.search-hf-cta:hover {
+    background: $surface;
+    border: tall $accent;
+}
