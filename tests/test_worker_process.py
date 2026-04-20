@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import sys
 from multiprocessing import get_context
 from pathlib import Path
 from unittest import mock
@@ -27,6 +26,7 @@ from lilbee.providers.worker_process import (
     _worker_main,
     config_snapshot_from_cfg,
 )
+from lilbee.providers.worker_process import _redirect_stdio as _redirect_stdio_real
 
 
 @pytest.fixture(autouse=True)
@@ -910,46 +910,42 @@ class TestLoadVisionModel:
         mock_load.assert_called_once_with(vision_path)
 
 
-def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:
-    """``_redirect_stdio`` points sys.stdout/stderr to devnull.
+def test_redirect_stdio_points_stdout_stderr_to_devnull() -> None:
+    """``_redirect_stdio`` dup2's /dev/null onto fds 1 and 2 and repoints sys.stdout/stderr.
 
-    Runs in a fresh subprocess because the function closes fds 1 and 2
-    in its caller's process; doing that inside the pytest process would
-    deadlock pytest-xdist's worker pipe. A child process has its own
-    fds so the close is harmless here (see bb-7w37). The verdict is
-    written to a sentinel file rather than stdout because the real
-    ``_redirect_stdio`` call eats stdout on its way.
+    Verified with mocks rather than a real subprocess because calling the
+    function in-process would close the pytest-xdist worker pipes, and the
+    subprocess-based flavor of this test deadlocked CI under xdist on
+    ubuntu 3.11. The function is trivial enough that mock assertions document
+    its contract fully.
+
+    Uses ``_redirect_stdio_real`` (bound at module import, before the
+    ``_no_stdio_redirect`` autouse fixture swaps the module attribute for
+    a MagicMock) so the real function actually runs. Restores
+    ``sys.stdout``/``sys.stderr`` before any assertion output because the
+    function reassigns them to a mock-open file handle.
     """
-    import json
-    import subprocess
-    import textwrap
+    import os
+    import sys
 
-    verdict = tmp_path / "verdict.json"
-    script = textwrap.dedent(
-        f"""
-        import json, os, sys
-        from lilbee.providers.worker_process import _redirect_stdio
+    opened_fd = 42
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    try:
+        with (
+            mock.patch("os.open", return_value=opened_fd) as mock_open_fd,
+            mock.patch("os.dup2") as mock_dup2,
+            mock.patch("os.close") as mock_close,
+            mock.patch("builtins.open", mock.mock_open()) as mock_open_file,
+        ):
+            _redirect_stdio_real()
+            open_calls = mock_open_fd.call_args_list
+            dup2_calls = mock_dup2.call_args_list
+            close_calls = mock_close.call_args_list
+            open_file_calls = mock_open_file.call_args_list
+    finally:
+        sys.stdout, sys.stderr = real_stdout, real_stderr
 
-        _redirect_stdio()
-        with open({str(verdict)!r}, "w") as fh:
-            json.dump(
-                {{
-                    "stdout_name": sys.stdout.name,
-                    "stderr_name": sys.stderr.name,
-                    "devnull": os.devnull,
-                }},
-                fh,
-            )
-        """
-    ).strip()
-
-    subprocess.run(
-        [sys.executable, "-c", script],
-        timeout=30,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    body = json.loads(verdict.read_text())
-    assert body["stdout_name"] == body["devnull"]
-    assert body["stderr_name"] == body["devnull"]
+    assert open_calls == [mock.call(os.devnull, os.O_RDWR)]
+    assert dup2_calls == [mock.call(opened_fd, 1), mock.call(opened_fd, 2)]
+    assert close_calls == [mock.call(opened_fd)]
+    assert open_file_calls == [mock.call(os.devnull, "w"), mock.call(os.devnull, "w")]
