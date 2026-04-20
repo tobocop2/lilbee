@@ -568,9 +568,7 @@ class TestBootstrapChromium:
         assert isinstance(events[0][1], SetupStartEvent)
         assert isinstance(progress_events[0], SetupProgressEvent)
 
-    async def test_raises_playwright_browser_missing_on_subprocess_failure(
-        self, monkeypatch
-    ):
+    async def test_raises_playwright_browser_missing_on_subprocess_failure(self, monkeypatch):
         """Non-zero exit → PlaywrightBrowserMissing with stderr tail."""
         from lilbee.crawler import PlaywrightBrowserMissing, bootstrap_chromium
         from lilbee.progress import EventType, SetupDoneEvent
@@ -614,9 +612,7 @@ class TestPlaywrightBrowserCheck:
         """Empty browsers path reports as not installed."""
         from lilbee.crawler import playwright_chromium_installed
 
-        monkeypatch.setattr(
-            "lilbee.crawler._playwright_browsers_path", lambda: tmp_path / "empty"
-        )
+        monkeypatch.setattr("lilbee.crawler._playwright_browsers_path", lambda: tmp_path / "empty")
         assert not playwright_chromium_installed()
 
     def test_nonexistent_root_reports_missing(self, tmp_path, monkeypatch):

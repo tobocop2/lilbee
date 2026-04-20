@@ -365,9 +365,9 @@ class ChatScreen(Screen[None]):
         from lilbee.progress import FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
-        result = copy_files([path], force=force)
-        copied = result.copied
-        for name in result.skipped:
+        copy_result = copy_files([path], force=force)
+        copied = copy_result.copied
+        for name in copy_result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
@@ -378,9 +378,9 @@ class ChatScreen(Screen[None]):
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
 
-        result = asyncio.run(sync(quiet=True, on_progress=on_progress))
-        if result.failed:
-            raise RuntimeError(f"Sync failed for {', '.join(result.failed)}")
+        sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        if sync_result.failed:
+            raise RuntimeError(f"Sync failed for {', '.join(sync_result.failed)}")
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:

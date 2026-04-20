@@ -198,13 +198,9 @@ async def bootstrap_chromium(
         if on_progress is not None:
             on_progress(
                 EventType.SETUP_DONE,
-                SetupDoneEvent(
-                    component=_CHROMIUM_COMPONENT, success=False, error=tail
-                ),
+                SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=False, error=tail),
             )
-        raise PlaywrightBrowserMissing(
-            f"Chromium bootstrap failed (exit {returncode}): {tail}"
-        )
+        raise PlaywrightBrowserMissing(f"Chromium bootstrap failed (exit {returncode}): {tail}")
 
     if on_progress is not None:
         on_progress(

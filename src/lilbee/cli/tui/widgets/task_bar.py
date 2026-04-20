@@ -26,6 +26,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
+from textual.timer import Timer
 from textual.widgets import Label, Static
 
 from lilbee.cancellation import TaskCancelled
@@ -218,10 +219,7 @@ class TaskBarController:
                 if not isinstance(data, SetupProgressEvent):
                     return
                 total = data.total_bytes or 0
-                if total > 0:
-                    pct = int(data.downloaded_bytes * 100 / total)
-                else:
-                    pct = 0
+                pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
                 mb = data.downloaded_bytes // (1024 * 1024)
                 total_mb = (total // (1024 * 1024)) if total else "?"
                 reporter.update(pct, f"chromium: {mb}/{total_mb} MB")
@@ -449,7 +447,7 @@ class TaskBar(Static):
         # a screen push/pop cycle leaves the previous TaskBar's interval
         # firing against a detached widget, racing with the new TaskBar and
         # occasionally setting ``display=False`` on the live instance (bb-3uzp).
-        self._interval = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+        self._interval: Timer | None = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
 
     def on_unmount(self) -> None:
         interval = getattr(self, "_interval", None)

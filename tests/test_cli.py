@@ -2404,9 +2404,7 @@ class TestSetupCrawlerCommand:
     """bb-wq8g: 'lilbee setup crawler' installs Chromium."""
 
     def test_noop_when_already_installed(self):
-        with mock.patch(
-            "lilbee.crawler.playwright_chromium_installed", return_value=True
-        ):
+        with mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=True):
             result = runner.invoke(app, ["setup", "crawler"])
         assert result.exit_code == 0
         assert "already installed" in result.stdout.lower()
@@ -2416,9 +2414,7 @@ class TestSetupCrawlerCommand:
             return None
 
         with (
-            mock.patch(
-                "lilbee.crawler.playwright_chromium_installed", return_value=False
-            ),
+            mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=False),
             mock.patch("lilbee.crawler.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["setup", "crawler"])
@@ -2430,9 +2426,7 @@ class TestSetupCrawlerCommand:
             raise RuntimeError("offline")
 
         with (
-            mock.patch(
-                "lilbee.crawler.playwright_chromium_installed", return_value=False
-            ),
+            mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=False),
             mock.patch("lilbee.crawler.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["setup", "crawler"])

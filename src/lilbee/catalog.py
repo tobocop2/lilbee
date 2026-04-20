@@ -27,7 +27,6 @@ from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
 from lilbee.cancellation import TaskCancelled
-
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.registry import DEFAULT_TAG, ModelManifest, ModelRef, ModelRegistry

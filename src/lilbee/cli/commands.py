@@ -843,7 +843,7 @@ def setup_crawler_cmd() -> None:
 
     try:
         _asyncio.run(bootstrap_chromium(on_progress=_on_progress))
-    except Exception as exc:  # noqa: BLE001 — surfacing any subprocess failure
+    except Exception as exc:
         if cfg.json_mode:
             typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))
         else:

@@ -398,9 +398,7 @@ class TestModelBar:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            pills = [
-                str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes
-            ]
+            pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
             assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
             assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
 
@@ -2697,9 +2695,7 @@ class TestEnsureChromium:
                 return None
 
             with (
-                mock.patch(
-                    "lilbee.crawler.playwright_chromium_installed", return_value=False
-                ),
+                mock.patch("lilbee.crawler.playwright_chromium_installed", return_value=False),
                 mock.patch("lilbee.crawler.bootstrap_chromium", new=_fake_bootstrap),
             ):
                 fired = _threading.Event()
@@ -2712,9 +2708,7 @@ class TestEnsureChromium:
                 assert fired.is_set()
                 queued = app.task_bar.queue
                 all_tasks = queued.active_tasks + queued.queued_tasks + queued.history
-                setup_tasks = [
-                    t for t in all_tasks if t.task_type == TaskType.SETUP.value
-                ]
+                setup_tasks = [t for t in all_tasks if t.task_type == TaskType.SETUP.value]
                 assert len(setup_tasks) == 1
 
 

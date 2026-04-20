@@ -634,9 +634,7 @@ class TestSetupCrawlerRoutes:
 
         async def _fake_bootstrap(on_progress=None):
             if on_progress is not None:
-                on_progress(
-                    EventType.SETUP_START, SetupStartEvent(component="chromium")
-                )
+                on_progress(EventType.SETUP_START, SetupStartEvent(component="chromium"))
                 on_progress(
                     EventType.SETUP_DONE,
                     SetupDoneEvent(component="chromium", success=True, error=None),

@@ -109,9 +109,7 @@ class RoutingProvider(LLMProvider):
         model: str | None = None,
     ) -> str | Iterator[str]:
         ref = parse_model_ref(model or cfg.chat_model)
-        return self._pick_backend(ref).chat(
-            messages, stream=stream, options=options, model=model
-        )
+        return self._pick_backend(ref).chat(messages, stream=stream, options=options, model=model)
 
     def list_models(self) -> list[str]:
         """Return models from the active provider."""
