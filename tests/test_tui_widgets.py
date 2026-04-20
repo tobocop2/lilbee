@@ -3618,3 +3618,10 @@ class TestModelListItem:
 
         content = _build_specs("--", "--", "--")
         assert str(content.plain) == "--"
+
+
+# SearchHFCtaItem behavior is covered end-to-end in
+# tests/test_tui_e2e.py::TestCatalogInteractions — the class-isolated
+# mini-App pattern used by TestModelListItem currently hangs on textual's
+# run_test in this environment, so widget-level unit tests for the CTA
+# live with the integration tests.

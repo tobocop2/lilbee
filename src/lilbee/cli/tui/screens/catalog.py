@@ -36,6 +36,7 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
+from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
@@ -115,9 +116,7 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
         self._loading_more: bool = False
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
-        self._searched_remote: set[str] = set()
         self._search_in_flight: bool = False
-        self._pending_search_query: str | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -187,44 +186,35 @@ class CatalogScreen(Screen[None]):
         """Filter models when search input changes."""
         if self._grid_view:
             self._filter_grid()
+            self._sync_grid_search_cta()
         else:
-            self._filter_list()
+            self._refresh_list()
 
-    def _maybe_fetch_remote_search(self, visible_count: int) -> None:
-        """Fall back to the HF API when the local filter yields no matches."""
-        if visible_count > 0 or self._search_in_flight:
+    @on(Input.Submitted, "#catalog-search")
+    def _on_search_submitted(self, event: Input.Submitted) -> None:
+        """Enter in the search box installs the first visible match."""
+        if self._grid_view:
+            self._select_first_visible_grid_card()
+        else:
+            self._select_first_visible_list_item()
+
+    def _trigger_remote_search(self, query: str) -> None:
+        """Fire the HF search worker, unless one is already in flight."""
+        if self._search_in_flight or not query:
             return
-        query = self._get_search_text()
-        if not query or query in self._searched_remote:
-            return
-        self._searched_remote.add(query)
-        self._pending_search_query = query
         self._search_in_flight = True
         self._update_sort_label()
         # Sort label is hidden in grid view, so the toast is the only feedback there.
         self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
         self._fetch_hf_search(query)
 
-    @on(Input.Submitted, "#catalog-search")
-    def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Enter in the search box installs the first visible match.
+    @on(SearchHFCtaItem.Selected)
+    def _on_search_hf_cta_selected(self, event: SearchHFCtaItem.Selected) -> None:
+        self._trigger_remote_search(event.term)
 
-        If the local filter has at least one visible card/item, install
-        the first one. If not, fall back to the HuggingFace API for that
-        query and re-render once results land. Falls through silently
-        when the search box is empty (Esc cancels the search).
-        """
-        if self._grid_view:
-            visible_count = sum(1 for card in self.query(ModelCard) if card.display)
-            if visible_count > 0:
-                self._select_first_visible_grid_card()
-                return
-        else:
-            visible_count = sum(1 for item in self.query(ModelListItem) if item.display)
-            if visible_count > 0:
-                self._select_first_visible_list_item()
-                return
-        self._maybe_fetch_remote_search(visible_count)
+    @on(Click, ".search-hf-cta")
+    def _on_search_hf_cta_clicked(self) -> None:
+        self._trigger_remote_search(self._get_search_text())
 
     def _select_first_visible_grid_card(self) -> None:
         """Focus the first grid with a visible match and trigger its install.
@@ -314,11 +304,7 @@ class CatalogScreen(Screen[None]):
         if event.state in (WorkerState.ERROR, WorkerState.CANCELLED):
             if event.worker.name == _WORKER_FETCH_MORE_HF:
                 self._loading_more = False
-            # Release the gate so the user can retry the same query after a failure.
             if event.worker.name == _WORKER_FETCH_SEARCH:
-                if self._pending_search_query is not None:
-                    self._searched_remote.discard(self._pending_search_query)
-                    self._pending_search_query = None
                 self._search_in_flight = False
                 self._update_sort_label()
             return
@@ -337,16 +323,12 @@ class CatalogScreen(Screen[None]):
             self._hf_fetched = True
             self._hf_models.extend(result)
             self._search_in_flight = False
-            self._pending_search_query = None
             self._update_sort_label()
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         else:
             return
         self._refresh_view()
-        if name == _WORKER_FETCH_SEARCH:
-            # Newly-mounted widgets aren't queryable until after the next refresh.
-            self.call_after_refresh(self._filter_grid if self._grid_view else self._filter_list)
 
     def _get_search_text(self) -> str:
         return self.query_one("#catalog-search", Input).value.strip().lower()
@@ -444,6 +426,15 @@ class CatalogScreen(Screen[None]):
                     classes="grid-cta browse-more-hf",
                 )
             )
+        search = self._get_search_text()
+        if search:
+            widgets_to_mount.append(
+                Static(
+                    msg.CATALOG_SEARCH_HF_CTA.format(query=search),
+                    classes="grid-cta search-hf-cta",
+                    id="grid-search-hf-cta",
+                )
+            )
         widgets_to_mount.append(
             Static(
                 msg.CATALOG_VIEW_TOGGLE_GRID,
@@ -451,6 +442,23 @@ class CatalogScreen(Screen[None]):
             )
         )
         container.mount_all(widgets_to_mount)
+
+    def _sync_grid_search_cta(self) -> None:
+        """Mount/remove/update the grid-view search-HF CTA in response to typing."""
+        search = self._get_search_text()
+        existing = self.query("#grid-search-hf-cta")
+        if not search:
+            for w in existing:
+                w.remove()
+            return
+        cta_text = msg.CATALOG_SEARCH_HF_CTA.format(query=search)
+        if existing:
+            for w in existing:
+                if isinstance(w, Static):
+                    w.update(cta_text)
+            return
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        container.mount(Static(cta_text, classes="grid-cta search-hf-cta", id="grid-search-hf-cta"))
 
     def _filter_grid(self) -> None:
         """Filter visible cards by search text without recreating widgets."""
@@ -497,19 +505,19 @@ class CatalogScreen(Screen[None]):
         self._select_row(event.item.row)
 
     def _refresh_list(self) -> None:
-        """Rebuild the list view from current data."""
+        """Rebuild the list view from current data; append HF search CTA when filtering."""
         self._rows = self._sort_rows(self._build_rows())
         container = self.query_one("#catalog-list", VerticalScroll)
         container.remove_children()
-        if self._rows:
-            container.mount_all([ModelListItem(row) for row in self._rows])
-        self._update_sort_label()
-
-    def _filter_list(self) -> None:
-        """Toggle display on list items to match search text without rebuilding."""
+        widgets_to_mount: list[ModelListItem | SearchHFCtaItem] = [
+            ModelListItem(row) for row in self._rows
+        ]
         search = self._get_search_text()
-        for item in self.query(ModelListItem):
-            item.display = matches_search(item.row, search)
+        if search:
+            widgets_to_mount.append(SearchHFCtaItem(search))
+        if widgets_to_mount:
+            container.mount_all(widgets_to_mount)
+        self._update_sort_label()
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label."""

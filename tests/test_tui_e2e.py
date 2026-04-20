@@ -1140,11 +1140,35 @@ class TestCatalogInteractions:
                 grid = app.screen.query_one(GridSelect)
                 assert grid.has_focus
 
-    async def test_search_falls_back_to_hf_when_local_filter_empty(self, _mock_resolve):
-        """Pressing Enter on a non-matching local filter triggers the HF fallback worker."""
+    async def test_search_cta_visible_alongside_local_matches(self, _mock_resolve):
+        """The HF search CTA appears whenever search is non-empty, even with local hits."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.pause()
+
+                search = app.screen.query_one("#catalog-search")
+                search.value = "TestChat"
+                await pilot.pause()
+                await pilot.pause()
+
+                ctas = list(app.screen.query(SearchHFCtaItem))
+                assert len(ctas) == 1
+                assert ctas[0].term == "testchat"
+
+    async def test_search_cta_fires_hf_worker_on_select(self, _mock_resolve):
+        """Selecting the CTA fires the HF worker and merges results into the list."""
         from lilbee.catalog import CatalogModel, CatalogResult
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_card import ModelCard
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 
         hf_hit = CatalogModel(
             name="zzz_remote",
@@ -1159,15 +1183,15 @@ class TestCatalogInteractions:
             downloads=0,
             task="chat",
         )
-        empty_result = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
-        hit_result = CatalogResult(total=1, limit=25, offset=0, models=[hf_hit], has_more=False)
+        empty = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
+        hit = CatalogResult(total=1, limit=25, offset=0, models=[hf_hit], has_more=False)
         call_log: list[str] = []
 
         def fake_get_catalog(**kwargs: Any) -> CatalogResult:
             call_log.append(kwargs.get("search", ""))
             if kwargs.get("search") == "zzz_remote" and kwargs.get("task") == "chat":
-                return hit_result
-            return empty_result
+                return hit
+            return empty
 
         with (
             _mock_catalog_deps(),
@@ -1178,31 +1202,36 @@ class TestCatalogInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")
                 await pilot.pause()
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "zzz_remote"
                 await pilot.pause()
-                await search.action_submit()
+
+                cta = app.screen.query_one(SearchHFCtaItem)
+                cta.action_select()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
                 await pilot.pause()
 
                 assert "zzz_remote" in call_log
-                visible_names = [c.row.name for c in app.screen.query(ModelCard) if c.display]
-                assert visible_names == ["zzz_remote"]
+                names = [item.row.name for item in app.screen.query(ModelListItem)]
+                assert "zzz_remote" in names
 
-    async def test_search_fallback_clears_hint_on_worker_error(self, _mock_resolve):
-        """If the HF search worker errors out, the in-flight flag must reset."""
+    async def test_search_cta_clears_in_flight_on_worker_error(self, _mock_resolve):
+        """A failed worker must clear _search_in_flight so the CTA stays usable."""
         from lilbee.catalog import CatalogResult
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 
-        empty_result = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
+        empty = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
 
         def fake_get_catalog(**kwargs: Any) -> CatalogResult:
             if kwargs.get("search"):
                 raise RuntimeError("simulated HF outage")
-            return empty_result
+            return empty
 
         with (
             _mock_catalog_deps(),
@@ -1213,102 +1242,21 @@ class TestCatalogInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")
                 await pilot.pause()
 
                 screen = app.screen
                 search = screen.query_one("#catalog-search")
                 search.value = "boom-query"
                 await pilot.pause()
-                await search.action_submit()
+
+                cta = screen.query_one(SearchHFCtaItem)
+                cta.action_select()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
 
                 assert screen._search_in_flight is False
-                assert "boom-query" not in screen._searched_remote
-
-    async def test_search_fallback_retries_after_transient_failure(self, _mock_resolve):
-        """A failed HF fetch must release the per-query gate so the user can retry."""
-        from lilbee.catalog import CatalogResult
-        from lilbee.cli.tui.app import LilbeeApp
-
-        empty_result = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
-        attempts: list[str] = []
-
-        # First-pass calls (one per task) raise; subsequent calls succeed.
-        def fake_get_catalog(**kwargs: Any) -> CatalogResult:
-            term = kwargs.get("search", "")
-            if not term:
-                return empty_result
-            attempts.append(term)
-            if len([a for a in attempts if a == term]) <= 3:
-                raise RuntimeError("simulated transient outage")
-            return empty_result
-
-        with (
-            _mock_catalog_deps(),
-            _mock_remote_models(),
-            mock.patch("lilbee.cli.tui.screens.catalog.get_catalog", side_effect=fake_get_catalog),
-        ):
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                await pilot.pause()
-
-                screen = app.screen
-                search = screen.query_one("#catalog-search")
-                search.value = "transient-fail"
-                await pilot.pause()
-                await search.action_submit()
-                await app.workers.wait_for_complete()
-                await pilot.pause()
-
-                assert "transient-fail" not in screen._searched_remote
-
-                await search.action_submit()
-                await app.workers.wait_for_complete()
-                await pilot.pause()
-
-                assert attempts.count("transient-fail") >= 2
-
-    async def test_search_fallback_does_not_refetch_same_query(self, _mock_resolve):
-        """Submitting the same empty-result query twice only fires one HF fetch."""
-        from lilbee.catalog import CatalogResult
-        from lilbee.cli.tui.app import LilbeeApp
-
-        empty_result = CatalogResult(total=0, limit=25, offset=0, models=[], has_more=False)
-        search_calls: list[str] = []
-
-        def fake_get_catalog(**kwargs: Any) -> CatalogResult:
-            term = kwargs.get("search", "")
-            if term:
-                search_calls.append(term)
-            return empty_result
-
-        with (
-            _mock_catalog_deps(),
-            _mock_remote_models(),
-            mock.patch("lilbee.cli.tui.screens.catalog.get_catalog", side_effect=fake_get_catalog),
-        ):
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                await pilot.pause()
-
-                search = app.screen.query_one("#catalog-search")
-                search.value = "no-such-model"
-                await pilot.pause()
-                await search.action_submit()
-                await app.workers.wait_for_complete()
-                await pilot.pause()
-
-                await search.action_submit()
-                await app.workers.wait_for_complete()
-                await pilot.pause()
-
-                # One pass per task type (chat/embedding/vision).
-                assert len(search_calls) == 3
 
     async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
         """In list view, pressing Enter in search returns focus to a list item."""

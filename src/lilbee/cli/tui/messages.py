@@ -103,6 +103,7 @@ CATALOG_VIEW_TOGGLE_LIST = "Press v for card view · s to sort"
 CATALOG_BROWSE_MORE = "Browse more models →"
 CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
+CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
 CHAT_INPUT_PLACEHOLDER = "Ask a question or type / for commands"
 CHAT_ONLY_BANNER = "Chat only, no document search. Press F5 to set up embedding model."
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
