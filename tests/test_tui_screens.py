@@ -394,15 +394,10 @@ class TestBackendField:
         assert matches_search(row, "ollama") is False
 
     def test_matches_search_normalizes_hyphens_and_underscores(self):
-        """A hyphenated query (the form HF model ids use) must match a
-        space-separated display name. Without normalization, the HF
-        fallback fetches matching repos but the post-fetch filter hides
-        them again."""
         model = _make_catalog_model(display_name="Deepseek R1 Distill Llama 70B")
         row = catalog_to_row(model, installed=False)
         assert matches_search(row, "deepseek-r1-distill") is True
         assert matches_search(row, "deepseek_r1_distill") is True
-        # Plain queries still work after the normalization.
         assert matches_search(row, "deepseek") is True
         assert matches_search(row, "mistral") is False
 

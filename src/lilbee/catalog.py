@@ -423,19 +423,13 @@ _hf_cache_lock = threading.Lock()
 
 _EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
-# HuggingFace ``/api/models?search=`` is a plain substring match against the
-# model id (no globs, no regex). Multiple ``search=`` query params AND-together
-# (each must be a substring of the id), so we always include ``GGUF`` as one
-# term and append the user's whitespace-split query as additional terms.
+# HF ``?search=`` is a plain substring match on the model id; multiple
+# ``search=`` params AND-together. Always include GGUF; user terms append.
 _HF_GGUF_SEARCH_TERM = "GGUF"
 
 
 def _hf_search_terms(search: str) -> list[str]:
-    """Return the list of search terms to AND-combine on the HF API.
-
-    Always begins with the ``GGUF`` filter; the user's query is split on
-    whitespace and each token becomes an additional substring constraint.
-    """
+    """Build the list of HF ``search=`` params, GGUF first then user tokens."""
     return [_HF_GGUF_SEARCH_TERM, *search.split()]
 
 

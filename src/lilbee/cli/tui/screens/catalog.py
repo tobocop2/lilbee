@@ -47,9 +47,7 @@ _HF_PAGE_SIZE = 25
 # auto-fetch the next page. Small enough that the request is already
 # in flight by the time the user reaches the bottom.
 _HF_LOAD_MORE_TRIGGER = 5
-# Notification timeout for the transient "Searching HuggingFace…" toast.
-# Long enough to register, short enough to clear before the worker
-# typically completes on a warm cache.
+# Long enough to register; short enough to clear before a warm-cache fetch.
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
@@ -193,11 +191,7 @@ class CatalogScreen(Screen[None]):
             self._filter_list()
 
     def _maybe_fetch_remote_search(self, visible_count: int) -> None:
-        """Fall back to the HF API when the local filter yields no matches.
-
-        Triggered from `_on_search_submitted` (Enter), not from
-        `Input.Changed`, to avoid a 3-task fan-out per keystroke.
-        """
+        """Fall back to the HF API when the local filter yields no matches."""
         if visible_count > 0 or self._search_in_flight:
             return
         query = self._get_search_text()
@@ -207,9 +201,7 @@ class CatalogScreen(Screen[None]):
         self._pending_search_query = query
         self._search_in_flight = True
         self._update_sort_label()
-        # The sort label is hidden by CSS in grid view; a notification
-        # gives the user feedback that the search is in flight regardless
-        # of which view they're in.
+        # Sort label is hidden in grid view, so the toast is the only feedback there.
         self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
         self._fetch_hf_search(query)
 
@@ -318,18 +310,11 @@ class CatalogScreen(Screen[None]):
         return new_models
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        # `state_changed` fires for every transition. PENDING / RUNNING are
-        # in-progress and must NOT touch latches. ERROR / CANCELLED are
-        # terminal failures; SUCCESS is the only happy path.
+        # PENDING/RUNNING fire here too; only ERROR/CANCELLED should release latches.
         if event.state in (WorkerState.ERROR, WorkerState.CANCELLED):
-            # Release the load-more latch on failure so the user can retry
-            # with ``n`` instead of being stuck at the current page forever.
             if event.worker.name == _WORKER_FETCH_MORE_HF:
                 self._loading_more = False
-            # An HF search failure must clear the in-flight flag, otherwise
-            # the "Searching HuggingFace…" hint is stuck on the sort label.
-            # Also release the per-query gate so the user can retry the same
-            # term after a transient network failure.
+            # Release the gate so the user can retry the same query after a failure.
             if event.worker.name == _WORKER_FETCH_SEARCH:
                 if self._pending_search_query is not None:
                     self._searched_remote.discard(self._pending_search_query)
@@ -360,9 +345,7 @@ class CatalogScreen(Screen[None]):
             return
         self._refresh_view()
         if name == _WORKER_FETCH_SEARCH:
-            # _refresh_grid / _refresh_list mount widgets asynchronously, so
-            # the filter has to run after the compositor flushes. Otherwise
-            # query(...) misses the cards/items that were just scheduled.
+            # Newly-mounted widgets aren't queryable until after the next refresh.
             self.call_after_refresh(self._filter_grid if self._grid_view else self._filter_list)
 
     def _get_search_text(self) -> str:
