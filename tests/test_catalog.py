@@ -867,6 +867,29 @@ class TestDownloadModel:
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             download_model(entry)
 
+    def test_task_cancelled_propagates_unwrapped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TaskCancelled from the progress callback must bubble up as-is.
+
+        Regression test for bb-nis1: catalog.py used to wrap TaskCancelled in
+        a generic RuntimeError via its 'except Exception' block, causing
+        cancelled downloads to land as FAILED instead of CANCELLED in the
+        Task Center.
+        """
+        from lilbee.cancellation import TaskCancelled
+
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+
+        def fake_download(**kwargs: Any) -> str:
+            raise TaskCancelled
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(TaskCancelled):
+            download_model(entry)
+
     def test_repo_not_found_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

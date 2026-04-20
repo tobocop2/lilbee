@@ -610,6 +610,57 @@ class TestCrawlRoute:
         assert resp.status_code == 400
 
 
+class TestSetupCrawlerRoutes:
+    """bb-wq8g: GET /setup/crawler/status + POST /setup/crawler."""
+
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=True)
+    def test_status_when_installed(self, _mock, client):
+        resp = client.get("/setup/crawler/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["installed"] is True
+        assert body["component"] == "chromium"
+        assert "browsers_path" in body
+
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=False)
+    def test_status_when_missing(self, _mock, client):
+        resp = client.get("/setup/crawler/status")
+        assert resp.status_code == 200
+        assert resp.json()["installed"] is False
+
+    def test_post_setup_crawler_streams_setup_events(self, client):
+        """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
+        from lilbee.progress import EventType, SetupDoneEvent, SetupStartEvent
+
+        async def _fake_bootstrap(on_progress=None):
+            if on_progress is not None:
+                on_progress(EventType.SETUP_START, SetupStartEvent(component="chromium"))
+                on_progress(
+                    EventType.SETUP_DONE,
+                    SetupDoneEvent(component="chromium", success=True, error=None),
+                )
+
+        with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
+            resp = client.post("/setup/crawler")
+            assert resp.status_code == 201
+            assert "text/event-stream" in resp.headers["content-type"]
+            assert b"event: setup_start" in resp.content
+            assert b"event: setup_done" in resp.content
+
+    def test_post_setup_crawler_emits_error_when_bootstrap_raises(self, client):
+        """Non-zero-exit bootstrap routes through sse_error before done."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        async def _fake_bootstrap(on_progress=None):
+            raise CrawlerBrowserMissing("network unreachable")
+
+        with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
+            resp = client.post("/setup/crawler")
+            assert resp.status_code == 201
+            assert b"event: error" in resp.content
+            assert b"network unreachable" in resp.content
+
+
 class TestCreateAppReexport:
     @mock.patch("lilbee.server.app.create_app")
     def test_lazy_import(self, mock_create):

@@ -1129,6 +1129,12 @@ class TestGetConfigReranker:
 
 
 class TestCrawlStream:
+    @pytest.fixture(autouse=True)
+    def _skip_chromium_bootstrap(self):
+        """Treat Chromium as installed so crawl_stream doesn't subprocess out."""
+        with patch("lilbee.crawler.chromium_installed", return_value=True):
+            yield
+
     @patch("lilbee.crawler.crawl_and_save")
     @patch("lilbee.crawler.validate_crawl_url")
     async def test_streams_events_and_done(self, _mock_validate, mock_crawl):

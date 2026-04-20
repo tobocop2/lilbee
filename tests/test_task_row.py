@@ -73,6 +73,28 @@ def test_build_head_composes_name_type_and_status_pills() -> None:
     assert "00:03" in plain
 
 
+def test_build_head_renders_setup_pill() -> None:
+    """bb-wq8g: TaskType.SETUP rows render with the 'setup' type pill.
+
+    The head content must include the literal 'setup' string so
+    TaskCenter users can tell a bootstrap task apart from download /
+    sync / crawl / etc.
+    """
+    task = Task(
+        task_id="t-setup",
+        name="Install Chromium browser",
+        task_type="setup",
+        fn=lambda: None,
+        status=TaskStatus.ACTIVE,
+        started_at=time.monotonic() - 5,
+    )
+    content = _build_head(task, elapsed="00:05")
+    plain = content.plain
+    assert "Install Chromium browser" in plain
+    assert "setup" in plain
+    assert "active" in plain
+
+
 def test_build_head_omits_elapsed_when_empty() -> None:
     task = Task(
         task_id="t2",

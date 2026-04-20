@@ -365,9 +365,9 @@ class ChatScreen(Screen[None]):
         from lilbee.progress import FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
-        result = copy_files([path], force=force)
-        copied = result.copied
-        for name in result.skipped:
+        copy_result = copy_files([path], force=force)
+        copied = copy_result.copied
+        for name in copy_result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
@@ -378,7 +378,9 @@ class ChatScreen(Screen[None]):
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
 
-        asyncio.run(sync(quiet=True, on_progress=on_progress))
+        sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        if sync_result.failed:
+            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -426,16 +428,26 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
     def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
-        """Enqueue a crawl task and run it in the background."""
+        """Enqueue a crawl task and run it in the background.
+
+        Bootstrap Chromium first via the controller helper. If the
+        browser isn't installed yet, a SETUP task renders in the Task
+        Center and the crawl kicks off from its on_success hook. On a
+        machine where Chromium is already present this is a synchronous
+        no-op and the crawl starts immediately (bb-wq8g).
+        """
         from lilbee.cli.tui.task_queue import TaskType
 
+        def _kick_off_crawl() -> None:
+            self._task_bar.start_task(
+                msg.TASK_NAME_CRAWL.format(url=url),
+                TaskType.CRAWL,
+                lambda reporter: self._do_crawl(url, depth, max_pages, reporter),
+                on_success=lambda: call_from_thread(self, self._run_sync),
+            )
+
         self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
-        self._task_bar.start_task(
-            msg.TASK_NAME_CRAWL.format(url=url),
-            TaskType.CRAWL,
-            lambda reporter: self._do_crawl(url, depth, max_pages, reporter),
-            on_success=lambda: call_from_thread(self, self._run_sync),
-        )
+        self._task_bar.ensure_chromium(_kick_off_crawl)
 
     @staticmethod
     def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
@@ -466,7 +478,13 @@ class ChatScreen(Screen[None]):
                 reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
 
         paths = asyncio.run(
-            crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
+            crawl_and_save(
+                url,
+                depth=depth,
+                max_pages=max_pages,
+                on_progress=on_progress,
+                quiet=True,
+            )
         )
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
@@ -841,10 +859,12 @@ class ChatScreen(Screen[None]):
                 reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
 
         try:
-            asyncio.run(sync(quiet=True, on_progress=on_progress))
+            result = asyncio.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
             self._auto_sync = False
             raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
+        if result.failed:
+            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

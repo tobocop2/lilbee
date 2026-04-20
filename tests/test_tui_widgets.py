@@ -256,6 +256,24 @@ class TestTaskBar:
             await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
+    async def test_unmount_cancels_poll_interval(self) -> None:
+        """bb-3uzp: on_unmount must stop the 10 Hz poll interval.
+
+        Without this, a detached TaskBar's interval keeps firing after a
+        screen push/pop cycle and can set ``display=False`` on the new
+        TaskBar mid-render, making the bar vanish from chat.
+        """
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            assert getattr(bar, "_interval", None) is not None
+            await bar.remove()
+            await pilot.pause()
+            assert getattr(bar, "_interval", None) is None
+
     async def test_queue_advances_on_complete(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -367,16 +385,22 @@ class TestModelBar:
             assert embed_sel is not None
 
     async def test_labels_rendered(self) -> None:
-        from textual.widgets import Label
+        """bb-ec3q: Chat/Embed labels render as pills, not plain text.
+
+        Each pill is a Static carrying a pill() Content with half-block
+        ends around the label text. Assert the text survives, wrapped
+        by the PILL_LEFT/RIGHT half-block glyphs.
+        """
+        from textual.widgets import Static
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            labels = [str(lbl.render()) for lbl in app.query(Label)]
-            assert "Chat:" in labels
-            assert "Embed:" in labels
+            pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
+            assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
+            assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
 
 
 class TestIsMmproj:
@@ -2637,6 +2661,56 @@ class TestTaskBarAdditional:
             bar._refresh_display()
 
 
+class TestEnsureChromium:
+    """bb-wq8g: TaskBarController.ensure_chromium short-circuits or spawns SETUP."""
+
+    async def test_short_circuits_when_installed(self) -> None:
+        """No SETUP task enqueued; on_ready fires immediately."""
+        import threading as _threading
+
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True
+            ):
+                fired = _threading.Event()
+                app.task_bar.ensure_chromium(fired.set)
+                assert fired.is_set()
+                queued = app.task_bar.queue
+                all_tasks = queued.active_tasks + queued.queued_tasks + queued.history
+                assert not any(t.task_type == TaskType.SETUP.value for t in all_tasks)
+
+    async def test_enqueues_setup_task_when_missing(self) -> None:
+        """bb-wq8g happy path: SETUP task calls start_task with the right args.
+
+        Asserts against ``start_task`` directly instead of spawning a real
+        worker thread — running an actual ``asyncio.run`` inside the
+        daemon worker leaves thread-local state that later pilot tests
+        trip over.
+        """
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            on_ready = mock.Mock()
+            with (
+                mock.patch(
+                    "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=False
+                ),
+                mock.patch.object(app.task_bar, "start_task") as mock_start,
+            ):
+                app.task_bar.ensure_chromium(on_ready)
+            mock_start.assert_called_once()
+            args, kwargs = mock_start.call_args
+            assert args[1] == TaskType.SETUP
+            assert kwargs.get("on_success") is on_ready
+            on_ready.assert_not_called()
+
+
 class TestTaskBarIndeterminate:
     """Tests for indeterminate task flag propagation."""
 
@@ -3567,51 +3641,60 @@ def _make_list_row(
     )
 
 
-class _ListItemApp(App[None]):
-    def __init__(self, row: TableRow) -> None:
-        super().__init__()
-        self._row = row
+def _make_click(widget: Any, button: int = 1) -> Any:
+    """Construct a Click event for a detached widget. Coordinates are arbitrary."""
+    from textual.events import Click
 
-    def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
-
-        yield ModelListItem(self._row)
+    return Click(
+        widget=widget,
+        x=0,
+        y=0,
+        delta_x=0,
+        delta_y=0,
+        button=button,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        screen_x=0,
+        screen_y=0,
+    )
 
 
 class TestModelListItem:
-    """Cover selection, click, and build_specs fallback paths."""
+    """Cover selection, click, and build_specs fallback paths.
 
-    async def test_action_select_posts_message(self) -> None:
+    Previously used ``app.run_test()`` pilot harness, which tripped a
+    known pytest-asyncio + Textual hang on this branch and stalled CI
+    indefinitely. These tests don't need a mounted app to verify the
+    action_select / on_click message-posting contract; constructing the
+    widget directly and monkey-patching ``post_message`` is enough.
+    """
+
+    def test_action_select_posts_message(self) -> None:
         from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
-        app = _ListItemApp(_make_list_row())
+        item = ModelListItem(_make_list_row())
         received: list[ModelListItem.Selected] = []
+        # Widget's post_message isn't injectable; monkey-patch the bound
+        # method directly so the test doesn't need a mounted App.
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.action_select()
+        assert len(received) == 1
+        assert received[0].item is item
+        assert received[0].control is item
 
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            item = app.query_one(ModelListItem)
-            item.post_message = received.append  # type: ignore[method-assign]
-            item.action_select()
-            assert len(received) == 1
-            assert received[0].item is item
-            assert received[0].control is item
-
-    async def test_on_click_focuses_and_posts(self) -> None:
-        from textual.events import Click
-        from textual.geometry import Offset
-
+    def test_on_click_posts_selected_message(self) -> None:
         from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
-        app = _ListItemApp(_make_list_row())
+        item = ModelListItem(_make_list_row())
         received: list[ModelListItem.Selected] = []
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            item = app.query_one(ModelListItem)
-            item.post_message = received.append  # type: ignore[method-assign]
-            item.on_click(Click(widget=item, widget_offset=Offset(0, 0), button=1))
-            assert item.has_focus
-            assert received and received[0].item is item
+        item.post_message = received.append  # type: ignore[method-assign]
+        # .focus() normally requires a mounted App; stub so we can verify
+        # on_click calls it without the NoActiveAppError.
+        item.focus = mock.Mock()  # type: ignore[method-assign]
+        item.on_click(_make_click(item))
+        item.focus.assert_called_once()
+        assert received and received[0].item is item
 
     def test_build_specs_all_placeholders_renders_dashes(self) -> None:
         from lilbee.cli.tui.widgets.model_list_item import _build_specs

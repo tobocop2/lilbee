@@ -42,8 +42,10 @@ from lilbee.cli.helpers import (
     render_status,
     sync_result_to_json,
 )
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
-from lilbee.crawler import is_url
+from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed, is_url
+from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
 
@@ -802,6 +804,51 @@ def mcp_cmd() -> None:
     from lilbee.mcp import main
 
     main()
+
+
+setup_app = typer.Typer(help="One-time setup for optional runtime components.")
+app.add_typer(setup_app, name="setup")
+
+
+@setup_app.command(name="crawler")
+def setup_crawler_cmd() -> None:
+    """Install Playwright's Chromium browser, needed for /crawl.
+
+    No-op when Chromium is already present. Emits a simple progress
+    readout; use '--json' mode on the top-level 'lilbee' command to get
+    a single JSON blob with the final install state instead.
+    """
+    if chromium_installed():
+        if cfg.json_mode:
+            typer.echo(json.dumps({"component": "chromium", "already_installed": True}))
+        else:
+            typer.echo("Chromium already installed.")
+        return
+
+    last_pct: list[int] = [-1]
+
+    def _on_progress(event_type: object, data: object) -> None:
+        if event_type != EventType.SETUP_PROGRESS or not isinstance(data, SetupProgressEvent):
+            return
+        total = data.total_bytes or 0
+        pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
+        if pct != last_pct[0] and not cfg.json_mode:
+            last_pct[0] = pct
+            typer.echo(msg.SETUP_CHROMIUM_CLI_PROGRESS.format(pct=pct), err=True)
+
+    try:
+        asyncio.run(bootstrap_chromium(on_progress=_on_progress))
+    except CrawlerBrowserMissing as exc:
+        if cfg.json_mode:
+            typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))
+        else:
+            typer.secho(f"Install failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    if cfg.json_mode:
+        typer.echo(json.dumps({"component": "chromium", "installed": True}))
+    else:
+        typer.echo("Chromium installed.")
 
 
 wiki_app = typer.Typer(help="Wiki layer commands: lint, citations, status.")

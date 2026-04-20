@@ -45,6 +45,10 @@ from lilbee.server.routes.search import (
     chat_stream_route,
     search_route,
 )
+from lilbee.server.routes.setup import (
+    setup_crawler_route,
+    setup_crawler_status_route,
+)
 from lilbee.server.wiki import (
     wiki_citations_reverse_route,
     wiki_drafts_route,
@@ -120,6 +124,8 @@ def create_app() -> Litestar:
             documents_list_route,
             documents_remove_route,
             crawl_route,
+            setup_crawler_route,
+            setup_crawler_status_route,
             wiki_list_route,
             wiki_read_route,
             wiki_drafts_route,

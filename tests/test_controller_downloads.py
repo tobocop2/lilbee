@@ -26,7 +26,6 @@ from lilbee.cli.tui.widgets.task_bar import (
     ProgressReporter,
     TaskBarController,
     TaskCancelled,
-    _DownloadCancelled,
 )
 
 
@@ -209,11 +208,6 @@ async def test_progress_reporter_update_raises_when_cancelled() -> None:
 
         with pytest.raises(TaskCancelled):
             reporter.update(0, "nope")
-
-
-def test_download_cancelled_is_alias_for_task_cancelled() -> None:
-    """Legacy import path must keep working."""
-    assert _DownloadCancelled is TaskCancelled
 
 
 @pytest.mark.asyncio

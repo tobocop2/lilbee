@@ -50,7 +50,7 @@ TaskRow {
     border-left: thick $surface-lighten-2;
 
     &.-active { border-left: thick $primary; }
-    &.-active.-pulse { border-left: thick $primary-lighten-2; }
+    &.-active.-pulse { border-left: thick $primary-lighten-3; }
     &.-done { border-left: thick $success; }
     &.-failed { border-left: thick $error; }
     &.-cancelled { border-left: thick $warning; }

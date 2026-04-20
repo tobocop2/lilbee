@@ -130,12 +130,14 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         exc: list[BaseException] = []
 
+        from lilbee.ingest import SyncResult
+
         def _worker() -> None:
             try:
                 with (
                     patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
                     patch("lilbee.ingest.sync", new=MagicMock(return_value=None)),
-                    patch("asyncio.run"),
+                    patch("asyncio.run", new=MagicMock(return_value=SyncResult())),
                 ):
                     screen._do_add(src, reporter)
             except BaseException as e:  # pragma: no cover
@@ -179,7 +181,14 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
             try:
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
-                    patch("asyncio.run", new=MagicMock(return_value=None)),
+                    patch(
+                        "asyncio.run",
+                        new=MagicMock(
+                            return_value=__import__(
+                                "lilbee.ingest", fromlist=["SyncResult"]
+                            ).SyncResult()
+                        ),
+                    ),
                 ):
                     screen._do_add(src, reporter, force=True)
             except BaseException as e:  # pragma: no cover
@@ -225,7 +234,14 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
             try:
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
-                    patch("asyncio.run", new=MagicMock(return_value=None)),
+                    patch(
+                        "asyncio.run",
+                        new=MagicMock(
+                            return_value=__import__(
+                                "lilbee.ingest", fromlist=["SyncResult"]
+                            ).SyncResult()
+                        ),
+                    ),
                 ):
                     screen._do_add(src, reporter)
             except BaseException as e:  # pragma: no cover
@@ -257,7 +273,7 @@ def test_do_crawl_reports_page_progress() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_crawl(url, *, depth, max_pages, on_progress):
+    async def fake_crawl(url, *, depth, max_pages, on_progress, quiet=False):
         on_progress(
             EventType.CRAWL_PAGE,
             CrawlPageEvent(url="https://x/a", current=1, total=2),
@@ -291,6 +307,8 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
+    from lilbee.ingest import SyncResult
+
     async def fake_sync(*, quiet, on_progress):
         on_progress(
             EventType.FILE_START,
@@ -298,6 +316,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
         )
         on_progress(EventType.FILE_DONE, FileDoneEvent(file="a.pdf", status="ok", chunks=5))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
+        return SyncResult()
 
     exc: list[BaseException] = []
 
@@ -321,6 +340,7 @@ def test_do_sync_done_event_reports_completion() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.ingest import SyncResult
     from lilbee.progress import EventType, SyncDoneEvent
 
     screen = ChatScreen.__new__(ChatScreen)
@@ -331,6 +351,7 @@ def test_do_sync_done_event_reports_completion() -> None:
             EventType.DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
         )
+        return SyncResult()
 
     exc: list[BaseException] = []
 

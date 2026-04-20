@@ -256,8 +256,11 @@ class WorkerProcess:
 
 def _redirect_stdio() -> None:
     """Redirect stdout/stderr to /dev/null for the worker subprocess.
+
     Suppresses llama-cpp's C-level prints that would corrupt the parent TUI.
-    Queues use pipes, not stdout.
+    Queues use pipes, not stdout. The sibling test in
+    ``tests/test_worker_process.py`` exercises this in a fresh
+    subprocess so it can close fds 1/2 without deadlocking pytest-xdist.
     """
     import os
     import sys

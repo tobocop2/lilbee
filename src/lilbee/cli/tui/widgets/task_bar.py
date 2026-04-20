@@ -18,6 +18,7 @@ State ownership is split so the bar can render on every screen:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import threading
@@ -26,11 +27,15 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
+from textual.timer import Timer
 from textual.widgets import Label, Static
 
+from lilbee.cancellation import TaskCancelled
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.crawler import bootstrap_chromium, chromium_installed
+from lilbee.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -48,20 +53,6 @@ _DOWNLOAD_CONCURRENCY = 2
 # matching the active-row rail pulse in the Task Center.
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
-
-
-class TaskCancelled(Exception):
-    """Raised inside a ``ProgressReporter.update`` call to abort the task.
-
-    The worker's target function receives a ``ProgressReporter`` whose
-    ``check_cancelled()`` / ``update()`` both raise ``TaskCancelled`` when
-    the task has been cancelled from the UI. The worker can let the
-    exception propagate and the controller handles it uniformly.
-    """
-
-
-# Back-compat alias: legacy tests/imports still reference this name.
-_DownloadCancelled = TaskCancelled
 
 
 class TaskOutcome(StrEnum):
@@ -114,6 +105,33 @@ class ProgressReporter:
 
 
 TaskTarget = Callable[[ProgressReporter], None]
+
+
+_BYTES_PER_MB = 1024 * 1024
+
+
+def _chromium_bootstrap_target(reporter: ProgressReporter) -> None:
+    """Worker target for the SETUP task: run bootstrap_chromium with progress forwarding.
+
+    Module-level so ``TaskBarController.ensure_chromium`` stays short and
+    tests can stub the target in isolation.
+    """
+
+    def _forward(event_type: EventType, data: Any) -> None:
+        if event_type != EventType.SETUP_PROGRESS:
+            return
+        if not isinstance(data, SetupProgressEvent):
+            return
+        total = data.total_bytes or 0
+        pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
+        mb = data.downloaded_bytes // _BYTES_PER_MB
+        if total > 0:
+            detail = msg.SETUP_CHROMIUM_DETAIL.format(done=mb, total=total // _BYTES_PER_MB)
+        else:
+            detail = msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(done=mb)
+        reporter.update(pct, detail)
+
+    asyncio.run(bootstrap_chromium(on_progress=_forward))
 
 
 class TaskBarController:
@@ -197,6 +215,32 @@ class TaskBarController:
             self.queue.advance(task_type)
         while self.queue.advance() is not None:
             pass
+
+    def ensure_chromium(self, on_ready: Callable[[], None]) -> None:
+        """Kick off a Chromium bootstrap if missing, then call ``on_ready``.
+
+        If Chromium is already installed, ``on_ready`` runs immediately on
+        the caller's thread. Otherwise a single SETUP task is enqueued
+        that runs ``bootstrap_chromium``; on success the controller
+        invokes ``on_ready`` on the worker thread via the task's
+        ``on_success`` hook. On failure the SETUP task surfaces as FAILED
+        and ``on_ready`` is NOT called (the follow-up work shouldn't
+        proceed against a missing browser).
+
+        bb-wq8g: the on_ready hook is how callers like ``_do_crawl`` chain
+        their real work behind the one-time bootstrap.
+        """
+        if chromium_installed():
+            on_ready()
+            return
+
+        self.start_task(
+            msg.SETUP_CHROMIUM_NAME,
+            TaskType.SETUP,
+            _chromium_bootstrap_target,
+            indeterminate=False,
+            on_success=on_ready,
+        )
 
     def start_task(
         self,
@@ -405,7 +449,18 @@ class TaskBar(Static):
 
     def on_mount(self) -> None:
         self._refresh_display()
-        self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+        # Capture the handle so we can cancel the poll on unmount. Without
+        # this, a screen push/pop cycle leaves the previous TaskBar's
+        # interval firing against a detached widget, racing with the new
+        # TaskBar and occasionally setting ``display=False`` on the live
+        # instance (bb-3uzp).
+        self._interval: Timer | None = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+
+    def on_unmount(self) -> None:
+        interval = getattr(self, "_interval", None)
+        if interval is not None:
+            interval.stop()
+            self._interval = None
 
     @property
     def _controller(self) -> TaskBarController:

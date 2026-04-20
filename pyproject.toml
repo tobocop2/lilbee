@@ -46,10 +46,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-litellm = ["litellm"]
+litellm = ["litellm>=1.50"]
 reranker = ["sentence-transformers"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
-crawler = ["crawl4ai>=0.8.0"]
+# Pin below 0.8.6 — that release swapped the canonical 'litellm' dep for a
+# fork ('unclecode-litellm') that only ships the .proxy subpackage and
+# breaks our litellm provider. Revisit when crawl4ai restores litellm.
+crawler = ["crawl4ai>=0.8.0,<0.8.6"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
