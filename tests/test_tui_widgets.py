@@ -3641,6 +3641,25 @@ def _make_list_row(
     )
 
 
+def _make_click(widget: Any, button: int = 1) -> Any:
+    """Construct a Click event for a detached widget. Coordinates are arbitrary."""
+    from textual.events import Click
+
+    return Click(
+        widget=widget,
+        x=0,
+        y=0,
+        delta_x=0,
+        delta_y=0,
+        button=button,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        screen_x=0,
+        screen_y=0,
+    )
+
+
 class TestModelListItem:
     """Cover selection, click, and build_specs fallback paths.
 
@@ -3656,6 +3675,8 @@ class TestModelListItem:
 
         item = ModelListItem(_make_list_row())
         received: list[ModelListItem.Selected] = []
+        # Widget's post_message isn't injectable; monkey-patch the bound
+        # method directly so the test doesn't need a mounted App.
         item.post_message = received.append  # type: ignore[method-assign]
         item.action_select()
         assert len(received) == 1
@@ -3663,28 +3684,15 @@ class TestModelListItem:
         assert received[0].control is item
 
     def test_on_click_posts_selected_message(self) -> None:
-        from textual.events import Click
-
         from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         item = ModelListItem(_make_list_row())
         received: list[ModelListItem.Selected] = []
         item.post_message = received.append  # type: ignore[method-assign]
+        # .focus() normally requires a mounted App; stub so we can verify
+        # on_click calls it without the NoActiveAppError.
         item.focus = mock.Mock()  # type: ignore[method-assign]
-        click = Click(
-            widget=item,
-            x=0,
-            y=0,
-            delta_x=0,
-            delta_y=0,
-            button=1,
-            shift=False,
-            meta=False,
-            ctrl=False,
-            screen_x=0,
-            screen_y=0,
-        )
-        item.on_click(click)
+        item.on_click(_make_click(item))
         item.focus.assert_called_once()
         assert received and received[0].item is item
 

@@ -910,34 +910,40 @@ class TestLoadVisionModel:
         mock_load.assert_called_once_with(vision_path)
 
 
-@pytest.mark.skip(
-    reason="Closes stdio fds that xdist needs; deadlocks under some schedules (bb-7w37)."
-)
-def test_redirect_stdio_points_stdout_stderr_to_devnull() -> None:
+def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:
     """``_redirect_stdio`` points sys.stdout/stderr to devnull.
 
-    Skipped: running the real function in the test process closes fds 1
-    and 2, which pytest-xdist uses to talk to its workers, so some
-    scheduling orders deadlock the suite for the full 60-min timeout.
-    The real subprocess path (``_worker_main``) covers the function via
-    the WorkerProcess integration flow.
+    Runs in a fresh subprocess because the function closes fds 1 and 2
+    in its caller's process; doing that inside the pytest process would
+    deadlock pytest-xdist's worker pipe. A child process has its own
+    fds so the close is harmless here (see bb-7w37). The verdict is
+    written to a sentinel file rather than stdout because the real
+    ``_redirect_stdio`` call eats stdout on its way.
     """
-    import os
+    import json
+    import subprocess
+    import textwrap
 
-    from lilbee.providers.worker_process import _redirect_stdio
+    verdict = tmp_path / "verdict.json"
+    script = textwrap.dedent(
+        f"""
+        import json, os, sys
+        from lilbee.providers.worker_process import _redirect_stdio
 
-    orig_out, orig_err = sys.stdout, sys.stderr
-    orig_fd1, orig_fd2 = os.dup(1), os.dup(2)
-    try:
         _redirect_stdio()
-        assert sys.stdout.name == os.devnull
-        assert sys.stderr.name == os.devnull
-    finally:
-        sys.stdout.close()
-        sys.stderr.close()
-        sys.stdout = orig_out
-        sys.stderr = orig_err
-        os.dup2(orig_fd1, 1)
-        os.dup2(orig_fd2, 2)
-        os.close(orig_fd1)
-        os.close(orig_fd2)
+        with open({str(verdict)!r}, "w") as fh:
+            json.dump(
+                {{
+                    "stdout_name": sys.stdout.name,
+                    "stderr_name": sys.stderr.name,
+                    "devnull": os.devnull,
+                }},
+                fh,
+            )
+        """
+    ).strip()
+
+    subprocess.run([sys.executable, "-c", script], timeout=30, check=True)
+    body = json.loads(verdict.read_text())
+    assert body["stdout_name"] == body["devnull"]
+    assert body["stderr_name"] == body["devnull"]
