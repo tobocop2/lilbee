@@ -2291,14 +2291,14 @@ class TestSyncSelectPrepend:
         matches — ``_sync_select`` now forces that refresh via
         ``_refresh_select_label``.
         """
-        from textual.app import App, ComposeResult
+        from textual.app import App
         from textual.widgets import Select
         from textual.widgets._select import SelectCurrent
 
         from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
 
         class _Harness(App[None]):
-            def compose(self) -> ComposeResult:
+            def compose(self):
                 yield Select(
                     options=[("fake-ref", "fake-ref")],
                     prompt="pick",
