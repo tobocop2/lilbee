@@ -465,6 +465,43 @@ async def test_settings_readonly_no_editor():
         assert len(editors) == 0
 
 
+def test_settings_screen_has_expected_handlers_and_actions() -> None:
+    """Structural regression test: SettingsScreen event handlers + action
+    bindings must be class methods, not nested functions captured by a
+    misplaced module-level helper.
+
+    The polish-pass commit 6ecd206 silently moved a helper into the
+    class body with matching indentation, which closed the class early
+    and turned every event handler into unreachable dead code. Parsing
+    succeeded because the indentation stayed consistent, and all
+    behavioural tests stayed red until caught by CI failures on
+    release/next-style platforms. See 5ffc5d6 for the fix.
+
+    This test fires before any pilot harness, so if someone re-breaks
+    the class boundary it surfaces immediately instead of at runtime.
+    """
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    expected = (
+        "_on_input_save",
+        "_on_checkbox_save",
+        "_on_select_save",
+        "_on_search_submitted",
+        "_filter_settings",
+        "_persist_value",
+        "_parse_value",
+        "_refresh_help",
+        "action_focus_search",
+        "action_go_back",
+        "action_scroll_down",
+        "action_scroll_up",
+        "action_scroll_home",
+        "action_scroll_end",
+    )
+    missing = [name for name in expected if not callable(getattr(SettingsScreen, name, None))]
+    assert not missing, f"SettingsScreen missing expected methods: {missing}"
+
+
 async def test_settings_persist_on_change():
     """Changing a setting persists the value to cfg."""
     app = SettingsTestApp()
