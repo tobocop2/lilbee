@@ -1163,6 +1163,29 @@ class TestCatalogInteractions:
                 assert len(ctas) == 1
                 assert ctas[0].term == "testchat"
 
+    async def test_search_cta_survives_view_toggle(self, _mock_resolve):
+        """Toggling list→grid with a pending search must mount the grid-view CTA."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")  # list view
+                await pilot.pause()
+
+                search = app.screen.query_one("#catalog-search")
+                search.value = "some-missing-model"
+                await pilot.pause()
+
+                await pilot.press("v")  # back to grid view
+                await pilot.pause()
+
+                grid_ctas = list(app.screen.query("#grid-search-hf-cta"))
+                assert len(grid_ctas) == 1, "grid-view CTA missing after toggle"
+
     async def test_search_cta_fires_hf_worker_on_select(self, _mock_resolve):
         """Selecting the CTA fires the HF worker and merges results into the list."""
         from lilbee.catalog import CatalogModel, CatalogResult

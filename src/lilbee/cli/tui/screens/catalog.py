@@ -115,7 +115,7 @@ class CatalogScreen(Screen[None]):
         self._grid_view: bool = True
         self._hf_fetched: bool = False
         self._loading_more: bool = False
-        self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
+        self._grid_cache_key: tuple[tuple[tuple[str, bool], ...], bool] | tuple = ()
         self._search_in_flight: bool = False
 
     def compose(self) -> ComposeResult:
@@ -405,7 +405,12 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows("")
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
-        row_key = tuple((r.name, r.installed) for r in all_rows)
+        # Include search-presence so toggling back into grid view with a
+        # pending search forces a rebuild that mounts the HF CTA.
+        row_key = (
+            tuple((r.name, r.installed) for r in all_rows),
+            bool(self._get_search_text()),
+        )
         if self._grid_cache_key == row_key:
             return
         self._grid_cache_key = row_key
