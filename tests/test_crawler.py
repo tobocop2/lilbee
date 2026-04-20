@@ -799,8 +799,17 @@ class TestCrawlRecursive:
 
     async def test_propagates_crawler_browser_missing(self, monkeypatch):
         """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
+        import sys as _sys
+
         from lilbee.crawler import CrawlerBrowserMissing
 
+        # Stub crawl4ai + the deep_crawling submodule so the test runs even
+        # when the `crawler` extra isn't installed — crawl_recursive imports
+        # both at the top of its body before _open_crawler can fire.
+        monkeypatch.setitem(_sys.modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
+        monkeypatch.setitem(
+            _sys.modules, "crawl4ai.deep_crawling", MagicMock(BFSDeepCrawlStrategy=MagicMock())
+        )
         monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_recursive("https://example.com", max_depth=1)
