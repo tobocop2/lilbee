@@ -183,7 +183,11 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
                         "asyncio.run",
-                        new=MagicMock(return_value=__import__("lilbee.ingest", fromlist=["SyncResult"]).SyncResult()),
+                        new=MagicMock(
+                            return_value=__import__(
+                                "lilbee.ingest", fromlist=["SyncResult"]
+                            ).SyncResult()
+                        ),
                     ),
                 ):
                     screen._do_add(src, reporter, force=True)
@@ -232,7 +236,11 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
                         "asyncio.run",
-                        new=MagicMock(return_value=__import__("lilbee.ingest", fromlist=["SyncResult"]).SyncResult()),
+                        new=MagicMock(
+                            return_value=__import__(
+                                "lilbee.ingest", fromlist=["SyncResult"]
+                            ).SyncResult()
+                        ),
                     ),
                 ):
                     screen._do_add(src, reporter)

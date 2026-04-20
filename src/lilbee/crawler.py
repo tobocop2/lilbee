@@ -614,6 +614,14 @@ async def crawl_and_save(
     """
     max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
+    # Auto-bootstrap Chromium on first use so every crawl entry point works
+    # on a fresh install without a separate setup step. bootstrap_chromium
+    # short-circuits when Chromium is already installed. Any progress is
+    # forwarded through the same on_progress callback so downstream UIs
+    # surface a 'setup' stage before the crawl events.
+    if not playwright_chromium_installed():
+        await bootstrap_chromium(on_progress=on_progress)
+
     sem = _get_crawl_semaphore()
     if sem is not None:
         await sem.acquire()

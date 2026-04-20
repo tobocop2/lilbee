@@ -65,19 +65,24 @@ class RoutingProvider(LLMProvider):
     def _native_has(self, name: str) -> bool:
         """Return True if the model resolves natively via the local registry.
 
-        Swallows registry lookup errors so routing falls through to litellm
-        when the ref isn't a local GGUF — this is the escape hatch that
+        Treats registry / path lookup failures as 'not native' so routing
+        falls through to litellm when the ref isn't a local GGUF — this
         keeps Ollama-backed refs like ``nomic-embed-text:v1.5`` from
         crashing in llama-cpp when no native copy is installed (bb-0ud4).
+        Any other exception (services-container bootstrap errors, etc.)
+        gets logged at debug level so it doesn't silently mask real
+        routing regressions.
         """
-        import contextlib
-
         from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-        with contextlib.suppress(Exception):
+        try:
             resolve_model_path(name)
-            return True
-        return False
+        except ProviderError:
+            return False
+        except Exception:
+            log.debug("Native registry probe for %r raised unexpectedly", name, exc_info=True)
+            return False
+        return True
 
     def _pick_backend(self, ref: Any) -> LLMProvider:
         """Choose litellm vs llama-cpp for a parsed ref.
