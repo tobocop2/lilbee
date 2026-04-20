@@ -913,18 +913,23 @@ class TestLoadVisionModel:
 def test_redirect_stdio_points_stdout_stderr_to_devnull() -> None:
     """``_redirect_stdio`` dup2's /dev/null onto fds 1 and 2 and repoints sys.stdout/stderr.
 
-    Verified with mocks rather than a real subprocess because calling the
-    function in-process would close the pytest-xdist worker pipes, and the
-    subprocess-based flavor of this test deadlocked CI under xdist on
-    ubuntu 3.11. The function is trivial enough that mock assertions document
-    its contract fully.
+    Verified with mocks rather than a real subprocess: calling the function
+    in-process without mocking would close the pytest-xdist worker pipes, and
+    the subprocess-based flavor deadlocked CI under xdist on ubuntu 3.11.
+
+    Mocks only ``os.open``/``os.dup2``/``os.close`` to prevent actual fd
+    manipulation. Does NOT patch ``builtins.open``: the two
+    ``open(os.devnull, "w")`` calls at the tail of the function run for real,
+    producing real /dev/null handles that get discarded when ``sys.stdout`` and
+    ``sys.stderr`` are restored. Globally patching ``builtins.open`` deadlocks
+    ubuntu-3.11 under xdist: any pytest / coverage / xdist internal ``open()``
+    call during the ``with`` block receives a MagicMock and the worker wedges.
 
     Uses ``_redirect_stdio_real`` (bound at module import, before the
-    ``_no_stdio_redirect`` autouse fixture swaps the module attribute for
-    a MagicMock) so the real function actually runs. Restores
-    ``sys.stdout``/``sys.stderr`` before any assertion output because the
-    function reassigns them to a mock-open file handle.
+    ``_no_stdio_redirect`` autouse fixture swaps the module attribute for a
+    MagicMock) so the real function actually runs.
     """
+    import contextlib
     import os
     import sys
 
@@ -935,17 +940,20 @@ def test_redirect_stdio_points_stdout_stderr_to_devnull() -> None:
             mock.patch("os.open", return_value=opened_fd) as mock_open_fd,
             mock.patch("os.dup2") as mock_dup2,
             mock.patch("os.close") as mock_close,
-            mock.patch("builtins.open", mock.mock_open()) as mock_open_file,
         ):
             _redirect_stdio_real()
             open_calls = mock_open_fd.call_args_list
             dup2_calls = mock_dup2.call_args_list
             close_calls = mock_close.call_args_list
-            open_file_calls = mock_open_file.call_args_list
+            new_stdout, new_stderr = sys.stdout, sys.stderr
     finally:
         sys.stdout, sys.stderr = real_stdout, real_stderr
+        for handle in (new_stdout, new_stderr):
+            with contextlib.suppress(Exception):
+                handle.close()
 
     assert open_calls == [mock.call(os.devnull, os.O_RDWR)]
     assert dup2_calls == [mock.call(opened_fd, 1), mock.call(opened_fd, 2)]
     assert close_calls == [mock.call(opened_fd)]
-    assert open_file_calls == [mock.call(os.devnull, "w"), mock.call(os.devnull, "w")]
+    assert new_stdout is not real_stdout
+    assert new_stderr is not real_stderr
