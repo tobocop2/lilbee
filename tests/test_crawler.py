@@ -1112,6 +1112,12 @@ class TestCrawlCancel:
 
         _safe_strategy_cancel(object())  # object() has no cancel; must not raise
 
+    async def test_safe_aclose_noop_on_none(self):
+        """_safe_aclose returns cleanly when stream is None (e.g. crawler never opened)."""
+        from lilbee.crawler import _safe_aclose
+
+        await _safe_aclose(None)  # must not raise
+
 
 class TestCrawlDispatcher:
     """Rate-limit dispatcher wiring for the recursive path."""
