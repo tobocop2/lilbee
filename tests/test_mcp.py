@@ -23,6 +23,7 @@ from lilbee.mcp import (
     status,
     sync,
     wiki_citations,
+    wiki_generate,
     wiki_lint,
     wiki_list,
     wiki_prune,
@@ -715,6 +716,52 @@ class TestWikiPrune:
         assert result["archived"] == 0
         assert result["flagged"] == 0
         assert result["records"] == []
+
+
+class TestWikiGenerate:
+    def test_generate_success(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        out_path = tmp_path / "wiki" / "summaries" / "doc.md"
+        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=out_path):
+            result = wiki_generate("doc.pdf")
+        assert result["command"] == "wiki_generate"
+        assert result["source"] == "doc.pdf"
+        assert result["status"] == "generated"
+        assert result["paths"] == [str(out_path)]
+
+    def test_generate_no_chunks_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = wiki_generate("missing.pdf")
+        assert "error" in result
+        assert "missing.pdf" in result["error"]
+
+    def test_generate_returns_none_status_failed(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=None):
+            result = wiki_generate("doc.pdf")
+        assert result["status"] == "failed"
+        assert result["paths"] == []
+
+    def test_generate_wiki_disabled(self):
+        cfg.wiki = False
+        result = wiki_generate("doc.pdf")
+        assert result == {"error": "wiki not enabled"}
+
+    def test_generate_empty_source_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        result = wiki_generate("")
+        assert "error" in result
 
 
 class TestWikiList:

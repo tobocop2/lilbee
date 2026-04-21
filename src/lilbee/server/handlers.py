@@ -840,8 +840,10 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
     if error_holder:
         yield sse_error(error_holder[0])
     elif not sse.cancel.is_set() and not task.cancelled():
+        from lilbee.wiki.shared import WIKI_STATUS_FAILED, WIKI_STATUS_GENERATED
+
         path = str(result_holder[0]) if result_holder and result_holder[0] is not None else None
-        status = "generated" if path else "failed"
+        status = WIKI_STATUS_GENERATED if path else WIKI_STATUS_FAILED
         yield sse_done({"status": status, "source": source, "path": path or ""})
 
 

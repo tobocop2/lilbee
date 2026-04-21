@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from litestar import get, post
-from litestar.exceptions import HTTPException, NotFoundException
+from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 from litestar.response import Stream
 
@@ -87,14 +87,6 @@ async def wiki_citations_reverse_route(
         return []
     records = svc_mod.get_services().store.get_citations_for_source(source)
     return [WikiCitationRecord(**r) for r in records]
-
-
-@get("/api/wiki/lint/{task_id:str}")
-@read_only
-async def wiki_lint_status_route(task_id: str) -> None:
-    """Poll lint task status by task ID."""
-    _require_wiki()
-    raise HTTPException(status_code=501, detail="lint task polling not implemented")
 
 
 @get("/api/wiki/{slug:path}")
