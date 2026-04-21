@@ -109,6 +109,20 @@ class TestDisplaySourcePath:
         monkeypatch.setattr(_Path, "resolve", _raise)
         assert display_source_path("anything.md") == "anything.md"
 
+    def test_returns_absolute_when_not_under_home(self, tmp_path, monkeypatch):
+        """When the resolved path is not under ``Path.home()``, fall through to str(resolved)."""
+        from pathlib import Path as _Path
+
+        from lilbee.query import display_source_path
+
+        cfg.documents_dir = tmp_path / "docs"
+        (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path / "fake-home"))
+
+        result = display_source_path("note.md")
+        assert not result.startswith("~/")
+        assert result.endswith("note.md")
+
 
 class TestFormatSource:
     def test_pdf_single_page(self):
