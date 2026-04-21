@@ -56,6 +56,9 @@ _CONTEXT_BUDGET_FRACTION = 0.75
 # is a widely used heuristic for English text.
 _CHARS_PER_TOKEN = 4
 
+# Width (in characters) of the zero-padded page number inside a per-page slug.
+_PAGE_SLUG_WIDTH = 4
+
 
 def _truncate_chunks_to_budget(
     chunks: list[SearchChunk],
@@ -87,6 +90,27 @@ def _truncate_chunks_to_budget(
             context_window,
         )
     return kept
+
+
+def _group_chunks_by_page(
+    chunks: list[SearchChunk],
+) -> list[tuple[int, list[SearchChunk]]]:
+    """Group chunks by ``page_start``, preserving in-document order within a page.
+
+    Returns ``(page_start, chunks)`` tuples sorted ascending by page number.
+    Chunks with ``page_start=0`` (non-paginated sources) collapse to a single
+    entry keyed at 0, so a markdown or code source still emits exactly one
+    summary file until structure detection arrives in a later stage.
+    """
+    grouped: dict[int, list[SearchChunk]] = {}
+    for chunk in chunks:
+        grouped.setdefault(chunk.page_start, []).append(chunk)
+    return sorted(grouped.items())
+
+
+def _page_slug(source_slug: str, page_num: int) -> str:
+    """Build a per-page slug of the form ``<source>/page-NNNN``."""
+    return f"{source_slug}/page-{page_num:0{_PAGE_SLUG_WIDTH}d}"
 
 
 def _chunks_to_text(chunks: list[SearchChunk]) -> str:
@@ -239,9 +263,9 @@ def _divert_to_drafts(
     diff_text: str,
 ) -> Path:
     """Write new content to wiki/drafts/ with a drift note instead of overwriting."""
-    drafts_dir.mkdir(parents=True, exist_ok=True)
     draft_path = drafts_dir / f"{slug}.md"
-    note = f"<!-- DRIFT: {change_ratio:.0%} content changed — flagged for human review -->\n\n"
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    note = f"<!-- DRIFT: {change_ratio:.0%} content changed - flagged for human review -->\n\n"
     draft_path.write_text(note + new_content, encoding="utf-8")
     log.warning(
         "Drift detected for %s (%.0f%% changed), diverted to drafts. Diff:\n%s",
@@ -321,10 +345,13 @@ def _write_page(
     full_content: str,
     drift_threshold: float,
 ) -> Path:
-    """Write page to disk with drift detection. Returns path written to."""
-    page_dir = wiki_root / subdir
-    page_dir.mkdir(parents=True, exist_ok=True)
-    page_path = page_dir / f"{slug}.md"
+    """Write page to disk with drift detection. Returns path written to.
+
+    ``slug`` may contain forward slashes (e.g. ``cv-manual/page-0042``);
+    any intermediate directories are created before writing.
+    """
+    page_path = wiki_root / subdir / f"{slug}.md"
+    page_path.parent.mkdir(parents=True, exist_ok=True)
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
@@ -457,41 +484,39 @@ def _generate_page(
     return page_path
 
 
-def generate_summary_page(
+def _source_slug(source_name: str) -> str:
+    """Filesystem-safe slug for a source: drop extension, replace ``/`` with ``--``."""
+    return source_name.replace("/", "--").rsplit(".", 1)[0]
+
+
+def _generate_page_for_leaf(
     source_name: str,
-    chunks: list[SearchChunk],
+    source_hash: str,
+    page_num: int,
+    page_chunks: list[SearchChunk],
+    source_slug: str,
     provider: LLMProvider,
     store: Store,
-    config: Config | None = None,
-    on_progress: WikiProgressCallback | None = None,
+    config: Config,
+    on_progress: WikiProgressCallback | None,
 ) -> Path | None:
-    """Generate a wiki summary page for a source document.
-    Returns the path to the generated page, or None on failure.
-    The page goes to wiki/summaries/ if it passes the quality gate,
-    or wiki/drafts/ if it fails.
-    """
-    if config is None:
-        config = cfg
-    if not chunks:
-        log.warning("No chunks for source %s, skipping wiki generation", source_name)
-        return None
+    """Generate a single per-page leaf summary. Returns ``None`` if the page fails."""
+    trimmed = _truncate_chunks_to_budget(page_chunks, config)
+    chunks_text = _chunks_to_text(trimmed)
+    prompt = config.wiki_summary_prompt.format(source_name=source_name, chunks_text=chunks_text)
+    slug = _page_slug(source_slug, page_num)
 
-    chunks = _truncate_chunks_to_budget(chunks, config)
-    chunks_text = _chunks_to_text(chunks)
-    template = config.wiki_summary_prompt
-    prompt = template.format(source_name=source_name, chunks_text=chunks_text)
-    slug = source_name.replace("/", "--").rsplit(".", 1)[0]
-
-    source_path = config.documents_dir / source_name
-    source_hash = file_hash(source_path) if source_path.exists() else ""
-
-    def resolver(parsed: list[ParsedCitation]) -> list[CitationRecord]:
-        return _resolve_citations(parsed, source_name, source_hash, chunks)
+    def resolver(
+        parsed: list[ParsedCitation],
+        _chunks: list[SearchChunk] = trimmed,
+        _hash: str = source_hash,
+    ) -> list[CitationRecord]:
+        return _resolve_citations(parsed, source_name, _hash, _chunks)
 
     return _generate_page(
-        label=source_name,
+        label=f"{source_name} p{page_num}",
         prompt=prompt,
-        chunks=chunks,
+        chunks=trimmed,
         chunks_text=chunks_text,
         citation_resolver=resolver,
         page_type=SUMMARIES_SUBDIR,
@@ -502,6 +527,51 @@ def generate_summary_page(
         config=config,
         on_progress=on_progress,
     )
+
+
+def generate_summary_page(
+    source_name: str,
+    chunks: list[SearchChunk],
+    provider: LLMProvider,
+    store: Store,
+    config: Config | None = None,
+    on_progress: WikiProgressCallback | None = None,
+) -> list[Path]:
+    """Generate per-page wiki summary leaves for a source document.
+
+    Groups chunks by ``page_start`` and writes one summary per page at
+    ``wiki/summaries/<source>/page-NNNN.md``. Pages that miss the
+    faithfulness threshold are diverted to ``wiki/drafts/<source>/`` with
+    the same filename. Returns the list of generated paths (empty if the
+    source has no chunks or every page fails).
+    """
+    if config is None:
+        config = cfg
+    if not chunks:
+        log.warning("No chunks for source %s, skipping wiki generation", source_name)
+        return []
+
+    source_slug = _source_slug(source_name)
+    source_path = config.documents_dir / source_name
+    source_hash = file_hash(source_path) if source_path.exists() else ""
+
+    pages: list[Path] = []
+    for page_num, page_chunks in _group_chunks_by_page(chunks):
+        page_path = _generate_page_for_leaf(
+            source_name=source_name,
+            source_hash=source_hash,
+            page_num=page_num,
+            page_chunks=page_chunks,
+            source_slug=source_slug,
+            provider=provider,
+            store=store,
+            config=config,
+            on_progress=on_progress,
+        )
+        if page_path is not None:
+            pages.append(page_path)
+
+    return pages
 
 
 def _resolve_multi_source_citations(

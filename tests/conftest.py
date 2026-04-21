@@ -237,9 +237,8 @@ def make_citation(
 
 def write_wiki_page(tmp_path: Path, subdir: str, slug: str, content: str) -> Path:
     """Write a wiki page and return its path."""
-    wiki_root = tmp_path / "wiki" / subdir
-    wiki_root.mkdir(parents=True, exist_ok=True)
-    path = wiki_root / f"{slug}.md"
+    path = tmp_path / "wiki" / subdir / f"{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
 

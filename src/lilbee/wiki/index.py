@@ -61,11 +61,11 @@ def update_wiki_index(config: Config | None = None) -> Path:
         if not subdir_path.is_dir():
             continue
         page_type = SUBDIR_TO_TYPE[subdir]
-        for md_path in sorted(subdir_path.glob("*.md")):
+        for md_path in sorted(subdir_path.rglob("*.md")):
             text = md_path.read_text(encoding="utf-8")
             title = _parse_title(text) or md_path.stem.replace("-", " ").title()
             source_count = parse_source_count(text)
-            rel = f"{subdir}/{md_path.stem}"
+            rel = md_path.relative_to(root).with_suffix("").as_posix()
             lines.append(f"- [{title}]({rel}.md) | {page_type} | {source_count} sources")
 
     lines.append("")  # trailing newline

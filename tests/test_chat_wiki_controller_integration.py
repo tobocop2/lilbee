@@ -496,7 +496,10 @@ async def test_wiki_worker_process_source_returns_true_on_result(tmp_path: Path)
     svc.store.get_chunks_by_source.return_value = [MagicMock()]
     with (
         patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc),
-        patch("lilbee.wiki.gen.generate_summary_page", return_value=tmp_path / "out.md"),
+        patch(
+            "lilbee.wiki.gen.generate_summary_page",
+            return_value=[tmp_path / "out.md"],
+        ),
     ):
         assert _process_source("src.pdf", 0, 1, reporter, []) is True
 
@@ -525,7 +528,7 @@ async def test_wiki_worker_process_source_records_stage_errors(tmp_path: Path) -
 
     def fake_generate(source, chunks, provider, store, *, on_progress):
         on_progress("failed", {"error": "nope"})
-        return None
+        return []
 
     with (
         patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc),
@@ -546,7 +549,7 @@ async def test_wiki_worker_process_source_reports_other_stages(tmp_path: Path) -
 
     def fake_generate(source, chunks, provider, store, *, on_progress):
         on_progress("generating", {})
-        return tmp_path / "out.md"
+        return [tmp_path / "out.md"]
 
     with (
         patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc),

@@ -275,7 +275,7 @@ class TestWikiEnabled:
         from lilbee.wiki import gen as gen_mod
 
         monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: [])
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
         assert resp.status_code == 201
@@ -284,6 +284,7 @@ class TestWikiEnabled:
         done_events = [e for e in events if e[0] == "done"]
         assert len(done_events) == 1
         assert done_events[0][1]["status"] == "failed"
+        assert done_events[0][1]["paths"] == []
 
     async def test_generate_returns_sse_stream_success(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
@@ -292,8 +293,11 @@ class TestWikiEnabled:
         from lilbee.wiki import gen as gen_mod
 
         monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        page_path = isolated_env / "wiki" / "summaries" / "test.md"
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
+        pages = [
+            isolated_env / "wiki" / "summaries" / "test" / "page-0001.md",
+            isolated_env / "wiki" / "summaries" / "test" / "page-0002.md",
+        ]
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: pages)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
         assert resp.status_code == 201
@@ -303,6 +307,7 @@ class TestWikiEnabled:
         assert len(done_events) == 1
         assert done_events[0][1]["status"] == "generated"
         assert done_events[0][1]["source"] == "test.txt"
+        assert done_events[0][1]["paths"] == [str(p) for p in pages]
 
     async def test_generate_path_traversal_blocked(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -475,9 +480,9 @@ class TestWikiGenerateStream:
         from lilbee.server.handlers import wiki_generate_stream
         from lilbee.wiki import gen as gen_mod
 
-        page_path = isolated_env / "wiki" / "summaries" / "test.md"
+        page_path = isolated_env / "wiki" / "summaries" / "test" / "page-0001.md"
         monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: [page_path])
         cfg.wiki = True
         events = []
         async for chunk in wiki_generate_stream("test.txt"):
@@ -487,6 +492,7 @@ class TestWikiGenerateStream:
         done_events = [e for e in sse if e[0] == "done"]
         assert len(done_events) == 1
         assert done_events[0][1]["status"] == "generated"
+        assert done_events[0][1]["paths"] == [str(page_path)]
 
     async def test_stream_emits_done_failed_on_none(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
@@ -496,7 +502,7 @@ class TestWikiGenerateStream:
         from lilbee.wiki import gen as gen_mod
 
         monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: [])
         cfg.wiki = True
         events = []
         async for chunk in wiki_generate_stream("test.txt"):
@@ -539,7 +545,7 @@ class TestWikiGenerateStream:
             if cb:
                 cb("preparing", {"chunks": 5, "source": "test.txt"})
                 cb("generating", {"source": "test.txt"})
-            return Path(isolated_env / "wiki" / "summaries" / "test.md")
+            return [Path(isolated_env / "wiki" / "summaries" / "test" / "page-0001.md")]
 
         monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(gen_mod, "generate_summary_page", _fake_generate)

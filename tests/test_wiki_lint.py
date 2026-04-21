@@ -213,6 +213,29 @@ class TestLintAll:
         report = lint_all(store)
         assert report.issues == []
 
+    def test_lints_nested_per_source_pages(self, tmp_path: Path):
+        """Pages under per-source subdirectories (stage-1 layout) are lint-scanned."""
+        source = write_source(tmp_path, "cv-manual.pdf", "Content.")
+        write_wiki_page(
+            tmp_path,
+            "summaries",
+            "cv-manual/page-0001",
+            '> Content.[^src1]\n\n[^src1]: cv-manual.pdf, excerpt: "Content."\n',
+        )
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(
+                wiki_source="wiki/summaries/cv-manual/page-0001.md",
+                source_filename="cv-manual.pdf",
+                source_hash=source_hash(source),
+                excerpt="Content.",
+            )
+        ]
+        report = lint_all(store)
+        # Reverse lookup must have been called with the nested wiki_source key.
+        store.get_citations_for_wiki.assert_any_call("wiki/summaries/cv-manual/page-0001.md")
+        assert report.error_count == 0
+
 
 class TestPathTraversalDefense:
     def test_citation_with_traversal_path_returns_error(self, tmp_path: Path):

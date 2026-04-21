@@ -79,12 +79,12 @@ def _process_source(
     original_level = wiki_logger.level
     wiki_logger.setLevel(logging.ERROR)
     try:
-        result = generate_summary_page(
+        pages = generate_summary_page(
             source, chunks, svc.provider, svc.store, on_progress=_on_stage
         )
     finally:
         wiki_logger.setLevel(original_level)
-    return result is not None
+    return bool(pages)
 
 
 def generate_wiki_pages(sources: list[str], reporter: ProgressReporter) -> int:

@@ -296,6 +296,23 @@ class TestPruneWiki:
         report = prune_wiki(store)
         assert report.records == []
 
+    def test_prunes_nested_per_source_page(self, tmp_path: Path):
+        """Pages under per-source subdirectories (stage-1 layout) are reached by the prune scan."""
+        write_wiki_page(tmp_path, "summaries", "cv-manual/page-0001", "# P1\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(
+                wiki_source="wiki/summaries/cv-manual/page-0001.md",
+                source_filename="deleted.pdf",
+            ),
+        ]
+
+        report = prune_wiki(store)
+
+        assert report.archived_count == 1
+        # The reverse lookup key must use the nested wiki_source string.
+        store.get_citations_for_wiki.assert_called_with("wiki/summaries/cv-manual/page-0001.md")
+
     def test_healthy_page_not_pruned(self, tmp_path: Path):
         source = write_source(tmp_path, "doc.md", "Good content here.")
         write_wiki_page(

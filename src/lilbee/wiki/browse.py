@@ -137,18 +137,28 @@ def find_page(wiki_root: Path, slug: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _list_md_files_recursive(directory: Path) -> list[Path]:
+    """Sorted markdown files under *directory* at any depth."""
+    if not directory.is_dir():
+        return []
+    return sorted(directory.rglob("*.md"))
+
+
 def list_pages(wiki_root: Path) -> list[WikiPageInfo]:
-    """List all wiki pages from summaries/ and synthesis/ subdirectories."""
+    """List all wiki pages under summaries/ and synthesis/ at any nesting depth."""
     pages: list[WikiPageInfo] = []
     for subdir in WIKI_CONTENT_SUBDIRS:
-        for path in list_md_files(wiki_root / subdir):
+        for path in _list_md_files_recursive(wiki_root / subdir):
             pages.append(build_page_info(path, wiki_root))
     return pages
 
 
 def list_draft_pages(wiki_root: Path) -> list[WikiPageInfo]:
-    """List draft pages that failed the quality gate."""
-    return [build_page_info(path, wiki_root) for path in list_md_files(wiki_root / DRAFTS_SUBDIR)]
+    """List draft pages that failed the quality gate (recurses into per-source dirs)."""
+    return [
+        build_page_info(path, wiki_root)
+        for path in _list_md_files_recursive(wiki_root / DRAFTS_SUBDIR)
+    ]
 
 
 def read_page(wiki_root: Path, slug: str) -> WikiPageContent | None:

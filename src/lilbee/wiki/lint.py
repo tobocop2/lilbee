@@ -238,9 +238,9 @@ def lint_all(
         subdir_path = wiki_root / subdir
         if not subdir_path.is_dir():
             continue
-        for md_path in sorted(subdir_path.glob("*.md")):
+        for md_path in sorted(subdir_path.rglob("*.md")):
             relative = md_path.relative_to(wiki_root)
-            wiki_source = f"{config.wiki_dir}/{relative}"
+            wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
             report.issues.extend(lint_wiki_page(wiki_source, store, config))
 
     return report

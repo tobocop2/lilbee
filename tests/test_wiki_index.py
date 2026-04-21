@@ -138,6 +138,15 @@ class TestUpdateWikiIndex:
         path = update_wiki_index(config=cfg)
         assert path.exists()
 
+    def test_lists_nested_per_source_pages(self, isolated_env: Path):
+        """Pages under per-source subdirectories (stage-1 layout) are listed with nested slugs."""
+        write_wiki_page(isolated_env, "summaries", "cv-manual/page-0001", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "cv-manual/page-0042", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "[My Document](summaries/cv-manual/page-0001.md)" in content
+        assert "[My Document](summaries/cv-manual/page-0042.md)" in content
+
 
 class TestAppendWikiLog:
     def test_creates_log_file(self, isolated_env: Path):

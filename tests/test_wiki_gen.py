@@ -19,10 +19,13 @@ from lilbee.wiki.gen import (
     _extract_excerpt,
     _find_excerpt_source,
     _generate_synthesis_page,
+    _group_chunks_by_page,
     _match_citation_source,
+    _page_slug,
     _parse_faithfulness_score,
     _resolve_citations,
     _resolve_multi_source_citations,
+    _source_slug,
     _truncate_chunks_to_budget,
     _verify_citations,
     generate_summary_page,
@@ -303,10 +306,11 @@ class TestGenerateSummaryPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        result = pages[0]
         assert result.exists()
-        assert "summaries" in str(result)
+        assert "summaries/doc/page-0000.md" in str(result).replace("\\", "/")
         content = result.read_text()
         assert "generated_by: test-model" in content
         assert "faithfulness_score: 0.85" in content
@@ -327,18 +331,18 @@ class TestGenerateSummaryPage:
         provider = _mock_provider(wiki_text, faith_score="0.3")
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        assert "drafts/doc/page-0000.md" in str(pages[0]).replace("\\", "/")
 
-    def test_empty_chunks_returns_none(self):
+    def test_empty_chunks_returns_empty_list(self):
         provider = MagicMock()
         store = _mock_store()
-        result = generate_summary_page("doc.md", [], provider, store)
-        assert result is None
+        pages = generate_summary_page("doc.md", [], provider, store)
+        assert pages == []
         provider.chat.assert_not_called()
 
-    def test_llm_failure_returns_none(self, tmp_path: Path):
+    def test_llm_failure_returns_empty_list(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content")
         chunks = [_make_chunk("Content")]
@@ -346,10 +350,10 @@ class TestGenerateSummaryPage:
         provider.chat.side_effect = ConnectionError("LLM down")
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert pages == []
 
-    def test_no_valid_citations_returns_none(self, tmp_path: Path):
+    def test_no_valid_citations_returns_empty_list(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content")
         chunks = [_make_chunk("Content")]
@@ -364,8 +368,8 @@ class TestGenerateSummaryPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert pages == []
 
     def test_no_valid_citations_emits_failed_progress(self, tmp_path: Path):
         """Progress callback receives 'failed' stage when no citations verify."""
@@ -408,9 +412,9 @@ class TestGenerateSummaryPage:
         provider.chat.side_effect = [wiki_text, ConnectionError("LLM down")]
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)  # score=0.0 < threshold=0.7
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        assert "drafts" in str(pages[0])  # score=0.0 < threshold=0.7
 
     def test_llm_returns_empty_string(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
@@ -419,11 +423,11 @@ class TestGenerateSummaryPage:
         provider = _mock_provider("   ")  # whitespace-only -> empty after strip
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert pages == []
 
-    def test_provider_error_returns_none(self, tmp_path: Path):
-        """ProviderError from chat() is caught and returns None."""
+    def test_provider_error_returns_empty_list(self, tmp_path: Path):
+        """ProviderError from chat() is caught and returns an empty list."""
         from lilbee.providers.base import ProviderError
 
         source = tmp_path / "documents" / "doc.md"
@@ -433,10 +437,10 @@ class TestGenerateSummaryPage:
         provider.chat.side_effect = ProviderError("model not found", provider="litellm")
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert pages == []
 
-    def test_unexpected_exception_returns_none(self, tmp_path: Path):
+    def test_unexpected_exception_returns_empty_list(self, tmp_path: Path):
         """Unexpected exceptions (ValueError, KeyError, etc.) are caught."""
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content")
@@ -445,8 +449,8 @@ class TestGenerateSummaryPage:
         provider.chat.side_effect = ValueError("context window exceeded")
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert pages == []
 
     def test_llm_failure_emits_failed_progress(self, tmp_path: Path):
         """Progress callback receives 'failed' stage with error on LLM failure."""
@@ -505,9 +509,9 @@ class TestGenerateSummaryPage:
         ]
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)  # score=0.0 < threshold=0.7
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        assert "drafts" in str(pages[0])  # score=0.0 < threshold=0.7
 
     def test_inference_citations_pass_verification(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
@@ -524,8 +528,8 @@ class TestGenerateSummaryPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
         store.add_citations.assert_called_once()
 
     def test_prune_raw_deletes_source_chunks(self, tmp_path: Path):
@@ -544,8 +548,8 @@ class TestGenerateSummaryPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
         store.delete_by_source.assert_called_once_with("doc.md")
 
     def test_citations_cleared_before_adding(self, tmp_path: Path):
@@ -583,12 +587,156 @@ class TestGenerateSummaryPage:
         provider = _mock_provider(wiki_text_with_think)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        content = result.read_text()
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        content = pages[0].read_text()
         assert "<think>" not in content
         assert "Let me reason" not in content
         assert "# Doc Summary" in content
+
+    def test_multi_page_source_produces_one_file_per_page(self, tmp_path: Path):
+        source = tmp_path / "documents" / "doc.pdf"
+        source.write_text("Two pages of content.")
+        chunks = [
+            _make_chunk("Alpha page one.", page_start=1, page_end=1, chunk_index=0),
+            _make_chunk("Alpha page one.", page_start=1, page_end=1, chunk_index=1),
+            _make_chunk("Beta page two.", page_start=2, page_end=2, chunk_index=2),
+        ]
+        wiki_p1 = (
+            "# P1\n\n"
+            "> Alpha page one.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.pdf, excerpt: "Alpha page one."'
+        )
+        wiki_p2 = (
+            "# P2\n\n"
+            "> Beta page two.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.pdf, excerpt: "Beta page two."'
+        )
+        provider = MagicMock()
+        provider.chat.side_effect = [wiki_p1, "0.9", wiki_p2, "0.9"]
+        store = _mock_store()
+
+        pages = generate_summary_page("doc.pdf", chunks, provider, store)
+        assert len(pages) == 2
+        paths = {str(p).replace("\\", "/") for p in pages}
+        assert any("summaries/doc/page-0001.md" in p for p in paths)
+        assert any("summaries/doc/page-0002.md" in p for p in paths)
+
+    def test_partial_multi_page_failure_returns_successful_pages(self, tmp_path: Path):
+        """One failing page doesn't drop the rest of the source."""
+        source = tmp_path / "documents" / "doc.pdf"
+        source.write_text("Two pages of content.")
+        chunks = [
+            _make_chunk("Alpha page one.", page_start=1, page_end=1, chunk_index=0),
+            _make_chunk("Beta page two.", page_start=2, page_end=2, chunk_index=1),
+        ]
+        wiki_p1 = (
+            "# P1\n\n"
+            "> Alpha page one.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.pdf, excerpt: "Alpha page one."'
+        )
+        # Page 2's model call returns empty, which skips that page.
+        provider = MagicMock()
+        provider.chat.side_effect = [wiki_p1, "0.9", "   "]
+        store = _mock_store()
+
+        pages = generate_summary_page("doc.pdf", chunks, provider, store)
+        assert len(pages) == 1
+        assert "summaries/doc/page-0001.md" in str(pages[0]).replace("\\", "/")
+
+    def test_same_page_chunks_collapse_into_single_file(self, tmp_path: Path):
+        """Two chunks sharing page_start produce exactly one page file."""
+        source = tmp_path / "documents" / "doc.pdf"
+        source.write_text("Two chunks on one page.")
+        chunks = [
+            _make_chunk("Same page fact.", page_start=3, page_end=3, chunk_index=0),
+            _make_chunk("Same page fact.", page_start=3, page_end=3, chunk_index=1),
+        ]
+        wiki_text = (
+            "# Page three\n\n"
+            "> Same page fact.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.pdf, excerpt: "Same page fact."'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        pages = generate_summary_page("doc.pdf", chunks, provider, store)
+        assert len(pages) == 1
+        assert "summaries/doc/page-0003.md" in str(pages[0]).replace("\\", "/")
+
+
+class TestGroupChunksByPage:
+    def test_empty_returns_empty(self):
+        assert _group_chunks_by_page([]) == []
+
+    def test_single_page_preserves_chunk_order(self):
+        chunks = [
+            _make_chunk("a", page_start=1, chunk_index=0),
+            _make_chunk("b", page_start=1, chunk_index=1),
+        ]
+        result = _group_chunks_by_page(chunks)
+        assert len(result) == 1
+        page_num, group = result[0]
+        assert page_num == 1
+        assert [c.chunk for c in group] == ["a", "b"]
+
+    def test_sorts_by_page_number(self):
+        chunks = [
+            _make_chunk("z", page_start=5, chunk_index=0),
+            _make_chunk("a", page_start=1, chunk_index=1),
+            _make_chunk("m", page_start=3, chunk_index=2),
+        ]
+        result = _group_chunks_by_page(chunks)
+        assert [page for page, _ in result] == [1, 3, 5]
+
+    def test_non_contiguous_pages_kept_separately(self):
+        chunks = [
+            _make_chunk("a", page_start=1, chunk_index=0),
+            _make_chunk("b", page_start=7, chunk_index=1),
+        ]
+        result = _group_chunks_by_page(chunks)
+        assert [page for page, _ in result] == [1, 7]
+
+    def test_non_paginated_source_single_bucket(self):
+        """Chunks with page_start=0 (markdown, code, HTML) collapse to one entry."""
+        chunks = [_make_chunk(f"c{i}", chunk_index=i) for i in range(4)]
+        result = _group_chunks_by_page(chunks)
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert len(result[0][1]) == 4
+
+
+class TestPageSlug:
+    def test_zero_padded_width_four(self):
+        assert _page_slug("cv-manual", 1) == "cv-manual/page-0001"
+
+    def test_page_zero(self):
+        assert _page_slug("doc", 0) == "doc/page-0000"
+
+    def test_large_page_number(self):
+        assert _page_slug("book", 12345) == "book/page-12345"
+
+    def test_preserves_double_dash_in_source_slug(self):
+        assert _page_slug("nested--source", 42) == "nested--source/page-0042"
+
+
+class TestSourceSlug:
+    def test_strips_extension(self):
+        assert _source_slug("cv-manual.pdf") == "cv-manual"
+
+    def test_replaces_slash_with_double_dash(self):
+        assert _source_slug("folder/doc.md") == "folder--doc"
+
+    def test_no_extension_kept(self):
+        assert _source_slug("README") == "README"
 
 
 class TestMakeSlug:
@@ -990,15 +1138,14 @@ class TestSummaryDriftDetection:
     """Drift detection during summary page regeneration."""
 
     def test_drift_diverts_to_drafts(self, tmp_path: Path):
-        """When >30% of content changes, new version goes to drafts."""
+        """When >30% of content changes on a regeneration, the new version goes to drafts."""
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Python supports gradual typing.")
         chunks = [_make_chunk("Python supports gradual typing.")]
 
-        # Write an existing page with very different content
-        wiki_root = tmp_path / "wiki" / "summaries"
-        wiki_root.mkdir(parents=True)
-        existing = wiki_root / "doc.md"
+        # Pre-seed the per-page file at its new tree location with wildly different content.
+        existing = tmp_path / "wiki" / "summaries" / "doc" / "page-0000.md"
+        existing.parent.mkdir(parents=True)
         existing.write_text("---\ngenerated_by: old-model\n---\n\nCompletely different content.\n")
 
         wiki_text = (
@@ -1011,13 +1158,13 @@ class TestSummaryDriftDetection:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)
-        # Original page should be unchanged
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        assert "drafts" in str(pages[0])
+        # Original page should be unchanged.
         assert "Completely different content" in existing.read_text()
-        # Draft should have drift note
-        draft_text = result.read_text()
+        # Draft should have drift note.
+        draft_text = pages[0].read_text()
         assert "DRIFT" in draft_text
 
     def test_small_change_overwrites(self, tmp_path: Path):
@@ -1034,23 +1181,22 @@ class TestSummaryDriftDetection:
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
 
-        # Write an existing page with nearly identical content (only timestamp differs)
         provider = _mock_provider(wiki_text, faith_score="0.85")
         store = _mock_store()
 
         # First generation
-        result1 = generate_summary_page("doc.md", chunks, provider, store)
-        assert result1 is not None
-        assert "summaries" in str(result1)
+        pages1 = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages1) == 1
+        assert "summaries" in str(pages1[0])
 
-        # Regenerate with same content — provider returns same text
+        # Regenerate with same content; provider returns same text.
         provider2 = _mock_provider(wiki_text, faith_score="0.85")
         store2 = _mock_store()
-        result2 = generate_summary_page("doc.md", chunks, provider2, store2)
-        # Small diff (only timestamp) should overwrite, not divert
-        assert result2 is not None
-        # Should still be in summaries (not drafts) since content is nearly identical
-        assert "summaries" in str(result2)
+        pages2 = generate_summary_page("doc.md", chunks, provider2, store2)
+        # Small diff (only timestamp) should overwrite, not divert.
+        assert len(pages2) == 1
+        # Should still be in summaries (not drafts) since content is nearly identical.
+        assert "summaries" in str(pages2[0])
 
 
 class TestSynthesisDriftDetection:
@@ -1108,8 +1254,8 @@ class TestProgressCallback:
         def on_progress(stage: str, data: dict) -> None:
             stages.append(stage)
 
-        result = generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
-        assert result is not None
+        pages = generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        assert len(pages) == 1
         assert "preparing" in stages
         assert "generating" in stages
         assert "faithfulness_check" in stages
@@ -1130,5 +1276,5 @@ class TestProgressCallback:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = generate_summary_page("doc.md", chunks, provider, store, on_progress=None)
-        assert result is not None
+        pages = generate_summary_page("doc.md", chunks, provider, store, on_progress=None)
+        assert len(pages) == 1

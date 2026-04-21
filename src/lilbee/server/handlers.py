@@ -811,7 +811,7 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         return
 
     sse = SseStream()
-    result_holder: list[Path | None] = []
+    result_holder: list[list[Path]] = []
     error_holder: list[str] = []
 
     def _on_progress(stage: str, data: dict[str, object]) -> None:
@@ -840,9 +840,9 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
     if error_holder:
         yield sse_error(error_holder[0])
     elif not sse.cancel.is_set() and not task.cancelled():
-        path = str(result_holder[0]) if result_holder and result_holder[0] is not None else None
-        status = "generated" if path else "failed"
-        yield sse_done({"status": status, "source": source, "path": path or ""})
+        paths = [str(p) for p in result_holder[0]] if result_holder else []
+        status = "generated" if paths else "failed"
+        yield sse_done({"status": status, "source": source, "paths": paths})
 
 
 _EXTERNAL_MODELS_TTL = 60
