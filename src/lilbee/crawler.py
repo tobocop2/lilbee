@@ -627,6 +627,29 @@ _SITEMAP_MAX_URLS = 10_000
 _SITEMAP_URL_TAG_RE = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.IGNORECASE)
 
 
+def _host_in_scope(link_host: str, host: str, *, include_subdomains: bool) -> bool:
+    if not link_host:
+        return False
+    if link_host == host:
+        return True
+    return include_subdomains and link_host.endswith(f".{host}")
+
+
+def _fetch_sitemap_text(start_url: str) -> str | None:
+    """Return sitemap.xml body or None on any fetch/status failure."""
+    import httpx
+
+    parsed = urlparse(start_url)
+    sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+    try:
+        resp = httpx.get(sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+    except (httpx.HTTPError, OSError):
+        return None
+    if resp.status_code >= 400:
+        return None
+    return resp.text
+
+
 def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
     """Best-effort count of URLs in the host's /sitemap.xml that match the crawl scope.
 
@@ -637,31 +660,17 @@ def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
     Only fetches sitemap.xml directly at the root of the starting host; does
     not follow robots.txt references or nested sitemap indexes.
     """
-    import httpx
-
-    parsed = urlparse(start_url)
-    host = (parsed.hostname or "").lower()
+    host = (urlparse(start_url).hostname or "").lower()
     if not host:
         return CRAWL_TOTAL_UNKNOWN
-    sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
-    try:
-        resp = httpx.get(sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=True)
-    except (httpx.HTTPError, OSError):
-        return CRAWL_TOTAL_UNKNOWN
-    if resp.status_code >= 400:
+    text = _fetch_sitemap_text(start_url)
+    if text is None:
         return CRAWL_TOTAL_UNKNOWN
 
     count = 0
-    for match in _SITEMAP_URL_TAG_RE.finditer(resp.text):
-        candidate = match.group(1).strip()
-        link_host = (urlparse(candidate).hostname or "").lower()
-        if not link_host:
-            continue
-        if include_subdomains:
-            matches = link_host == host or link_host.endswith(f".{host}")
-        else:
-            matches = link_host == host
-        if matches:
+    for match in _SITEMAP_URL_TAG_RE.finditer(text):
+        link_host = (urlparse(match.group(1).strip()).hostname or "").lower()
+        if _host_in_scope(link_host, host, include_subdomains=include_subdomains):
             count += 1
         if count >= _SITEMAP_MAX_URLS:
             break

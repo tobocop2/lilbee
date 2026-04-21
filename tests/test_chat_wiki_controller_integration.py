@@ -259,6 +259,49 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
         assert reporter.update.call_count >= 1
 
 
+def test_do_crawl_reports_setup_progress() -> None:
+    """_do_crawl wires SETUP_START and SETUP_PROGRESS through reporter.update."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.progress import EventType, SetupProgressEvent
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    async def fake_crawl(
+        url, *, depth, max_pages, on_progress, quiet=False, include_subdomains=False
+    ):
+        on_progress(EventType.SETUP_START, object())
+        on_progress(
+            EventType.SETUP_PROGRESS,
+            SetupProgressEvent(
+                component="chromium", downloaded_bytes=5_000_000, total_bytes=10_000_000
+            ),
+        )
+        on_progress(
+            EventType.SETUP_PROGRESS,
+            SetupProgressEvent(component="chromium", downloaded_bytes=1_000_000, total_bytes=None),
+        )
+        return []
+
+    exc: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+            with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
+                screen._do_crawl("https://x", 0, 2, reporter)
+        except BaseException as e:  # pragma: no cover - re-raised
+            exc.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not exc, f"worker raised: {exc[0]}"
+    assert reporter.update.call_count >= 3
+
+
 def test_do_crawl_reports_page_progress() -> None:
     """_do_crawl wires CrawlPageEvent through reporter.update.
 
