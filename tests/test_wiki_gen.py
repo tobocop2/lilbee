@@ -17,9 +17,11 @@ from lilbee.wiki.gen import (
     _diff_summary,
     _divert_to_drafts,
     _extract_excerpt,
+    _find_cached_leaf,
     _find_excerpt_source,
     _generate_synthesis_page,
     _group_chunks_by_page,
+    _leaf_hash,
     _match_citation_source,
     _page_slug,
     _parse_faithfulness_score,
@@ -672,6 +674,96 @@ class TestGenerateSummaryPage:
         assert len(pages) == 1
         assert "summaries/doc/page-0003.md" in str(pages[0]).replace("\\", "/")
 
+    def test_frontmatter_carries_leaf_hash(self, tmp_path: Path):
+        """Fresh generation writes leaf_hash so next rebuild can cache-hit."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        pages = generate_summary_page("doc.md", chunks, provider, store)
+        assert len(pages) == 1
+        content = pages[0].read_text(encoding="utf-8")
+        expected = _leaf_hash(chunks)
+        assert f"leaf_hash: {expected}" in content
+
+    def test_unchanged_chunks_skip_llm_on_rerun(self, tmp_path: Path):
+        """Second sync with the same chunks hits the cache and does not call the provider."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider1 = _mock_provider(wiki_text)
+        store = _mock_store()
+        first = generate_summary_page("doc.md", chunks, provider1, store)
+        assert len(first) == 1
+        first_path = first[0]
+
+        # Second run: fresh provider that would blow up if asked to generate.
+        provider2 = MagicMock()
+        provider2.chat.side_effect = AssertionError("should not be called on cache hit")
+        store2 = _mock_store()
+        stages: list[str] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            stages.append(stage)
+
+        second = generate_summary_page("doc.md", chunks, provider2, store2, on_progress=on_progress)
+        assert second == [first_path]
+        provider2.chat.assert_not_called()
+        store2.add_citations.assert_not_called()
+        assert "cached" in stages
+
+    def test_changed_chunks_invalidate_cache(self, tmp_path: Path):
+        """If chunk content changes, the provider is called again."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Original content.")
+        chunks1 = [_make_chunk("Original fact.")]
+
+        wiki_text1 = (
+            "# V1\n\n"
+            "> Original fact.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Original fact."'
+        )
+        generate_summary_page("doc.md", chunks1, _mock_provider(wiki_text1), _mock_store())
+
+        chunks2 = [_make_chunk("Edited fact.")]
+        wiki_text2 = (
+            "# V2\n\n"
+            "> Edited fact.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Edited fact."'
+        )
+        provider2 = _mock_provider(wiki_text2)
+        store2 = _mock_store()
+
+        pages = generate_summary_page("doc.md", chunks2, provider2, store2)
+        assert len(pages) == 1
+        # Provider got both the generate and faithfulness calls.
+        assert provider2.chat.call_count == 2
+        content = pages[0].read_text(encoding="utf-8")
+        assert "Edited fact." in content
+        assert f"leaf_hash: {_leaf_hash(chunks2)}" in content
+
 
 class TestGroupChunksByPage:
     def test_empty_returns_empty(self):
@@ -726,6 +818,68 @@ class TestPageSlug:
 
     def test_preserves_double_dash_in_source_slug(self):
         assert _page_slug("nested--source", 42) == "nested--source/page-0042"
+
+
+class TestLeafHash:
+    def test_empty_returns_hash_of_empty(self):
+        """Deterministic hash even for no chunks."""
+        h = _leaf_hash([])
+        assert isinstance(h, str)
+        assert len(h) == 64  # sha256 hex digest
+
+    def test_same_chunks_same_hash(self):
+        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
+        b = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
+        assert _leaf_hash(a) == _leaf_hash(b)
+
+    def test_order_sensitive(self):
+        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
+        b = [_make_chunk("two", chunk_index=1), _make_chunk("one")]
+        assert _leaf_hash(a) != _leaf_hash(b)
+
+    def test_content_change_changes_hash(self):
+        a = [_make_chunk("one")]
+        b = [_make_chunk("two")]
+        assert _leaf_hash(a) != _leaf_hash(b)
+
+    def test_null_separator_prevents_concat_collision(self):
+        """Chunk boundaries must affect the hash, not just the concatenated bytes."""
+        a = [_make_chunk("ab"), _make_chunk("c", chunk_index=1)]
+        b = [_make_chunk("a"), _make_chunk("bc", chunk_index=1)]
+        assert _leaf_hash(a) != _leaf_hash(b)
+
+
+class TestFindCachedLeaf:
+    def _write(self, tmp_path: Path, subdir: str, slug: str, leaf_hash: str) -> Path:
+        path = tmp_path / subdir / f"{slug}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fm = f"---\nleaf_hash: {leaf_hash}\n---\nBody.\n" if leaf_hash else "Body.\n"
+        path.write_text(fm, encoding="utf-8")
+        return path
+
+    def test_no_file_returns_none(self, tmp_path: Path):
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "h") is None
+
+    def test_returns_summaries_path_on_match(self, tmp_path: Path):
+        p = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
+
+    def test_returns_drafts_path_on_match(self, tmp_path: Path):
+        p = self._write(tmp_path, "drafts", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
+
+    def test_summaries_wins_when_both_match(self, tmp_path: Path):
+        s = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
+        self._write(tmp_path, "drafts", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == s
+
+    def test_mismatch_returns_none(self, tmp_path: Path):
+        self._write(tmp_path, "summaries", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "different") is None
+
+    def test_missing_hash_in_frontmatter_is_not_a_match(self, tmp_path: Path):
+        self._write(tmp_path, "summaries", "src/page-0001", "")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") is None
 
 
 class TestSourceSlug:

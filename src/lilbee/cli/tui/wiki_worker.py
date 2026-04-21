@@ -22,11 +22,14 @@ WIKI_STAGE_PREPARING = "preparing"
 WIKI_STAGE_GENERATING = "generating"
 WIKI_STAGE_FAITHFULNESS = "faithfulness_check"
 WIKI_STAGE_FAILED = "failed"
+WIKI_STAGE_CACHED = "cached"
 
 WIKI_STAGE_FRACTIONS: dict[str, float] = {
     WIKI_STAGE_PREPARING: 0.0,
     WIKI_STAGE_GENERATING: 0.33,
     WIKI_STAGE_FAITHFULNESS: 0.67,
+    # Cache hit bypasses generation; jump straight to done-for-this-leaf.
+    WIKI_STAGE_CACHED: 1.0,
 }
 
 

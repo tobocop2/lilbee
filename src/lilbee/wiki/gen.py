@@ -9,6 +9,7 @@ _citations table is the source of truth; markdown footnotes are rendered from it
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ from lilbee.wiki.shared import (
     SYNTHESIS_SUBDIR,
     PageTarget,
     make_slug,
+    parse_frontmatter,
 )
 
 log = logging.getLogger(__name__)
@@ -111,6 +113,36 @@ def _group_chunks_by_page(
 def _page_slug(source_slug: str, page_num: int) -> str:
     """Build a per-page slug of the form ``<source>/page-NNNN``."""
     return f"{source_slug}/page-{page_num:0{_PAGE_SLUG_WIDTH}d}"
+
+
+def _leaf_hash(chunks: list[SearchChunk]) -> str:
+    """SHA-256 over concatenated chunk content (null-separated, in given order).
+
+    Acts as the cache key for incremental rebuild: an existing page whose
+    frontmatter ``leaf_hash`` matches this value has already summarized the
+    exact same input and can be reused without a new LLM call.
+    """
+    h = hashlib.sha256()
+    for chunk in chunks:
+        h.update(chunk.chunk.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _find_cached_leaf(wiki_root: Path, slug: str, leaf_hash: str) -> Path | None:
+    """Return an existing page whose ``leaf_hash`` frontmatter matches, or ``None``.
+
+    Checks both ``summaries/`` and ``drafts/`` so an unchanged draft stays in
+    drafts rather than triggering a speculative regeneration.
+    """
+    for subdir in (SUMMARIES_SUBDIR, DRAFTS_SUBDIR):
+        candidate = wiki_root / subdir / f"{slug}.md"
+        if not candidate.is_file():
+            continue
+        fm = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+        if fm.get("leaf_hash") == leaf_hash:
+            return candidate
+    return None
 
 
 def _chunks_to_text(chunks: list[SearchChunk]) -> str:
@@ -325,15 +357,22 @@ def _build_frontmatter(
     config: Config,
     source_names: list[str],
     score: float,
+    leaf_hash: str = "",
 ) -> str:
-    """Build YAML frontmatter for a wiki page."""
+    """Build YAML frontmatter for a wiki page.
+
+    When ``leaf_hash`` is non-empty it is written so incremental rebuild can
+    skip regeneration on a subsequent sync whose chunks produce the same hash.
+    """
     sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
+    hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
         f"generated_at: {datetime.now(UTC).isoformat()}\n"
         f"sources: [{sources_yaml}]\n"
         f"faithfulness_score: {score:.2f}\n"
+        f"{hash_line}"
         f"---\n\n"
     )
 
@@ -420,6 +459,7 @@ def _generate_page(
     store: Store,
     config: Config,
     on_progress: WikiProgressCallback | None = None,
+    leaf_hash: str = "",
 ) -> Path | None:
     """Core generation pipeline shared by summary and synthesis pages."""
 
@@ -459,7 +499,7 @@ def _generate_page(
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)
-    frontmatter = _build_frontmatter(config, source_names, score)
+    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash)
     citation_block = render_citation_block(verified)
     full_content = _assemble_content(frontmatter, wiki_text, citation_block)
 
@@ -501,10 +541,20 @@ def _generate_page_for_leaf(
     on_progress: WikiProgressCallback | None,
 ) -> Path | None:
     """Generate a single per-page leaf summary. Returns ``None`` if the page fails."""
+    slug = _page_slug(source_slug, page_num)
+    leaf_hash = _leaf_hash(page_chunks)
+
+    wiki_root = config.data_root / config.wiki_dir
+    cached = _find_cached_leaf(wiki_root, slug, leaf_hash)
+    if cached is not None:
+        log.info("Wiki leaf %s unchanged (hash match), skipping", slug)
+        if on_progress is not None:
+            on_progress("cached", {"source": f"{source_name} p{page_num}", "slug": slug})
+        return cached
+
     trimmed = _truncate_chunks_to_budget(page_chunks, config)
     chunks_text = _chunks_to_text(trimmed)
     prompt = config.wiki_summary_prompt.format(source_name=source_name, chunks_text=chunks_text)
-    slug = _page_slug(source_slug, page_num)
 
     def resolver(
         parsed: list[ParsedCitation],
@@ -526,6 +576,7 @@ def _generate_page_for_leaf(
         store=store,
         config=config,
         on_progress=on_progress,
+        leaf_hash=leaf_hash,
     )
 
 
