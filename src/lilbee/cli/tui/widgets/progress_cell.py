@@ -29,3 +29,14 @@ def indeterminate_cell(tick: int, width: int = _BAR_WIDTH) -> str:
         if 0 <= i < width:
             cells[i] = _FULL
     return "".join(cells) + "   ···"
+
+
+def frozen_indeterminate_cell(width: int = _BAR_WIDTH) -> str:
+    """Render a non-animating indeterminate bar for terminal-state rows.
+
+    The bar is fully filled and trailing dots are dropped so the row no
+    longer reads as 'work in progress' once the task has finished
+    (bb-j3q2). The trailing percentage is omitted because an
+    indeterminate task never had a real percentage to report.
+    """
+    return _FULL * width

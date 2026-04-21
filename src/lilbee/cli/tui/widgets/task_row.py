@@ -19,7 +19,11 @@ from textual.widgets import Label, Static
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.task_queue import Task, TaskStatus, TaskType
-from lilbee.cli.tui.widgets.progress_cell import indeterminate_cell, progress_cell
+from lilbee.cli.tui.widgets.progress_cell import (
+    frozen_indeterminate_cell,
+    indeterminate_cell,
+    progress_cell,
+)
 
 # ~1.7 Hz rail pulse at a 10 Hz poll cadence = 3 ticks on, 3 off.
 # Faster cadence than the original 1 Hz makes 'something is happening'
@@ -160,7 +164,12 @@ class TaskRow(Widget, can_focus=True):
         meta.update("  ".join(p for p in meta_parts if p))
 
         if task.indeterminate:
-            bar.update(indeterminate_cell(tick))
+            # Terminal rows freeze the bar so a cancelled/failed/done
+            # task doesn't keep reading as live work (bb-j3q2).
+            if task.status in _TERMINAL_STATUSES:
+                bar.update(frozen_indeterminate_cell())
+            else:
+                bar.update(indeterminate_cell(tick))
         else:
             bar.update(progress_cell(task.progress))
 

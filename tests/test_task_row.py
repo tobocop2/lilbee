@@ -186,6 +186,33 @@ async def test_update_uses_indeterminate_cell_when_flagged() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_freezes_indeterminate_bar_in_terminal_states() -> None:
+    """bb-j3q2: once a row goes CANCELLED/FAILED, the indeterminate bar
+    stops animating. Successive ticks render the same static bar."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one("#host", VerticalScroll)
+        row = TaskRow("t1")
+        await host.mount(row)
+        for _ in range(3):
+            await pilot.pause()
+        bar_widget = row.query_one("#row-bar")
+
+        for status in (TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.DONE):
+            row.update(_task(indeterminate=True, status=status), 0)
+            frame_a = str(bar_widget._Static__content)  # type: ignore[attr-defined]
+            row.update(_task(indeterminate=True, status=status), 7)
+            frame_b = str(bar_widget._Static__content)  # type: ignore[attr-defined]
+            assert frame_a == frame_b, (
+                f"{status.value} indeterminate row still animates across ticks"
+            )
+            # Frozen bars have no trailing dots (that reads as 'still
+            # working') and no percentage (indeterminate never had one).
+            assert "···" not in frame_a
+            assert "%" not in frame_a
+
+
+@pytest.mark.asyncio
 async def test_update_shows_state_classes_for_every_status() -> None:
     app = _Host()
     async with app.run_test() as pilot:
