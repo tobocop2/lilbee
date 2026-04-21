@@ -1,6 +1,7 @@
 """Tests for the web crawling module."""
 
 import asyncio
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -924,9 +925,11 @@ class TestCrawlRecursive:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
-            with pytest.raises(CrawlerBrowserMissing, match="chromium gone"):
-                await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            pytest.raises(CrawlerBrowserMissing, match="chromium gone"),
+        ):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
 
     async def test_propagates_crawler_browser_missing(self, monkeypatch):
         """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
@@ -951,10 +954,47 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1)
 
 
+class _StubURLFilter:
+    def __init__(self) -> None:
+        self.stats = MagicMock()
+
+    def _update_stats(self, passed: bool) -> None:
+        pass
+
+    def apply(self, url: str) -> bool:
+        return True
+
+
+class _StubDomainFilter(_StubURLFilter):
+    def __init__(self, allowed_domains: str) -> None:
+        super().__init__()
+        self.allowed_domains = allowed_domains
+
+    def apply(self, url: str) -> bool:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+        allowed = self.allowed_domains.lower()
+        return host == allowed or host.endswith(f".{allowed}")
+
+
+@pytest.fixture
+def _stub_crawl4ai_filters(monkeypatch):
+    """Make ``crawl4ai.deep_crawling.filters`` importable with minimal stand-ins.
+
+    CI installs without the ``crawler`` extra, so ``_host_scope_filter``'s inline
+    ``from crawl4ai.deep_crawling.filters import ...`` would raise ImportError.
+    """
+    stub = MagicMock(URLFilter=_StubURLFilter, DomainFilter=_StubDomainFilter)
+    monkeypatch.setitem(sys.modules, "crawl4ai", MagicMock())
+    monkeypatch.setitem(sys.modules, "crawl4ai.deep_crawling", MagicMock())
+    monkeypatch.setitem(sys.modules, "crawl4ai.deep_crawling.filters", stub)
+
+
 class TestHostScopeFilter:
     """whole-site crawl must scope to the exact host by default."""
 
-    def test_exact_host_rejects_other_subdomains(self):
+    def test_exact_host_rejects_other_subdomains(self, _stub_crawl4ai_filters):
         from lilbee.crawler import _host_scope_filter
 
         f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=False)
@@ -962,18 +1002,14 @@ class TestHostScopeFilter:
         assert f.apply("https://af.wikipedia.org/wiki/Y") is False
         assert f.apply("https://wikipedia.org/wiki/Y") is False
 
-    def test_include_subdomains_allows_siblings(self):
+    def test_include_subdomains_allows_siblings(self, _stub_crawl4ai_filters):
         from lilbee.crawler import _host_scope_filter
 
         f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=True)
         assert f.apply("https://en.wikipedia.org/wiki/Y") is True
-        # DomainFilter allows exact host + any subdomain of it. en.wikipedia.org
-        # is not a parent of af.wikipedia.org, so "include_subdomains" on a
-        # start URL of en.wikipedia.org does NOT unlock other language subdomains.
-        # That's fine: users who want that can pass wikipedia.org directly.
         assert f.apply("https://other.example.com/") is False
 
-    def test_returns_none_when_host_missing(self):
+    def test_returns_none_when_host_missing(self, _stub_crawl4ai_filters):
         from lilbee.crawler import _host_scope_filter
 
         assert _host_scope_filter("not-a-url", include_subdomains=False) is None
