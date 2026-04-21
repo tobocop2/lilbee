@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -36,7 +37,7 @@ from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -51,6 +52,25 @@ log = logging.getLogger(__name__)
 _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
+
+
+def _remove_copied_files(names: list[str]) -> None:
+    """Delete files previously copied into documents/ by a /add invocation.
+
+    Called on cancel or failure of the add task so a cancelled file does not
+    re-appear on the next sync. Silently tolerates missing entries;
+    the user may have removed them concurrently, and the goal is just to
+    prevent accidental indexing.
+    """
+    for name in names:
+        target = cfg.documents_dir / name
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.exists():
+                target.unlink()
+        except OSError:
+            log.debug("Could not remove copied file %s", target, exc_info=True)
 
 
 class ChatStatusLine(Label):
@@ -123,10 +143,6 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
-        # threading.Event for the currently-running crawl so /cancel can
-        # actually stop it (worker.cancel() alone only kills the textual
-        # worker; the asyncio.run inside it keeps going).
-        self._active_crawl_cancel: threading.Event | None = None
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -134,22 +150,24 @@ class ChatScreen(Screen[None]):
         return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
         yield ChatStatusLine(id="chat-status-line")
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        with PromptArea(id="chat-prompt-area"):
-            yield NavAwareInput(
-                placeholder=msg.CHAT_INPUT_PLACEHOLDER,
-                id="chat-input",
-                suggester=SlashSuggester(use_cache=False),
-            )
-        yield TaskBar()
-        yield ViewTabs()
-        yield Footer()
+        with BottomBars():
+            with PromptArea(id="chat-prompt-area"):
+                yield NavAwareInput(
+                    placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                    id="chat-input",
+                    suggester=SlashSuggester(use_cache=False),
+                )
+            yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
 
     def on_mount(self) -> None:
         self._update_input_style()
@@ -169,7 +187,7 @@ class ChatScreen(Screen[None]):
         from lilbee.splash import dismiss
 
         dismiss()
-        self._refresh_model_bar()
+        self.refresh_model_bar()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models."""
@@ -225,7 +243,7 @@ class ChatScreen(Screen[None]):
             self._hide_chat_only_banner()
             if self._auto_sync:
                 self._run_sync()
-        self._refresh_model_bar()
+        self.refresh_model_bar()
 
     def _show_chat_only_banner(self) -> None:
         """Show the persistent chat-only banner."""
@@ -320,83 +338,84 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
-        task_bar = self._task_bar
-        task_id = task_bar.add_task(f"Add {path.name}", "add", indeterminate=True)
-        task_bar.queue.advance("add")
-        self._run_add_background(path, task_id)
+        # Directory adds are whole-tree copies handled by copy_files'
+        # recursion; a same-named subdir in documents_dir is not a clean
+        # "duplicate file" signal, so skip the prompt there and let
+        # copy_files emit its per-file skipped notices.
+        dest = cfg.documents_dir / path.name
+        if path.is_file() and dest.exists():
+            self._prompt_overwrite(path)
+            return
+        self._submit_add(path, force=False)
 
-    @work(thread=True)
-    def _run_add_background(self, path: Path, task_id: str) -> None:
-        """Copy files and sync in a background thread."""
-        self._sync_active = True
-        task_bar = self._task_bar
-        # Copy + ingest run as opaque phases from the TUI's perspective:
-        # the underlying pipeline does not emit percent-complete events,
-        # so a determinate bar would lie about progress (see BEE-65f). Use
-        # an indeterminate bar and update detail text as each phase runs.
-        call_from_thread(
-            self,
-            task_bar.update_task,
-            task_id,
-            0,
-            f"Copying {path.name}...",
-            indeterminate=True,
+    def _prompt_overwrite(self, path: Path) -> None:
+        """Ask to overwrite an existing copy before re-syncing."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=path.name))
+                return
+            self._submit_add(path, force=True)
+
+        self.app.push_screen(
+            ConfirmDialog(
+                msg.CMD_ADD_DUPLICATE_TITLE,
+                msg.CMD_ADD_DUPLICATE_MESSAGE.format(name=path.name),
+            ),
+            _on_confirm,
         )
+
+    def _submit_add(self, path: Path, *, force: bool) -> None:
+        """Spawn the add worker. Separated so overwrite confirm can reuse it."""
+        from lilbee.cli.tui.task_queue import TaskType
+
+        self._sync_active = True
+
+        def _target(reporter: ProgressReporter) -> None:
+            try:
+                self._do_add(path, reporter, force=force)
+            finally:
+                self._sync_active = False
+
+        self._task_bar.start_task(f"Add {path.name}", TaskType.ADD, _target, indeterminate=True)
+
+    def _do_add(self, path: Path, reporter: ProgressReporter, *, force: bool = False) -> None:
+        """Copy files and run sync. Called on worker thread with a reporter."""
+        from lilbee.cli.helpers import copy_files
+        from lilbee.ingest import sync
+        from lilbee.progress import FileStartEvent
+
+        reporter.update(0, f"Copying {path.name}...", indeterminate=True)
+        copy_result = copy_files([path], force=force)
+        copied = copy_result.copied
+        for name in copy_result.skipped:
+            call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
+        reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
+
+        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            # Polling point so /c in Task Center can stop a long ingest
+            # between file boundaries without having to kill the thread.
+            reporter.check_cancelled()
+            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+                reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
+
         try:
-            from lilbee.cli.helpers import copy_files
-
-            result = copy_files([path])
-            copied = result.copied
-            for name in result.skipped:
-                call_from_thread(
-                    self, self.notify, f"{name} already exists (use --force to overwrite)"
-                )
-            call_from_thread(
-                self,
-                task_bar.update_task,
-                task_id,
-                0,
-                f"Copied {len(copied)} file(s), syncing...",
-                indeterminate=True,
-            )
-
-            from lilbee.ingest import sync
-
-            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-                if event_type == EventType.FILE_START:
-                    from lilbee.progress import FileStartEvent
-
-                    if not isinstance(data, FileStartEvent):
-                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-                    call_from_thread(
-                        self,
-                        task_bar.update_task,
-                        task_id,
-                        0,
-                        f"Syncing {data.file}...",
-                        indeterminate=True,
-                    )
-
-            asyncio.run(sync(quiet=True, on_progress=on_progress))
-            call_from_thread(self, task_bar.complete_task, task_id)
-            call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
-        except Exception as exc:
-            log.warning("Failed to add %s", path, exc_info=True)
-            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
-            call_from_thread(
-                self, self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
-            )
-        finally:
-            self._sync_active = False
+            sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        except BaseException:
+            # On cancel or any failure, remove the files we copied into
+            # documents/ so the next sync doesn't silently re-ingest the
+            # file the user just cancelled. Only files copied by
+            # this /add invocation are removed; pre-existing files the user
+            # put in documents/ themselves are never touched.
+            _remove_copied_files(copied)
+            raise
+        if sync_result.failed:
+            _remove_copied_files(copied)
+            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
+        call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
-        # Signal the crawl cancel event BEFORE killing the worker: the event
-        # lets the crawl loop unwind cleanly (closing the stream, tearing down
-        # Playwright in order). worker.cancel() is the hard stop for anything
-        # that doesn't check the event.
-        active_cancel = self._active_crawl_cancel
-        if active_cancel is not None:
-            active_cancel.set()
         for worker in self.workers:
             worker.cancel()
         self.notify(msg.CMD_CANCEL)
@@ -420,13 +439,15 @@ class ChatScreen(Screen[None]):
             return
         parts = args.split()
         url = parts[0]
+        if not is_url(url):
+            url = f"https://{url}"
         try:
             require_valid_crawl_url(url)
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        depth, max_pages = self._parse_crawl_flags(parts[1:])
-        self._start_crawl(url, depth, max_pages)
+        depth, max_pages, include_subdomains = self._parse_crawl_flags(parts[1:])
+        self._start_crawl(url, depth, max_pages, include_subdomains=include_subdomains)
 
     def _open_crawl_dialog(self) -> None:
         """Push the crawl modal and handle its result."""
@@ -438,25 +459,54 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
-    def _start_crawl(self, url: str, depth: int | None, max_pages: int | None) -> None:
-        """Enqueue a crawl task and run it in the background."""
-        task_bar = self._task_bar
-        task_id = task_bar.add_task(msg.TASK_NAME_CRAWL.format(url=url), "crawl")
-        task_bar.queue.advance("crawl")
+    def _start_crawl(
+        self,
+        url: str,
+        depth: int | None,
+        max_pages: int | None,
+        *,
+        include_subdomains: bool = False,
+    ) -> None:
+        """Enqueue a crawl task and run it in the background.
+
+        Bootstrap Chromium first via the controller helper. If the
+        browser isn't installed yet, a SETUP task renders in the Task
+        Center and the crawl kicks off from its on_success hook. On a
+        machine where Chromium is already present this is a synchronous
+        no-op and the crawl starts immediately (bb-wq8g).
+        """
+        from lilbee.cli.tui.task_queue import TaskType
+
+        def _kick_off_crawl() -> None:
+            self._task_bar.start_task(
+                msg.TASK_NAME_CRAWL.format(url=url),
+                TaskType.CRAWL,
+                lambda reporter: self._do_crawl(
+                    url, depth, max_pages, reporter, include_subdomains=include_subdomains
+                ),
+                on_success=lambda: call_from_thread(self, self._run_sync),
+            )
+
         self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
-        self._run_crawl_background(url, depth, max_pages, task_id)
+        self._task_bar.ensure_chromium(_kick_off_crawl)
 
     @staticmethod
-    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None]:
-        """Extract --depth and --max-pages from argument tokens.
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None, bool]:
+        """Extract --depth, --max-pages, and --include-subdomains from tokens.
 
-        Returns None for either when the flag is absent, so the caller
-        inherits the unbounded-by-default crawl_and_save semantics.
+        Numeric flags return None when absent so the caller inherits
+        crawl_and_save's unbounded-by-default semantics. The boolean
+        ``--include-subdomains`` flag defaults to False (exact-host scope).
         """
         flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
         parsed: dict[str, int | None] = {"depth": None, "max_pages": None}
+        include_subdomains = False
         i = 0
         while i < len(tokens):
+            if tokens[i] == "--include-subdomains":
+                include_subdomains = True
+                i += 1
+                continue
             key = flag_map.get(tokens[i])
             if key and i + 1 < len(tokens):
                 with contextlib.suppress(ValueError):
@@ -464,67 +514,54 @@ class ChatScreen(Screen[None]):
                 i += 2
             else:
                 i += 1
-        return parsed["depth"], parsed["max_pages"]
+        return parsed["depth"], parsed["max_pages"], include_subdomains
 
-    @work(thread=True)
-    def _run_crawl_background(
-        self, url: str, depth: int | None, max_pages: int | None, task_id: str
+    def _do_crawl(
+        self,
+        url: str,
+        depth: int | None,
+        max_pages: int | None,
+        reporter: ProgressReporter,
+        *,
+        include_subdomains: bool = False,
     ) -> None:
-        """Run a crawl in a background thread, then trigger sync."""
+        """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
+        from lilbee.progress import CrawlPageEvent, SetupProgressEvent
 
-        worker = _get_worker()
-        task_bar = self._task_bar
-        call_from_thread(
-            self, task_bar.update_task, task_id, 0, msg.CMD_CRAWL_STARTED.format(url=url)
+        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
+
+        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            if event_type == EventType.SETUP_START:
+                reporter.update(0, msg.SETUP_CHROMIUM_NAME)
+            elif event_type == EventType.SETUP_PROGRESS and isinstance(data, SetupProgressEvent):
+                if data.total_bytes:
+                    pct = int(data.downloaded_bytes * 100 / data.total_bytes)
+                    detail = msg.SETUP_CHROMIUM_DETAIL.format(
+                        done=data.downloaded_bytes // (1024 * 1024),
+                        total=data.total_bytes // (1024 * 1024),
+                    )
+                else:
+                    pct = 0
+                    detail = msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(
+                        done=data.downloaded_bytes // (1024 * 1024),
+                    )
+                reporter.update(pct, detail)
+            elif event_type == EventType.CRAWL_PAGE and isinstance(data, CrawlPageEvent):
+                pct = int(data.current * 100 / data.total) if data.total > 0 else 50
+                reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
+
+        paths = asyncio.run(
+            crawl_and_save(
+                url,
+                depth=depth,
+                max_pages=max_pages,
+                on_progress=on_progress,
+                quiet=True,
+                include_subdomains=include_subdomains,
+            )
         )
-        # Fresh cancel event per crawl so /cancel can signal THIS run without
-        # affecting a future one that starts after. Stored on the screen so
-        # _cmd_cancel can reach it from the TUI thread.
-        cancel_event = threading.Event()
-        self._active_crawl_cancel = cancel_event
-
-        try:
-
-            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-                if event_type == EventType.CRAWL_PAGE:
-                    from lilbee.progress import CrawlPageEvent
-
-                    if not isinstance(data, CrawlPageEvent):
-                        raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
-                    pct = int(data.current * 100 / data.total) if data.total > 0 else 50
-                    total_str = str(data.total) if data.total > 0 else "?"
-                    detail = f"[{data.current}/{total_str}]: {data.url}"
-                    call_from_thread(self, task_bar.update_task, task_id, pct, detail)
-
-            paths = asyncio.run(
-                crawl_and_save(
-                    url,
-                    depth=depth,
-                    max_pages=max_pages,
-                    on_progress=on_progress,
-                    cancel=cancel_event,
-                )
-            )
-            call_from_thread(self, task_bar.complete_task, task_id)
-            call_from_thread(
-                self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
-            )
-        except Exception as exc:
-            if not worker.is_cancelled:
-                call_from_thread(self, task_bar.fail_task, task_id, str(exc))
-                call_from_thread(
-                    self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
-                )
-            return
-        finally:
-            # Clear only if it still refers to OUR event; a later crawl may
-            # have replaced it while we were running.
-            if self._active_crawl_cancel is cancel_event:
-                self._active_crawl_cancel = None
-
-        if not worker.is_cancelled:
-            call_from_thread(self, self._run_sync)
+        call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -591,7 +628,7 @@ class ChatScreen(Screen[None]):
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
-            self._refresh_model_bar()
+            self.refresh_model_bar()
         else:
             from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -850,65 +887,59 @@ class ChatScreen(Screen[None]):
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
-        task_bar = self._task_bar
-        task_id = task_bar.add_task("Sync documents", "sync", indeterminate=True)
-        task_bar.queue.advance("sync")
-        self._run_sync_worker(task_id)
-
-    @work(thread=True)
-    def _run_sync_worker(self, task_id: str) -> None:
-        """Run background document sync in a Textual worker thread."""
-        import asyncio
+        from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
-        task_bar = self._task_bar
+
+        def _target(reporter: ProgressReporter) -> None:
+            try:
+                self._do_sync(reporter)
+            finally:
+                self._sync_active = False
+
+        self._task_bar.start_task("Sync documents", TaskType.SYNC, _target, indeterminate=True)
+
+    def _do_sync(self, reporter: ProgressReporter) -> None:
+        """Sync body. Runs on worker thread."""
+        from lilbee.ingest import sync
+        from lilbee.progress import EmbedEvent, FileDoneEvent, FileStartEvent, SyncDoneEvent
+
+        reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
+
+        last_embed_update = 0.0
+        _throttle_seconds = 0.15
+
+        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            nonlocal last_embed_update
+            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+                pct = int((data.current_file - 1) * 100 / data.total_files)
+                status = msg.SYNC_FILE_PROGRESS.format(
+                    current=data.current_file, total=data.total_files, file=data.file
+                )
+                reporter.update(pct, status, indeterminate=False)
+            elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
+                reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
+            elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+                now = time.monotonic()
+                if now - last_embed_update < _throttle_seconds:
+                    return
+                last_embed_update = now
+                pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+                reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+            elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
+                # Without this handler the task never ticks to 100% and the
+                # Task Center row never flashes "just-completed" (bb-7enj).
+                # "Synced (N docs)" means successfully synced, so failed is excluded.
+                total = data.added + data.updated + data.removed
+                reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
+
         try:
-            from lilbee.ingest import sync
-
-            call_from_thread(
-                self, task_bar.update_task, task_id, 0, "Syncing...", indeterminate=True
-            )
-
-            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-                if event_type == EventType.FILE_START:
-                    from lilbee.progress import FileStartEvent
-
-                    if not isinstance(data, FileStartEvent):
-                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-                    status = msg.SYNC_FILE_PROGRESS.format(
-                        current=data.current_file,
-                        total=data.total_files,
-                        file=data.file,
-                    )
-                    call_from_thread(
-                        self, task_bar.update_task, task_id, 0, status, indeterminate=True
-                    )
-                elif event_type == EventType.FILE_DONE:
-                    from lilbee.progress import FileDoneEvent
-
-                    if not isinstance(data, FileDoneEvent):
-                        raise TypeError(f"Expected FileDoneEvent, got {type(data).__name__}")
-                    call_from_thread(
-                        self,
-                        task_bar.update_task,
-                        task_id,
-                        0,
-                        f"Done: {data.file}",
-                        indeterminate=True,
-                    )
-
-            asyncio.run(sync(quiet=True, on_progress=on_progress))
-            call_from_thread(self, task_bar.complete_task, task_id)
-        except asyncio.CancelledError:
+            result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        except asyncio.CancelledError as exc:
             self._auto_sync = False
-            call_from_thread(
-                self, task_bar.fail_task, task_id, "Sync cancelled. Use /sync to resume."
-            )
-        except Exception:
-            log.warning("Background sync failed", exc_info=True)
-            call_from_thread(self, task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
-        finally:
-            self._sync_active = False
+            raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
+        if result.failed:
+            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
@@ -1031,7 +1062,7 @@ class ChatScreen(Screen[None]):
         if overlay.is_visible:
             overlay.hide()
 
-    def _refresh_model_bar(self) -> None:
+    def refresh_model_bar(self) -> None:
         """Update the model status bar and status line."""
         self.query_one("#model-bar", ModelBar).refresh_models()
         self._refresh_status_line()

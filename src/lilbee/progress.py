@@ -20,6 +20,9 @@ class EventType(StrEnum):
     CRAWL_START = "crawl_start"
     CRAWL_PAGE = "crawl_page"
     CRAWL_DONE = "crawl_done"
+    SETUP_START = "setup_start"
+    SETUP_PROGRESS = "setup_progress"
+    SETUP_DONE = "setup_done"
 
 
 class SseEvent(StrEnum):
@@ -111,6 +114,30 @@ class SyncDoneEvent(BaseModel):
     failed: int
 
 
+class SetupStartEvent(BaseModel):
+    """Emitted when a setup/bootstrap operation begins."""
+
+    component: str
+    size_estimate_bytes: int | None = None
+
+
+class SetupProgressEvent(BaseModel):
+    """Emitted periodically during a setup/bootstrap operation."""
+
+    component: str
+    downloaded_bytes: int
+    total_bytes: int | None = None
+    detail: str = ""
+
+
+class SetupDoneEvent(BaseModel):
+    """Emitted when a setup/bootstrap operation completes."""
+
+    component: str
+    success: bool
+    error: str | None = None
+
+
 ProgressEvent = (
     FileStartEvent
     | FileDoneEvent
@@ -121,6 +148,9 @@ ProgressEvent = (
     | CrawlStartEvent
     | CrawlPageEvent
     | CrawlDoneEvent
+    | SetupStartEvent
+    | SetupProgressEvent
+    | SetupDoneEvent
 )
 
 DetailedProgressCallback = Callable[[EventType, ProgressEvent], None]

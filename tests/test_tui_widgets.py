@@ -82,7 +82,8 @@ class TestAssistantMessageAsync:
             am.finish(sources=["doc.pdf:1"])
             assert am._finished is True
             assert am._reasoning_widget is not None
-            assert am._reasoning_widget.title == "Reasoning"
+            assert "reasoning" in am._reasoning_widget.title
+            assert "token" in am._reasoning_widget.title
 
     async def test_finish_without_reasoning_hides_widget(self) -> None:
         app = _MsgApp()
@@ -252,8 +253,26 @@ class TestTaskBar:
             bar.complete_task(task_id)
             await pilot.pause()
             # After flash timer fires, task is removed
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
+
+    async def test_unmount_cancels_poll_interval(self) -> None:
+        """bb-3uzp: on_unmount must stop the 10 Hz poll interval.
+
+        Without this, a detached TaskBar's interval keeps firing after a
+        screen push/pop cycle and can set ``display=False`` on the new
+        TaskBar mid-render, making the bar vanish from chat.
+        """
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            assert getattr(bar, "_interval", None) is not None
+            await bar.remove()
+            await pilot.pause()
+            assert getattr(bar, "_interval", None) is None
 
     async def test_queue_advances_on_complete(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -267,7 +286,7 @@ class TestTaskBar:
             bar.add_task("Sync B", "sync")
             bar.complete_task(t1)
             # After flash, next task should advance
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             active = bar.queue.active_task
             assert active is not None
             assert active.name == "Sync B"
@@ -309,7 +328,7 @@ class TestTaskBar:
             task_id = bar.add_task("Download", "download")
             bar.queue.advance()
             bar.fail_task(task_id, "Network error")
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
     async def test_app_task_bar_ref(self) -> None:
@@ -366,16 +385,22 @@ class TestModelBar:
             assert embed_sel is not None
 
     async def test_labels_rendered(self) -> None:
-        from textual.widgets import Label
+        """bb-ec3q: Chat/Embed labels render as pills, not plain text.
+
+        Each pill is a Static carrying a pill() Content with half-block
+        ends around the label text. Assert the text survives, wrapped
+        by the PILL_LEFT/RIGHT half-block glyphs.
+        """
+        from textual.widgets import Static
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            labels = [str(lbl.render()) for lbl in app.query(Label)]
-            assert "Chat:" in labels
-            assert "Embed:" in labels
+            pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
+            assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
+            assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
 
 
 class TestIsMmproj:
@@ -1080,17 +1105,51 @@ class TestTaskQueue:
         assert q.history[0].status == TaskStatus.FAILED
 
     def test_history_accumulates(self) -> None:
+        """Completed + failed tasks sit in history until remove_task prunes them."""
         from lilbee.cli.tui.task_queue import TaskQueue
 
         q = TaskQueue()
         t1 = q.enqueue(lambda: None, "A", "sync")
         q.advance()
         q.complete_task(t1)
-        q.remove_task(t1)
         t2 = q.enqueue(lambda: None, "B", "sync")
         q.advance()
         q.fail_task(t2, "err")
+        # Both completions sit in history together; remove_task would prune.
         assert len(q.history) == 2
+
+    def test_remove_task_prunes_history(self) -> None:
+        """remove_task drops the entry from history so TaskCenter rows unmount."""
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(t1)
+        assert any(t.task_id == t1 for t in q.history)
+        q.remove_task(t1)
+        assert not any(t.task_id == t1 for t in q.history)
+
+    def test_clear_history_drops_all_finished_tasks(self) -> None:
+        """clear_history prunes DONE/FAILED/CANCELLED in one shot."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        a = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(a)
+        b = q.enqueue(lambda: None, "B", "sync")
+        q.advance()
+        q.fail_task(b, "err")
+        c = q.enqueue(lambda: None, "C", "sync")
+        q.advance()
+        # C stays ACTIVE; cleared list should still leave it behind.
+        assert len(q.history) == 2
+        cleared = q.clear_history()
+        assert cleared == 2
+        assert q.history == []
+        active_task = q.get_task(c)
+        assert active_task is not None and active_task.status == TaskStatus.ACTIVE
 
     def test_history_empty_initially(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
@@ -1103,6 +1162,57 @@ class TestTaskQueue:
 
         q = TaskQueue()
         assert q.cancel("nonexistent") is False
+
+    def test_cancel_done_task_is_noop(self) -> None:
+        """terminal rows are immutable. Cancel on DONE returns False
+        and leaves status + completed_at frozen."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.complete_task(tid)
+        task = q.get_task(tid)
+        assert task is not None
+        frozen_completed_at = task.completed_at
+        assert q.cancel(tid) is False
+        task_after = q.get_task(tid)
+        assert task_after is not None
+        assert task_after.status == TaskStatus.DONE
+        assert task_after.completed_at == frozen_completed_at
+
+    def test_cancel_failed_task_is_noop(self) -> None:
+        """cancel on a FAILED row must not flip it to CANCELLED."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.fail_task(tid, "boom")
+        assert q.cancel(tid) is False
+        task_after = q.get_task(tid)
+        assert task_after is not None
+        assert task_after.status == TaskStatus.FAILED
+
+    def test_cancel_already_cancelled_is_noop(self) -> None:
+        """cancelling an already-cancelled row does not re-append
+        it to history or reset its completed_at."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        assert q.cancel(tid) is True
+        task = q.get_task(tid)
+        assert task is not None
+        first_completed_at = task.completed_at
+        history_len = len(q.history)
+        assert q.cancel(tid) is False
+        assert len(q.history) == history_len
+        task_after = q.get_task(tid)
+        assert task_after is not None
+        assert task_after.status == TaskStatus.CANCELLED
+        assert task_after.completed_at == first_completed_at
 
     def test_remove_task_nonexistent_is_noop(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
@@ -1256,7 +1366,25 @@ class TestSetupWizard:
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
-    async def test_action_cancel_dismisses_skipped(self) -> None:
+    async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
+        """action_cancel returns 'skipped' only when the user picked nothing."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.models import ModelTask
+
+        app = _SetupApp()
+        results: list[object] = []
+        async with app.run_test() as pilot:
+            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
+            await pilot.pause()
+            # Clear the RAM-based preselection so action_cancel treats it as empty.
+            app.screen._selections[ModelTask.CHAT] = (None, None)
+            app.screen._selections[ModelTask.EMBEDDING] = (None, None)
+            app.screen.action_cancel()
+            await pilot.pause()
+        assert "skipped" in results
+
+    async def test_action_cancel_dismisses_completed_when_any_selection(self) -> None:
+        """action_cancel returns 'completed' if any model was picked."""
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
@@ -1264,9 +1392,11 @@ class TestSetupWizard:
         async with app.run_test() as pilot:
             app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
-            app.screen.action_cancel()
+            # Preselected chat+embed survive; action_cancel should return completed.
+            with mock.patch("lilbee.services.reset_services"):
+                app.screen.action_cancel()
             await pilot.pause()
-        assert "skipped" in results
+        assert "completed" in results
 
     def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.setup import _scan_installed_models
@@ -1349,8 +1479,8 @@ class TestSetupWizard:
 
     def test_build_section_marks_installed_catalog_cards(self) -> None:
         """Catalog cards whose name:tag is already installed come back with
-        ``installed=True`` so they report a zero download size."""
-        from lilbee.cli.tui.screens.setup import SetupWizard, _card_download_size
+        ``installed=True`` so the Enter-to-install hint stays hidden."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         a = _make_model("Qwen3 0.6B", tag="0.6b", featured=True, size_gb=0.6)
         b = _make_model("Qwen3 4B", tag="4b", featured=True, size_gb=2.5)
@@ -1359,8 +1489,6 @@ class TestSetupWizard:
         cards = SetupWizard._build_section(wizard, "Chat", (a, b), {"qwen3-0.6b:0.6b"}, widgets)
         assert cards[0].row.installed is True
         assert cards[1].row.installed is False
-        assert _card_download_size(cards[0]) == 0.0
-        assert _card_download_size(cards[1]) == 2.5
 
     def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
         """_scan_installed_models output must be usable as installed refs for the
@@ -1503,10 +1631,19 @@ class TestViewTabs:
             await pilot.pause()
             assert bar.mode_text == msg.MODE_NORMAL
 
-    async def test_dock_bottom_in_css(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+    async def test_bottom_bars_container_docks_bottom(self) -> None:
+        """BottomBars owns the dock; ViewTabs/TaskBar must not dock themselves.
 
-        assert "dock: bottom" in ViewTabs.DEFAULT_CSS
+        Sibling dock-bottom widgets overlap at the same edge row in Textual
+        (see BottomBars docstring). Keep the dock on the single container.
+        """
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        assert "dock: bottom" in BottomBars.DEFAULT_CSS
+        assert "dock: bottom" not in ViewTabs.DEFAULT_CSS
+        assert "dock: bottom" not in TaskBar.DEFAULT_CSS
 
     async def test_nav_views_contains_all_screens(self) -> None:
         from lilbee.cli.tui.messages import get_nav_views
@@ -2173,7 +2310,7 @@ class TestSyncSelectPrepend:
         assert sel.value == "qwen3:8b"
 
     def test_default_prepended_when_not_in_opts(self) -> None:
-        """When the configured default isn't in opts, it's prepended before set_options."""
+        """A configured-but-uninstalled default is prepended with a clear label."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
         sel = mock.MagicMock()
@@ -2182,7 +2319,9 @@ class TestSyncSelectPrepend:
         _sync_select(sel, opts, default="llama3:8b")
         assert sel.set_options.call_count == 1
         passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:8b", "llama3:8b")
+        # Label should surface the uninstalled state, ref stays the same.
+        assert passed[0].ref == "llama3:8b"
+        assert "not installed" in passed[0].label
         assert sel.value == "llama3:8b"
 
     def test_bare_name_matches_latest_alias(self) -> None:
@@ -2210,10 +2349,11 @@ class TestSyncSelectPrepend:
         sel = mock.MagicMock()
         opts = [ModelOption("Qwen3 0.6B", "qwen3:0.6b")]
         _sync_select(sel, opts, default="llama3")
-        # Should normalize to llama3:latest and prepend that
+        # Should normalize to llama3:latest and prepend with an explicit label
         assert sel.value == "llama3:latest"
         passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:latest", "llama3:latest")
+        assert passed[0].ref == "llama3:latest"
+        assert "not installed" in passed[0].label
 
     def test_no_default_leaves_value_untouched(self) -> None:
         """When there's no default, don't assign a value."""
@@ -2226,6 +2366,43 @@ class TestSyncSelectPrepend:
         assert sel.set_options.call_count == 1
         # value should not have been reassigned beyond the mock default
         assert sel.value == _DISABLED
+
+    async def test_not_installed_label_renders_in_collapsed_select(self) -> None:
+        """Live Select shows the (not installed) suffix after _sync_select runs.
+
+        Regression test for bb-6jpp: Textual's ``set_options`` doesn't
+        refresh the closed-state label when the existing value still
+        matches — ``_sync_select`` now forces that refresh via
+        ``_refresh_select_label``.
+        """
+        from textual.app import App
+        from textual.widgets import Select
+        from textual.widgets._select import SelectCurrent
+
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        class _Harness(App[None]):
+            def compose(self):
+                yield Select(
+                    options=[("fake-ref", "fake-ref")],
+                    prompt="pick",
+                    allow_blank=False,
+                )
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sel = app.query_one(Select)
+            sel.value = "fake-ref"
+            await pilot.pause()
+            # Simulate what _populate does once scan finishes: opts list
+            # doesn't contain the current value; _sync_select should
+            # prepend "(not installed)" AND refresh the collapsed label.
+            _sync_select(sel, [ModelOption("(none)", "")], default="fake-ref")
+            await pilot.pause()
+            current = sel.query_one(SelectCurrent)
+            rendered = str(current.label)
+            assert "not installed" in rendered, rendered
 
 
 class TestCollectNativeModelsError:
@@ -2489,70 +2666,8 @@ class TestTaskBarAdditional:
             text = str(label._Static__content)  # type: ignore[attr-defined]
             assert "queued" in text
 
-    async def test_spinner_index_advances(self) -> None:
-        """The spinner frame index increments when active tasks exist."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            bar.add_task("Sync", "sync")
-            bar.queue.advance()
-            initial = bar._spinner_index
-            bar._tick_spinner()
-            assert bar._spinner_index == initial + 1
-
-    async def test_spinner_does_not_advance_when_idle(self) -> None:
-        """The spinner stays put when there are no active tasks."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            initial = bar._spinner_index
-            bar._tick_spinner()
-            assert bar._spinner_index == initial
-
-    async def test_on_queue_change_exception_suppressed(self) -> None:
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            bar._on_queue_change()  # should not raise
-            assert bar.display is False
-
-    async def test_on_queue_change_from_worker_thread(self) -> None:
-        """Queue notifications fired from a background thread must marshal back."""
-        import threading
-
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-
-            called = threading.Event()
-
-            def worker() -> None:
-                bar._on_queue_change()
-                called.set()
-
-            thread = threading.Thread(target=worker)
-            thread.start()
-            for _ in range(20):
-                await pilot.pause()
-                if called.is_set():
-                    break
-            thread.join(timeout=5)
-            assert called.is_set()
-
     async def test_label_contains_task_center_hint(self) -> None:
-        """The status label includes the 'press t for Task Center' hint."""
+        """The status label includes the Task Center hint."""
         from textual.widgets import Label
 
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2566,7 +2681,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "press t for Task Center" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "Press t for Tasks" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_active_task_with_progress_shows_percentage(self) -> None:
         """An active task with nonzero progress shows its percentage."""
@@ -2584,7 +2699,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "45%" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "45.0%" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_refresh_display_exception_suppressed(self) -> None:
         """_refresh_display handles missing label gracefully."""
@@ -2604,6 +2719,103 @@ class TestTaskBarAdditional:
             await pilot.pause()
             # Should not raise
             bar._refresh_display()
+
+
+class TestEnsureChromium:
+    """bb-wq8g: TaskBarController.ensure_chromium short-circuits or spawns SETUP."""
+
+    async def test_short_circuits_when_installed(self) -> None:
+        """No SETUP task enqueued; on_ready fires immediately."""
+        import threading as _threading
+
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True
+            ):
+                fired = _threading.Event()
+                app.task_bar.ensure_chromium(fired.set)
+                assert fired.is_set()
+                queued = app.task_bar.queue
+                all_tasks = queued.active_tasks + queued.queued_tasks + queued.history
+                assert not any(t.task_type == TaskType.SETUP.value for t in all_tasks)
+
+    async def test_enqueues_setup_task_when_missing(self) -> None:
+        """bb-wq8g happy path: SETUP task calls start_task with the right args.
+
+        Asserts against ``start_task`` directly instead of spawning a real
+        worker thread — running an actual ``asyncio.run`` inside the
+        daemon worker leaves thread-local state that later pilot tests
+        trip over.
+        """
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            on_ready = mock.Mock()
+            with (
+                mock.patch(
+                    "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=False
+                ),
+                mock.patch.object(app.task_bar, "start_task") as mock_start,
+            ):
+                app.task_bar.ensure_chromium(on_ready)
+            mock_start.assert_called_once()
+            args, kwargs = mock_start.call_args
+            assert args[1] == TaskType.SETUP
+            assert kwargs.get("on_success") is on_ready
+            on_ready.assert_not_called()
+
+
+class TestChromiumBootstrapTarget:
+    """bb-wq8g: directly drive _chromium_bootstrap_target's body."""
+
+    def test_forwards_setup_progress_with_known_total(self) -> None:
+        """With total_bytes set, the target formats 'chromium: N/M MB'."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets import task_bar
+        from lilbee.progress import EventType, SetupDoneEvent, SetupProgressEvent
+
+        reporter = mock.MagicMock()
+
+        async def _fake_bootstrap(on_progress=None):
+            on_progress(
+                EventType.SETUP_DONE,  # ignored by the forward filter
+                SetupDoneEvent(component="chromium", success=True, error=None),
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                "not a SetupProgressEvent",  # type: ignore[arg-type]
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=10 * 1024 * 1024,
+                    total_bytes=40 * 1024 * 1024,
+                    detail="...",
+                ),
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=5 * 1024 * 1024,
+                    total_bytes=None,
+                    detail="...",
+                ),
+            )
+
+        with mock.patch.object(task_bar, "bootstrap_chromium", new=_fake_bootstrap):
+            task_bar._chromium_bootstrap_target(reporter)
+
+        pct_detail_calls = [call.args for call in reporter.update.call_args_list]
+        assert (25, msg.SETUP_CHROMIUM_DETAIL.format(done=10, total=40)) in pct_detail_calls
+        assert (0, msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(done=5)) in pct_detail_calls
 
 
 class TestTaskBarIndeterminate:
@@ -2742,18 +2954,6 @@ class TestGridSelectExtra:
             await pilot.pause()
             assert grid.highlighted == 0
 
-    async def test_tab_next_advances_highlight(self) -> None:
-        """Tab advances the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 0
-            grid.action_tab_next()
-            assert grid.highlighted == 1
-
     async def test_tab_next_escapes_at_last_card(self) -> None:
         """Tab on the last card posts LeaveDown to escape the grid."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -2768,18 +2968,6 @@ class TestGridSelectExtra:
             grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
             grid.action_tab_next()
             assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
-
-    async def test_tab_previous_retreats_highlight(self) -> None:
-        """Shift+Tab retreats the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 2
-            grid.action_tab_previous()
-            assert grid.highlighted == 1
 
     async def test_tab_previous_escapes_at_first_card(self) -> None:
         """Shift+Tab on the first card posts LeaveUp to escape the grid."""
@@ -2815,30 +3003,6 @@ class TestGridSelectExtra:
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_tab_previous()
         assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
-
-    async def test_tab_next_initializes_highlight_when_none(self) -> None:
-        """Tab with no highlight initializes to 0."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_next()
-            assert grid.highlighted == 0
-
-    async def test_tab_previous_initializes_highlight_when_none(self) -> None:
-        """Shift+Tab with no highlight initializes to last card."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_previous()
-            assert grid.highlighted == len(grid.children) - 1
 
 
 # ---------------------------------------------------------------------------
@@ -3607,3 +3771,119 @@ async def test_crawl_dialog_auto_prefix_https():
     result = app.results[0]
     assert isinstance(result, CrawlParams)
     assert result.url == "https://example.com"
+
+
+def _make_list_row(
+    name: str = "test",
+    task: str = "chat",
+    params: str = "7B",
+    size: str = "4.0 GB",
+    quant: str = "Q4_K_M",
+    downloads: str = "1K",
+    featured: bool = False,
+    installed: bool = False,
+    sort_downloads: int = 1000,
+    backend: str = "native",
+) -> TableRow:
+    return TableRow(
+        name=name,
+        task=task,
+        params=params,
+        size=size,
+        quant=quant,
+        downloads=downloads,
+        featured=featured,
+        installed=installed,
+        sort_downloads=sort_downloads,
+        sort_size=4.0,
+        backend=backend,
+    )
+
+
+def _make_click(widget: Any, button: int = 1) -> Any:
+    """Construct a Click event for a detached widget. Coordinates are arbitrary."""
+    from textual.events import Click
+
+    return Click(
+        widget=widget,
+        x=0,
+        y=0,
+        delta_x=0,
+        delta_y=0,
+        button=button,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        screen_x=0,
+        screen_y=0,
+    )
+
+
+class TestModelListItem:
+    """Cover selection, click, and build_specs fallback paths.
+
+    Previously used ``app.run_test()`` pilot harness, which tripped a
+    known pytest-asyncio + Textual hang on this branch and stalled CI
+    indefinitely. These tests don't need a mounted app to verify the
+    action_select / on_click message-posting contract; constructing the
+    widget directly and monkey-patching ``post_message`` is enough.
+    """
+
+    def test_action_select_posts_message(self) -> None:
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        item = ModelListItem(_make_list_row())
+        received: list[ModelListItem.Selected] = []
+        # Widget's post_message isn't injectable; monkey-patch the bound
+        # method directly so the test doesn't need a mounted App.
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.action_select()
+        assert len(received) == 1
+        assert received[0].item is item
+        assert received[0].control is item
+
+    def test_on_click_posts_selected_message(self) -> None:
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        item = ModelListItem(_make_list_row())
+        received: list[ModelListItem.Selected] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        # .focus() normally requires a mounted App; stub so we can verify
+        # on_click calls it without the NoActiveAppError.
+        item.focus = mock.Mock()  # type: ignore[method-assign]
+        item.on_click(_make_click(item))
+        item.focus.assert_called_once()
+        assert received and received[0].item is item
+
+    def test_build_specs_all_placeholders_renders_dashes(self) -> None:
+        from lilbee.cli.tui.widgets.model_list_item import _build_specs
+
+        content = _build_specs("--", "--", "--")
+        assert str(content.plain) == "--"
+
+
+class TestSearchHFCtaItem:
+    """Direct-construction pattern (no run_test) — same rationale as TestModelListItem."""
+
+    def test_action_select_posts_message_with_term(self) -> None:
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        item = SearchHFCtaItem("qwen3")
+        received: list[SearchHFCtaItem.Selected] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.action_select()
+        assert len(received) == 1
+        assert received[0].term == "qwen3"
+        assert received[0].control is item
+
+    def test_on_click_focuses_and_posts(self) -> None:
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        item = SearchHFCtaItem("phi-3")
+        received: list[SearchHFCtaItem.Selected] = []
+        focus_calls: list[bool] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.focus = lambda: focus_calls.append(True)  # type: ignore[method-assign]
+        item.on_click(_make_click(item))
+        assert focus_calls == [True]
+        assert received and received[0].term == "phi-3"

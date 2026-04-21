@@ -26,6 +26,7 @@ from huggingface_hub.utils import HFValidationError, validate_repo_id
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
+from lilbee.cancellation import TaskCancelled
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.registry import DEFAULT_TAG, ModelManifest, ModelRef, ModelRegistry
@@ -37,9 +38,14 @@ HF_API_URL = "https://huggingface.co/api/models"
 
 @dataclass
 class DownloadProgress:
-    """Human-readable snapshot of download progress."""
+    """Human-readable snapshot of download progress.
 
-    percent: int
+    ``percent`` is a float (0.0 to 100.0) so the ProgressBar renders smooth
+    fractional movement during multi-GB downloads. Call sites that need
+    an integer for display format it themselves.
+    """
+
+    percent: float
     detail: str
     is_cache_hit: bool
 
@@ -54,19 +60,22 @@ def make_download_callback(
     throttle_interval: float = 0.1,
 ) -> ProgressCallback:
     """Build a download progress callback that converts bytes to human-readable state.
-    *on_update(progress: DownloadProgress)* is called with throttled, deduplicated
-    progress snapshots. Both the catalog and setup screens use this to avoid
-    duplicating byte→MB conversion and cache-hit detection.
+    *on_update(progress: DownloadProgress)* is called at most once per
+    ``throttle_interval`` seconds with a float percentage (0.0 to 100.0), a
+    ``"<done>/<total> MB"`` detail string, and a cache-hit flag. Both the
+    catalog and setup screens use this so byte-to-MB conversion and
+    cache-hit detection aren't duplicated.
     """
     last_update_time = 0.0
-    last_pct = -1
     seen_partial = False
 
     def _on_progress(downloaded: int, total: int) -> None:
-        nonlocal last_update_time, last_pct, seen_partial
+        nonlocal last_update_time, seen_partial
 
         if total > 0 and downloaded >= total and not seen_partial:
-            on_update(DownloadProgress(percent=100, detail="already downloaded", is_cache_hit=True))
+            on_update(
+                DownloadProgress(percent=100.0, detail="already downloaded", is_cache_hit=True)
+            )
             return
         seen_partial = True
 
@@ -77,10 +86,7 @@ def make_download_callback(
 
         mb_done = downloaded / _BYTES_PER_MB
         if total > 0:
-            pct = min(int(downloaded * 100 / total), 100)
-            if pct == last_pct and pct > 0:
-                return
-            last_pct = pct
+            pct = min(downloaded * 100.0 / total, 100.0)
             mb_total = total / _BYTES_PER_MB
             on_update(
                 DownloadProgress(
@@ -90,7 +96,7 @@ def make_download_callback(
                 )
             )
         else:
-            on_update(DownloadProgress(percent=0, detail=f"{mb_done:.0f} MB", is_cache_hit=False))
+            on_update(DownloadProgress(percent=0.0, detail=f"{mb_done:.0f} MB", is_cache_hit=False))
 
     return _on_progress
 
@@ -418,6 +424,17 @@ _hf_cache_lock = threading.Lock()
 
 _EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
+# HF ``?search=`` is a single space-tokenized substring match on the model id.
+# Multiple ``search=`` params are silently ignored, so the user's query is
+# space-joined onto the GGUF filter into one param value.
+_HF_GGUF_SEARCH_TERM = "GGUF"
+
+
+def _hf_search_value(search: str) -> str:
+    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
+    tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
+    return " ".join(tokens)
+
 
 def _fetch_hf_models(
     pipeline_tag: str = "text-generation",
@@ -425,6 +442,7 @@ def _fetch_hf_models(
     limit: int = 50,
     offset: int = 0,
     library: str | None = None,
+    search: str = "",
 ) -> _HfPage:
     """Fetch GGUF models from HuggingFace API with 5-minute cache.
 
@@ -432,7 +450,8 @@ def _fetch_hf_models(
     ``Link: <...>; rel="next"`` response header (RFC 5988), the same
     mechanism the ``huggingface_hub`` library uses internally.
     """
-    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}"
+    search_value = _hf_search_value(search)
+    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{search_value}"
     now = time.monotonic()
     with _hf_cache_lock:
         expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -445,7 +464,7 @@ def _fetch_hf_models(
 
     params = httpx.QueryParams(
         pipeline_tag=pipeline_tag,
-        search="GGUF",
+        search=search_value,
         sort=sort,
         limit=limit,
         skip=offset,
@@ -545,6 +564,7 @@ def get_catalog(
             limit=limit,
             offset=offset,
             library=hf_library,
+            search=search,
         )
         hf_has_more = hf_page.has_more
         # Deduplicate: skip HF models whose repo matches a featured model
@@ -760,6 +780,8 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         # Setting it here is too late — huggingface_hub.constants already
         # captured the value when this module first imported it.
         cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+    except TaskCancelled:
+        raise
     except GatedRepoError:
         raise PermissionError(
             f"{entry.name} requires HuggingFace authentication. "

@@ -254,10 +254,16 @@ class WorkerProcess:
         self._request_queue.put(LoadModelRequest(model=model, model_type=model_type))
 
 
-def _redirect_stdio() -> None:
+def _redirect_stdio() -> None:  # pragma: no cover
     """Redirect stdout/stderr to /dev/null for the worker subprocess.
+
     Suppresses llama-cpp's C-level prints that would corrupt the parent TUI.
     Queues use pipes, not stdout.
+
+    Covered by ``test_redirect_stdio_points_stdout_stderr_to_devnull`` in
+    a subprocess (closing fds 1/2 in-process would deadlock pytest-xdist).
+    Subprocess execution doesn't report back to coverage.py, so the body
+    carries ``# pragma: no cover``.
     """
     import os
     import sys

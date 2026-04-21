@@ -1,6 +1,8 @@
 """Tests for the web crawling module."""
 
 import asyncio
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,14 +31,33 @@ from lilbee.progress import EventType
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
-    """Redirect config paths for all crawler tests."""
+def isolated_env(tmp_path, monkeypatch, request):
+    """Redirect config paths for all crawler tests.
+
+    Also stubs :func:`chromium_installed` to return True so the
+    pre-flight guard in ``_open_crawler`` doesn't trip in CI envs where
+    Playwright's Chromium binary is absent. Tests marked
+    ``real_browser_check`` (or in :class:`TestPlaywrightBrowserCheck`) get
+    the real function so they can drive the check directly.
+    """
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cls = request.cls.__name__ if request.cls else ""
+    if cls != "TestPlaywrightBrowserCheck":
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+    # Default the sitemap bound to "unknown" so tests don't hit the network.
+    # Tests that exercise the sitemap hook directly (TestSitemapCounting)
+    # opt out of this autopatch.
+    if cls != "TestSitemapCounting":
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        monkeypatch.setattr(
+            "lilbee.crawler._count_sitemap_urls", lambda *a, **kw: CRAWL_TOTAL_UNKNOWN
+        )
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -478,6 +499,205 @@ class TestCrawlSingle:
             await crawl_single("https://example.com", quiet=True)
         mock_crawler_cls.assert_called_once_with(verbose=False)
 
+    async def test_missing_chromium_raises_crawler_browser_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without Chromium installed, crawl_single raises a clean exception.
+
+        Regression test for bb-60mj: without this guard Playwright prints
+        a raw ASCII install banner into the TUI and the task lands as DONE.
+        """
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        # Stub crawl4ai so the test runs even when the `crawler` extra
+        # isn't installed in the unit-test env.
+        monkeypatch.setitem(__import__("sys").modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+            await crawl_single("https://example.com")
+
+
+class TestBootstrapChromium:
+    """bb-wq8g: the subprocess wrapper that installs Playwright's Chromium."""
+
+    async def test_short_circuits_when_already_installed(self, monkeypatch):
+        """No subprocess, no stream events, when Chromium is already present."""
+        from lilbee.crawler import bootstrap_chromium
+        from lilbee.progress import EventType, SetupDoneEvent
+
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+        events: list[tuple[EventType, object]] = []
+        await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+        # Only a single setup_done (success) — no start/progress when we
+        # short-circuit.
+        assert len(events) == 1
+        evt, payload = events[0]
+        assert evt == EventType.SETUP_DONE
+        assert isinstance(payload, SetupDoneEvent)
+        assert payload.success is True
+
+    async def test_parses_progress_from_fake_subprocess(self, monkeypatch):
+        """Feed canned stdout through the subprocess to drive progress events."""
+        from lilbee.crawler import bootstrap_chromium
+        from lilbee.progress import EventType, SetupProgressEvent, SetupStartEvent
+
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+
+        _bar = "\xe2\x96\xa0".encode("latin-1")  # three-byte UTF-8 for ■
+        stdout_lines = [
+            b"Downloading Chromium 145.0 ...\n",
+            b"|" + _bar * 2 + b"        |  25% of 162.3 MiB\n",
+            b"|" + _bar * 4 + b"    |  50% of 162.3 MiB\n",
+            b"|" + _bar * 8 + b"| 100% of 162.3 MiB\n",
+            b"",  # EOF
+        ]
+
+        class _Stream:
+            def __init__(self, lines: list[bytes]) -> None:
+                self._lines = list(lines)
+
+            async def readline(self) -> bytes:
+                return self._lines.pop(0) if self._lines else b""
+
+        class _Proc:
+            def __init__(self) -> None:
+                self.stdout = _Stream(stdout_lines)
+                self.stderr = _Stream([b""])
+
+            async def wait(self) -> int:
+                return 0
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+        events: list[tuple[EventType, object]] = []
+        await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+
+        types = [e for e, _ in events]
+        assert types[0] == EventType.SETUP_START
+        assert types[-1] == EventType.SETUP_DONE
+        progress_events = [d for e, d in events if e == EventType.SETUP_PROGRESS]
+        assert len(progress_events) >= 1
+        assert isinstance(events[0][1], SetupStartEvent)
+        assert isinstance(progress_events[0], SetupProgressEvent)
+
+    async def test_raises_crawler_browser_missing_on_subprocess_failure(self, monkeypatch):
+        """Non-zero exit → CrawlerBrowserMissing with stderr tail."""
+        from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium
+        from lilbee.progress import EventType, SetupDoneEvent
+
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+
+        class _Stream:
+            def __init__(self, lines: list[bytes]) -> None:
+                self._lines = list(lines)
+
+            async def readline(self) -> bytes:
+                return self._lines.pop(0) if self._lines else b""
+
+        class _Proc:
+            def __init__(self) -> None:
+                self.stdout = _Stream([b""])
+                self.stderr = _Stream(
+                    [b"error: network unreachable\n", b"cannot bind socket\n", b""]
+                )
+
+            async def wait(self) -> int:
+                return 42
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+        events: list[tuple[EventType, object]] = []
+        with pytest.raises(CrawlerBrowserMissing, match="exit 42"):
+            await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+        final = events[-1]
+        assert final[0] == EventType.SETUP_DONE
+        assert isinstance(final[1], SetupDoneEvent)
+        assert final[1].success is False
+        assert "network unreachable" in (final[1].error or "")
+
+
+class TestPlaywrightBrowserCheck:
+    def test_detects_missing_browsers(self, tmp_path, monkeypatch):
+        """Empty browsers path reports as not installed."""
+        from lilbee.crawler import chromium_installed
+
+        monkeypatch.setattr("lilbee.crawler._browsers_cache_path", lambda: tmp_path / "empty")
+        assert not chromium_installed()
+
+    def test_nonexistent_root_reports_missing(self, tmp_path, monkeypatch):
+        """A root path that doesn't exist reports as missing (not a crash)."""
+        from lilbee.crawler import chromium_installed
+
+        monkeypatch.setattr(
+            "lilbee.crawler._browsers_cache_path",
+            lambda: tmp_path / "does" / "not" / "exist",
+        )
+        assert not chromium_installed()
+
+    def test_detects_installed_chromium(self, tmp_path, monkeypatch):
+        """A chromium-* subdirectory counts as installed."""
+        from lilbee.crawler import chromium_installed
+
+        browsers = tmp_path / "ms-playwright"
+        browsers.mkdir()
+        (browsers / "chromium-1234").mkdir()
+        monkeypatch.setattr("lilbee.crawler._browsers_cache_path", lambda: browsers)
+        assert chromium_installed()
+
+    def test_path_respects_env_override(self, tmp_path, monkeypatch):
+        """PLAYWRIGHT_BROWSERS_PATH overrides the platform default."""
+        from lilbee.crawler import _browsers_cache_path
+
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "custom"))
+        assert _browsers_cache_path() == tmp_path / "custom"
+
+    def test_path_darwin_default(self, monkeypatch):
+        from lilbee.crawler import _browsers_cache_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr("sys.platform", "darwin")
+        parts = _browsers_cache_path().parts
+        assert parts[-1] == "ms-playwright"
+        assert "Library" in parts
+        assert "Caches" in parts
+
+    def test_path_linux_default(self, monkeypatch):
+        from lilbee.crawler import _browsers_cache_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr("sys.platform", "linux")
+        path = _browsers_cache_path()
+        assert path.name == "ms-playwright"
+        assert ".cache" in str(path)
+
+    def test_path_win32_default(self, monkeypatch):
+        from lilbee.crawler import _browsers_cache_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", "/tmp/localappdata")
+        monkeypatch.setattr("sys.platform", "win32")
+        assert _browsers_cache_path() == Path("/tmp/localappdata/ms-playwright")
+
+
+class TestSetupEventHelpers:
+    """bb-wq8g: _emit_setup_start / _emit_setup_done no-op when callback is None."""
+
+    def test_emit_start_no_op_when_on_progress_none(self) -> None:
+        from lilbee.crawler import _emit_setup_start
+
+        _emit_setup_start(None)  # must not raise
+
+    def test_emit_done_no_op_when_on_progress_none(self) -> None:
+        from lilbee.crawler import _emit_setup_done
+
+        _emit_setup_done(None, success=True, error=None)  # must not raise
+
 
 class TestCrawlRecursive:
     def _setup_crawl4ai(self, mock_instance):
@@ -696,6 +916,203 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1, quiet=True)
         mock_crawler_cls.assert_called_once_with(verbose=False)
 
+    async def test_reraises_browser_missing_from_crawler_open(self, monkeypatch):
+        """CrawlerBrowserMissing raised inside the try block propagates past the broad except."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        mock_instance = AsyncMock()
+        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserMissing("chromium gone"))
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            pytest.raises(CrawlerBrowserMissing, match="chromium gone"),
+        ):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+
+    async def test_propagates_crawler_browser_missing(self, monkeypatch):
+        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
+        import sys as _sys
+
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        # Stub crawl4ai + the deep_crawling submodule so the test runs even
+        # when the `crawler` extra isn't installed — crawl_recursive imports
+        # both at the top of its body before _open_crawler can fire.
+        monkeypatch.setitem(_sys.modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
+        monkeypatch.setitem(
+            _sys.modules, "crawl4ai.deep_crawling", MagicMock(BFSDeepCrawlStrategy=MagicMock())
+        )
+        monkeypatch.setitem(
+            _sys.modules,
+            "crawl4ai.deep_crawling.filters",
+            MagicMock(FilterChain=MagicMock(), URLPatternFilter=MagicMock()),
+        )
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+            await crawl_recursive("https://example.com", max_depth=1)
+
+
+class _StubURLFilter:
+    def __init__(self) -> None:
+        self.stats = MagicMock()
+
+    def _update_stats(self, passed: bool) -> None:
+        pass
+
+    def apply(self, url: str) -> bool:
+        return True
+
+
+class _StubDomainFilter(_StubURLFilter):
+    def __init__(self, allowed_domains: str) -> None:
+        super().__init__()
+        self.allowed_domains = allowed_domains
+
+    def apply(self, url: str) -> bool:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+        allowed = self.allowed_domains.lower()
+        return host == allowed or host.endswith(f".{allowed}")
+
+
+@pytest.fixture
+def _stub_crawl4ai_filters(monkeypatch):
+    """Make ``crawl4ai.deep_crawling.filters`` importable with minimal stand-ins.
+
+    CI installs without the ``crawler`` extra, so ``_host_scope_filter``'s inline
+    ``from crawl4ai.deep_crawling.filters import ...`` would raise ImportError.
+    """
+    stub = MagicMock(URLFilter=_StubURLFilter, DomainFilter=_StubDomainFilter)
+    monkeypatch.setitem(sys.modules, "crawl4ai", MagicMock())
+    monkeypatch.setitem(sys.modules, "crawl4ai.deep_crawling", MagicMock())
+    monkeypatch.setitem(sys.modules, "crawl4ai.deep_crawling.filters", stub)
+
+
+class TestHostScopeFilter:
+    """whole-site crawl must scope to the exact host by default."""
+
+    def test_exact_host_rejects_other_subdomains(self, _stub_crawl4ai_filters):
+        from lilbee.crawler import _host_scope_filter
+
+        f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=False)
+        assert f.apply("https://en.wikipedia.org/wiki/Y") is True
+        assert f.apply("https://af.wikipedia.org/wiki/Y") is False
+        assert f.apply("https://wikipedia.org/wiki/Y") is False
+
+    def test_include_subdomains_allows_siblings(self, _stub_crawl4ai_filters):
+        from lilbee.crawler import _host_scope_filter
+
+        f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=True)
+        assert f.apply("https://en.wikipedia.org/wiki/Y") is True
+        assert f.apply("https://other.example.com/") is False
+
+    def test_returns_none_when_host_missing(self, _stub_crawl4ai_filters):
+        from lilbee.crawler import _host_scope_filter
+
+        assert _host_scope_filter("not-a-url", include_subdomains=False) is None
+
+
+class TestSitemapCounting:
+    """best-effort sitemap lookup bounds the crawl progress total."""
+
+    def test_returns_unknown_on_http_error(self, monkeypatch):
+        import httpx
+
+        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        def _raise(*a, **kw):
+            raise httpx.ConnectError("boom")
+
+        monkeypatch.setattr("httpx.get", _raise)
+        assert (
+            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
+
+    def test_returns_unknown_on_4xx(self, monkeypatch):
+        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        fake = MagicMock(status_code=404, text="")
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        assert (
+            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
+
+    def test_counts_matching_urls_only(self, monkeypatch):
+        from lilbee.crawler import _count_sitemap_urls
+
+        body = (
+            "<urlset>"
+            "<url><loc>https://example.com/a</loc></url>"
+            "<url><loc>https://example.com/b</loc></url>"
+            "<url><loc>https://other.com/c</loc></url>"
+            "<url><loc>https://sub.example.com/d</loc></url>"
+            "</urlset>"
+        )
+        fake = MagicMock(status_code=200, text=body)
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        assert count == 2
+
+    def test_include_subdomains_counts_children(self, monkeypatch):
+        from lilbee.crawler import _count_sitemap_urls
+
+        body = (
+            "<urlset>"
+            "<url><loc>https://example.com/a</loc></url>"
+            "<url><loc>https://sub.example.com/d</loc></url>"
+            "<url><loc>https://other.com/c</loc></url>"
+            "</urlset>"
+        )
+        fake = MagicMock(status_code=200, text=body)
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
+        assert count == 2
+
+    def test_returns_unknown_when_start_url_has_no_host(self):
+        """A malformed start URL short-circuits before hitting the network."""
+        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        # file:///foo has no hostname, so the helper bails immediately.
+        assert (
+            _count_sitemap_urls("file:///not-a-real-host", include_subdomains=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
+
+    def test_skips_entries_with_no_host(self, monkeypatch):
+        """Sitemap entries whose loc has no hostname are skipped."""
+        from lilbee.crawler import _count_sitemap_urls
+
+        body = (
+            "<urlset>"
+            "<url><loc>/relative/path</loc></url>"
+            "<url><loc>https://example.com/a</loc></url>"
+            "</urlset>"
+        )
+        fake = MagicMock(status_code=200, text=body)
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        assert count == 1
+
+    def test_caps_at_max_urls(self, monkeypatch):
+        """A giant sitemap stops at _SITEMAP_MAX_URLS so the scan is bounded."""
+        from lilbee import crawler as crawler_mod
+        from lilbee.crawler import _count_sitemap_urls
+
+        monkeypatch.setattr(crawler_mod, "_SITEMAP_MAX_URLS", 3)
+        entries = "".join(f"<url><loc>https://example.com/{i}</loc></url>" for i in range(10))
+        fake = MagicMock(status_code=200, text=f"<urlset>{entries}</urlset>")
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        assert count == 3
+
 
 class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
@@ -704,6 +1121,22 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_triggers_bootstrap_when_chromium_missing(
+        self, mock_crawl_single, isolated_env, monkeypatch
+    ):
+        """bb-wq8g: crawl_and_save kicks off bootstrap_chromium on first use."""
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        called: list[object] = []
+
+        async def _fake_bootstrap(on_progress=None):
+            called.append(on_progress)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap_chromium", _fake_bootstrap)
+        await crawl_and_save("https://example.com", depth=0)
+        assert called == [None]
 
     @patch("lilbee.crawler.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):
@@ -738,6 +1171,20 @@ class TestCrawlAndSave:
         await crawl_and_save("https://example.com", depth=2, quiet=True)
         call_kwargs = mock_crawl_recursive.call_args[1]
         assert call_kwargs["quiet"] is True
+
+    @patch("lilbee.crawler.crawl_recursive")
+    async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
+        """whole-site default is exact-host scoping."""
+        mock_crawl_recursive.return_value = []
+        await crawl_and_save("https://example.com", depth=2)
+        assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is False
+
+    @patch("lilbee.crawler.crawl_recursive")
+    async def test_include_subdomains_threaded_through(self, mock_crawl_recursive, isolated_env):
+        """Opting into subdomain scope reaches the recursive crawl."""
+        mock_crawl_recursive.return_value = []
+        await crawl_and_save("https://example.com", depth=2, include_subdomains=True)
+        assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is True
 
     @patch("lilbee.crawler.crawl_recursive")
     async def test_cancel_threaded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):

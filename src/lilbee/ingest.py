@@ -248,15 +248,29 @@ def suppress_fd_stderr() -> Generator[None, None, None]:
 async def _try_tesseract_ocr(
     path: Path, source_name: str, fallback: ExtractionResult
 ) -> ExtractionResult:
-    """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
+    """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure.
+
+    Wraps extraction in ``asyncio.wait_for(cfg.tesseract_timeout)`` so a
+    huge scanned document can't monopolize an ingest worker for many
+    minutes (which the caller perceives as a UI lockup). The timeout is
+    configurable via ``LILBEE_TESSERACT_TIMEOUT``; 0 disables the cap.
+    """
     try:
         from kreuzberg import extract_file
 
         log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
         with suppress_fd_stderr():
-            return await extract_file(
-                str(path), config=extraction_config(ExtractMode.PAGINATED_OCR)
-            )
+            coro = extract_file(str(path), config=extraction_config(ExtractMode.PAGINATED_OCR))
+            if cfg.tesseract_timeout > 0:
+                return await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+            return await coro
+    except TimeoutError:
+        log.warning(
+            "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
+            cfg.tesseract_timeout,
+            source_name,
+        )
+        return fallback
     except Exception:
         log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)
         return fallback
@@ -356,25 +370,29 @@ async def _handle_scanned_pdf_fallback(
     updated ExtractionResult when Tesseract OCR succeeded (so the
     caller can proceed with normal chunking/embedding).
 
-    Vision OCR is attempted when ``_should_run_ocr()`` is True. When
-    force-OCR is on, Tesseract is skipped and we go straight to vision.
+    When vision OCR is available (``_should_run_ocr()`` True) we go
+    straight to it. Tesseract is only attempted when vision isn't an
+    option at all. Running a huge scanned PDF through vision *and then*
+    through Tesseract would double the wall-clock cost for no reason,
+    and Tesseract on a 50+ MB document otherwise feels like a TUI
+    lockup to the user.
     """
     use_ocr = _should_run_ocr()
 
-    if cfg.enable_ocr is not True:
-        result = await _try_tesseract_ocr(path, source_name, result)
+    if use_ocr:
+        log.info("Scanned PDF: using vision OCR for %s", source_name)
+        return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
+
+    result = await _try_tesseract_ocr(path, source_name, result)
 
     if not _has_meaningful_text(result):
-        if not use_ocr:
-            log.warning(
-                "Skipped %s: text extraction produced no usable text. "
-                "For better results on scanned PDFs, switch to a vision-capable "
-                "chat model or set LILBEE_ENABLE_OCR=true.",
-                source_name,
-            )
-            return []
-        log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
-        return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
+        log.warning(
+            "Skipped %s: text extraction produced no usable text. "
+            "For better results on scanned PDFs, switch to a vision-capable "
+            "chat model or set LILBEE_ENABLE_OCR=true.",
+            source_name,
+        )
+        return []
 
     log.info(
         "Scanned PDF detected — extracted with Tesseract OCR: %s. "
@@ -828,7 +846,13 @@ def _apply_result(
 ) -> None:
     """Record an ingestion result — update store on success, track failure."""
     if result.error is not None:
-        log.exception("Failed to ingest %s", result.name, exc_info=result.error)
+        # Log the error message without the traceback: ingest failures are
+        # already surfaced to callers via SyncResult.failed, and the raw
+        # traceback from log.exception bleeds into the TUI chat pane via the
+        # stderr bridge. Full stack traces stay reachable by
+        # lowering LILBEE_LOG_LEVEL to DEBUG.
+        log.warning("Failed to ingest %s: %s", result.name, result.error)
+        log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
         failed.append(result.name)

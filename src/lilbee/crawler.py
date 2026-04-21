@@ -8,8 +8,10 @@ import ipaddress
 import json
 import logging
 import math
+import os
 import re
 import socket
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -27,6 +29,9 @@ from lilbee.progress import (
     CrawlStartEvent,
     DetailedProgressCallback,
     EventType,
+    SetupDoneEvent,
+    SetupProgressEvent,
+    SetupStartEvent,
 )
 from lilbee.security import validate_path_within
 
@@ -41,6 +46,198 @@ def crawler_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+class CrawlerBrowserMissing(RuntimeError):
+    """Playwright is installed but its Chromium browser binary is not.
+
+    Raised early by ``_open_crawler`` so task workers route to FAILED with
+    an actionable message instead of letting Playwright print its raw
+    ASCII install banner into the TUI.
+    """
+
+
+def _browsers_cache_path() -> Path:
+    """Return the root path where Playwright stores browser binaries."""
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(local) / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def chromium_installed() -> bool:
+    """Return True if at least one chromium-* install directory exists."""
+    root = _browsers_cache_path()
+    if not root.exists():
+        return False
+    return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
+
+
+def crawler_browsers_path() -> Path:
+    """Public accessor for the crawler browser cache root.
+
+    Used by the HTTP status endpoint to tell plugins where Chromium
+    lives. The underlying resolver stays private because callers should
+    not depend on the Playwright-specific directory layout.
+    """
+    return _browsers_cache_path()
+
+
+_CHROMIUM_COMPONENT = "chromium"
+# Rough size estimate for the Chromium download; Playwright bundles vary
+# slightly per platform but this gives the UI a decent denominator before
+# 'Total bytes' parses out of stdout.
+_CHROMIUM_ESTIMATE_MB = 180
+_CHROMIUM_SIZE_ESTIMATE_BYTES = _CHROMIUM_ESTIMATE_MB * 1024 * 1024
+
+# Unit -> bytes scale for Playwright stdout progress lines.
+_BYTE_UNIT_SCALE: dict[str, int] = {
+    "b": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 * 1024,
+    "mib": 1024 * 1024,
+}
+
+# Playwright 1.58 prints lines like
+# ``|■■■■■■■■                                  |  10% of 162.3 MiB`` during
+# the chromium download. The percent comes first, then "of <total> <unit>".
+_PROGRESS_LINE_RE = re.compile(
+    r"(\d+)\s*%\s*of\s*(\d+(?:\.\d+)?)\s*(MiB|Mb|MB|KiB|KB|B)",
+    re.IGNORECASE,
+)
+
+
+def _bytes_from_stdout(line: str) -> tuple[int, int] | None:
+    """Extract (downloaded_bytes, total_bytes) from a Playwright stdout line.
+
+    Matches the ``NN% of N.N MiB`` shape Playwright 1.58+ emits for the
+    Chromium download. Returns None when the line doesn't match. The
+    percent and total both parse out of the same line so callers never
+    have to handle a missing total.
+    """
+    match = _PROGRESS_LINE_RE.search(line)
+    if match is None:
+        return None
+    pct = int(match.group(1))
+    raw_total = float(match.group(2))
+    unit = match.group(3).lower()
+    scale = _BYTE_UNIT_SCALE.get(unit, 1)
+    total = int(raw_total * scale)
+    downloaded = int(total * pct / 100)
+    return downloaded, total
+
+
+def _emit_setup_start(on_progress: DetailedProgressCallback | None) -> None:
+    if on_progress is None:
+        return
+    on_progress(
+        EventType.SETUP_START,
+        SetupStartEvent(
+            component=_CHROMIUM_COMPONENT,
+            size_estimate_bytes=_CHROMIUM_SIZE_ESTIMATE_BYTES,
+        ),
+    )
+
+
+def _emit_setup_done(
+    on_progress: DetailedProgressCallback | None,
+    *,
+    success: bool,
+    error: str | None,
+) -> None:
+    if on_progress is None:
+        return
+    on_progress(
+        EventType.SETUP_DONE,
+        SetupDoneEvent(component=_CHROMIUM_COMPONENT, success=success, error=error),
+    )
+
+
+async def _drain_stdout_to_progress(
+    stream: asyncio.StreamReader,
+    on_progress: DetailedProgressCallback | None,
+) -> None:
+    while True:
+        line_bytes = await stream.readline()
+        if not line_bytes:
+            return
+        line = line_bytes.decode(errors="replace").rstrip()
+        parsed = _bytes_from_stdout(line)
+        if parsed is None or on_progress is None:
+            continue
+        downloaded, total = parsed
+        on_progress(
+            EventType.SETUP_PROGRESS,
+            SetupProgressEvent(
+                component=_CHROMIUM_COMPONENT,
+                downloaded_bytes=downloaded,
+                total_bytes=total,
+                detail=line,
+            ),
+        )
+
+
+async def _drain_stderr(stream: asyncio.StreamReader, tail: list[str]) -> None:
+    while True:
+        line_bytes = await stream.readline()
+        if not line_bytes:
+            return
+        tail.append(line_bytes.decode(errors="replace").rstrip())
+
+
+async def bootstrap_chromium(
+    on_progress: DetailedProgressCallback | None = None,
+) -> None:
+    """Run ``playwright install chromium`` as a subprocess, emitting events.
+
+    Short-circuits when ``chromium_installed()`` is already True. Emits
+    ``setup_start`` before spawning, ``setup_progress`` for each
+    recognizable progress line on stdout, and ``setup_done`` on exit
+    (``success=False`` + the subprocess stderr tail on failure). Raises
+    :class:`CrawlerBrowserMissing` with the tail so task workers route
+    to FAILED cleanly.
+
+    Uses the current Python interpreter's ``playwright`` module so this
+    works under ``uv tool install`` and bundled installs alike without
+    relying on a globally-installed ``playwright`` CLI.
+    """
+    if chromium_installed():
+        _emit_setup_done(on_progress, success=True, error=None)
+        return
+
+    _emit_setup_start(on_progress)
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "playwright",
+        "install",
+        "chromium",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    stderr_tail: list[str] = []
+    await asyncio.gather(
+        _drain_stdout_to_progress(proc.stdout, on_progress),
+        _drain_stderr(proc.stderr, stderr_tail),
+    )
+    returncode = await proc.wait()
+
+    if returncode != 0:
+        tail = "\n".join(stderr_tail[-10:]) or f"exit code {returncode}"
+        _emit_setup_done(on_progress, success=False, error=tail)
+        raise CrawlerBrowserMissing(f"Chromium bootstrap failed (exit {returncode}): {tail}")
+
+    _emit_setup_done(on_progress, success=True, error=None)
 
 
 class CrawlerState:
@@ -355,15 +552,26 @@ class _LilbeeAsyncCrawler:
 async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
     """Open a crawler.
 
+    Raises :class:`CrawlerBrowserMissing` early if the Chromium binary
+    hasn't been downloaded. Without this guard Playwright prints a full
+    ASCII install banner that leaks into the TUI.
+
     When *dispatcher* is provided, wrap AsyncWebCrawler in _LilbeeAsyncCrawler
     so every strategy-originated arun_many call picks it up. The single-URL
     path (crawl_single) doesn't need a dispatcher because arun() doesn't accept
     one, so it passes None and gets a bare AsyncWebCrawler.
     """
+    if not chromium_installed():
+        raise CrawlerBrowserMissing(
+            "Playwright Chromium browser not installed. "
+            "Run 'uv run playwright install chromium' to enable /crawl."
+        )
+
     from crawl4ai import AsyncWebCrawler
 
     stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
-    with stdout_ctx:
+    stderr_ctx = contextlib.redirect_stderr(io.StringIO()) if quiet else contextlib.nullcontext()
+    with stdout_ctx, stderr_ctx:
         if dispatcher is not None:
             async with _LilbeeAsyncCrawler(verbose=not quiet, dispatcher=dispatcher) as crawler:
                 yield crawler
@@ -391,6 +599,8 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
             success=False,
             error=result.error_message or "No content extracted",
         )
+    except CrawlerBrowserMissing:
+        raise
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
         return CrawlResult(url=url, success=False, error=str(exc))
@@ -411,6 +621,93 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> float:
     return effective
 
 
+# Sitemap lookups are best-effort progress hints; never block the actual crawl.
+_SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0
+_SITEMAP_MAX_URLS = 10_000
+_SITEMAP_URL_TAG_RE = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.IGNORECASE)
+
+
+def _host_in_scope(link_host: str, host: str, *, include_subdomains: bool) -> bool:
+    if not link_host:
+        return False
+    if link_host == host:
+        return True
+    return include_subdomains and link_host.endswith(f".{host}")
+
+
+def _fetch_sitemap_text(start_url: str) -> str | None:
+    """Return sitemap.xml body or None on any fetch/status failure."""
+    import httpx
+
+    parsed = urlparse(start_url)
+    sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+    try:
+        resp = httpx.get(sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+    except (httpx.HTTPError, OSError):
+        return None
+    if resp.status_code >= 400:
+        return None
+    return resp.text
+
+
+def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
+    """Best-effort count of URLs in the host's /sitemap.xml that match the crawl scope.
+
+    Returns CRAWL_TOTAL_UNKNOWN on any failure (missing sitemap, timeout,
+    parse error, redirect away from the starting host). This is purely a
+    progress-hint denominator, so correctness is not load-bearing.
+
+    Only fetches sitemap.xml directly at the root of the starting host; does
+    not follow robots.txt references or nested sitemap indexes.
+    """
+    host = (urlparse(start_url).hostname or "").lower()
+    if not host:
+        return CRAWL_TOTAL_UNKNOWN
+    text = _fetch_sitemap_text(start_url)
+    if text is None:
+        return CRAWL_TOTAL_UNKNOWN
+
+    count = 0
+    for match in _SITEMAP_URL_TAG_RE.finditer(text):
+        link_host = (urlparse(match.group(1).strip()).hostname or "").lower()
+        if _host_in_scope(link_host, host, include_subdomains=include_subdomains):
+            count += 1
+        if count >= _SITEMAP_MAX_URLS:
+            break
+    return count if count > 0 else CRAWL_TOTAL_UNKNOWN
+
+
+def _host_scope_filter(start_url: str, *, include_subdomains: bool) -> Any:
+    """Build a URLFilter that scopes a crawl to the starting URL's host.
+
+    Default behavior (``include_subdomains=False``) restricts link-following to
+    the exact host of *start_url*. For ``https://en.wikipedia.org/...`` this
+    excludes ``af.wikipedia.org`` and every other language subdomain.
+
+    When ``include_subdomains=True``, crawl4ai's DomainFilter matches the host
+    plus any of its subdomains (``foo.example.com`` matches ``example.com``),
+    which is the loose "whole registrable domain" behavior users may want.
+    """
+    from crawl4ai.deep_crawling.filters import DomainFilter, URLFilter
+
+    host = (urlparse(start_url).hostname or "").lower()
+    if include_subdomains:
+        return DomainFilter(allowed_domains=host) if host else None
+
+    class _ExactHostFilter(URLFilter):  # type: ignore[misc]
+        def __init__(self, allowed_host: str) -> None:
+            super().__init__()
+            self._host = allowed_host
+
+        def apply(self, url: str) -> bool:
+            link_host = (urlparse(url).hostname or "").lower()
+            ok = link_host == self._host
+            self._update_stats(ok)
+            return ok
+
+    return _ExactHostFilter(host) if host else None
+
+
 async def crawl_recursive(
     url: str,
     max_depth: int | None = None,
@@ -419,6 +716,7 @@ async def crawl_recursive(
     cancel: threading.Event | None = None,
     *,
     quiet: bool = False,
+    include_subdomains: bool = False,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
@@ -427,10 +725,24 @@ async def crawl_recursive(
     Positive ints are explicit caps. CRAWL_PAGE events fire as each page
     completes; total is CRAWL_TOTAL_UNKNOWN since BFS doesn't know the final
     page count up front.
+
+    By default the crawl is scoped to the exact starting host so a Wikipedia
+    article doesn't wander into other language editions. Pass
+    ``include_subdomains=True`` to broaden scope to the starting host plus any
+    subdomains (e.g. ``en.wikipedia.org`` plus ``af.wikipedia.org``).
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
     pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+
+    # Fail fast before pulling in crawl4ai submodules so callers get a clear
+    # CrawlerBrowserMissing instead of a Playwright install banner or a
+    # dispatcher import path.
+    if not chromium_installed():
+        raise CrawlerBrowserMissing(
+            "Playwright Chromium browser not installed. "
+            "Run 'uv run playwright install chromium' to enable /crawl."
+        )
 
     from crawl4ai import CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
@@ -443,11 +755,13 @@ async def crawl_recursive(
     # filtering later. Patterns are treated as regex (use_glob=False);
     # reverse=True flips the filter's sense from include to exclude.
     exclude_patterns = list(cfg.crawl_exclude_patterns)
-    filter_chain = (
-        FilterChain([URLPatternFilter(exclude_patterns, use_glob=False, reverse=True)])
-        if exclude_patterns
-        else FilterChain()
-    )
+    filters: list[Any] = []
+    host_filter = _host_scope_filter(url, include_subdomains=include_subdomains)
+    if host_filter is not None:
+        filters.append(host_filter)
+    if exclude_patterns:
+        filters.append(URLPatternFilter(exclude_patterns, use_glob=False, reverse=True))
+    filter_chain = FilterChain(filters) if filters else FilterChain()
 
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
@@ -462,6 +776,13 @@ async def crawl_recursive(
         max_range=cfg.crawl_max_delay_range,
         semaphore_count=cfg.crawl_concurrent_requests,
         stream=True,
+    )
+
+    # Best-effort sitemap lookup so the TUI / CLI can render a real page-count
+    # denominator instead of [n/-1]. Falls back to CRAWL_TOTAL_UNKNOWN on any
+    # failure; off the hot path so a slow/missing sitemap never blocks the crawl.
+    sitemap_total = await asyncio.to_thread(
+        _count_sitemap_urls, url, include_subdomains=include_subdomains
     )
 
     results: list[CrawlResult] = []
@@ -480,7 +801,7 @@ async def crawl_recursive(
                     if on_progress:
                         on_progress(
                             EventType.CRAWL_PAGE,
-                            CrawlPageEvent(url=cr.url, current=counter, total=CRAWL_TOTAL_UNKNOWN),
+                            CrawlPageEvent(url=cr.url, current=counter, total=sitemap_total),
                         )
                     if cr.success:
                         results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
@@ -507,6 +828,8 @@ async def crawl_recursive(
                 # order. Skipping this is what produced the "BrowserContext.
                 # new_page: Connection closed" spam on cancel.
                 await _safe_aclose(stream)
+    except CrawlerBrowserMissing:
+        raise
     except Exception as exc:
         # After cancel, crawl4ai may raise BrowserContext teardown errors as
         # in-flight URLs bail. That's expected noise, not a failure worth
@@ -613,6 +936,7 @@ async def crawl_and_save(
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
     quiet: bool = False,
+    include_subdomains: bool = False,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
@@ -621,10 +945,22 @@ async def crawl_and_save(
     Positive int = cap. cfg.crawl_max_{depth,pages} act as user-opted-in
     ceilings applied only when depth/max_pages are None.
 
+    When recursing, the crawl is scoped to the exact starting host by default.
+    Set ``include_subdomains=True`` to also follow links into sibling
+    subdomains of the starting host.
+
     Uses hash-based change detection: always fetches, but only saves files
     whose content has changed (or is new). When *cancel* is set, returns
     early with an empty list.
     """
+    # Auto-bootstrap Chromium on first use so every crawl entry point works
+    # on a fresh install without a separate setup step. bootstrap_chromium
+    # short-circuits when Chromium is already installed. Any progress is
+    # forwarded through the same on_progress callback so downstream UIs
+    # surface a 'setup' stage before the crawl events.
+    if not chromium_installed():
+        await bootstrap_chromium(on_progress=on_progress)
+
     sem = _get_crawl_semaphore()
     if sem is not None:
         await sem.acquire()
@@ -646,6 +982,7 @@ async def crawl_and_save(
                 on_progress=on_progress,
                 cancel=cancel,
                 quiet=quiet,
+                include_subdomains=include_subdomains,
             )
 
         if cancel and cancel.is_set():

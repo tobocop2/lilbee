@@ -375,6 +375,84 @@ class TestCatalogScreenAsync:
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
 
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_escape_from_filter_unfocuses_instead_of_leaving(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """first Escape while filter is focused should move focus to
+        the list or grid, not leave the screen."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            catalog = CatalogScreen()
+            app.push_screen(catalog)
+            await pilot.pause()
+            # Focus the filter input explicitly to match the scenario.
+            catalog.query_one("#catalog-search", Input).focus()
+            await pilot.pause()
+            assert isinstance(catalog.focused, Input)
+            catalog.action_go_back()
+            await pilot.pause()
+            # Still on the catalog screen; focus no longer on the Input.
+            assert isinstance(app.screen, CatalogScreen)
+            assert not isinstance(catalog.focused, Input)
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_escape_from_filter_in_list_view_focuses_list(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """in list view, Escape from filter should focus the list."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            catalog = CatalogScreen()
+            app.push_screen(catalog)
+            await pilot.pause()
+            catalog.action_toggle_view()  # switch to list view
+            await pilot.pause()
+            catalog.query_one("#catalog-search", Input).focus()
+            await pilot.pause()
+            assert isinstance(catalog.focused, Input)
+            catalog.action_go_back()
+            await pilot.pause()
+            assert isinstance(app.screen, CatalogScreen)
+            assert not isinstance(catalog.focused, Input)
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_sort_cycle_visits_all_four_columns(self, mock_catalog: mock.MagicMock) -> None:
+        """cycle must visit Name -> Downloads -> Size -> Params -> Name."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            catalog = CatalogScreen()
+            app.push_screen(catalog)
+            await pilot.pause()
+            # Switch to list view so sort is available.
+            catalog._grid_view = False
+            catalog._sort_column = "Name"
+            observed = []
+            for _ in range(5):
+                catalog.action_cycle_sort()
+                await pilot.pause()
+                observed.append(catalog._sort_column)
+            assert observed == ["Downloads", "Size", "Params", "Name", "Downloads"]
+
 
 class TestSettingsScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -532,6 +610,55 @@ class TestSetupWizard:
         wizard = SetupWizard()
         assert wizard._selected_chat is None
         assert wizard._selected_embed is None
+
+    async def test_first_chat_grid_focused_on_mount(self) -> None:
+        """On mount, the first chat-model GridSelect must have keyboard focus.
+
+        Regression guard for bb-rqrv: on a fresh launch the wizard's
+        GridSelect widgets were focus-less, so arrow keys / Tab / Enter
+        never reached them. Users could not pick a model without the mouse.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.push_screen(SetupWizard())
+            await pilot.pause()
+            focused = app.focused
+            assert isinstance(focused, GridSelect), (
+                f"expected GridSelect to have focus on mount, got {type(focused).__name__}"
+            )
+
+    async def test_single_tab_escapes_chat_grid(self) -> None:
+        """A single Tab from the chat grid must move focus OUT of the grid.
+
+        Regression guard for bb-q9gl root cause: GridSelect's default
+        ``action_tab_next`` cycled highlight within the grid before
+        escaping, so users who pressed Tab after selecting a card found
+        their selection silently changed as the highlight wandered through
+        other cards. Tab must not be a within-grid navigator.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            wizard = SetupWizard()
+            await app.push_screen(wizard)
+            await pilot.pause()
+            assert isinstance(app.focused, GridSelect), "test precondition"
+            before = app.focused
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is not before, (
+                "Tab on focused GridSelect must leave the grid; "
+                f"stayed on {type(app.focused).__name__}"
+            )
 
 
 class TestCanonicalModelsDir:
@@ -726,14 +853,14 @@ class TestNavBindings:
 
 
 class TestNoRichConsoleInTui:
-    """B2: Verify _run_add_background does not import Rich Console."""
+    """B2: Verify the /add implementation doesn't pull Rich Console into the TUI."""
 
     def test_chat_add_uses_copy_files_not_copy_paths(self) -> None:
         import inspect
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen._run_add_background)
+        source = inspect.getsource(ChatScreen._do_add)
         assert "from lilbee.cli.app import console" not in source
         assert "copy_paths" not in source
         assert "copy_files" in source

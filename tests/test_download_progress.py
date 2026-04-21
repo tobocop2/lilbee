@@ -469,18 +469,6 @@ class TestMakeDownloadCallback:
         assert updates[0].percent == 0
         assert "MB" in updates[0].detail
 
-    def test_deduplicates_same_percent(self) -> None:
-        """Repeated callbacks at the same percentage are suppressed."""
-        updates: list[DownloadProgress] = []
-        cb = make_download_callback(updates.append, throttle_interval=0)
-        cb(10, 1000)  # 1%
-        cb(11, 1000)  # still 1%
-        cb(12, 1000)  # still 1%
-        cb(20, 1000)  # 2%
-        assert len(updates) == 2
-        assert updates[0].percent == 1
-        assert updates[1].percent == 2
-
     def test_throttle_suppresses_rapid_calls(self) -> None:
         """Calls within throttle_interval are suppressed."""
         updates: list[DownloadProgress] = []

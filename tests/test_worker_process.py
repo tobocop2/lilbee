@@ -910,32 +910,40 @@ class TestLoadVisionModel:
         mock_load.assert_called_once_with(vision_path)
 
 
-class TestRedirectStdio:
-    """Test _redirect_stdio without the autouse mock (override the fixture)."""
+def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:
+    """``_redirect_stdio`` points sys.stdout/stderr to devnull.
 
-    @pytest.fixture(autouse=True)
-    def _no_stdio_redirect(self):
-        """Override the module-level autouse fixture — let _redirect_stdio run."""
-        yield
+    Runs in a fresh subprocess because the function closes fds 1 and 2
+    in its caller's process; doing that inside the pytest process would
+    deadlock pytest-xdist's worker pipe. A child process has its own
+    fds so the close is harmless here (see bb-7w37). The verdict is
+    written to a sentinel file rather than stdout because the real
+    ``_redirect_stdio`` call eats stdout on its way.
+    """
+    import json
+    import subprocess
+    import textwrap
 
-    def test_redirects_stdout_stderr_to_devnull(self) -> None:
-        """_redirect_stdio points sys.stdout/stderr to devnull."""
-        import os
-
+    verdict = tmp_path / "verdict.json"
+    script = textwrap.dedent(
+        f"""
+        import json, os, sys
         from lilbee.providers.worker_process import _redirect_stdio
 
-        orig_out, orig_err = sys.stdout, sys.stderr
-        orig_fd1, orig_fd2 = os.dup(1), os.dup(2)
-        try:
-            _redirect_stdio()
-            assert sys.stdout.name == os.devnull
-            assert sys.stderr.name == os.devnull
-        finally:
-            sys.stdout.close()
-            sys.stderr.close()
-            sys.stdout = orig_out
-            sys.stderr = orig_err
-            os.dup2(orig_fd1, 1)
-            os.dup2(orig_fd2, 2)
-            os.close(orig_fd1)
-            os.close(orig_fd2)
+        _redirect_stdio()
+        with open({str(verdict)!r}, "w") as fh:
+            json.dump(
+                {{
+                    "stdout_name": sys.stdout.name,
+                    "stderr_name": sys.stderr.name,
+                    "devnull": os.devnull,
+                }},
+                fh,
+            )
+        """
+    ).strip()
+
+    subprocess.run([sys.executable, "-c", script], timeout=30, check=True)
+    body = json.loads(verdict.read_text())
+    assert body["stdout_name"] == body["devnull"]
+    assert body["stderr_name"] == body["devnull"]

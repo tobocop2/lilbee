@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import NamedTuple
 
@@ -9,9 +10,11 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
-from textual.widgets import Label, Select
+from textual.widgets import Select, Static
+from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
+from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
 from lilbee.models import ModelTask
@@ -121,15 +124,40 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     Normalizes *default* with :latest when no tag is present so that a
     bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
     instead of creating a broken fallback entry.
-    Prepends *default* if it is not already in *opts*.
+
+    If *default* is set but not actually installed, surfaces it with a
+    ``(not installed)`` label so the user doesn't mistake the config
+    default for a working model. Select still allows picking it for
+    backward compatibility, but the UI makes the real state obvious.
     """
     ref = parse_model_ref(default) if default else None
     default = default if (ref and ref.is_api) else (ref.name if ref else default)
     if default and not any(o.ref == default for o in opts):
-        opts.insert(0, ModelOption(default, default))
+        opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)
     if default:
         sel.value = default
+    _refresh_select_label(sel, opts, default)
+
+
+def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> None:
+    """Push the matching option's label into ``SelectCurrent``.
+
+    Textual's ``Select.set_options`` updates the option list but doesn't
+    re-render ``SelectCurrent`` if the existing ``value`` still matches
+    an option — the reactive watcher short-circuits on ``old == new``.
+    That meant a freshly-labelled option (e.g. ``"<ref> (not installed)"``)
+    kept the compose-time bare-ref label on screen. Poke the inner
+    widget directly so the visible label matches what tests assert.
+    """
+    if not value:
+        return
+    with contextlib.suppress(Exception):
+        current = sel.query_one(SelectCurrent)
+        for label, ref_value in opts:
+            if ref_value == value:
+                current.update(label)
+                return
 
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
@@ -138,6 +166,11 @@ _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
+    # Textual's SelectOverlay floats with overlay: screen and can leak
+    # border cells into terminal scrollback on collapse. Capping the
+    # height and constraining inside the screen keeps the overlay from
+    # crossing the viewport; the refresh in _watch_overlay_collapse
+    # forces the compositor to re-paint the covered region.
     DEFAULT_CSS = """
     ModelBar {
         dock: top;
@@ -148,14 +181,17 @@ class ModelBar(Widget, can_focus=False):
         height: 3;
         width: 100%;
     }
-    ModelBar Label {
+    ModelBar .model-bar-pill {
         width: auto;
         padding: 1 1 0 0;
-        text-style: bold;
     }
     ModelBar Select {
         width: 1fr;
         margin: 0 1 0 0;
+    }
+    ModelBar Select > SelectOverlay {
+        max-height: 8;
+        constrain: inside inside;
     }
     """
 
@@ -167,14 +203,14 @@ class ModelBar(Widget, can_focus=False):
         chat_opts = [(cfg.chat_model, cfg.chat_model)] if cfg.chat_model else []
         embed_opts = [(cfg.embedding_model, cfg.embedding_model)] if cfg.embedding_model else []
         with Horizontal():
-            yield Label("Chat:")
+            yield Static(pill("Chat", "$primary", "$text"), classes="model-bar-pill")
             yield Select[str](
                 options=chat_opts,
                 prompt="Chat model",
                 id="chat-model-select",
                 allow_blank=False,
             )
-            yield Label("Embed:")
+            yield Static(pill("Embed", "$secondary", "$text"), classes="model-bar-pill")
             yield Select[str](
                 options=embed_opts,
                 prompt="Embed model",
@@ -191,7 +227,20 @@ class ModelBar(Widget, can_focus=False):
         if cfg.embedding_model:
             embed_sel.value = cfg.embedding_model
 
+        self._watch_overlay_collapse(chat_sel)
+        self._watch_overlay_collapse(embed_sel)
+
         self._scan_models()
+
+    def _watch_overlay_collapse(self, sel: Select) -> None:
+        """Force a full screen refresh when a Select overlay collapses."""
+
+        def _on_expanded_change(expanded: bool) -> None:
+            if not expanded and self.is_mounted:
+                with contextlib.suppress(Exception):
+                    self.screen.refresh()
+
+        self.watch(sel, "expanded", _on_expanded_change, init=False)
 
     @work(thread=True)
     def _scan_models(self) -> None:

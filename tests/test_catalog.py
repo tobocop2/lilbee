@@ -867,6 +867,29 @@ class TestDownloadModel:
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             download_model(entry)
 
+    def test_task_cancelled_propagates_unwrapped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TaskCancelled from the progress callback must bubble up as-is.
+
+        Regression test for bb-nis1: catalog.py used to wrap TaskCancelled in
+        a generic RuntimeError via its 'except Exception' block, causing
+        cancelled downloads to land as FAILED instead of CANCELLED in the
+        Task Center.
+        """
+        from lilbee.cancellation import TaskCancelled
+
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+
+        def fake_download(**kwargs: Any) -> str:
+            raise TaskCancelled
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(TaskCancelled):
+            download_model(entry)
+
     def test_repo_not_found_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1555,6 +1578,77 @@ class TestHfModelsSearchFilter:
         page = catalog._fetch_hf_models()
         models = page.models
         assert len(models) == 2
+
+
+class TestHfSearchValue:
+    """Helper that joins the user's query onto the GGUF filter for HF ``search=``."""
+
+    def test_empty_query_returns_only_gguf_filter(self) -> None:
+        assert catalog._hf_search_value("") == "GGUF"
+
+    def test_single_term_space_joined_after_gguf(self) -> None:
+        assert catalog._hf_search_value("qwen3") == "GGUF qwen3"
+
+    def test_whitespace_split_collapses_into_single_string(self) -> None:
+        assert catalog._hf_search_value("qwen3 8b  instruct") == "GGUF qwen3 8b instruct"
+
+
+class TestFetchHfModelsSearchForwarding:
+    """User search text reaches HF as one space-joined ``search=`` value."""
+
+    def test_search_value_sent_as_single_query_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured_params: list[httpx.QueryParams] = []
+        mock_resp = httpx.Response(200, json=[])
+
+        def capture_get(url: str, **kwargs: Any) -> httpx.Response:
+            captured_params.append(kwargs["params"])
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models(search="qwen3 8b")
+        assert captured_params[0].get_list("search") == ["GGUF qwen3 8b"]
+
+    def test_empty_search_still_sends_gguf_term(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured_params: list[httpx.QueryParams] = []
+        mock_resp = httpx.Response(200, json=[])
+
+        def capture_get(url: str, **kwargs: Any) -> httpx.Response:
+            captured_params.append(kwargs["params"])
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models()
+        assert captured_params[0].get_list("search") == ["GGUF"]
+
+    def test_different_search_terms_do_not_collide_in_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cache key must include the search terms so distinct queries aren't aliased."""
+        calls = 0
+
+        def capture_get(*a: object, **kw: object) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models(search="qwen")
+        catalog._fetch_hf_models(search="llama")
+        # A third call with the first term should be served from cache.
+        catalog._fetch_hf_models(search="qwen")
+        assert calls == 2
+
+    def test_get_catalog_forwards_search_to_hf_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The top-level catalog API must pass search through to the HF fetcher."""
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_fetch(**kwargs: Any) -> catalog._HfPage:
+            captured_kwargs.update(kwargs)
+            return _EMPTY_HF_PAGE
+
+        monkeypatch.setattr(catalog, "_fetch_hf_models", fake_fetch)
+        get_catalog(search="llama3", featured=False)
+        assert captured_kwargs.get("search") == "llama3"
 
 
 class TestGatedRepoShowsLoginMessage:

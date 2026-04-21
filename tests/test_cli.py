@@ -1667,6 +1667,26 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["max_pages"] == 10
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_defaults_include_subdomains_false(self, mock_sync, mock_crawl, mock_avail):
+        """default scope is the starting host only, no subdomains."""
+        result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["include_subdomains"] is False
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_opt_in_include_subdomains(self, mock_sync, mock_crawl, mock_avail):
+        """--include-subdomains broadens scope to sibling subdomains."""
+        result = runner.invoke(
+            app, ["add", "--crawl", "--include-subdomains", "https://example.com"]
+        )
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["include_subdomains"] is True
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
@@ -1834,7 +1854,16 @@ class TestCrawlUrlsBlocking:
 
         call_log = []
 
-        def fake_run(url, *, depth, max_pages, on_progress, cancel_event, crawl_and_save):
+        def fake_run(
+            url,
+            *,
+            depth,
+            max_pages,
+            on_progress,
+            cancel_event,
+            crawl_and_save,
+            include_subdomains=False,
+        ):
             call_log.append(url)
             # Simulate SIGINT landing during the first URL's crawl:
             cancel_event.set()
@@ -2447,3 +2476,130 @@ class TestSyncResultToJson:
 
         with pytest.raises(TypeError, match="Expected SyncResult"):
             sync_result_to_json("not a SyncResult")
+
+
+class TestSetupCrawlerCommand:
+    """bb-wq8g: 'lilbee setup crawler' installs Chromium."""
+
+    def test_noop_when_already_installed(self):
+        with mock.patch("lilbee.cli.commands.chromium_installed", return_value=True):
+            result = runner.invoke(app, ["setup", "crawler"])
+        assert result.exit_code == 0
+        assert "already installed" in result.stdout.lower()
+
+    def test_runs_bootstrap_when_missing(self):
+        async def _fake_bootstrap(on_progress=None):
+            return None
+
+        with (
+            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+        ):
+            result = runner.invoke(app, ["setup", "crawler"])
+        assert result.exit_code == 0
+        assert "installed" in result.stdout.lower()
+
+    def test_propagates_bootstrap_failure_as_exit_1(self):
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        async def _fake_bootstrap(on_progress=None):
+            raise CrawlerBrowserMissing("offline")
+
+        with (
+            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+        ):
+            result = runner.invoke(app, ["setup", "crawler"])
+        assert result.exit_code == 1
+
+    def test_already_installed_json_mode(self):
+        """--json with chromium present yields already_installed=True."""
+        with mock.patch("lilbee.cli.commands.chromium_installed", return_value=True):
+            result = runner.invoke(app, ["--json", "setup", "crawler"])
+        assert result.exit_code == 0
+        assert '"already_installed": true' in result.stdout
+
+    def test_runs_bootstrap_emits_progress_and_json_success(self):
+        """--json with missing chromium emits progress via on_progress, then 'installed: true'."""
+        from lilbee.progress import EventType, SetupProgressEvent
+
+        async def _fake_bootstrap(on_progress=None):
+            # Exercise the progress-echo and percent-dedup branches.
+            assert on_progress is not None
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=10,
+                    total_bytes=100,
+                    detail="...",
+                ),
+            )
+            # Same pct again — should not re-emit.
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=10,
+                    total_bytes=100,
+                    detail="...",
+                ),
+            )
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium",
+                    downloaded_bytes=50,
+                    total_bytes=100,
+                    detail="...",
+                ),
+            )
+            # Non-progress events and non-progress payloads must be ignored.
+            on_progress(EventType.SETUP_DONE, object())
+
+        with (
+            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+        ):
+            result = runner.invoke(app, ["--json", "setup", "crawler"])
+        assert result.exit_code == 0
+        assert '"installed": true' in result.stdout
+
+    def test_runs_bootstrap_emits_progress_non_json(self):
+        """Non-json mode prints 'chromium: NN%' for each new percent."""
+        from lilbee.progress import EventType, SetupProgressEvent
+
+        async def _fake_bootstrap(on_progress=None):
+            assert on_progress is not None
+            on_progress(
+                EventType.SETUP_PROGRESS,
+                SetupProgressEvent(
+                    component="chromium", downloaded_bytes=10, total_bytes=100, detail="..."
+                ),
+            )
+
+        with (
+            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+        ):
+            result = runner.invoke(app, ["setup", "crawler"])
+        assert result.exit_code == 0
+        # The progress line goes to stderr; the typer runner mixes stderr into stdout
+        # in default mode only when mix_stderr=True, but the echo's side effect runs
+        # regardless. We just confirm successful completion here.
+
+    def test_bootstrap_failure_json_mode(self):
+        """--json with a bootstrap failure yields error JSON + exit 1."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        async def _fake_bootstrap(on_progress=None):
+            raise CrawlerBrowserMissing("offline")
+
+        with (
+            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+        ):
+            result = runner.invoke(app, ["--json", "setup", "crawler"])
+        assert result.exit_code == 1
+        assert '"error"' in result.stdout
+        assert "offline" in result.stdout

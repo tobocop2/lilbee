@@ -54,7 +54,7 @@ def test_tui_screens_do_not_reintroduce_bare_input():
     screens_dir = Path(__file__).parent.parent / "src" / "lilbee" / "cli" / "tui" / "screens"
     offenders: list[str] = []
     for path in sorted(screens_dir.glob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if _is_bare_input_call(node):
                 offenders.append(f"{path.name}:{node.lineno}")

@@ -277,6 +277,11 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+
+    # Wall-clock timeout in seconds for the Tesseract OCR fallback per
+    # file. Large scanned PDFs can otherwise block an ingest worker for
+    # many minutes and make the TUI feel frozen. 0 disables the cap.
+    tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     server_host: str = "127.0.0.1"
@@ -287,7 +292,11 @@ class Config(BaseSettings):
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
     top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
-    repeat_penalty: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    # 1.1 is the llama.cpp default and the value most open-weights chat
+    # models are tuned with. A None here made chat prone to n-gram loops
+    # ("tire tire tire ...") on some models. Users can still override or
+    # disable via settings / config.toml.
+    repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)

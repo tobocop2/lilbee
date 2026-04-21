@@ -22,9 +22,11 @@ _DEFAULT_MODE_COLOR = "$error"
 class ViewTabs(Widget):
     """View tab strip with mode indicator."""
 
+    # NOTE: no ``dock: bottom`` here. ViewTabs is always mounted inside a
+    # ``BottomBars`` container that owns the dock; multiple dock-bottom
+    # siblings overlap at the same row in Textual (see BottomBars docstring).
     DEFAULT_CSS = """
     ViewTabs {
-        dock: bottom;
         height: 1;
         width: 100%;
         background: $surface;

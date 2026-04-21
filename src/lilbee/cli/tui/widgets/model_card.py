@@ -11,20 +11,12 @@ from textual.content import Content
 from textual.reactive import reactive
 
 from lilbee.cli.tui.pill import pill
-from lilbee.models import ModelTask
+from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
 
 _CSS_FILE = Path(__file__).parent / "model_card.tcss"
-
-MIDDLE_DOT = "·"
-
-_TASK_COLORS: dict[str, str] = {
-    ModelTask.CHAT: "$primary",
-    ModelTask.EMBEDDING: "$secondary",
-    ModelTask.VISION: "$warning",
-}
 
 
 class ModelCard(containers.VerticalGroup):
@@ -50,10 +42,12 @@ class ModelCard(containers.VerticalGroup):
         self.set_class(selected, "-selected")
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui import messages as msg
+
         row = self._row
-        bg = _TASK_COLORS.get(row.task, "$primary")
-        with containers.Grid(id="card-header"):
-            yield widgets.Label(row.name, id="card-name")
+        bg = TASK_COLORS.get(row.task, "$primary")
+        yield widgets.Label(row.name, id="card-name")
+        with containers.HorizontalGroup(id="card-pills"):
             if row.featured:
                 yield widgets.Label(pill("pick", "$warning", "$text"), id="card-pick")
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
@@ -64,6 +58,10 @@ class ModelCard(containers.VerticalGroup):
         status = _build_status(row)
         if status is not None:
             yield widgets.Label(status, id="card-status")
+        # Subtle "Enter to install" hint; CSS shows it only when the card
+        # is highlighted (GridSelect cursor), hides for installed cards.
+        if not row.installed:
+            yield widgets.Label(msg.SETUP_CARD_HINT, id="card-hint")
 
 
 def _build_specs(params: str, quant: str, size: str) -> Content:

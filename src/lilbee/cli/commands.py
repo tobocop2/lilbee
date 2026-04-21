@@ -42,8 +42,10 @@ from lilbee.cli.helpers import (
     render_status,
     sync_result_to_json,
 )
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
-from lilbee.crawler import is_url
+from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed, is_url
+from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
 
@@ -191,6 +193,15 @@ _max_pages_option = typer.Option(
     "--max-pages",
     help="Cap total pages for --crawl. Unset = no limit; positive int = hard cap.",
 )
+_include_subdomains_option = typer.Option(
+    False,
+    "--include-subdomains",
+    help=(
+        "Allow --crawl to follow links into sibling subdomains of the start "
+        "host (e.g. en.wikipedia.org plus af.wikipedia.org). Default scopes "
+        "the crawl to the exact start host only."
+    ),
+)
 
 
 def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
@@ -206,7 +217,12 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
 
 
 def _crawl_urls_blocking(
-    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
+    urls: list[str],
+    *,
+    crawl: bool,
+    depth: int | None,
+    max_pages: int | None,
+    include_subdomains: bool = False,
 ) -> list[Path]:
     """Crawl URLs synchronously (for CLI), returning paths written.
 
@@ -272,6 +288,7 @@ def _crawl_urls_blocking(
                 on_progress=_make_callback(),
                 cancel_event=cancel_event,
                 crawl_and_save=crawl_and_save,
+                include_subdomains=include_subdomains,
             )
             all_paths.extend(paths)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
@@ -286,6 +303,7 @@ def _run_crawl_with_signal_cancel(
     on_progress: object,
     cancel_event: object,
     crawl_and_save: object,
+    include_subdomains: bool = False,
 ) -> list[Path]:
     """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
 
@@ -322,6 +340,7 @@ def _run_crawl_with_signal_cancel(
             on_progress=on_progress,
             cancel=cancel_event,
             quiet=cfg.json_mode,
+            include_subdomains=include_subdomains,
         )
         return loop.run_until_complete(coro)
     finally:
@@ -341,6 +360,7 @@ def add(
     crawl: bool = _crawl_option,
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
+    include_subdomains: bool = _include_subdomains_option,
 ) -> None:
     """Copy files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -369,7 +389,11 @@ def add(
                 )
                 raise SystemExit(1)
             crawled_paths = _crawl_urls_blocking(
-                urls, crawl=crawl, depth=depth, max_pages=max_pages
+                urls,
+                crawl=crawl,
+                depth=depth,
+                max_pages=max_pages,
+                include_subdomains=include_subdomains,
             )
             if not cfg.json_mode:
                 console.print(
@@ -886,6 +910,51 @@ def mcp_cmd() -> None:
     from lilbee.mcp import main
 
     main()
+
+
+setup_app = typer.Typer(help="One-time setup for optional runtime components.")
+app.add_typer(setup_app, name="setup")
+
+
+@setup_app.command(name="crawler")
+def setup_crawler_cmd() -> None:
+    """Install Playwright's Chromium browser, needed for /crawl.
+
+    No-op when Chromium is already present. Emits a simple progress
+    readout; use '--json' mode on the top-level 'lilbee' command to get
+    a single JSON blob with the final install state instead.
+    """
+    if chromium_installed():
+        if cfg.json_mode:
+            typer.echo(json.dumps({"component": "chromium", "already_installed": True}))
+        else:
+            typer.echo("Chromium already installed.")
+        return
+
+    last_pct: list[int] = [-1]
+
+    def _on_progress(event_type: object, data: object) -> None:
+        if event_type != EventType.SETUP_PROGRESS or not isinstance(data, SetupProgressEvent):
+            return
+        total = data.total_bytes or 0
+        pct = int(data.downloaded_bytes * 100 / total) if total > 0 else 0
+        if pct != last_pct[0] and not cfg.json_mode:
+            last_pct[0] = pct
+            typer.echo(msg.SETUP_CHROMIUM_CLI_PROGRESS.format(pct=pct), err=True)
+
+    try:
+        asyncio.run(bootstrap_chromium(on_progress=_on_progress))
+    except CrawlerBrowserMissing as exc:
+        if cfg.json_mode:
+            typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))
+        else:
+            typer.secho(f"Install failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    if cfg.json_mode:
+        typer.echo(json.dumps({"component": "chromium", "installed": True}))
+    else:
+        typer.echo("Chromium installed.")
 
 
 wiki_app = typer.Typer(help="Wiki layer commands: lint, citations, status.")

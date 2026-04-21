@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import ClassVar
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -14,17 +13,15 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
-from textual.widgets import DataTable, Input, Static
-from textual.worker import Worker, WorkerState, get_current_worker
+from textual.widgets import Input, Static
+from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
     CatalogModel,
-    DownloadProgress,
     ModelFamily,
     ModelVariant,
     get_catalog,
     get_families,
-    make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
@@ -33,33 +30,38 @@ from lilbee.cli.tui.screens.catalog_utils import (
     catalog_to_row,
     matches_search,
     remote_to_row,
-    row_display_name,
     variant_to_row,
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
+from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
 
-if TYPE_CHECKING:
-    from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
+# When the highlighted row is within this many rows of the end we
+# auto-fetch the next page. Small enough that the request is already
+# in flight by the time the user reaches the bottom.
+_HF_LOAD_MORE_TRIGGER = 5
+# Long enough to register; short enough to clear before a warm-cache fetch.
+_NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
 _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
-
-COLUMNS = ("Name", "Task", "Backend", "Params", "Size", "Quant", "Downloads")
-
+_WORKER_FETCH_SEARCH = "fetch_hf_search"
 
 _GRID_PAGE_ROWS = 3
-_TABLE_PAGE_ROWS = 10
+_LIST_PAGE_ROWS = 10
+
+# Sort columns cycled by the `s` keybinding in list view.
+_SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
 
 class CatalogScreen(Screen[None]):
@@ -91,6 +93,11 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
+        # Hidden from the footer so catalog still has <=5 visible bindings;
+        # the sort-label surfaces "press n for more" and "press s to sort"
+        # to the user instead.
+        Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
+        Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
     ]
 
     def __init__(self) -> None:
@@ -107,27 +114,28 @@ class CatalogScreen(Screen[None]):
         self._installed_names: set[str] = set()
         self._grid_view: bool = True
         self._hf_fetched: bool = False
-        self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
+        self._loading_more: bool = False
+        self._grid_cache_key: tuple[tuple[tuple[str, bool], ...], str] | tuple = ()
+        self._search_in_flight: bool = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
-        yield DataTable(id="catalog-table", cursor_type="row")
+        yield VerticalScroll(id="catalog-list")
         yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield TaskBar()
-        yield ViewTabs()
-        yield Footer()
+        with BottomBars():
+            yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#catalog-table", DataTable)
-        for col in COLUMNS:
-            table.add_column(col, key=col)
         self._fetch_installed_names()
         self.add_class("-grid-view")
         self._refresh_grid()
@@ -136,8 +144,6 @@ class CatalogScreen(Screen[None]):
 
     def _focus_first_grid(self) -> None:
         """Focus the first GridSelect widget if available."""
-        import contextlib
-
         with contextlib.suppress(Exception):
             self.query_one(GridSelect).focus()
 
@@ -163,16 +169,15 @@ class CatalogScreen(Screen[None]):
             if not self._hf_fetched:
                 self._hf_fetched = True
                 self._fetch_all_hf_models()
-            self._refresh_table()
-            with contextlib.suppress(Exception):
-                self.query_one("#catalog-table", DataTable).focus()
+            self._refresh_list()
+            self._focus_list_item(0)
         else:
             self._grid_view = True
             self.remove_class("-list-view")
             self.add_class("-grid-view")
             self._refresh_grid()
             with contextlib.suppress(Exception):
-                self.query_one(GridSelect).focus()
+                self.query_one("#catalog-grid GridSelect", GridSelect).focus()
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -183,17 +188,68 @@ class CatalogScreen(Screen[None]):
         """Filter models when search input changes."""
         if self._grid_view:
             self._filter_grid()
+            self._sync_grid_search_cta()
         else:
-            self._refresh_table()
+            self._refresh_list()
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Return focus to the visible view on Enter."""
+        """Enter installs the first visible match; falls through to the HF CTA
+        when nothing matches locally so the obvious intent ('search for this')
+        doesn't require the user to Tab over to the CTA row first."""
+        if self._grid_view:
+            if any(card.display for card in self.query(ModelCard)):
+                self._select_first_visible_grid_card()
+                return
+        elif any(item.display for item in self.query(ModelListItem)):
+            self._select_first_visible_list_item()
+            return
+        self._trigger_remote_search(self._get_search_text())
+
+    def _trigger_remote_search(self, query: str) -> None:
+        """Fire the HF search worker, unless one is already in flight."""
+        if self._search_in_flight or not query:
+            return
+        self._search_in_flight = True
+        self._update_sort_label()
+        # Sort label is hidden in grid view, so the toast is the only feedback there.
+        self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
+        self._fetch_hf_search(query)
+
+    @on(SearchHFCtaItem.Selected)
+    def _on_search_hf_cta_selected(self, event: SearchHFCtaItem.Selected) -> None:
+        self._trigger_remote_search(event.term)
+
+    @on(Click, ".search-hf-cta")
+    def _on_search_hf_cta_clicked(self) -> None:
+        self._trigger_remote_search(self._get_search_text())
+
+    def _select_first_visible_grid_card(self) -> None:
+        """Focus the first grid with a visible match and trigger its install.
+
+        Without the "first visible" walk, focusing any grid with
+        ``highlighted = 0`` could land on a card the filter just hid,
+        and Enter would install the wrong model. Setting
+        ``highlighted`` to the first visible index guarantees the
+        install fires on what the user can actually see.
+        """
         with contextlib.suppress(Exception):
-            if self._grid_view:
-                self.query_one(GridSelect).focus()
-            else:
-                self.query_one("#catalog-table", DataTable).focus()
+            for grid in self.query(GridSelect):
+                visible = [i for i, card in enumerate(grid.children) if card.display]
+                if visible:
+                    grid.focus()
+                    grid.highlighted = visible[0]
+                    grid.action_select()
+                    return
+
+    def _select_first_visible_list_item(self) -> None:
+        """List-view counterpart: focus + install the first visible row."""
+        with contextlib.suppress(Exception):
+            for item in self.query(ModelListItem):
+                if item.display:
+                    item.focus()
+                    item.action_select()
+                    return
 
     def _fetch_hf_page(self) -> list[CatalogModel]:
         """Fetch one page of HF models for all task types (runs in worker thread)."""
@@ -232,7 +288,34 @@ class CatalogScreen(Screen[None]):
         """Fetch next page of HF models for all task types (extends current list)."""
         return self._fetch_hf_page()
 
+    @work(thread=True, name=_WORKER_FETCH_SEARCH, exit_on_error=False)
+    def _fetch_hf_search(self, query: str) -> list[CatalogModel]:
+        """Fetch HF models matching the user's search term (runs in worker thread)."""
+        existing_repos = {m.hf_repo for m in self._hf_models}
+        new_models: list[CatalogModel] = []
+        for task in _ALL_TASKS:
+            result = get_catalog(
+                task=task,
+                featured=False,
+                search=query,
+                limit=_HF_PAGE_SIZE,
+                offset=0,
+            )
+            for m in result.models:
+                if not m.featured and m.hf_repo not in existing_repos:
+                    existing_repos.add(m.hf_repo)
+                    new_models.append(m)
+        return new_models
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        # PENDING/RUNNING fire here too; only ERROR/CANCELLED should release latches.
+        if event.state in (WorkerState.ERROR, WorkerState.CANCELLED):
+            if event.worker.name == _WORKER_FETCH_MORE_HF:
+                self._loading_more = False
+            if event.worker.name == _WORKER_FETCH_SEARCH:
+                self._search_in_flight = False
+                self._update_sort_label()
+            return
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
@@ -243,6 +326,12 @@ class CatalogScreen(Screen[None]):
             self._hf_models = result
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
+            self._loading_more = False
+        elif name == _WORKER_FETCH_SEARCH:
+            self._hf_fetched = True
+            self._hf_models.extend(result)
+            self._search_in_flight = False
+            self._update_sort_label()
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         else:
@@ -250,7 +339,9 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
 
     def _get_search_text(self) -> str:
-        return self.query_one("#catalog-search", Input).value.strip().lower()
+        # Preserve the user's casing for display (e.g. the CTA label); matching
+        # callers normalize via _normalize_for_search.
+        return self.query_one("#catalog-search", Input).value.strip()
 
     def _build_rows(self) -> list[TableRow]:
         """Build all table rows from current data sources."""
@@ -316,7 +407,7 @@ class CatalogScreen(Screen[None]):
         if self._grid_view:
             self._refresh_grid()
         else:
-            self._refresh_table()
+            self._refresh_list()
 
     def _refresh_grid(self) -> None:
         """Rebuild the grid view with all cards (called when data changes)."""
@@ -324,7 +415,12 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows("")
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
-        row_key = tuple((r.name, r.installed) for r in all_rows)
+        # Include the full search text so toggle-back + value-change combinations
+        # rebuild the grid (and therefore the CTA) with the current query.
+        row_key = (
+            tuple((r.name, r.installed) for r in all_rows),
+            self._get_search_text(),
+        )
         if self._grid_cache_key == row_key:
             return
         self._grid_cache_key = row_key
@@ -345,13 +441,38 @@ class CatalogScreen(Screen[None]):
                     classes="grid-cta browse-more-hf",
                 )
             )
+        search = self._get_search_text()
+        if search:
+            widgets_to_mount.append(
+                Static(
+                    msg.CATALOG_SEARCH_HF_CTA.format(query=search),
+                    classes="grid-cta search-hf-cta",
+                )
+            )
         widgets_to_mount.append(
             Static(
                 msg.CATALOG_VIEW_TOGGLE_GRID,
-                classes="grid-cta view-toggle-cta",
+                classes="grid-cta",
             )
         )
         container.mount_all(widgets_to_mount)
+
+    def _sync_grid_search_cta(self) -> None:
+        """Mount/remove/update the grid-view search-HF CTA in response to typing."""
+        search = self._get_search_text()
+        existing = self.query("#catalog-grid > .search-hf-cta")
+        if not search:
+            for w in existing:
+                w.remove()
+            return
+        cta_text = msg.CATALOG_SEARCH_HF_CTA.format(query=search)
+        if existing:
+            for w in existing:
+                if isinstance(w, Static):
+                    w.update(cta_text)
+            return
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
         """Filter visible cards by search text without recreating widgets."""
@@ -392,52 +513,61 @@ class CatalogScreen(Screen[None]):
         if isinstance(event.widget, ModelCard):
             self._select_row(event.widget.row)
 
-    def _refresh_table(self) -> None:
-        """Rebuild the DataTable from current data."""
+    @on(ModelListItem.Selected)
+    def _on_list_item_selected(self, event: ModelListItem.Selected) -> None:
+        """Handle model selection from the list view."""
+        self._select_row(event.item.row)
+
+    def _refresh_list(self) -> None:
+        """Rebuild the list view from current data; append HF search CTA when filtering."""
         self._rows = self._sort_rows(self._build_rows())
-        table = self.query_one("#catalog-table", DataTable)
-        table.clear()
-        for row in self._rows:
-            table.add_row(
-                row_display_name(row),
-                row.task,
-                row.backend or "--",
-                row.params,
-                row.size,
-                row.quant,
-                row.downloads,
-            )
+        container = self.query_one("#catalog-list", VerticalScroll)
+        container.remove_children()
+        widgets_to_mount: list[ModelListItem | SearchHFCtaItem] = [
+            ModelListItem(row) for row in self._rows
+        ]
+        search = self._get_search_text()
+        if search:
+            widgets_to_mount.append(SearchHFCtaItem(search))
+        if widgets_to_mount:
+            container.mount_all(widgets_to_mount)
         self._update_sort_label()
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label."""
         direction = "asc" if self._sort_ascending else "desc"
         n_total = len(self._rows)
-        more = "+" if self._hf_has_more else ""
+        if self._loading_more:
+            count = f"{n_total} models · loading more…"
+        elif self._hf_has_more:
+            count = f"{n_total} models · press [b]n[/b] for more"
+        else:
+            count = f"{n_total} models"
+        hint = msg.CATALOG_SEARCHING_HF if self._search_in_flight else msg.CATALOG_VIEW_TOGGLE_LIST
         self.query_one("#sort-label", Static).update(
-            f"Sort: {self._sort_column} ({direction})  |  "
-            f"{n_total}{more} models  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
+            f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}"
         )
 
-    @on(DataTable.HeaderSelected, "#catalog-table")
-    def _on_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        """Sort by the clicked column header, toggling asc/desc."""
-        col_key = str(event.column_key)
-        if col_key == self._sort_column:
-            self._sort_ascending = not self._sort_ascending
-        else:
-            self._sort_column = col_key
-            self._sort_ascending = True
-        self._refresh_table()
-
-    @on(DataTable.RowSelected, "#catalog-table")
-    def _on_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Install/select the model on the highlighted row."""
-        row_index = event.cursor_row
-        if row_index < 0 or row_index >= len(self._rows):
+    def action_cycle_sort(self) -> None:
+        """Cycle the list-view sort column ascending: Name, Downloads, Size, Params."""
+        if isinstance(self.focused, Input):
             return
-        row = self._rows[row_index]
-        self._select_row(row)
+        if self._grid_view:
+            self.notify(msg.CATALOG_SORT_LIST_ONLY)
+            return
+        try:
+            idx = _SORT_CYCLE.index(self._sort_column)
+        except ValueError:
+            idx = -1
+        self._sort_column = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
+        self._sort_ascending = True
+        self._refresh_list()
+        # _refresh_list replaces the list children asynchronously via
+        # mount_all; focusing before the new widgets settle can leave focus
+        # on the filter Input, which swallows the next `s` press as text
+        # . Defer the focus move until after Textual's next refresh
+        # so _list_items() actually returns the new rows.
+        self.call_after_refresh(self._focus_list_item, 0)
 
     def _select_row(self, row: TableRow) -> None:
         """Handle row selection: install or use the model."""
@@ -450,9 +580,16 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:
-        """Load next page of HF models."""
+        """Load next page of HF models, if any remain and no fetch is in flight."""
+        if self._loading_more or not self._hf_has_more:
+            return
+        self._loading_more = True
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
+
+    def action_load_more(self) -> None:
+        """Keyboard trigger (``n``) so users can page without scrolling."""
+        self._load_more()
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
@@ -487,65 +624,40 @@ class CatalogScreen(Screen[None]):
         self._enqueue_download(model)
 
     def _enqueue_download(self, model: CatalogModel) -> None:
-        """Enqueue a model download in the app's TaskBar."""
+        """Submit the download to the app-level TaskBarController.
+
+        The controller owns the worker thread; this screen just fires the
+        request and returns. Progress is visible from every screen and
+        survives navigation.
+        """
         from lilbee.cli.tui.app import LilbeeApp
 
         if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
-        task_bar = self.app.task_bar
-        task_id = task_bar.add_task(f"Downloading {model.display_name}", "download")
-        task_bar.queue.advance("download")
+        self.app.task_bar.start_download(model)
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
-        self._run_download(model, task_id, task_bar)
-
-    def _make_progress_callback(
-        self, task_id: str, bar: TaskBarController
-    ) -> Callable[[int, int], None]:
-        """Build a progress callback that reports download progress to the TaskBar."""
-
-        def _on_update(p: DownloadProgress) -> None:
-            self._safe_call(bar.update_task, task_id, p.percent, p.detail)
-
-        return make_download_callback(_on_update)
-
-    @work(thread=True)
-    def _run_download(self, model: CatalogModel, task_id: str, bar: TaskBarController) -> None:
-        """Download a model in a background thread, reporting to TaskBar."""
-        from lilbee.catalog import download_model
-
-        worker = get_current_worker()
-        try:
-            download_model(model, on_progress=self._make_progress_callback(task_id, bar))
-            if worker.is_cancelled:
-                return
-            self._safe_call(bar.complete_task, task_id)
-            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.display_name))
-        except PermissionError:
-            detail = msg.CATALOG_GATED_REPO.format(name=model.display_name)
-            log.warning("Gated repo: %s", model.hf_repo)
-            self._safe_call(bar.fail_task, task_id, detail)
-            self._safe_call(self.notify, detail, severity="warning")
-        except Exception as exc:
-            log.warning("Download failed for %s", model.ref, exc_info=True)
-            error_detail = str(exc) if str(exc) else type(exc).__name__
-            detail = f"{model.display_name}: {error_detail}"
-            self._safe_call(bar.fail_task, task_id, detail)
-            self._safe_call(self.notify, detail, severity="error")
-
-    def _safe_call(self, fn: Any, *args: Any, **kwargs: Any) -> None:
-        """Call fn via call_from_thread, suppressing errors if app context is gone."""
-        from lilbee.cli.tui.thread_safe import call_from_thread
-
-        call_from_thread(self, fn, *args, **kwargs)
 
     def action_go_back(self) -> None:
+        # First Escape press unfocuses the filter input; without this
+        # the screen-level `s` / `v` keys get typed into the input and the only
+        # way to regain screen focus is to leave the screen entirely.
+        if isinstance(self.focused, Input):
+            self._focus_list_or_grid()
+            return
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()
+
+    def _focus_list_or_grid(self) -> None:
+        """Move focus from the filter input to the active view's list/grid."""
+        if self._grid_view:
+            self._focus_first_grid()
+        else:
+            self._focus_list_item(0)
 
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""
@@ -569,32 +681,41 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
 
     def _get_highlighted_model_name(self) -> str | None:
-        """Return the registry-compatible model ref for the highlighted row."""
-        table = self.query_one("#catalog-table", DataTable)
-        row_idx = table.cursor_row
-        if row_idx < 0 or row_idx >= len(self._rows):
+        """Return the registry-compatible model ref for the focused/highlighted row."""
+        if isinstance(self.focused, ModelListItem):
+            return self.focused.row.ref or None
+        focused_grid = self._focused_grid()
+        if focused_grid is None or focused_grid.highlighted is None:
             return None
-        row = self._rows[row_idx]
-        return row.ref or None
+        child = focused_grid.children[focused_grid.highlighted]
+        if isinstance(child, ModelCard):
+            return child.row.ref or None
+        return None
 
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:
         """Remove a model in a background thread."""
+        from lilbee.cli.tui.thread_safe import call_from_thread
+
         try:
             removed = get_model_manager().remove(model_name)
             if removed:
-                self._safe_call(self.notify, msg.CATALOG_DELETED.format(name=model_name))
-                self._safe_call(self._refresh_after_delete)
+                call_from_thread(self, self.notify, msg.CATALOG_DELETED.format(name=model_name))
+                call_from_thread(self, self._refresh_after_delete)
             else:
-                self._safe_call(
+                call_from_thread(
+                    self,
                     self.notify,
                     msg.CATALOG_DELETE_FAILED.format(error=model_name),
                     severity="error",
                 )
         except Exception as exc:
             log.warning("Delete failed for %s", model_name, exc_info=True)
-            self._safe_call(
-                self.notify, msg.CATALOG_DELETE_FAILED.format(error=exc), severity="error"
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CATALOG_DELETE_FAILED.format(error=exc),
+                severity="error",
             )
 
     def _refresh_after_delete(self) -> None:
@@ -604,67 +725,111 @@ class CatalogScreen(Screen[None]):
         self._fetch_remote_models()
 
     def _focused_grid(self) -> GridSelect | None:
-        """Return the focused GridSelect if in grid mode, else None."""
+        """Return the focused GridSelect (grid view), else None."""
         if self._grid_view and isinstance(self.focused, GridSelect):
             return self.focused
         return None
 
+    def _list_items(self) -> list[ModelListItem]:
+        """Return all visible list items in the list view."""
+        return [item for item in self.query(ModelListItem) if item.display]
+
+    def _focus_list_item(self, index: int) -> None:
+        """Focus the list item at *index*, clamped to the visible range."""
+        items = self._list_items()
+        if not items:
+            return
+        clamped = max(0, min(index, len(items) - 1))
+        items[clamped].focus()
+
+    def _focused_list_index(self) -> int | None:
+        """Index of the focused ModelListItem among visible list items."""
+        if not isinstance(self.focused, ModelListItem):
+            return None
+        items = self._list_items()
+        try:
+            return items.index(self.focused)
+        except ValueError:
+            return None
+
+    def _nudge_list(self, delta: int) -> None:
+        idx = self._focused_list_index()
+        if idx is None:
+            self._focus_list_item(0)
+            return
+        self._focus_list_item(idx + delta)
+        self._maybe_prefetch_on_nav()
+
+    def _maybe_prefetch_on_nav(self) -> None:
+        if self._grid_view or not self._hf_has_more or self._loading_more:
+            return
+        idx = self._focused_list_index()
+        if idx is None:
+            return
+        if idx >= len(self._list_items()) - _HF_LOAD_MORE_TRIGGER:
+            self._load_more()
+
+    def _page_rows(self) -> int:
+        """How many cursor steps make up one 'page' in the active view."""
+        return _GRID_PAGE_ROWS if self._grid_view else _LIST_PAGE_ROWS
+
     def action_page_down(self) -> None:
         if isinstance(self.focused, Input):
             return
-        if (grid := self._focused_grid()) is not None:
-            for _ in range(_GRID_PAGE_ROWS):
-                grid.action_cursor_down()
-            return
-        table = self.query_one("#catalog-table", DataTable)
-        for _ in range(_TABLE_PAGE_ROWS):
-            table.action_cursor_down()
+        if self._grid_view:
+            if (grid := self._focused_grid()) is not None:
+                for _ in range(self._page_rows()):
+                    grid.action_cursor_down()
+        else:
+            self._nudge_list(self._page_rows())
 
     def action_page_up(self) -> None:
         if isinstance(self.focused, Input):
             return
-        if (grid := self._focused_grid()) is not None:
-            for _ in range(_GRID_PAGE_ROWS):
-                grid.action_cursor_up()
-            return
-        table = self.query_one("#catalog-table", DataTable)
-        for _ in range(_TABLE_PAGE_ROWS):
-            table.action_cursor_up()
+        if self._grid_view:
+            if (grid := self._focused_grid()) is not None:
+                for _ in range(self._page_rows()):
+                    grid.action_cursor_up()
+        else:
+            self._nudge_list(-self._page_rows())
 
     def action_cursor_down(self) -> None:
         if isinstance(self.focused, Input):
             return
-        if (grid := self._focused_grid()) is not None:
-            grid.action_cursor_down()
-            return
-        self.query_one("#catalog-table", DataTable).action_cursor_down()
+        if self._grid_view:
+            if (grid := self._focused_grid()) is not None:
+                grid.action_cursor_down()
+        else:
+            self._nudge_list(1)
 
     def action_cursor_up(self) -> None:
         if isinstance(self.focused, Input):
             return
-        if (grid := self._focused_grid()) is not None:
-            grid.action_cursor_up()
-            return
-        self.query_one("#catalog-table", DataTable).action_cursor_up()
+        if self._grid_view:
+            if (grid := self._focused_grid()) is not None:
+                grid.action_cursor_up()
+        else:
+            self._nudge_list(-1)
 
     def action_jump_top(self) -> None:
         if isinstance(self.focused, Input):
             return
-        if (grid := self._focused_grid()) is not None:
-            grid.highlight_first()
-            return
-        table = self.query_one("#catalog-table", DataTable)
-        table.move_cursor(row=0)
+        if self._grid_view:
+            if (grid := self._focused_grid()) is not None:
+                grid.highlight_first()
+        else:
+            self._focus_list_item(0)
 
     def action_jump_bottom(self) -> None:
         if isinstance(self.focused, Input):
             return
-        if (grid := self._focused_grid()) is not None:
-            grid.highlight_last()
-            return
-        table = self.query_one("#catalog-table", DataTable)
-        if self._rows:
-            table.move_cursor(row=len(self._rows) - 1)
+        if self._grid_view:
+            if (grid := self._focused_grid()) is not None:
+                grid.highlight_last()
+        else:
+            items = self._list_items()
+            if items:
+                self._focus_list_item(len(items) - 1)
 
 
 @dataclass

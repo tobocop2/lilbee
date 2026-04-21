@@ -30,6 +30,8 @@ beads/
 beads_bb/
 vault/
 plugins/
+.lilbee/
+.superpowers/
 node_modules/
 *.mov
 *.mp4
@@ -37,3 +39,4 @@ PLAN.md
 .DS_Store
 scripts/
 .DS_Store
+.superpowers/

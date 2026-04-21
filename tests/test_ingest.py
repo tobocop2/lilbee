@@ -609,6 +609,36 @@ class TestApplyResultZeroChunks:
         mock_svc.store.upsert_source.assert_called_once()
         assert "doc.pdf" in added
 
+    def test_ingest_error_logs_warning_not_exception(self, caplog):
+        """ingest errors must not log at exception level.
+
+        The logger's exception() call routes the full traceback through the
+        stderr bridge into the TUI chat pane, even though the functional path
+        already surfaces the failure via SyncResult.failed. Dropping to
+        warning() keeps the noise out of chat while leaving the error
+        reachable at DEBUG level.
+        """
+        import logging
+
+        from lilbee.ingest import _apply_result, _IngestResult
+
+        added: list[str] = []
+        updated: list[str] = []
+        failed: list[str] = []
+        err = RuntimeError("embedder bogus:bogus not installed")
+        result = _IngestResult("qa-fail.md", Path("qa-fail.md"), chunk_count=0, error=err)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.ingest"):
+            _apply_result(result, added, updated, failed)
+        levels = [r.levelno for r in caplog.records if r.name == "lilbee.ingest"]
+        assert logging.WARNING in levels
+        # Exception-level records carry exc_info; warning call should not.
+        warning_records = [
+            r for r in caplog.records if r.name == "lilbee.ingest" and r.levelno == logging.WARNING
+        ]
+        assert warning_records
+        assert warning_records[0].exc_info is None
+        assert "qa-fail.md" in failed
+
 
 class TestSyncResultStr:
     def test_str_no_failures(self):
@@ -1197,6 +1227,61 @@ class TestTesseractOcrMiddleTier:
         # extract_file called only once (initial extraction), not twice (no OCR retry)
         assert mock_kf.call_count == 1
         assert len(result) > 0
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_tesseract_timeout_zero_disables_cap(self, mock_kf, isolated_env):
+        """``cfg.tesseract_timeout == 0`` means "no limit" — await without wait_for."""
+        cfg.enable_ocr = False
+        cfg.tesseract_timeout = 0
+        empty = _make_empty_result()
+        ocr_result = _make_kreuzberg_result(
+            text="Tesseract succeeded. " * 20, num_chunks=1, has_pages=True
+        )
+        mock_kf.side_effect = [empty, ocr_result]
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.ingest import ingest_document
+
+        result = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
+        assert len(result) > 0
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_tesseract_timeout_returns_fallback(self, mock_kf, isolated_env):
+        """Tesseract exceeding cfg.tesseract_timeout is caught; fallback returned.
+
+        Without the cap, a huge scanned PDF can stall the ingest worker
+        for many minutes and the UI feels frozen.
+        """
+        cfg.enable_ocr = False
+        cfg.tesseract_timeout = 0.01
+        empty = _make_empty_result()
+
+        call_count = 0
+
+        async def _extract(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return empty
+            # Second call is the Tesseract retry; sleep past the timeout
+            # so asyncio.wait_for cancels the coroutine.
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(1.0)
+            return empty
+
+        mock_kf.side_effect = _extract
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.ingest import ingest_document
+
+        result = await ingest_document(f, "scanned.pdf", "pdf")
+        # Tesseract timed out; vision disabled; final chunk list is empty.
+        assert result == []
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_empty_no_vision_warns(self, mock_kf, isolated_env):

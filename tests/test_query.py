@@ -72,6 +72,58 @@ def _make_result(
     )
 
 
+class TestDisplaySourcePath:
+    """source citations render absolute paths with ~ expansion."""
+
+    def test_expands_under_documents_dir(self, tmp_path):
+        from lilbee.query import display_source_path
+
+        cfg.documents_dir = tmp_path / "docs"
+        result = display_source_path("_web/example.com/index.md")
+        normalized = result.replace("\\", "/")
+        assert str(tmp_path).replace("\\", "/") in normalized or normalized.startswith("~/")
+        assert "_web/example.com/index.md" in normalized
+
+    def test_substitutes_home_with_tilde(self, tmp_path, monkeypatch):
+        from pathlib import Path as _Path
+
+        from lilbee.query import display_source_path
+
+        # Force documents_dir under the home directory so ~ substitution fires.
+        cfg.documents_dir = _Path.home() / ".lilbee-fixes-content-test" / "docs"
+        result = display_source_path("note.md")
+        assert result.startswith("~/")
+        assert result.endswith("note.md")
+
+    def test_falls_back_to_raw_on_resolve_failure(self, tmp_path, monkeypatch):
+        from pathlib import Path as _Path
+
+        from lilbee.query import display_source_path
+
+        cfg.documents_dir = tmp_path / "docs"
+
+        # Force resolve() to raise so the fallback path runs.
+        def _raise(self, strict=False):
+            raise OSError("simulated")
+
+        monkeypatch.setattr(_Path, "resolve", _raise)
+        assert display_source_path("anything.md") == "anything.md"
+
+    def test_returns_absolute_when_not_under_home(self, tmp_path, monkeypatch):
+        """When the resolved path is not under ``Path.home()``, fall through to str(resolved)."""
+        from pathlib import Path as _Path
+
+        from lilbee.query import display_source_path
+
+        cfg.documents_dir = tmp_path / "docs"
+        (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path / "fake-home"))
+
+        result = display_source_path("note.md")
+        assert not result.startswith("~/")
+        assert result.endswith("note.md")
+
+
 class TestFormatSource:
     def test_pdf_single_page(self):
         r = _make_result(source="manual.pdf", content_type="pdf", page_start=5, page_end=5)
@@ -94,8 +146,12 @@ class TestFormatSource:
         r = _make_result(source="readme.md", content_type="text")
         result = format_source(r)
         assert "readme.md" in result
-        assert "page" not in result
-        assert "line" not in result
+        # Text sources should not carry page/line annotations appended after
+        # the source path. The path itself may contain "page" or "line" as
+        # substrings (e.g. tmp dirs), so only check the tail.
+        tail = result.split("readme.md", 1)[1]
+        assert "page" not in tail
+        assert "line" not in tail
 
 
 class TestDeduplicateSources:
@@ -325,6 +381,10 @@ class TestAskRaw:
         mock_svc.store.search.return_value = []
         result = get_services().searcher.ask_raw("anything")
         assert "No relevant documents" in result.answer
+        # copy no longer blames the user for missing docs when only
+        # this query failed to match.
+        assert "ingesting" not in result.answer
+        assert "for this query" in result.answer
         assert result.sources == []
 
     def test_ask_raw_with_history(self, mock_svc):
@@ -393,7 +453,10 @@ class TestAskStream:
     def test_empty_results_yields_message(self, mock_svc):
         mock_svc.store.search.return_value = []
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
-        assert any("No relevant documents" in st.content for st in stream_tokens)
+        combined = "".join(st.content for st in stream_tokens)
+        assert "No relevant documents" in combined
+        # stream copy matches the AskResult copy.
+        assert "ingesting" not in combined
 
     def test_ask_stream_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -419,7 +482,14 @@ class TestAskStream:
         mock_svc.store.search.return_value = [_make_result()]
         mock_svc.provider.chat.return_value = iter(["<think>reasoning</think>answer"])
         stream_tokens = list(get_services().searcher.ask_stream("test"))
-        combined = "".join(st.content for st in stream_tokens if not st.is_reasoning)
+        # Only inspect the model-answer tokens; the trailing "Sources:" block
+        # includes absolute paths that may coincidentally contain the test name.
+        body_tokens = [
+            st.content
+            for st in stream_tokens
+            if not st.is_reasoning and "Sources:" not in st.content and "→" not in st.content
+        ]
+        combined = "".join(body_tokens)
         assert "reasoning" not in combined
         assert "answer" in combined
 
@@ -723,9 +793,12 @@ class TestHydeSearch:
 
 class TestTemporalFilter:
     def test_filters_by_date(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
         mock_svc.store.get_sources.return_value = [
-            {"filename": "old.md", "ingested_at": "2025-01-01T00:00:00+00:00"},
-            {"filename": "new.md", "ingested_at": "2026-03-22T12:00:00+00:00"},
+            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
+            {"filename": "new.md", "ingested_at": recent},
         ]
         results = [
             _make_result(source="old.md"),
@@ -733,6 +806,7 @@ class TestTemporalFilter:
         ]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert any(r.source == "new.md" for r in filtered)
+        assert not any(r.source == "old.md" for r in filtered)
 
     def test_no_temporal_keyword_passes_through(self, mock_svc):
         results = [_make_result()]
@@ -1075,7 +1149,7 @@ class TestFormatSourceWiki:
         )
         cits = [make_citation(page_start=3, page_end=3)]
         result = format_source(r, citations=cits)
-        assert "wiki/summaries/doc.md" in result
+        assert "wiki/summaries/doc.md" in result.replace("\\", "/")
         assert "page 3" in result
 
     def test_wiki_chunk_without_citations(self):
@@ -1085,7 +1159,7 @@ class TestFormatSourceWiki:
             chunk_type="wiki",
         )
         result = format_source(r)
-        assert "wiki/summaries/doc.md" in result
+        assert "wiki/summaries/doc.md" in result.replace("\\", "/")
 
 
 class TestPreferWiki:

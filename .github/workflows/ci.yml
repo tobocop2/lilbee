@@ -50,12 +50,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
-        exclude:
-          # macOS 3.11 unit tests hang past the 60-min timeout after the
-          # test_store area. Serial execution did not help. 3.11 remains
-          # covered on Ubuntu + Windows; macOS remains covered on 3.12 + 3.13.
-          - os: macos-latest
-            python-version: "3.11"
 
     steps:
       - uses: actions/checkout@v6
@@ -79,7 +73,15 @@ jobs:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
       - name: Run unit tests with coverage
-        run: make test-ci
+        # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
+        # the run. Drop to serial execution for both; Windows 3.11 is fine
+        # in parallel. 3.12 and 3.13 are fine in parallel on every OS.
+        run: |
+          if [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" != "windows-latest" ]; then
+            make test-ci-serial
+          else
+            make test-ci
+          fi
         shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
