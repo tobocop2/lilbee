@@ -18,9 +18,9 @@ crawl4ai = pytest.importorskip("crawl4ai")
 from lilbee import crawler as crawler_mod  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
+    _save_single_result,  # pins the helper directly; public wrapper hides it
     crawl_and_save,
     load_crawl_metadata,
-    save_crawl_results,
     validate_crawl_url,
 )
 from lilbee.progress import EventType  # noqa: E402
@@ -230,13 +230,18 @@ class TestSecurity:
 
     def test_path_traversal_contained(self, isolated_env):
         """Path traversal in URL stays contained within _web/."""
-        from lilbee.crawler import CrawlResult
+        from lilbee.crawler import CrawlMeta, CrawlResult
 
         result = CrawlResult(url="https://evil.com/../../etc/passwd", markdown="# Malicious")
-        paths = save_crawl_results([result])
+        meta: dict[str, CrawlMeta] = {}
+        path = _save_single_result(result, meta)
         web_dir = cfg.documents_dir / "_web"
-        for p in paths:
-            assert p.resolve().is_relative_to(web_dir.resolve())
+        # url_to_filename neutralizes ".." segments, so the result MUST be a
+        # concrete path under _web/. A None return would indicate the helper
+        # started rejecting the request at the hash/exists short-circuit, which
+        # is the class of refactor we want to catch.
+        assert path is not None
+        assert path.resolve().is_relative_to(web_dir.resolve())
 
     async def test_max_pages_enforced(self, httpserver, allow_localhost):
         """Max pages config caps the crawl."""
