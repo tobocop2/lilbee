@@ -43,6 +43,14 @@ _TYPE_COLORS: dict[str, tuple[str, str]] = {
 
 _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
 
+# DOM id prefix for the internal "Restore defaults" button inside a
+# Collapsible list editor. Kept distinct from any row-level reset affordance
+# so composition doesn't collide on the same id.
+_LIST_RESTORE_PREFIX = "list-restore-"
+
+# CSS class toggled on the inline validation error Static to show/hide it.
+_LIST_ERROR_VISIBLE_CLASS = "-visible"
+
 
 def _effective_value(key: str) -> str:
     """Return the effective value for a setting, including model defaults."""
@@ -129,7 +137,7 @@ def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
 def _make_editor(key: str, defn: SettingDef) -> Widget:
     """Create the appropriate editor widget for a setting."""
     if defn.render is RenderStyle.LIST_COLLAPSED:
-        return _make_list_editor(key, defn)
+        return _make_list_editor(key)
     value = _effective_value(key)
     if defn.choices:
         return _make_select(key, defn, value)
@@ -138,7 +146,7 @@ def _make_editor(key: str, defn: SettingDef) -> Widget:
     return _make_input(key, value)
 
 
-def _make_list_editor(key: str, defn: SettingDef) -> Collapsible:
+def _make_list_editor(key: str) -> Collapsible:
     """Create a Collapsible with a line-numbered TextArea for list[str] settings."""
     current = getattr(cfg, key, None) or []
     title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
@@ -150,14 +158,11 @@ def _make_list_editor(key: str, defn: SettingDef) -> Collapsible:
         classes="setting-list-editor",
     )
     error = Static("", id=f"err-{key}", classes="setting-list-error")
-    error.display = False
     reset = Button(
         msg.SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS,
-        id=f"reset-{key}",
+        id=f"{_LIST_RESTORE_PREFIX}{key}",
         classes="setting-list-restore",
     )
-    # Silence unused defn in case future logic needs it; keep parameter for consistency.
-    _ = defn
     return Collapsible(
         editor,
         error,
@@ -337,7 +342,7 @@ class SettingsScreen(Screen[None]):
         try:
             parsed = self._parse_value(defn, raw)
             setattr(cfg, key, parsed)
-            persisted = str(parsed) if parsed is not None else ""
+            persisted = self._stringify_for_toml(parsed)
             settings.set_value(cfg.data_root, key, persisted)
             if not quiet:
                 self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
@@ -358,6 +363,21 @@ class SettingsScreen(Screen[None]):
         if defn.type is list:
             return [line.strip() for line in raw.split("\n") if line.strip()]
         return defn.type(raw)
+
+    @staticmethod
+    def _stringify_for_toml(parsed: object) -> str:
+        """Serialize a parsed value for the TOML settings store.
+
+        Lists become newline-joined so reload via `settings.load` + the
+        pydantic `splitlines()` validator returns the same list. Using
+        `str(parsed)` for a list would persist Python's repr such as
+        ``"['a', 'b']"`` and corrupt the config on next process start.
+        """
+        if parsed is None:
+            return ""
+        if isinstance(parsed, list):
+            return "\n".join(parsed)
+        return str(parsed)
 
     @staticmethod
     def _validate_regex_list(lines: list[str]) -> tuple[int, str] | None:
@@ -390,9 +410,9 @@ class SettingsScreen(Screen[None]):
             error_widget.update(
                 msg.SETTINGS_LIST_EDITOR_INVALID_REGEX.format(n=line_no, error=err_text)
             )
-            error_widget.display = True
+            error_widget.add_class(_LIST_ERROR_VISIBLE_CLASS)
             return
-        error_widget.display = False
+        error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
         self._persist_value(key, defn, raw)
         self._refresh_list_title(key, len(parsed))
 
@@ -400,9 +420,9 @@ class SettingsScreen(Screen[None]):
     def _on_list_restore(self, event: Button.Pressed) -> None:
         """Restore defaults for a LIST_COLLAPSED setting."""
         btn_id = event.button.id
-        if btn_id is None or not btn_id.startswith("reset-"):
+        if btn_id is None or not btn_id.startswith(_LIST_RESTORE_PREFIX):
             return
-        key = btn_id.removeprefix("reset-")
+        key = btn_id.removeprefix(_LIST_RESTORE_PREFIX)
         defn = SETTINGS_MAP.get(key)
         if defn is None:
             return
@@ -412,7 +432,7 @@ class SettingsScreen(Screen[None]):
         ta.load_text(text)
         self._persist_value(key, defn, text)
         error_widget = self.query_one(f"#err-{key}", Static)
-        error_widget.display = False
+        error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
         self._refresh_list_title(key, len(defaults))
 
     def _refresh_list_title(self, key: str, count: int) -> None:
