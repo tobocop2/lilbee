@@ -35,8 +35,10 @@ TaskCenter {
         text-style: italic;
     }
 
+    /* task-center-hint lives inside the BottomBars wrapper; docking it
+     * directly would collide with TaskBar/ViewTabs/Footer (see BottomBars
+     * docstring). */
     #task-center-hint {
-        dock: bottom;
         color: $text-muted;
         text-style: italic;
         padding: 0 2 1 2;

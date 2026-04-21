@@ -57,9 +57,12 @@ Markdown {
     padding: 0 1;
 }
 
+/* chat-prompt-area lives inside the BottomBars wrapper, which docks the
+ * whole bottom stack. Docking the prompt area here directly would collide
+ * with TaskBar/ViewTabs/Footer (Textual stacks dock-bottom siblings at the
+ * same row; see BottomBars docstring). */
 #chat-prompt-area {
     height: auto;
-    dock: bottom;
     border: tall transparent;
 }
 

@@ -121,6 +121,7 @@ class CatalogScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -129,9 +130,10 @@ class CatalogScreen(Screen[None]):
         yield VerticalScroll(id="catalog-list")
         yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield TaskBar()
-        yield ViewTabs()
-        yield Footer()
+        with BottomBars():
+            yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
 
     def on_mount(self) -> None:
         self._fetch_installed_names()

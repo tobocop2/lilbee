@@ -133,13 +133,15 @@ class SetupWizard(Screen[str | None]):
         return self._selections[ModelTask.EMBEDDING][0]
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_INTRO, id="setup-intro")
         yield VerticalScroll(id="setup-grid-container")
-        yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
-        yield TaskBar()
+        with BottomBars():
+            yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
+            yield TaskBar()
 
     def on_mount(self) -> None:
         self._build_grid()

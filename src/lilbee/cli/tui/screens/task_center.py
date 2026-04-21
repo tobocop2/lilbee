@@ -60,6 +60,7 @@ class TaskCenter(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -70,10 +71,11 @@ class TaskCenter(Screen[None]):
             f"{msg.TASK_CENTER_EMPTY_HEADLINE}\n{msg.TASK_CENTER_EMPTY_DETAIL}",
             id="task-center-empty",
         )
-        yield Label(msg.TASK_CENTER_HINT, id="task-center-hint")
-        yield TaskBar()
-        yield ViewTabs()
-        yield Footer()
+        with BottomBars():
+            yield Label(msg.TASK_CENTER_HINT, id="task-center-hint")
+            yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
 
     def action_go_back(self) -> None:
         """Return to Chat (or pop if we're on a detached test app)."""

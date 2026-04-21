@@ -164,6 +164,7 @@ class SettingsScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -173,9 +174,10 @@ class SettingsScreen(Screen[None]):
         )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
-        yield TaskBar()
-        yield ViewTabs()
-        yield Footer()
+        with BottomBars():
+            yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
 
     def _compose_groups(self) -> ComposeResult:
         """Yield grouped setting sections."""
