@@ -833,6 +833,18 @@ async def test_settings_effective_value_shows_model_default():
         object.__setattr__(cfg, "_model_defaults", old_defaults)
 
 
+def test_settings_effective_value_summarizes_list():
+    """List values are shown as a line count, not Python repr, on the help line."""
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    cfg.crawl_exclude_patterns = ["a", "b", "c"]
+    result = _effective_value("crawl_exclude_patterns")
+    assert result == "3 lines"
+    # Specifically guards against the "current: ['a', 'b', 'c']" regression.
+    assert "[" not in result
+    assert "'" not in result
+
+
 async def test_settings_effective_value_user_overrides_default():
     """When user has set a value, it takes precedence over model default."""
     from dataclasses import dataclass

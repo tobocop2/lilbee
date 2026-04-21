@@ -57,9 +57,16 @@ _LIST_ERROR_VISIBLE_CLASS = "-visible"
 
 
 def _effective_value(key: str) -> str:
-    """Return the effective value for a setting, including model defaults."""
+    """Return the effective value for a setting, including model defaults.
+
+    For list-typed values the help-line would otherwise show Python repr like
+    ``['a', 'b']``; collapse to a count summary so the scroll line stays readable.
+    The full list is visible inside the Collapsible TextArea.
+    """
     user_value = getattr(cfg, key, None)
     if user_value is not None:
+        if isinstance(user_value, list):
+            return f"{len(user_value)} lines"
         return str(user_value)
     defaults = cfg.model_defaults
     if defaults is None:
