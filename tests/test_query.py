@@ -80,9 +80,9 @@ class TestDisplaySourcePath:
 
         cfg.documents_dir = tmp_path / "docs"
         result = display_source_path("_web/example.com/index.md")
-        # absolute path includes the documents_dir, not just the relative source
-        assert str(tmp_path) in result or result.startswith("~/")
-        assert "_web/example.com/index.md" in result
+        normalized = result.replace("\\", "/")
+        assert str(tmp_path).replace("\\", "/") in normalized or normalized.startswith("~/")
+        assert "_web/example.com/index.md" in normalized
 
     def test_substitutes_home_with_tilde(self, tmp_path, monkeypatch):
         from pathlib import Path as _Path
@@ -1135,7 +1135,7 @@ class TestFormatSourceWiki:
         )
         cits = [make_citation(page_start=3, page_end=3)]
         result = format_source(r, citations=cits)
-        assert "wiki/summaries/doc.md" in result
+        assert "wiki/summaries/doc.md" in result.replace("\\", "/")
         assert "page 3" in result
 
     def test_wiki_chunk_without_citations(self):
@@ -1145,7 +1145,7 @@ class TestFormatSourceWiki:
             chunk_type="wiki",
         )
         result = format_source(r)
-        assert "wiki/summaries/doc.md" in result
+        assert "wiki/summaries/doc.md" in result.replace("\\", "/")
 
 
 class TestPreferWiki:
