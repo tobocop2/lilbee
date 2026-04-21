@@ -247,7 +247,12 @@ class TaskQueue:
         self._notify()
 
     def cancel(self, task_id: str) -> bool:
-        """Cancel a queued or active task. Returns True if found.
+        """Cancel a queued or active task. Returns True if cancelled.
+
+        Terminal rows (DONE / FAILED / CANCELLED) are immutable: a cancel
+        call against an already-finished task is a no-op and returns
+        False so callers that key off the return value (e.g. UI actions)
+        don't treat it as success (bb-y1t5).
 
         Appends the cancelled task to ``_history`` so the Task Center
         renders it as a lingering ``cancelled`` row, matching the
@@ -256,6 +261,8 @@ class TaskQueue:
         with self._lock:
             task = self._tasks.get(task_id)
             if not task:
+                return False
+            if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
                 return False
             task.status = TaskStatus.CANCELLED
             task.completed_at = time.monotonic()

@@ -90,7 +90,28 @@ class TaskCenter(Screen[None]):
         self._tick: int = 0
         self._rows: dict[str, TaskRow] = {}
         self._poll()
+        self._focus_initial_row()
         self.set_interval(_POLL_INTERVAL_SECONDS, self._poll)
+
+    def _focus_initial_row(self) -> None:
+        """Land initial focus on the topmost active/queued row (bb-5djq).
+
+        Users open the Task Center to manage live work, not to review
+        history. Without this, focus lands on the first row regardless
+        of status, so an accidental ``c`` on a DONE row used to flip it
+        to CANCELLED (compounded by bb-y1t5).
+
+        Falls back to the first row if there are no active/queued
+        tasks; falls back to no-op if the screen has no rows at all.
+        """
+        queue = self.app.task_bar.queue
+        for task in queue.active_tasks + queue.queued_tasks:
+            row = self._rows.get(task.task_id)
+            if row is not None:
+                row.focus()
+                return
+        # No active/queued work: leave focus on whatever AUTO_FOCUS
+        # picked (the scroll container, or the first row if one exists).
 
     def action_refresh_tasks(self) -> None:
         """Manual refresh (r). No-op beyond forcing an immediate poll."""

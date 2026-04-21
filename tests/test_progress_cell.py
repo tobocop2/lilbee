@@ -6,6 +6,7 @@ from lilbee.cli.tui.widgets.progress_cell import (
     _BAR_WIDTH,
     _EMPTY,
     _FULL,
+    frozen_indeterminate_cell,
     indeterminate_cell,
     progress_cell,
 )
@@ -64,3 +65,20 @@ def test_indeterminate_cell_slides_with_tick() -> None:
 def test_indeterminate_cell_wraps_on_long_tick() -> None:
     rendered = indeterminate_cell(1000)
     assert _FULL in rendered
+
+
+def test_frozen_indeterminate_cell_is_fully_filled() -> None:
+    """bb-j3q2: terminal indeterminate rows render a full static bar."""
+    rendered = frozen_indeterminate_cell()
+    assert rendered == _FULL * _BAR_WIDTH
+
+
+def test_frozen_indeterminate_cell_drops_trailing_dots() -> None:
+    """bb-j3q2: no '···' tail on frozen bars (that trail reads as 'still
+    working')."""
+    assert "·" not in frozen_indeterminate_cell()
+
+
+def test_frozen_indeterminate_cell_respects_custom_width() -> None:
+    rendered = frozen_indeterminate_cell(width=8)
+    assert rendered == _FULL * 8
