@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Union, cast, get_args, get_origi
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 
 from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
@@ -616,6 +617,25 @@ async def get_config() -> ConfigResponse:
         result["reranker_model"] = dumped["reranker_model"]
         result["rerank_candidates"] = dumped["rerank_candidates"]
     return ConfigResponse(**result)
+
+
+async def get_config_defaults() -> ConfigResponse:
+    """Return canonical defaults for every writable, public config field.
+
+    Used by plugin/TUI reset-to-default affordances so clients never need to
+    hardcode defaults locally.
+    """
+    defaults: dict[str, Any] = {}
+    for name, info in Config.model_fields.items():
+        if name not in WRITABLE_CONFIG_FIELDS or name not in _PUBLIC_CONFIG_FIELDS:
+            continue
+        if info.default_factory is not None:
+            defaults[name] = info.default_factory()
+            continue
+        if info.default is PydanticUndefined:
+            continue
+        defaults[name] = info.default
+    return ConfigResponse(**defaults)
 
 
 async def models_show(model: str) -> ModelsShowResponse:
