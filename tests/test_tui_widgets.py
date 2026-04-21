@@ -1163,6 +1163,57 @@ class TestTaskQueue:
         q = TaskQueue()
         assert q.cancel("nonexistent") is False
 
+    def test_cancel_done_task_is_noop(self) -> None:
+        """bb-y1t5: terminal rows are immutable. Cancel on DONE returns False
+        and leaves status + completed_at frozen."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.complete_task(tid)
+        task = q.get_task(tid)
+        assert task is not None
+        frozen_completed_at = task.completed_at
+        assert q.cancel(tid) is False
+        task_after = q.get_task(tid)
+        assert task_after is not None
+        assert task_after.status == TaskStatus.DONE
+        assert task_after.completed_at == frozen_completed_at
+
+    def test_cancel_failed_task_is_noop(self) -> None:
+        """bb-y1t5: cancel on a FAILED row must not flip it to CANCELLED."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.fail_task(tid, "boom")
+        assert q.cancel(tid) is False
+        task_after = q.get_task(tid)
+        assert task_after is not None
+        assert task_after.status == TaskStatus.FAILED
+
+    def test_cancel_already_cancelled_is_noop(self) -> None:
+        """bb-y1t5: cancelling an already-cancelled row does not re-append
+        it to history or reset its completed_at."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        assert q.cancel(tid) is True
+        task = q.get_task(tid)
+        assert task is not None
+        first_completed_at = task.completed_at
+        history_len = len(q.history)
+        assert q.cancel(tid) is False
+        assert len(q.history) == history_len
+        task_after = q.get_task(tid)
+        assert task_after is not None
+        assert task_after.status == TaskStatus.CANCELLED
+        assert task_after.completed_at == first_completed_at
+
     def test_remove_task_nonexistent_is_noop(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
 
