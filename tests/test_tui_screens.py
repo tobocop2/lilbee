@@ -3320,37 +3320,56 @@ class TestParseCrawlFlags:
     def test_empty(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags([]) == (None, None)
+        assert ChatScreen._parse_crawl_flags([]) == (None, None, False)
 
     def test_depth_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, None)
+        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, None, False)
 
     def test_max_pages_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (None, 20)
+        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (None, 20, False)
 
     def test_both(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "2", "--max-pages", "15"]) == (2, 15)
+        assert ChatScreen._parse_crawl_flags(["--depth", "2", "--max-pages", "15"]) == (
+            2,
+            15,
+            False,
+        )
 
     def test_invalid_values(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None)
+        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None, False)
 
     def test_missing_value(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth"]) == (None, None)
+        assert ChatScreen._parse_crawl_flags(["--depth"]) == (None, None, False)
 
     def test_unknown_flags_skipped(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None)
+        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None, False)
+
+    def test_include_subdomains_flag(self):
+        """bb-hpri: --include-subdomains opts into sibling-subdomain crawl."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--include-subdomains"]) == (None, None, True)
+
+    def test_include_subdomains_with_depth(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--depth", "2", "--include-subdomains"]) == (
+            2,
+            None,
+            True,
+        )
 
 
 async def test_chat_vim_g_scrolls_home():

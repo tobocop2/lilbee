@@ -7,6 +7,7 @@ import math
 import re
 from collections.abc import Generator, Iterator
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -172,25 +173,50 @@ CONTEXT_TEMPLATE = """Context:
 Question: {question}"""
 
 
+def display_source_path(source: str) -> str:
+    """Render a chunk's source as an absolute path with ``~`` expansion.
+
+    Source values in the store are stored relative to ``documents_dir`` so the
+    database is portable across machines. For display we resolve back to the
+    user's filesystem and substitute ``~`` for the home directory so the path
+    is unambiguous without being noisy (bb-2ude).
+
+    Falls back to the raw source string if the file no longer exists on disk
+    (e.g. the user moved the documents directory since ingestion).
+    """
+    candidate = cfg.documents_dir / source
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return source
+    home = Path.home()
+    try:
+        return f"~/{resolved.relative_to(home)}"
+    except ValueError:
+        return str(resolved)
+
+
 def _format_citation(citation: CitationRecord) -> str:
     """Format a single citation record as an indented attribution line."""
+    source_display = display_source_path(citation["source_filename"])
     if citation["page_start"] or citation["page_end"]:
         ps, pe = citation["page_start"], citation["page_end"]
         pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"    → {citation['source_filename']}, {pages}"
+        return f"    → {source_display}, {pages}"
     if citation["line_start"] or citation["line_end"]:
         ls, le = citation["line_start"], citation["line_end"]
         lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"    → {citation['source_filename']}, {lines}"
-    return f"    → {citation['source_filename']}"
+        return f"    → {source_display}, {lines}"
+    return f"    → {source_display}"
 
 
 def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
     """Format a search result as a source citation line.
     For wiki chunks, shows the wiki page path followed by indented transitive citations.
     """
+    source_display = display_source_path(result.source)
     if result.chunk_type == "wiki" and citations:
-        parts = [f"  → {result.source}"]
+        parts = [f"  → {source_display}"]
         for cit in citations:
             parts.append(_format_citation(cit))
         return "\n".join(parts)
@@ -198,14 +224,14 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     if result.content_type == "pdf":
         ps, pe = result.page_start, result.page_end
         pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"  → {result.source}, {pages}"
+        return f"  → {source_display}, {pages}"
 
     if result.content_type == "code":
         ls, le = result.line_start, result.line_end
         lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"  → {result.source}, {lines}"
+        return f"  → {source_display}, {lines}"
 
-    return f"  → {result.source}"
+    return f"  → {source_display}"
 
 
 def _source_slug(source_name: str) -> str:
@@ -599,6 +625,7 @@ class Searcher:
         "Chat only — no document search configured. "
         "Install an embedding model: lilbee models install nomic-embed-text\n\n"
     )
+    _NO_RESULTS_MESSAGE = "No relevant documents found for this query."
 
     def _direct_messages(
         self, question: str, history: list[ChatMessage] | None = None
@@ -632,7 +659,7 @@ class Searcher:
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
             return AskResult(
-                answer="No relevant documents found. Try ingesting some documents first.",
+                answer=self._NO_RESULTS_MESSAGE,
                 sources=[],
             )
         results, messages = rag
@@ -692,7 +719,7 @@ class Searcher:
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
             yield StreamToken(
-                content="No relevant documents found. Try ingesting some documents first.",
+                content=self._NO_RESULTS_MESSAGE,
                 is_reasoning=False,
             )
             return

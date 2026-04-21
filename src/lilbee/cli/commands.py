@@ -193,6 +193,15 @@ _max_pages_option = typer.Option(
     "--max-pages",
     help="Cap total pages for --crawl. Unset = no limit; positive int = hard cap.",
 )
+_include_subdomains_option = typer.Option(
+    False,
+    "--include-subdomains",
+    help=(
+        "Allow --crawl to follow links into sibling subdomains of the start "
+        "host (e.g. en.wikipedia.org plus af.wikipedia.org). Default scopes "
+        "the crawl to the exact start host only."
+    ),
+)
 
 
 def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
@@ -208,7 +217,12 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
 
 
 def _crawl_urls_blocking(
-    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
+    urls: list[str],
+    *,
+    crawl: bool,
+    depth: int | None,
+    max_pages: int | None,
+    include_subdomains: bool = False,
 ) -> list[Path]:
     """Crawl URLs synchronously (for CLI), returning paths written.
 
@@ -274,6 +288,7 @@ def _crawl_urls_blocking(
                 on_progress=_make_callback(),
                 cancel_event=cancel_event,
                 crawl_and_save=crawl_and_save,
+                include_subdomains=include_subdomains,
             )
             all_paths.extend(paths)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
@@ -288,6 +303,7 @@ def _run_crawl_with_signal_cancel(
     on_progress: object,
     cancel_event: object,
     crawl_and_save: object,
+    include_subdomains: bool = False,
 ) -> list[Path]:
     """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
 
@@ -324,6 +340,7 @@ def _run_crawl_with_signal_cancel(
             on_progress=on_progress,
             cancel=cancel_event,
             quiet=cfg.json_mode,
+            include_subdomains=include_subdomains,
         )
         return loop.run_until_complete(coro)
     finally:
@@ -343,6 +360,7 @@ def add(
     crawl: bool = _crawl_option,
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
+    include_subdomains: bool = _include_subdomains_option,
 ) -> None:
     """Copy files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -371,7 +389,11 @@ def add(
                 )
                 raise SystemExit(1)
             crawled_paths = _crawl_urls_blocking(
-                urls, crawl=crawl, depth=depth, max_pages=max_pages
+                urls,
+                crawl=crawl,
+                depth=depth,
+                max_pages=max_pages,
+                include_subdomains=include_subdomains,
             )
             if not cfg.json_mode:
                 console.print(

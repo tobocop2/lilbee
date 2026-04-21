@@ -609,6 +609,36 @@ class TestApplyResultZeroChunks:
         mock_svc.store.upsert_source.assert_called_once()
         assert "doc.pdf" in added
 
+    def test_ingest_error_logs_warning_not_exception(self, caplog):
+        """bb-j69s: ingest errors must not log at exception level.
+
+        The logger's exception() call routes the full traceback through the
+        stderr bridge into the TUI chat pane, even though the functional path
+        already surfaces the failure via SyncResult.failed. Dropping to
+        warning() keeps the noise out of chat while leaving the error
+        reachable at DEBUG level.
+        """
+        import logging
+
+        from lilbee.ingest import _apply_result, _IngestResult
+
+        added: list[str] = []
+        updated: list[str] = []
+        failed: list[str] = []
+        err = RuntimeError("embedder bogus:bogus not installed")
+        result = _IngestResult("qa-fail.md", Path("qa-fail.md"), chunk_count=0, error=err)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.ingest"):
+            _apply_result(result, added, updated, failed)
+        levels = [r.levelno for r in caplog.records if r.name == "lilbee.ingest"]
+        assert logging.WARNING in levels
+        # Exception-level records carry exc_info; warning call should not.
+        warning_records = [
+            r for r in caplog.records if r.name == "lilbee.ingest" and r.levelno == logging.WARNING
+        ]
+        assert warning_records
+        assert warning_records[0].exc_info is None
+        assert "qa-fail.md" in failed
+
 
 class TestSyncResultStr:
     def test_str_no_failures(self):

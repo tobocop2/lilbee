@@ -48,6 +48,15 @@ def isolated_env(tmp_path, monkeypatch, request):
     cls = request.cls.__name__ if request.cls else ""
     if cls != "TestPlaywrightBrowserCheck":
         monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+    # Default the sitemap bound to "unknown" so tests don't hit the network.
+    # Tests that exercise the sitemap hook directly (TestSitemapCounting)
+    # opt out of this autopatch.
+    if cls != "TestSitemapCounting":
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        monkeypatch.setattr(
+            "lilbee.crawler._count_sitemap_urls", lambda *a, **kw: CRAWL_TOTAL_UNKNOWN
+        )
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -929,6 +938,133 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1)
 
 
+class TestHostScopeFilter:
+    """bb-hpri: whole-site crawl must scope to the exact host by default."""
+
+    def test_exact_host_rejects_other_subdomains(self):
+        from lilbee.crawler import _host_scope_filter
+
+        f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=False)
+        assert f.apply("https://en.wikipedia.org/wiki/Y") is True
+        assert f.apply("https://af.wikipedia.org/wiki/Y") is False
+        assert f.apply("https://wikipedia.org/wiki/Y") is False
+
+    def test_include_subdomains_allows_siblings(self):
+        from lilbee.crawler import _host_scope_filter
+
+        f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=True)
+        assert f.apply("https://en.wikipedia.org/wiki/Y") is True
+        # DomainFilter allows exact host + any subdomain of it. en.wikipedia.org
+        # is not a parent of af.wikipedia.org, so "include_subdomains" on a
+        # start URL of en.wikipedia.org does NOT unlock other language subdomains.
+        # That's fine: users who want that can pass wikipedia.org directly.
+        assert f.apply("https://other.example.com/") is False
+
+    def test_returns_none_when_host_missing(self):
+        from lilbee.crawler import _host_scope_filter
+
+        assert _host_scope_filter("not-a-url", include_subdomains=False) is None
+
+
+class TestSitemapCounting:
+    """bb-ufyk: best-effort sitemap lookup bounds the crawl progress total."""
+
+    def test_returns_unknown_on_http_error(self, monkeypatch):
+        import httpx
+
+        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        def _raise(*a, **kw):
+            raise httpx.ConnectError("boom")
+
+        monkeypatch.setattr("httpx.get", _raise)
+        assert (
+            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
+
+    def test_returns_unknown_on_4xx(self, monkeypatch):
+        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        fake = MagicMock(status_code=404, text="")
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        assert (
+            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
+
+    def test_counts_matching_urls_only(self, monkeypatch):
+        from lilbee.crawler import _count_sitemap_urls
+
+        body = (
+            "<urlset>"
+            "<url><loc>https://example.com/a</loc></url>"
+            "<url><loc>https://example.com/b</loc></url>"
+            "<url><loc>https://other.com/c</loc></url>"
+            "<url><loc>https://sub.example.com/d</loc></url>"
+            "</urlset>"
+        )
+        fake = MagicMock(status_code=200, text=body)
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        assert count == 2
+
+    def test_include_subdomains_counts_children(self, monkeypatch):
+        from lilbee.crawler import _count_sitemap_urls
+
+        body = (
+            "<urlset>"
+            "<url><loc>https://example.com/a</loc></url>"
+            "<url><loc>https://sub.example.com/d</loc></url>"
+            "<url><loc>https://other.com/c</loc></url>"
+            "</urlset>"
+        )
+        fake = MagicMock(status_code=200, text=body)
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
+        assert count == 2
+
+    def test_returns_unknown_when_start_url_has_no_host(self):
+        """A malformed start URL short-circuits before hitting the network."""
+        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+
+        # file:///foo has no hostname, so the helper bails immediately.
+        assert (
+            _count_sitemap_urls("file:///not-a-real-host", include_subdomains=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
+
+    def test_skips_entries_with_no_host(self, monkeypatch):
+        """Sitemap entries whose loc has no hostname are skipped."""
+        from lilbee.crawler import _count_sitemap_urls
+
+        body = (
+            "<urlset>"
+            "<url><loc>/relative/path</loc></url>"
+            "<url><loc>https://example.com/a</loc></url>"
+            "</urlset>"
+        )
+        fake = MagicMock(status_code=200, text=body)
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        assert count == 1
+
+    def test_caps_at_max_urls(self, monkeypatch):
+        """A giant sitemap stops at _SITEMAP_MAX_URLS so the scan is bounded."""
+        from lilbee import crawler as crawler_mod
+        from lilbee.crawler import _count_sitemap_urls
+
+        monkeypatch.setattr(crawler_mod, "_SITEMAP_MAX_URLS", 3)
+        entries = "".join(f"<url><loc>https://example.com/{i}</loc></url>" for i in range(10))
+        fake = MagicMock(status_code=200, text=f"<urlset>{entries}</urlset>")
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        assert count == 3
+
+
 class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
@@ -986,6 +1122,20 @@ class TestCrawlAndSave:
         await crawl_and_save("https://example.com", depth=2, quiet=True)
         call_kwargs = mock_crawl_recursive.call_args[1]
         assert call_kwargs["quiet"] is True
+
+    @patch("lilbee.crawler.crawl_recursive")
+    async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
+        """bb-hpri: whole-site default is exact-host scoping."""
+        mock_crawl_recursive.return_value = []
+        await crawl_and_save("https://example.com", depth=2)
+        assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is False
+
+    @patch("lilbee.crawler.crawl_recursive")
+    async def test_include_subdomains_threaded_through(self, mock_crawl_recursive, isolated_env):
+        """Opting into subdomain scope reaches the recursive crawl."""
+        mock_crawl_recursive.return_value = []
+        await crawl_and_save("https://example.com", depth=2, include_subdomains=True)
+        assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is True
 
     @patch("lilbee.crawler.crawl_recursive")
     async def test_cancel_threaded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
