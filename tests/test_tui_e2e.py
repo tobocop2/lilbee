@@ -1200,11 +1200,19 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "anything"
-                await pilot.pause()
+                # Mounting the CTA is async (container.mount). On slower runners
+                # a single pilot.pause isn't enough; poll until it settles.
+                for _ in range(10):
+                    await pilot.pause()
+                    if list(app.screen.query("#catalog-grid > .search-hf-cta")):
+                        break
                 assert len(list(app.screen.query("#catalog-grid > .search-hf-cta"))) == 1
 
                 search.value = ""
-                await pilot.pause()
+                for _ in range(10):
+                    await pilot.pause()
+                    if not list(app.screen.query("#catalog-grid > .search-hf-cta")):
+                        break
                 assert not list(app.screen.query("#catalog-grid > .search-hf-cta"))
 
     async def test_grid_cta_tracks_live_search_value(self, _mock_resolve):
