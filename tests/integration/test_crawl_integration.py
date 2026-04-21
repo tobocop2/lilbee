@@ -18,12 +18,7 @@ crawl4ai = pytest.importorskip("crawl4ai")
 from lilbee import crawler as crawler_mod  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
-    # `_save_single_result` is underscore-prefixed but used here deliberately:
-    # the path-traversal test below pins the helper's hash-check short-circuit
-    # behavior, which is NOT observable through the public crawl_and_save
-    # wrapper once upstream filtering runs. If this helper ever becomes a
-    # stable public API, drop the underscore; until then, accept the coupling.
-    _save_single_result,
+    _save_single_result,  # pins the helper directly; public wrapper hides it
     crawl_and_save,
     load_crawl_metadata,
     validate_crawl_url,

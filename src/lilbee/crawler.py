@@ -283,11 +283,9 @@ _MAX_FILENAME_LEN = 200
 # Sentinel for index pages (trailing slash or empty path)
 _INDEX_FILENAME = "index.md"
 
-# Batch window for the crawl metadata JSON rewrite. Markdown files are written
-# per page (durable immediately); metadata is flushed every N pages, plus
-# unconditionally at the end of the crawl, so we don't rewrite the full JSON
-# on every streamed result. At 10 pages the worst-case data-loss window on
-# crash is 9 metadata entries, all recoverable from the written markdown.
+# How often the crawl metadata JSON is rewritten during a streaming crawl.
+# Markdown files are durable per-page; metadata batches to keep write volume
+# bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
 METADATA_FLUSH_INTERVAL = 10
 
 
@@ -998,14 +996,7 @@ async def crawl_and_save(
         pages_since_metadata_flush = 0
 
         def flush_page(result: CrawlResult) -> Path | None:
-            """Save one streamed result and update metadata in memory.
-
-            Markdown files are always flushed per page (durable immediately).
-            Metadata JSON rewrite is batched to reduce I/O on large crawls:
-            it flushes every METADATA_FLUSH_INTERVAL pages, and the post-loop
-            block flushes unconditionally so both the success and cancel
-            paths land in a consistent state.
-            """
+            """Save one streamed result and update metadata in memory."""
             nonlocal pages_since_metadata_flush
             path = _save_single_result(result, meta)
             if path is None:
@@ -1024,9 +1015,6 @@ async def crawl_and_save(
             try:
                 flush_page(result)
             except OSError:
-                # Mirror the recursive path: a disk-side flush failure must not
-                # masquerade as a crawl failure. Log and return the (empty)
-                # written_paths list.
                 log.exception("Flush failed for %s", result.url)
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
@@ -1043,23 +1031,14 @@ async def crawl_and_save(
             )
             pages_seen = len(results)
 
-        # Final metadata flush covers both clean completion and cancel. Skip
-        # when there are no in-memory entries still pending write (nothing
-        # written at all, or the stream ended exactly on an interval boundary).
         if pages_since_metadata_flush > 0:
             try:
                 _flush_metadata(meta)
             except OSError:
-                # Markdown files were already written durably per page; a
-                # failed final metadata flush is observable at next startup
-                # when load_crawl_metadata() loses the last batch of entries,
-                # but it should not fail a crawl that otherwise succeeded.
                 log.exception("Final metadata flush failed")
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:
-            # Partial crawls skip auto-sync: the client (plugin/TUI) decides
-            # whether to ingest a partial result set.
             await _maybe_periodic_sync()
 
         if on_progress:
