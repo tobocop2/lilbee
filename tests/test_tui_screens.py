@@ -6643,7 +6643,7 @@ async def test_settings_on_list_restore_bad_button_id():
         with patch.object(screen, "_persist_value") as mock_pv:
             screen._on_list_restore(event)
             mock_pv.assert_not_called()
-        event.button.id = "not-a-list-restore-foo"
+        event.button.id = "wrong-prefix-foo"
         with patch.object(screen, "_persist_value") as mock_pv:
             screen._on_list_restore(event)
             mock_pv.assert_not_called()

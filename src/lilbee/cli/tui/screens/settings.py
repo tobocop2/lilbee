@@ -48,6 +48,10 @@ _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
 # so composition doesn't collide on the same id.
 _LIST_RESTORE_PREFIX = "list-restore-"
 
+# DOM id prefix for the inline regex-validation error Static inside a
+# Collapsible list editor.
+_LIST_ERROR_ID_PREFIX = "err-"
+
 # CSS class toggled on the inline validation error Static to show/hide it.
 _LIST_ERROR_VISIBLE_CLASS = "-visible"
 
@@ -157,7 +161,7 @@ def _make_list_editor(key: str) -> Collapsible:
         id=f"ed-{key}",
         classes="setting-list-editor",
     )
-    error = Static("", id=f"err-{key}", classes="setting-list-error")
+    error = Static("", id=f"{_LIST_ERROR_ID_PREFIX}{key}", classes="setting-list-error")
     reset = Button(
         msg.SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS,
         id=f"{_LIST_RESTORE_PREFIX}{key}",
@@ -404,7 +408,7 @@ class SettingsScreen(Screen[None]):
         # defn.type is list here, so _parse_value returned list[str].
         assert isinstance(parsed, list)  # for type narrowing in save path
         err = self._validate_regex_list(parsed)
-        error_widget = self.query_one(f"#err-{key}", Static)
+        error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
             line_no, err_text = err
             error_widget.update(
@@ -431,7 +435,7 @@ class SettingsScreen(Screen[None]):
         ta = self.query_one(f"#ed-{key}", ListTextArea)
         ta.load_text(text)
         self._persist_value(key, defn, text)
-        error_widget = self.query_one(f"#err-{key}", Static)
+        error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
         error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
         self._refresh_list_title(key, len(defaults))
 
