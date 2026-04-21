@@ -107,12 +107,7 @@ def _title_content(key: str, defn: SettingDef) -> Content:
 
 
 def _stringify_default(default: object) -> str:
-    """Serialize a reset-to-default value for the TOML settings store.
-
-    Lists become newline-joined so pydantic's splitlines validator round-trips
-    cleanly on reload. None collapses to the empty string. Other scalars use
-    str() directly.
-    """
+    """Serialize a default for the TOML settings store."""
     if default is None:
         return ""
     if isinstance(default, list):
@@ -303,11 +298,7 @@ class SettingsScreen(Screen[None]):
         self._persist_value(name, defn, value)
 
     def _persist_value(self, key: str, defn: SettingDef, raw: str, *, quiet: bool = False) -> None:
-        """Parse, apply, and persist a setting value.
-
-        When *quiet* is True, the per-field CMD_SET_SUCCESS toast is suppressed.
-        Used by batch paths (e.g. reset-all) that fire one summary toast instead.
-        """
+        """Parse, apply, and persist a setting value."""
         try:
             parsed = self._parse_value(defn, raw)
             setattr(cfg, key, parsed)
@@ -363,28 +354,22 @@ class SettingsScreen(Screen[None]):
         )
 
     def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
-        """Apply reset-to-default to every writable SETTINGS_MAP entry on confirm.
-
-        The pydantic default is applied directly via setattr (skipping the
-        _parse_value round-trip) so reset works even for fields where
-        SETTINGS_MAP.nullable does not match the cfg type exactly.
-
-        End-to-end atomicity: cfg values are snapshotted first, then mutated
-        in-memory, then persisted in one settings.update_values batch. If the
-        disk write fails, the in-memory state and editor widgets are rolled
-        back to the snapshot so on-disk and on-screen don't desync. The user
-        sees an error toast in that case rather than a misleading success.
-
-        Invalid defaults (e.g. pydantic validator rejects the stored default)
-        are logged and tracked; the summary toast names them so the user
-        isn't misled about which fields actually changed.
-        """
+        """Reset every writable setting to its cfg default atomically."""
         if not confirmed:
             return
         writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
-        # Snapshot the pre-reset cfg values so we can roll back on a failed
-        # disk write. Read every writable key up front, before any mutation.
-        snapshot: dict[str, object] = {key: getattr(cfg, key) for key, _ in writable}
+        snapshot = {key: getattr(cfg, key) for key, _ in writable}
+        updates, signal_payload, skipped = self._apply_batch_defaults(writable)
+        if updates and not self._persist_batch(writable, snapshot, updates):
+            return
+        self._refresh_batch(writable, skipped)
+        self._publish_batch_signals(signal_payload)
+        self._notify_batch_result(skipped)
+
+    def _apply_batch_defaults(
+        self, writable: list[tuple[str, SettingDef]]
+    ) -> tuple[dict[str, str], list[tuple[str, object]], list[str]]:
+        """Mutate cfg in-memory for every writable key; track updates + skips."""
         updates: dict[str, str] = {}
         signal_payload: list[tuple[str, object]] = []
         skipped: list[str] = []
@@ -398,37 +383,56 @@ class SettingsScreen(Screen[None]):
                 continue
             updates[key] = _stringify_default(default)
             signal_payload.append((key, default))
-        if updates:
+        return updates, signal_payload, skipped
+
+    def _persist_batch(
+        self,
+        writable: list[tuple[str, SettingDef]],
+        snapshot: dict[str, object],
+        updates: dict[str, str],
+    ) -> bool:
+        """Persist the batch; roll back cfg + UI on disk error. Returns True on success."""
+        try:
+            settings.update_values(cfg.data_root, updates)
+        except OSError as exc:
+            self._rollback_batch(writable, snapshot)
+            self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
+            return False
+        return True
+
+    def _rollback_batch(
+        self, writable: list[tuple[str, SettingDef]], snapshot: dict[str, object]
+    ) -> None:
+        """Restore cfg and editor widgets from snapshot after a failed persist."""
+        for key, prev in snapshot.items():
             try:
-                settings.update_values(cfg.data_root, updates)
-            except OSError as exc:
-                # Roll back in-memory cfg so next session reload (which will
-                # read the untouched TOML) doesn't desync from a UI showing
-                # defaults. Editor widgets also revert.
-                for key, prev in snapshot.items():
-                    try:
-                        setattr(cfg, key, prev)
-                    except (ValueError, TypeError):
-                        log.exception("Failed to roll back cfg.%s after update_values error", key)
-                for key, defn in writable:
-                    self._refresh_editor(key, defn, snapshot[key])
-                    self._refresh_help(key, defn)
-                self.notify(
-                    msg.SETTINGS_INVALID_VALUE.format(error=exc),
-                    severity="error",
-                )
-                return
-        # Persist succeeded. Refresh UI and fire signals AFTER the disk write.
+                setattr(cfg, key, prev)
+            except (ValueError, TypeError):
+                log.exception("Failed to roll back cfg.%s", key)
+        for key, defn in writable:
+            self._refresh_editor(key, defn, snapshot[key])
+            self._refresh_help(key, defn)
+
+    def _refresh_batch(self, writable: list[tuple[str, SettingDef]], skipped: list[str]) -> None:
+        """Refresh editor + help for each successfully-reset writable key."""
         for key, defn in writable:
             if key in skipped:
                 continue
-            self._refresh_editor(key, defn, get_default(key))
+            default = get_default(key)
+            self._refresh_editor(key, defn, default)
             self._refresh_help(key, defn)
+
+    def _publish_batch_signals(self, signal_payload: list[tuple[str, object]]) -> None:
+        """Fan out settings_changed signals for every successfully-reset key."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            for pub_key, pub_parsed in signal_payload:
-                self.app.settings_changed_signal.publish((pub_key, pub_parsed))
+        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            return
+        for pub_key, pub_parsed in signal_payload:
+            self.app.settings_changed_signal.publish((pub_key, pub_parsed))
+
+    def _notify_batch_result(self, skipped: list[str]) -> None:
+        """Surface a single summary toast; warning severity when any key skipped."""
         if skipped:
             self.notify(
                 msg.SETTINGS_RESET_ALL_PARTIAL.format(skipped=", ".join(skipped)),
@@ -450,11 +454,7 @@ class SettingsScreen(Screen[None]):
                 return
 
     def _reset_to_default(self, key: str) -> None:
-        """Restore a single setting to its cfg default via the normal persist path.
-
-        _persist_value already surfaces a `{key} = {value}` toast, so a second
-        reset-specific toast would just double up for every per-row click.
-        """
+        """Restore a single setting to its cfg default."""
         defn = SETTINGS_MAP.get(key)
         if defn is None or not defn.writable:
             return
