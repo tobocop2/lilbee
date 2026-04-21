@@ -715,7 +715,13 @@ async def test_settings_list_editor_restore_defaults():
         cfg.crawl_exclude_patterns = ["old"]
         btn = app.screen.query_one("#list-restore-crawl_exclude_patterns", Button)
         btn.press()
-        await pilot.pause()
+        # Button.Pressed flows through Textual's async message bus; poll until
+        # the handler updates cfg. A single pilot.pause is not enough on
+        # slower runners (Windows, in particular).
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS):
+                break
         assert cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         assert ta.text == "\n".join(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
