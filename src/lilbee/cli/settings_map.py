@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from lilbee.config import ClustererBackend
+from pydantic_core import PydanticUndefined
+
+from lilbee.config import ClustererBackend, cfg
 
 
 class RenderStyle(StrEnum):
@@ -26,6 +28,16 @@ class SettingDef:
     group: str = "General"
     help_text: str = ""
     choices: tuple[str, ...] | None = None
+
+
+def get_default(key: str) -> object:
+    """Return the cfg default for a setting key."""
+    field_info = type(cfg).model_fields[key]
+    if field_info.default_factory is not None:
+        return field_info.default_factory()  # type: ignore[call-arg]
+    if field_info.default is PydanticUndefined:
+        return None
+    return field_info.default
 
 
 SETTINGS_MAP: dict[str, SettingDef] = {

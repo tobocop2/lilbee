@@ -10,17 +10,22 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalGroup, VerticalScroll
+from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
 
 from lilbee import settings
-from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef
+from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.config import cfg
+
+_ROW_ID_PREFIX = "row-"
+_EDITOR_ID_PREFIX = "ed-"
+_RESET_BUTTON_ID_PREFIX = "reset-"
+_RESET_BUTTON_LABEL = "↺"
 
 log = logging.getLogger(__name__)
 
@@ -123,20 +128,30 @@ def _make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     """Create a Select widget for choice-based settings."""
     choices = [(c, c) for c in (defn.choices or ())]
     if value in {c[1] for c in choices}:
-        return Select(choices, value=value, name=key, classes="setting-editor", id=f"ed-{key}")
-    return Select(choices, name=key, classes="setting-editor", id=f"ed-{key}")
+        return Select(
+            choices,
+            value=value,
+            name=key,
+            classes="setting-editor",
+            id=f"{_EDITOR_ID_PREFIX}{key}",
+        )
+    return Select(choices, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}")
 
 
 def _make_checkbox(key: str, value: str) -> Checkbox:
     """Create a Checkbox widget for boolean settings."""
     checked = value.lower() in ("true", "1", "yes", "on")
-    return Checkbox(value=checked, name=key, classes="setting-editor", id=f"ed-{key}")
+    return Checkbox(
+        value=checked, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}"
+    )
 
 
 def _make_input(key: str, value: str) -> NavAwareInput:
     """Create an Input widget for string/number settings."""
     display = "" if value == "None" else value.replace(" (model default)", "")
-    return NavAwareInput(value=display, name=key, classes="setting-editor", id=f"ed-{key}")
+    return NavAwareInput(
+        value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}"
+    )
 
 
 class SettingsScreen(Screen[None]):
@@ -155,6 +170,7 @@ class SettingsScreen(Screen[None]):
         Binding("slash", "focus_search", "Search", show=True),
         Binding("tab", "app.focus_next", "Next field", show=True),
         Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
+        Binding("ctrl+r", "reset_focused", "Reset", show=False),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -168,10 +184,16 @@ class SettingsScreen(Screen[None]):
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        yield NavAwareInput(
-            placeholder="Filter settings...",
-            id="settings-search",
-        )
+        with Horizontal(id="settings-top-row"):
+            yield NavAwareInput(
+                placeholder="Filter settings...",
+                id="settings-search",
+            )
+            yield Button(
+                msg.SETTINGS_RESET_ALL_LABEL,
+                id="reset-all-defaults",
+                classes="reset-all-button",
+            )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
         with BottomBars():
@@ -192,12 +214,19 @@ class SettingsScreen(Screen[None]):
         with VerticalGroup(
             classes="setting-row",
             name=f"{defn.group.lower()} {key}",
-            id=f"row-{key}",
+            id=f"{_ROW_ID_PREFIX}{key}",
         ):
             yield Static(_title_content(key, defn), classes="setting-title")
             yield Static(_help_content(key, defn), classes="setting-help")
             if defn.writable:
-                yield _make_editor(key, defn)
+                with Horizontal(classes="setting-editor-row"):
+                    yield _make_editor(key, defn)
+                    yield Button(
+                        _RESET_BUTTON_LABEL,
+                        id=f"{_RESET_BUTTON_ID_PREFIX}{key}",
+                        classes="setting-reset-button",
+                        tooltip=msg.SETTINGS_RESET_TO_DEFAULT_TOOLTIP,
+                    )
 
     @on(Input.Submitted, "#settings-search")
     def _on_search_submitted(self) -> None:
@@ -286,11 +315,97 @@ class SettingsScreen(Screen[None]):
     def _refresh_help(self, key: str, defn: SettingDef) -> None:
         """Update the help text after a value change."""
         try:
-            row = self.query_one(f"#row-{key}", VerticalGroup)
+            row = self.query_one(f"#{_ROW_ID_PREFIX}{key}", VerticalGroup)
             help_widget = row.query_one(".setting-help", Static)
             help_widget.update(_help_content(key, defn))
         except Exception:
             log.debug("Failed to refresh help for %s", key, exc_info=True)
+
+    @on(Button.Pressed, ".setting-reset-button")
+    def _on_reset_pressed(self, event: Button.Pressed) -> None:
+        """Handle the small reset button embedded in each writable row."""
+        button_id = event.button.id
+        if button_id is None or not button_id.startswith(_RESET_BUTTON_ID_PREFIX):
+            return
+        key = button_id[len(_RESET_BUTTON_ID_PREFIX) :]
+        self._reset_to_default(key)
+
+    @on(Button.Pressed, "#reset-all-defaults")
+    def _on_reset_all_pressed(self) -> None:
+        """Open a destructive-confirm dialog before resetting every writable field."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        self.app.push_screen(
+            ConfirmDialog(
+                title=msg.SETTINGS_RESET_ALL_CONFIRM_TITLE,
+                message=msg.SETTINGS_RESET_ALL_CONFIRM_MESSAGE,
+            ),
+            self._on_reset_all_confirmed,
+        )
+
+    def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
+        """Apply reset-to-default to every writable SETTINGS_MAP entry on confirm."""
+        if not confirmed:
+            return
+        for key, defn in SETTINGS_MAP.items():
+            if defn.writable:
+                self._reset_to_default(key, notify=False)
+        self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
+
+    def action_reset_focused(self) -> None:
+        """Reset the currently-focused setting row to its cfg default."""
+        focused = self.focused
+        if focused is None:
+            return
+        for ancestor in focused.ancestors_with_self:
+            ancestor_id = getattr(ancestor, "id", None)
+            if ancestor_id and ancestor_id.startswith(_ROW_ID_PREFIX):
+                key = ancestor_id[len(_ROW_ID_PREFIX) :]
+                self._reset_to_default(key)
+                return
+
+    def _reset_to_default(self, key: str, *, notify: bool = True) -> None:
+        """Restore a setting to its cfg default via the normal persist path.
+
+        Set *notify* to False when called in a batch (e.g. reset-all) to
+        avoid firing a separate toast per field.
+        """
+        defn = SETTINGS_MAP.get(key)
+        if defn is None or not defn.writable:
+            return
+        default = get_default(key)
+        if default is None:
+            stringified = ""
+        elif isinstance(default, list):
+            stringified = "\n".join(default)
+        else:
+            stringified = str(default)
+        self._persist_value(key, defn, stringified)
+        self._refresh_editor(key, defn, default)
+        if notify:
+            self.notify(msg.SETTINGS_RESET_TO_DEFAULT_SUCCESS.format(key=key))
+
+    def _refresh_editor(self, key: str, defn: SettingDef, value: object) -> None:
+        """Update the editor widget to reflect a new value (e.g. after reset)."""
+        try:
+            widget = self.query_one(f"#{_EDITOR_ID_PREFIX}{key}")
+        except Exception:
+            log.debug("Failed to refresh editor for %s", key, exc_info=True)
+            return
+        if isinstance(widget, Input):
+            widget.value = "" if value is None else str(value)
+        elif isinstance(widget, Checkbox):
+            widget.value = bool(value)
+        elif isinstance(widget, Select):
+            if value is None:
+                widget.clear()
+            else:
+                widget.value = str(value)
+        elif isinstance(widget, TextArea):  # future-proofing: list/multiline defaults
+            if isinstance(value, list):
+                widget.load_text("\n".join(value))
+            else:
+                widget.load_text("" if value is None else str(value))
 
     def action_focus_search(self) -> None:
         """Focus the search input -- bound to / key."""

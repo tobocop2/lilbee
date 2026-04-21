@@ -124,25 +124,24 @@ def _drain_textual_threads():
 def _isolate_cfg(tmp_path, request):
     """Snapshot and restore cfg for every test to prevent cross-test pollution.
 
-    ``documents_dir`` is isolated to a scratch path so unit tests that
-    drive ``/add``-style flows can't see files left behind in the dev
+    ``documents_dir`` is isolated to a scratch path so unit tests that drive
+    ``/add``-style flows can't see files left behind in the dev
     ``.lilbee/documents/`` by an earlier run; without this, overwrite
-    prompts fire on phantom "existing" files.
+    prompts fire on phantom "existing" files. ``data_root`` is also
+    redirected so tests that exercise ``settings.set_value`` (e.g.
+    SettingsScreen persist handlers) never touch the developer's real
+    ``config.toml``.
 
-    Integration tests are opted out: their ``wiki_pipeline`` /
-    ``rag_pipeline`` session fixtures set ``documents_dir`` to a
-    real seeded directory, and a per-function override would break
-    the contract every integration test assumes.
+    Integration tests are opted out of the ``documents_dir`` override:
+    their ``wiki_pipeline`` / ``rag_pipeline`` session fixtures set
+    ``documents_dir`` to a real seeded directory, and a per-function
+    override would break the contract every integration test assumes.
     """
     snapshot = cfg.model_copy()
     cfg.models_dir = tmp_path / "models"
+    cfg.data_root = tmp_path / "data_root"
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
-        # Don't mkdir here. Most consumers that touch documents_dir
-        # create it with their own parents/exist_ok/ownership
-        # expectations; pre-creating here hides bugs where production
-        # code forgets to. ``dest.exists()`` on a missing path returns
-        # False, which is what the TUI ``/add`` duplicate check needs.
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
