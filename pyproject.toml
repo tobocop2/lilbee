@@ -49,7 +49,7 @@ dependencies = [
 litellm = ["litellm"]
 reranker = ["sentence-transformers"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
-crawler = ["crawl4ai>=0.8.0"]
+crawler = ["crawl4ai>=0.8.6"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
@@ -58,9 +58,6 @@ Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
 lilbee = "lilbee.launcher:main"
-
-[tool.uv.sources]
-huggingface_hub = { git = "https://github.com/tobocop2/huggingface_hub.git", branch = "fix/tqdm-bad-fd-safety" }
 
 [build-system]
 requires = ["hatchling"]

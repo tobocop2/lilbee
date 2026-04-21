@@ -609,6 +609,34 @@ class TestCrawlRoute:
         resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
         assert resp.status_code == 400
 
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_null_max_pages(self, mock_stream, client):
+        """null max_pages / depth passes through as None (unbounded)."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post(
+            "/api/crawl",
+            json={"url": "https://example.com", "depth": None, "max_pages": None},
+        )
+        assert resp.status_code == 201
+        kwargs = mock_stream.call_args.kwargs
+        assert kwargs["depth"] is None
+        assert kwargs["max_pages"] is None
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_omitted_fields_default_to_none(self, mock_stream, client):
+        """When depth/max_pages are omitted, the handler receives None (unbounded)."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post("/api/crawl", json={"url": "https://example.com"})
+        assert resp.status_code == 201
+        kwargs = mock_stream.call_args.kwargs
+        assert kwargs["depth"] is None
+        assert kwargs["max_pages"] is None
+
+    def test_post_crawl_rejects_zero_max_pages(self, client):
+        """max_pages=0 is invalid (use null for unbounded)."""
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": 0})
+        assert resp.status_code == 400
+
 
 class TestCreateAppReexport:
     @mock.patch("lilbee.server.app.create_app")

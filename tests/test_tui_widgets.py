@@ -3332,7 +3332,7 @@ class CrawlDialogTestApp(App[None]):
 
 
 async def test_crawl_dialog_submit_valid():
-    """Submitting with a valid URL returns CrawlParams."""
+    """Submitting with a valid URL and explicit advanced caps returns CrawlParams."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
 
     app = CrawlDialogTestApp()
@@ -3478,7 +3478,7 @@ async def test_crawl_dialog_input_submitted():
 
 
 async def test_crawl_dialog_defaults():
-    """Default values match config when left unchanged."""
+    """Default submit (recursive checked, advanced blank) yields None caps."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
 
     app = CrawlDialogTestApp()
@@ -3493,12 +3493,12 @@ async def test_crawl_dialog_defaults():
 
     result = app.results[0]
     assert isinstance(result, CrawlParams)
-    assert result.depth == cfg.crawl_max_depth
-    assert result.max_pages == cfg.crawl_max_pages
+    assert result.depth is None
+    assert result.max_pages is None
 
 
 async def test_crawl_dialog_negative_max_pages_shows_error():
-    """Negative max pages shows validation error."""
+    """Non-positive max pages shows validation error."""
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause()
@@ -3514,8 +3514,25 @@ async def test_crawl_dialog_negative_max_pages_shows_error():
             assert "max pages" in str(error.render()).lower()
 
 
-async def test_crawl_dialog_empty_depth_uses_default():
-    """Empty depth field falls back to config defaults."""
+async def test_crawl_dialog_zero_max_pages_shows_error():
+    """Zero max pages is invalid (blank means unbounded; 0 is nonsense)."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        max_input = app.screen.query_one("#crawl-max-pages-input")
+        max_input.value = "0"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            app.screen.query_one("#crawl-submit", Button).press()
+            await pilot.pause()
+            error = app.screen.query_one("#crawl-error", Static)
+            assert "max pages" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_empty_advanced_fields_are_unbounded():
+    """Empty Advanced fields submit as None (unbounded)."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
 
     app = CrawlDialogTestApp()
@@ -3534,8 +3551,43 @@ async def test_crawl_dialog_empty_depth_uses_default():
 
     result = app.results[0]
     assert isinstance(result, CrawlParams)
-    assert result.depth == cfg.crawl_max_depth
-    assert result.max_pages == cfg.crawl_max_pages
+    assert result.depth is None
+    assert result.max_pages is None
+
+
+async def test_crawl_dialog_unchecking_recursive_submits_depth_zero():
+    """Unchecking the Recursive checkbox submits with depth=0 (single URL)."""
+    from textual.widgets import Checkbox
+
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        checkbox = app.screen.query_one("#crawl-recursive-checkbox", Checkbox)
+        checkbox.value = False
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            app.screen.query_one("#crawl-submit", Button).press()
+            await pilot.pause()
+
+    result = app.results[0]
+    assert isinstance(result, CrawlParams)
+    assert result.depth == 0
+    assert result.max_pages is None
+
+
+async def test_crawl_dialog_recursive_checkbox_default_checked():
+    """The Recursive checkbox defaults to checked on dialog open."""
+    from textual.widgets import Checkbox
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        checkbox = app.screen.query_one("#crawl-recursive-checkbox", Checkbox)
+        assert checkbox.value is True
 
 
 async def test_crawl_dialog_auto_prefix_https():

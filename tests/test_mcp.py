@@ -568,7 +568,7 @@ class TestCrawl:
         assert result["status"] == "started"
         assert result["task_id"] == "abc123"
         assert result["url"] == "https://example.com"
-        mock_start.assert_called_once_with("https://example.com", depth=0, max_pages=50)
+        mock_start.assert_called_once_with("https://example.com", depth=None, max_pages=None)
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp.start_crawl", return_value="def456")

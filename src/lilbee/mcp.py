@@ -143,8 +143,8 @@ async def add(
 @mcp.tool()
 def crawl(
     url: str,
-    depth: int = 0,
-    max_pages: int = 50,
+    depth: int | None = None,
+    max_pages: int | None = None,
 ) -> dict[str, Any]:
     """Crawl a web page and add it to the knowledge base (non-blocking).
     Launches the crawl as a background task and returns immediately with a
@@ -152,8 +152,10 @@ def crawl(
 
     Args:
         url: The URL to crawl (must start with http:// or https://).
-        depth: Maximum link-following depth (0 = single page only).
-        max_pages: Maximum number of pages to fetch (default: 50).
+        depth: None (default) crawls the whole site; 0 fetches only this URL;
+            positive int caps link-follow depth.
+        max_pages: None (default) means no page limit. Positive int caps total
+            pages fetched.
     """
     from lilbee.crawler import crawler_available
 

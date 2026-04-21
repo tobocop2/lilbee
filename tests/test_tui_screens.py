@@ -3171,17 +3171,17 @@ class TestParseCrawlFlags:
     def test_empty(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags([]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags([]) == (None, None)
 
     def test_depth_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, 0)
+        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, None)
 
     def test_max_pages_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (0, 20)
+        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (None, 20)
 
     def test_both(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -3191,17 +3191,17 @@ class TestParseCrawlFlags:
     def test_invalid_values(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None)
 
     def test_missing_value(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth"]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags(["--depth"]) == (None, None)
 
     def test_unknown_flags_skipped(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (0, 0)
+        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None)
 
 
 async def test_chat_run_crawl_background_success():
@@ -7471,7 +7471,7 @@ async def test_chat_crawl_background_success():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
 
-        async def fake_crawl(url, *, depth=0, max_pages=0, on_progress=None):
+        async def fake_crawl(url, *, depth=0, max_pages=0, on_progress=None, cancel=None):
             if on_progress:
                 on_progress(
                     EventType.CRAWL_PAGE,
@@ -7487,6 +7487,106 @@ async def test_chat_crawl_background_success():
             while app.screen.workers:
                 await _pilot.pause()
             mock_sync.assert_called()
+
+
+async def test_cmd_cancel_sets_active_crawl_cancel_event():
+    """Pressing cancel while a crawl is blocked sets the cancel event."""
+    import asyncio as _asyncio
+    import threading as _threading
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+
+        seen_cancel: list[_threading.Event] = []
+        proceed = _threading.Event()
+
+        async def fake_crawl(url, *, depth=0, max_pages=0, on_progress=None, cancel=None):
+            seen_cancel.append(cancel)
+            # Block until either the cancel event or the test timer fires.
+            await _asyncio.get_running_loop().run_in_executor(None, proceed.wait, 5.0)
+            return []
+
+        with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
+            app.screen._run_crawl_background("https://example.com", 1, 10, "crawl-cancel-1")
+            # Wait until fake_crawl has been reached and stored the cancel.
+            for _ in range(50):
+                await _pilot.pause()
+                if seen_cancel:
+                    break
+            assert seen_cancel, "crawl_and_save never ran"
+            cancel_evt = seen_cancel[0]
+            assert isinstance(cancel_evt, _threading.Event)
+            assert not cancel_evt.is_set()
+
+            # Invoke the cancel command.
+            app.screen._cmd_cancel("")
+            # Event must be set immediately (synchronous).
+            assert cancel_evt.is_set()
+            # Release the blocking crawl so the worker can exit.
+            proceed.set()
+            while app.screen.workers:
+                await _pilot.pause()
+
+
+async def test_cmd_cancel_with_no_active_crawl_is_noop():
+    """/cancel with no active crawl must not crash."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        assert app.screen._active_crawl_cancel is None
+        app.screen._cmd_cancel("")  # must not raise
+        assert app.screen._active_crawl_cancel is None
+
+
+async def test_second_crawl_after_cancel_gets_fresh_event():
+    """After a cancelled crawl finishes, the next crawl gets a fresh (unset) event."""
+    import asyncio as _asyncio
+    import threading as _threading
+    from pathlib import Path as _Path
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+
+        seen: list[_threading.Event] = []
+        gate = _threading.Event()
+
+        async def fake_crawl(url, *, depth=0, max_pages=0, on_progress=None, cancel=None):
+            seen.append(cancel)
+            await _asyncio.get_running_loop().run_in_executor(None, gate.wait, 5.0)
+            gate.clear()
+            return [_Path("x.md")]
+
+        with (
+            patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+            patch.object(app.screen, "_run_sync"),
+        ):
+            # First crawl: start, cancel, let it finish.
+            app.screen._run_crawl_background("https://example.com/1", 1, 5, "c1")
+            for _ in range(50):
+                await _pilot.pause()
+                if seen:
+                    break
+            app.screen._cmd_cancel("")
+            gate.set()
+            while app.screen.workers:
+                await _pilot.pause()
+
+            # Second crawl: must see a fresh, unset event.
+            app.screen._run_crawl_background("https://example.com/2", 1, 5, "c2")
+            for _ in range(50):
+                await _pilot.pause()
+                if len(seen) >= 2:
+                    break
+            assert len(seen) == 2
+            first, second = seen
+            assert first is not second
+            assert first.is_set()
+            assert not second.is_set()
+            gate.set()
+            while app.screen.workers:
+                await _pilot.pause()
 
 
 def test_on_row_selected_valid_index():

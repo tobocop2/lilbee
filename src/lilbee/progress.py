@@ -81,6 +81,12 @@ class CrawlStartEvent(BaseModel):
     depth: int
 
 
+# Sentinel used in CrawlPageEvent.total when the crawl's final page count is
+# not yet known (BFS streaming, page N emitted before N+1 is discovered).
+# Consumers (plugin, TUI, CLI) treat total <= 0 as indeterminate progress.
+CRAWL_TOTAL_UNKNOWN = -1
+
+
 class CrawlPageEvent(BaseModel):
     """Emitted per page during crawling."""
 

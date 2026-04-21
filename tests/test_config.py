@@ -865,6 +865,199 @@ class TestParseEnableOcrFallback:
         assert Config._parse_enable_ocr(0) is False
 
 
+class TestDefaultCrawlExcludePatterns:
+    """The out-of-the-box default exclude list blocks common noise without
+    accidentally rejecting real content URLs."""
+
+    def _matches_any(self, url: str) -> bool:
+        import re
+
+        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        return any(re.search(p, url) for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+
+    def test_every_pattern_compiles(self):
+        """Every shipped default must be valid Python regex."""
+        import re
+
+        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        for pattern in DEFAULT_CRAWL_EXCLUDE_PATTERNS:
+            re.compile(pattern)
+
+    def test_every_category_contributes(self):
+        """Each per-category tuple appears in the master default list."""
+        from lilbee.config import (
+            _ARCHIVE_EXCLUDE,
+            _ATTACHMENT_EXCLUDE,
+            _AUTH_EXCLUDE,
+            _DUPLICATE_VIEW_EXCLUDE,
+            _ECOMMERCE_EXCLUDE,
+            _FEED_EXCLUDE,
+            _META_EXCLUDE,
+            _TRACKING_EXCLUDE,
+            _WP_EXCLUDE,
+            DEFAULT_CRAWL_EXCLUDE_PATTERNS,
+        )
+
+        for category in (
+            _WP_EXCLUDE,
+            _ARCHIVE_EXCLUDE,
+            _FEED_EXCLUDE,
+            _DUPLICATE_VIEW_EXCLUDE,
+            _ATTACHMENT_EXCLUDE,
+            _AUTH_EXCLUDE,
+            _ECOMMERCE_EXCLUDE,
+            _TRACKING_EXCLUDE,
+            _META_EXCLUDE,
+        ):
+            assert len(category) >= 1
+            for p in category:
+                assert p in DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+    def test_wordpress_noise_matches(self):
+        for url in (
+            "https://example.com/wp-admin/",
+            "https://example.com/wp-login.php",
+            "https://example.com/xmlrpc.php",
+            "https://example.com/wp-json/wp/v2/posts",
+            "https://example.com/wp-cron.php",
+            "https://example.com/wp-includes/js/jquery/jquery.js",
+            "https://example.com/wp-content/uploads/2024/06/banner.png",
+            "https://example.com/?p=123",
+            "https://example.com/?page_id=45",
+            "https://example.com/?cat=7",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_archive_and_pagination_matches(self):
+        for url in (
+            "https://example.com/page/5/",
+            "https://example.com/?paged=3",
+            "https://example.com/?page=2",
+            "https://example.com/2024/06/",
+            "https://example.com/2024/06/15/",
+            "https://example.com/2024/",
+            "https://example.com/tag/gardening/",
+            "https://example.com/category/growing/",
+            "https://example.com/author/tobias/",
+            "https://example.com/archive/",
+            "https://example.com/comment-page-2",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_feed_matches(self):
+        for url in (
+            "https://example.com/feed/",
+            "https://example.com/feed/atom/",
+            "https://example.com/comments/feed/",
+            "https://example.com/rss/",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_duplicate_view_matches(self):
+        for url in (
+            "https://example.com/article/amp/",
+            "https://example.com/article/?amp=1",
+            "https://example.com/article/?print=1",
+            "https://example.com/article/?preview=true",
+            "https://example.com/article/print/",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_auth_matches(self):
+        for url in (
+            "https://example.com/login",
+            "https://example.com/logout",
+            "https://example.com/register",
+            "https://example.com/signup",
+            "https://example.com/my-account/orders/",
+            "https://example.com/profile/settings",
+            "https://example.com/password-reset",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_ecommerce_matches(self):
+        for url in (
+            "https://example.com/cart",
+            "https://example.com/checkout/step1",
+            "https://example.com/wishlist",
+            "https://example.com/orders",
+            "https://example.com/compare",
+            "https://example.com/products.json",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_tracking_param_matches(self):
+        for url in (
+            "https://example.com/article?utm_source=newsletter",
+            "https://example.com/?fbclid=abc123",
+            "https://example.com/?gclid=xyz",
+            "https://example.com/?msclkid=1",
+            "https://example.com/?mc_cid=campaign1",
+            "https://example.com/?mkt_tok=token",
+            "https://example.com/?_hsenc=enc",
+            "https://example.com/?igshid=ig",
+            "https://example.com/?pk_campaign=spring",
+            "https://example.com/?affiliate=partner",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_meta_and_static_matches(self):
+        for url in (
+            "https://example.com/sitemap.xml",
+            "https://example.com/sitemap_index.xml",
+            "https://example.com/robots.txt",
+            "https://example.com/humans.txt",
+            "https://example.com/favicon.ico",
+            "https://example.com/.well-known/security.txt",
+            "https://example.com/files/report.pdf",
+            "https://example.com/img/logo.png",
+            "https://example.com/video.mp4",
+            "https://example.com/dist/app.js",
+            "https://example.com/style.css",
+        ):
+            assert self._matches_any(url), f"should exclude: {url}"
+
+    def test_content_urls_pass_through(self):
+        """Real content URLs must NOT match any default pattern."""
+        for url in (
+            "https://example.com/",
+            "https://example.com/blog/how-to-grow-basil",
+            "https://example.com/docs/installation",
+            "https://example.com/about-us/team",
+            "https://example.com/products/widget-1000",
+            "https://example.com/2024-annual-report",
+            "https://example.com/tutorials/setup",
+            "https://example.com/post/why-gardening-matters",
+            "https://example.com/plant_problems/yellow-leaves",
+        ):
+            assert not self._matches_any(url), f"should NOT exclude: {url}"
+
+
+class TestCrawlExcludePatternsValidator:
+    def test_newline_separated_string_splits(self):
+        """Env vars come in as strings; validator splits by newline."""
+        from lilbee.config import Config
+
+        result = Config._split_crawl_exclude_patterns("/page/\\d+\n/tag/\n/category/")
+        assert result == ["/page/\\d+", "/tag/", "/category/"]
+
+    def test_list_passes_through_unchanged(self):
+        """TOML lists and programmatic lists pass through the validator."""
+        from lilbee.config import Config
+
+        result = Config._split_crawl_exclude_patterns(["/page/", "/tag/"])
+        assert result == ["/page/", "/tag/"]
+
+    def test_empty_string_yields_empty_list(self):
+        """Empty env var collapses to an empty list, disabling the filter."""
+        from lilbee.config import Config
+
+        assert Config._split_crawl_exclude_patterns("") == []
+        assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = _clean_env(tmp_path)

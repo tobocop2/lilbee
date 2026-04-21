@@ -738,7 +738,9 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
     return ModelsDeleteResponse(deleted=deleted, model=model, freed_gb=0.0)
 
 
-async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGenerator[str, None]:
+async def crawl_stream(
+    url: str, depth: int | None = None, max_pages: int | None = None
+) -> AsyncGenerator[str, None]:
     """Stream crawl progress as SSE events.
     Emits crawl_start, crawl_page, crawl_done events, then a final done event
     with the list of files written. On error emits crawl_error.
