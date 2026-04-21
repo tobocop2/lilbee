@@ -43,26 +43,13 @@ _TYPE_COLORS: dict[str, tuple[str, str]] = {
 
 _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
 
-# DOM id prefix for the internal "Restore defaults" button inside a
-# Collapsible list editor. Kept distinct from any row-level reset affordance
-# so composition doesn't collide on the same id.
 _LIST_RESTORE_PREFIX = "list-restore-"
-
-# DOM id prefix for the inline regex-validation error Static inside a
-# Collapsible list editor.
 _LIST_ERROR_ID_PREFIX = "err-"
-
-# CSS class toggled on the inline validation error Static to show/hide it.
 _LIST_ERROR_VISIBLE_CLASS = "-visible"
 
 
 def _effective_value(key: str) -> str:
-    """Return the effective value for a setting, including model defaults.
-
-    For list-typed values the help-line would otherwise show Python repr like
-    ``['a', 'b']``; collapse to a count summary so the scroll line stays readable.
-    The full list is visible inside the Collapsible TextArea.
-    """
+    """Return the effective value for a setting, including model defaults."""
     user_value = getattr(cfg, key, None)
     if user_value is not None:
         if isinstance(user_value, list):
@@ -377,13 +364,7 @@ class SettingsScreen(Screen[None]):
 
     @staticmethod
     def _stringify_for_toml(parsed: object) -> str:
-        """Serialize a parsed value for the TOML settings store.
-
-        Lists become newline-joined so reload via `settings.load` + the
-        pydantic `splitlines()` validator returns the same list. Using
-        `str(parsed)` for a list would persist Python's repr such as
-        ``"['a', 'b']"`` and corrupt the config on next process start.
-        """
+        """Serialize a parsed value for the TOML settings store."""
         if parsed is None:
             return ""
         if isinstance(parsed, list):
@@ -412,9 +393,7 @@ class SettingsScreen(Screen[None]):
             return
         raw = ta.text
         parsed = self._parse_value(defn, raw)
-        # _parse_value returns object; mypy can't infer list[str] from the
-        # `defn.type is list` guard above, so this assert narrows the type.
-        assert isinstance(parsed, list)
+        assert isinstance(parsed, list)  # narrow for mypy; defn.type is list above
         err = self._validate_regex_list(parsed)
         error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
