@@ -613,6 +613,153 @@ async def test_settings_pop_screen():
         assert not isinstance(app.screen, SettingsScreen)
 
 
+async def test_settings_crawl_exclude_patterns_renders_collapsible():
+    """crawl_exclude_patterns renders as a Collapsible with line count in title."""
+    from textual.widgets import Collapsible
+
+    from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
+        assert collapsible.collapsed is True
+        assert "crawl_exclude_patterns" in collapsible.title
+        assert str(len(DEFAULT_CRAWL_EXCLUDE_PATTERNS)) in collapsible.title
+
+
+async def test_settings_list_editor_expands_on_title_enter():
+    """Focusing the Collapsible title and pressing enter expands it."""
+    from textual.widgets import Collapsible
+    from textual.widgets._collapsible import CollapsibleTitle
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
+        title = collapsible.query_one(CollapsibleTitle)
+        title.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert collapsible.collapsed is False
+
+
+async def test_settings_list_editor_saves_on_blur():
+    """Typing into the list TextArea and blurring persists the parsed list."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("foo\nbar")
+        search = app.screen.query_one("#settings-search", Input)
+        search.focus()
+        await pilot.pause()
+        assert cfg.crawl_exclude_patterns == ["foo", "bar"]
+
+
+async def test_settings_list_editor_strips_blanks():
+    """Blank lines and surrounding whitespace are stripped during parsing."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("a\n\nb\n")
+        search = app.screen.query_one("#settings-search", Input)
+        search.focus()
+        await pilot.pause()
+        assert cfg.crawl_exclude_patterns == ["a", "b"]
+
+
+async def test_settings_list_editor_invalid_regex_blocks_save():
+    """An invalid regex shows an error and does not mutate cfg."""
+    from textual.widgets import Input, Static
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_exclude_patterns = ["keep"]
+        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("[")
+        search = app.screen.query_one("#settings-search", Input)
+        search.focus()
+        await pilot.pause()
+        err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
+        assert err.display is True
+        assert "line 1" in str(err.render())
+        assert cfg.crawl_exclude_patterns == ["keep"]
+
+
+async def test_settings_list_editor_restore_defaults():
+    """Pressing Restore resets both cfg and the TextArea to the defaults."""
+    from textual.widgets import Button
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+    from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_exclude_patterns = ["old"]
+        btn = app.screen.query_one("#reset-crawl_exclude_patterns", Button)
+        btn.press()
+        await pilot.pause()
+        assert cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        assert ta.text == "\n".join(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+
+
+async def test_settings_parse_value_list_branch():
+    """_parse_value splits, strips, and drops blanks for list-typed settings."""
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    defn = SettingDef(list, nullable=False)
+    screen = SettingsScreen()
+    result = screen._parse_value(defn, "a\n\nb")
+    assert result == ["a", "b"]
+
+
+async def test_list_text_area_posts_blurred():
+    """ListTextArea posts its Blurred message when focus moves away."""
+    from textual.app import App
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    captured: list[ListTextArea.Blurred] = []
+
+    class _TestApp(App[None]):
+        CSS = ""
+
+        def compose(self) -> ComposeResult:
+            yield ListTextArea(id="ta")
+            yield Input(id="other")
+
+        def on_list_text_area_blurred(self, event: ListTextArea.Blurred) -> None:
+            captured.append(event)
+
+    app = _TestApp()
+    async with app.run_test(size=(80, 20)) as pilot:
+        ta = app.query_one("#ta", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        app.query_one("#other", Input).focus()
+        await pilot.pause()
+        assert captured, "Expected a Blurred message from ListTextArea"
+        assert captured[0].control is ta
+
+
 async def test_settings_effective_value_shows_model_default():
     """When user hasn't set a value, model default is shown with suffix."""
     from dataclasses import dataclass
@@ -6413,6 +6560,77 @@ async def test_settings_on_select_save_defn_none():
         with patch.object(screen, "_persist_value") as mock_pv:
             screen._on_select_save(event)
             mock_pv.assert_not_called()
+
+
+async def test_settings_on_list_blur_save_name_none():
+    """_on_list_blur_save returns early when the TextArea has no name."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        event = MagicMock()
+        event.control.name = None
+        with patch.object(screen, "_persist_value") as mock_pv:
+            screen._on_list_blur_save(event)
+            mock_pv.assert_not_called()
+
+
+async def test_settings_on_list_blur_save_defn_none():
+    """_on_list_blur_save returns early when SETTINGS_MAP has no entry."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        event = MagicMock()
+        event.control.name = "nonexistent_key_xyz"
+        with patch.object(screen, "_persist_value") as mock_pv:
+            screen._on_list_blur_save(event)
+            mock_pv.assert_not_called()
+
+
+async def test_settings_on_list_restore_bad_button_id():
+    """_on_list_restore ignores buttons whose id does not start with ``reset-``."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        event = MagicMock()
+        event.button.id = None
+        with patch.object(screen, "_persist_value") as mock_pv:
+            screen._on_list_restore(event)
+            mock_pv.assert_not_called()
+
+
+async def test_settings_on_list_restore_defn_none():
+    """_on_list_restore returns early when SETTINGS_MAP has no entry for the key."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        event = MagicMock()
+        event.button.id = "reset-nonexistent_key"
+        with patch.object(screen, "_persist_value") as mock_pv:
+            screen._on_list_restore(event)
+            mock_pv.assert_not_called()
+
+
+async def test_settings_refresh_list_title_missing_swallows():
+    """_refresh_list_title logs (does not raise) when the Collapsible is absent."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        screen._refresh_list_title("nonexistent_key_xyz", 0)
 
 
 async def test_settings_parse_value_nullable_none():

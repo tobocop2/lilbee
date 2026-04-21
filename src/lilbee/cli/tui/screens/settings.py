@@ -1,9 +1,10 @@
-"""Settings screen — grouped, type-aware configuration editor."""
+"""Settings screen. Grouped, type-aware configuration editor."""
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import defaultdict
 from typing import ClassVar
 
@@ -13,14 +14,16 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
+from textual.widget import Widget
+from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
 from lilbee import settings
-from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef, get_default
+from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
-from lilbee.config import cfg
+from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
 _ROW_ID_PREFIX = "row-"
 _EDITOR_ID_PREFIX = "ed-"
@@ -123,14 +126,46 @@ def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
     return dict(groups)
 
 
-def _make_editor(key: str, defn: SettingDef) -> Input | Checkbox | Select[str]:
+def _make_editor(key: str, defn: SettingDef) -> Widget:
     """Create the appropriate editor widget for a setting."""
+    if defn.render is RenderStyle.LIST_COLLAPSED:
+        return _make_list_editor(key, defn)
     value = _effective_value(key)
     if defn.choices:
         return _make_select(key, defn, value)
     if defn.type is bool:
         return _make_checkbox(key, value)
     return _make_input(key, value)
+
+
+def _make_list_editor(key: str, defn: SettingDef) -> Collapsible:
+    """Create a Collapsible with a line-numbered TextArea for list[str] settings."""
+    current = getattr(cfg, key, None) or []
+    title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
+    editor = ListTextArea(
+        text="\n".join(current),
+        show_line_numbers=True,
+        name=key,
+        id=f"ed-{key}",
+        classes="setting-list-editor",
+    )
+    error = Static("", id=f"err-{key}", classes="setting-list-error")
+    error.display = False
+    reset = Button(
+        msg.SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS,
+        id=f"reset-{key}",
+        classes="setting-list-restore",
+    )
+    # Silence unused defn in case future logic needs it; keep parameter for consistency.
+    _ = defn
+    return Collapsible(
+        editor,
+        error,
+        reset,
+        title=title,
+        collapsed=True,
+        id=f"collapsible-{key}",
+    )
 
 
 def _make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
@@ -320,7 +355,73 @@ class SettingsScreen(Screen[None]):
             return None
         if defn.type is bool:
             return raw.lower() in ("true", "1", "yes", "on")
+        if defn.type is list:
+            return [line.strip() for line in raw.split("\n") if line.strip()]
         return defn.type(raw)
+
+    @staticmethod
+    def _validate_regex_list(lines: list[str]) -> tuple[int, str] | None:
+        """Return the 1-indexed line number and error for the first bad regex, or None."""
+        for i, line in enumerate(lines, 1):
+            try:
+                re.compile(line)
+            except re.error as exc:
+                return (i, str(exc))
+        return None
+
+    @on(ListTextArea.Blurred, ".setting-list-editor")
+    def _on_list_blur_save(self, event: ListTextArea.Blurred) -> None:
+        """Validate and save list values when a ListTextArea loses focus."""
+        ta = event.control
+        key = ta.name
+        if key is None:
+            return
+        defn = SETTINGS_MAP.get(key)
+        if defn is None:
+            return
+        raw = ta.text
+        parsed = self._parse_value(defn, raw)
+        # defn.type is list here, so _parse_value returned list[str].
+        assert isinstance(parsed, list)  # for type narrowing in save path
+        err = self._validate_regex_list(parsed)
+        error_widget = self.query_one(f"#err-{key}", Static)
+        if err is not None:
+            line_no, err_text = err
+            error_widget.update(
+                msg.SETTINGS_LIST_EDITOR_INVALID_REGEX.format(n=line_no, error=err_text)
+            )
+            error_widget.display = True
+            return
+        error_widget.display = False
+        self._persist_value(key, defn, raw)
+        self._refresh_list_title(key, len(parsed))
+
+    @on(Button.Pressed, ".setting-list-restore")
+    def _on_list_restore(self, event: Button.Pressed) -> None:
+        """Restore defaults for a LIST_COLLAPSED setting."""
+        btn_id = event.button.id
+        if btn_id is None or not btn_id.startswith("reset-"):
+            return
+        key = btn_id.removeprefix("reset-")
+        defn = SETTINGS_MAP.get(key)
+        if defn is None:
+            return
+        defaults = list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        text = "\n".join(defaults)
+        ta = self.query_one(f"#ed-{key}", ListTextArea)
+        ta.load_text(text)
+        self._persist_value(key, defn, text)
+        error_widget = self.query_one(f"#err-{key}", Static)
+        error_widget.display = False
+        self._refresh_list_title(key, len(defaults))
+
+    def _refresh_list_title(self, key: str, count: int) -> None:
+        """Update the Collapsible title to reflect the current line count."""
+        try:
+            collapsible = self.query_one(f"#collapsible-{key}", Collapsible)
+            collapsible.title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=count)
+        except Exception:
+            log.debug("Failed to refresh collapsible title for %s", key, exc_info=True)
 
     def _refresh_help(self, key: str, defn: SettingDef) -> None:
         """Update the help text after a value change."""

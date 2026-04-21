@@ -15,6 +15,7 @@ class RenderStyle(StrEnum):
 
     COMPACT = "compact"
     FULL = "full"
+    LIST_COLLAPSED = "list_collapsed"
 
 
 @dataclass(frozen=True)
@@ -266,6 +267,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Crawling",
         help_text="Retry count per URL when a rate-limit code comes back",
+    ),
+    "crawl_exclude_patterns": SettingDef(
+        list,
+        nullable=False,
+        group="Crawling",
+        render=RenderStyle.LIST_COLLAPSED,
+        help_text=(
+            "Regex patterns that skip URLs at link-discovery time during "
+            "recursive crawls. One per line."
+        ),
     ),
     "openai_api_key": SettingDef(
         str,
