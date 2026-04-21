@@ -16,13 +16,18 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _patch_executor_daemon_threads() -> None:
-    """Make ThreadPoolExecutor worker threads daemon on Python 3.11.
+    """Make ThreadPoolExecutor workers and LanceDB event-loop threads daemon on 3.11.
 
     asyncio.run() inside @work(thread=True) creates nested event loops, each
     with its own ThreadPoolExecutor. On 3.11, those executor threads are
     non-daemon and block xdist worker process exit. On 3.12+, interpreter
-    shutdown handles this correctly. Patching Thread.__init__ to mark executor
-    workers as daemon lets the process exit without waiting for them.
+    shutdown handles this correctly.
+
+    LanceDB spawns a non-daemon ``LanceDBBackgroundEventLoop`` tokio thread
+    with no close() API. On ubuntu 3.11 these accumulate across tests in
+    test_store.py and the process wedges shortly after. On 3.12+ interpreter
+    shutdown handles it. Daemonify both at Thread.__init__ so start() runs
+    them as daemons.
     """
     if sys.version_info >= (3, 12):
         return
@@ -32,7 +37,7 @@ def _patch_executor_daemon_threads() -> None:
 
     def _init_with_daemon(self: threading.Thread, *args: object, **kwargs: object) -> None:
         _real_init(self, *args, **kwargs)  # type: ignore[misc]
-        if getattr(self, "_target", None) is _tmod._worker:
+        if getattr(self, "_target", None) is _tmod._worker or "LanceDB" in self.name:
             self.daemon = True
 
     threading.Thread.__init__ = _init_with_daemon  # type: ignore[assignment]
@@ -40,6 +45,14 @@ def _patch_executor_daemon_threads() -> None:
 
 # Apply at import time so xdist workers get the patch immediately.
 _patch_executor_daemon_threads()
+
+
+# Silence stray lancedb thread shutdown errors globally so they can't wedge
+# the test runner via threading.excepthook propagation on ubuntu 3.11.
+if sys.version_info < (3, 12):
+    from lilbee.store import install_lancedb_thread_error_suppressor
+
+    install_lancedb_thread_error_suppressor()
 
 
 def pytest_configure(config: pytest.Config) -> None:
