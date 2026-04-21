@@ -915,6 +915,19 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1, quiet=True)
         mock_crawler_cls.assert_called_once_with(verbose=False)
 
+    async def test_reraises_browser_missing_from_crawler_open(self, monkeypatch):
+        """CrawlerBrowserMissing raised inside the try block propagates past the broad except."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        mock_instance = AsyncMock()
+        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserMissing("chromium gone"))
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            with pytest.raises(CrawlerBrowserMissing, match="chromium gone"):
+                await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+
     async def test_propagates_crawler_browser_missing(self, monkeypatch):
         """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
         import sys as _sys
