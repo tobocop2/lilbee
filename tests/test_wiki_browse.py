@@ -7,10 +7,12 @@ from pathlib import Path
 from lilbee.wiki.browse import (
     WikiPageContent,
     WikiPageInfo,
+    _extract_h1_title,
     _page_type_from_path,
     _slug_from_path,
     build_page_info,
     find_page,
+    list_draft_pages,
     list_md_files,
     list_pages,
     read_page,
@@ -36,6 +38,16 @@ _FM_PAGE = (
 )
 
 _NO_FM_PAGE = "# Plain Heading\n\nNo frontmatter here.\n"
+
+_NO_FM_NO_H1_PAGE = "Just body text with no heading at all.\n"
+
+_CV_MANUAL_PAGE = "# 2011 Crown Victoria Owners Guide Summary\n\nSummary body for the CV manual.\n"
+
+_FENCED_CODE_H1_PAGE = (
+    "```\n# This is a code comment, not a heading\n```\n\n# Real Heading\n\nBody.\n"
+)
+
+_ONLY_H2_PAGE = "## Subsection Only\n\nNo top-level heading.\n"
 
 
 class TestWikiPageInfoToDict:
@@ -119,12 +131,33 @@ class TestBuildPageInfo:
         assert info.source_count == 2
         assert info.created_at == "2026-03-15"
 
-    def test_without_frontmatter(self, tmp_path: Path):
+    def test_without_frontmatter_uses_body_h1(self, tmp_path: Path):
         path = _write_page(tmp_path, "summaries", "plain", _NO_FM_PAGE)
         info = build_page_info(path, tmp_path)
-        assert info.title == "Plain"
+        assert info.title == "Plain Heading"
         assert info.source_count == 0
         assert info.created_at == ""
+
+    def test_without_frontmatter_acronym_preserved(self, tmp_path: Path):
+        path = _write_page(tmp_path, "summaries", "cv-manual", _CV_MANUAL_PAGE)
+        info = build_page_info(path, tmp_path)
+        assert info.title == "2011 Crown Victoria Owners Guide Summary"
+
+    def test_without_frontmatter_no_h1_uses_slug_fallback(self, tmp_path: Path):
+        path = _write_page(tmp_path, "summaries", "cv-manual", _NO_FM_NO_H1_PAGE)
+        info = build_page_info(path, tmp_path)
+        assert info.title == "Cv Manual"
+
+    def test_without_frontmatter_ignores_h1_inside_code_fence(self, tmp_path: Path):
+        path = _write_page(tmp_path, "summaries", "fenced", _FENCED_CODE_H1_PAGE)
+        info = build_page_info(path, tmp_path)
+        assert info.title == "Real Heading"
+
+    def test_draft_uses_body_h1(self, tmp_path: Path):
+        path = _write_page(tmp_path, "drafts", "cv-manual", _CV_MANUAL_PAGE)
+        info = build_page_info(path, tmp_path)
+        assert info.title == "2011 Crown Victoria Owners Guide Summary"
+        assert info.page_type == "draft"
 
     def test_date_object_in_frontmatter(self, tmp_path: Path):
         content = "---\ntitle: Dated\ngenerated_at: 2026-01-15\n---\nBody\n"
@@ -211,12 +244,31 @@ class TestReadPage:
     def test_path_traversal(self, tmp_path: Path):
         assert read_page(tmp_path, "../../etc/passwd") is None
 
-    def test_no_frontmatter(self, tmp_path: Path):
+    def test_no_frontmatter_uses_body_h1(self, tmp_path: Path):
         _write_page(tmp_path, "synthesis", "plain", _NO_FM_PAGE)
         result = read_page(tmp_path, "synthesis/plain")
         assert result is not None
-        assert result.title == "Plain"
+        assert result.title == "Plain Heading"
         assert result.frontmatter == {}
+
+    def test_no_frontmatter_no_h1_uses_slug_fallback(self, tmp_path: Path):
+        _write_page(tmp_path, "summaries", "cv-manual", _NO_FM_NO_H1_PAGE)
+        result = read_page(tmp_path, "summaries/cv-manual")
+        assert result is not None
+        assert result.title == "Cv Manual"
+
+    def test_no_frontmatter_ignores_h1_inside_code_fence(self, tmp_path: Path):
+        _write_page(tmp_path, "summaries", "fenced", _FENCED_CODE_H1_PAGE)
+        result = read_page(tmp_path, "summaries/fenced")
+        assert result is not None
+        assert result.title == "Real Heading"
+
+    def test_frontmatter_title_wins_over_body_h1(self, tmp_path: Path):
+        content = "---\ntitle: Frontmatter Wins\n---\n# Body Heading Loses\n"
+        _write_page(tmp_path, "summaries", "conflict", content)
+        result = read_page(tmp_path, "summaries/conflict")
+        assert result is not None
+        assert result.title == "Frontmatter Wins"
 
     def test_frontmatter_with_date_object(self, tmp_path: Path):
         content = (
@@ -234,3 +286,53 @@ class TestReadPage:
         import datetime
 
         assert isinstance(result.frontmatter["generated_at"], datetime.date)
+
+
+class TestExtractH1Title:
+    def test_simple_h1(self):
+        assert _extract_h1_title("# Hello World\n\nBody.\n") == "Hello World"
+
+    def test_returns_first_when_multiple_h1(self):
+        body = "# First Heading\n\n# Second Heading\n"
+        assert _extract_h1_title(body) == "First Heading"
+
+    def test_ignores_h2_and_deeper(self):
+        assert _extract_h1_title(_ONLY_H2_PAGE) is None
+
+    def test_returns_none_when_no_heading(self):
+        assert _extract_h1_title("Just prose, no heading.\n") is None
+
+    def test_returns_none_on_empty(self):
+        assert _extract_h1_title("") is None
+
+    def test_strips_trailing_whitespace(self):
+        assert _extract_h1_title("#   Padded Title   \n") == "Padded Title"
+
+    def test_ignores_h1_inside_code_fence(self):
+        assert _extract_h1_title(_FENCED_CODE_H1_PAGE) == "Real Heading"
+
+    def test_all_h1s_fenced_returns_none(self):
+        body = "```\n# Fake\n```\n\nBody without real heading.\n"
+        assert _extract_h1_title(body) is None
+
+    def test_tilde_fence_also_blocks_h1(self):
+        body = "~~~\n# Fake\n~~~\n\n# Real\n"
+        assert _extract_h1_title(body) == "Real"
+
+    def test_no_space_after_hash_is_not_h1(self):
+        assert _extract_h1_title("#NoSpace\n") is None
+
+    def test_leading_blank_lines_ok(self):
+        assert _extract_h1_title("\n\n# After Blanks\n") == "After Blanks"
+
+
+class TestListDraftPages:
+    def test_empty_dir(self, tmp_path: Path):
+        assert list_draft_pages(tmp_path) == []
+
+    def test_returns_draft_page_with_h1_title(self, tmp_path: Path):
+        _write_page(tmp_path, "drafts", "cv-manual", _CV_MANUAL_PAGE)
+        drafts = list_draft_pages(tmp_path)
+        assert len(drafts) == 1
+        assert drafts[0].title == "2011 Crown Victoria Owners Guide Summary"
+        assert drafts[0].page_type == "draft"

@@ -388,7 +388,7 @@ class TestHelpers:
         assert len(result) == 2
         assert all(p.suffix == ".md" for p in result)
 
-    def test_build_page_info_no_frontmatter(self, tmp_path: Path):
+    def test_build_page_info_no_frontmatter_uses_body_h1(self, tmp_path: Path):
         from lilbee.wiki.browse import build_page_info
 
         subdir = tmp_path / "summaries"
@@ -396,7 +396,7 @@ class TestHelpers:
         page = subdir / "my-doc.md"
         page.write_text("# Just a heading\n")
         info = build_page_info(page, tmp_path)
-        assert info.title == "My Doc"
+        assert info.title == "Just a heading"
         assert info.source_count == 0
         assert info.created_at == ""
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -15,6 +16,9 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     parse_frontmatter,
 )
+
+_H1_PATTERN = re.compile(r"^#\s+(.+?)\s*#*\s*$")
+_CODE_FENCE_PATTERN = re.compile(r"^(```|~~~)")
 
 
 @dataclass
@@ -73,12 +77,39 @@ def _slug_from_path(path: Path, wiki_root: Path) -> str:
     return str(relative.with_suffix("")).replace("\\", "/")
 
 
+def _extract_h1_title(text: str) -> str | None:
+    """Return the first top-level heading from markdown body, ignoring fenced code blocks."""
+    in_fence = False
+    for line in text.splitlines():
+        if _CODE_FENCE_PATTERN.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if m := _H1_PATTERN.match(line):
+            return m.group(1).strip()
+    return None
+
+
+def _resolve_page_title(fm: dict[str, Any], text: str, path: Path) -> str:
+    """Pick a page title. Frontmatter wins; body H1 beats slug-title-case fallback.
+
+    Wiki generation does not emit a frontmatter title today, so without the H1
+    step every page would render as the slug (e.g. 'Cv Manual' for cv-manual.md).
+    """
+    if (fm_title := fm.get("title")) is not None:
+        return str(fm_title)
+    if (h1 := _extract_h1_title(text)) is not None:
+        return h1
+    return path.stem.replace("-", " ").title()
+
+
 def build_page_info(path: Path, wiki_root: Path) -> WikiPageInfo:
     """Build a WikiPageInfo from a markdown file on disk."""
     text = path.read_text(encoding="utf-8")
     fm = parse_frontmatter(text)
     slug = _slug_from_path(path, wiki_root)
-    title = fm.get("title", path.stem.replace("-", " ").title())
+    title = _resolve_page_title(fm, text, path)
     page_type = _page_type_from_path(path, wiki_root)
     source_count = parse_source_count(text)
     raw_at = fm.get("generated_at", "")
@@ -129,5 +160,5 @@ def read_page(wiki_root: Path, slug: str) -> WikiPageContent | None:
         return None
     text = path.read_text(encoding="utf-8")
     fm = parse_frontmatter(text)
-    title = fm.get("title", path.stem.replace("-", " ").title())
+    title = _resolve_page_title(fm, text, path)
     return WikiPageContent(slug=slug, title=title, content=text, frontmatter=fm)
