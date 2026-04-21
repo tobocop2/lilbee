@@ -844,6 +844,11 @@ def test_settings_effective_value_summarizes_list():
     assert "[" not in result
     assert "'" not in result
 
+    # Empty list must still be rendered as a count, not fall through to
+    # "None" or model defaults. Guards off-by-one refactors of len().
+    cfg.crawl_exclude_patterns = []
+    assert _effective_value("crawl_exclude_patterns") == "0 lines"
+
 
 async def test_settings_effective_value_user_overrides_default():
     """When user has set a value, it takes precedence over model default."""

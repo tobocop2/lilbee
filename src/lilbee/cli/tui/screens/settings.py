@@ -412,8 +412,9 @@ class SettingsScreen(Screen[None]):
             return
         raw = ta.text
         parsed = self._parse_value(defn, raw)
-        # defn.type is list here, so _parse_value returned list[str].
-        assert isinstance(parsed, list)  # for type narrowing in save path
+        # _parse_value returns object; mypy can't infer list[str] from the
+        # `defn.type is list` guard above, so this assert narrows the type.
+        assert isinstance(parsed, list)
         err = self._validate_regex_list(parsed)
         error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
