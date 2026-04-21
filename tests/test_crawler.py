@@ -939,7 +939,7 @@ class TestCrawlRecursive:
 
 
 class TestHostScopeFilter:
-    """bb-hpri: whole-site crawl must scope to the exact host by default."""
+    """whole-site crawl must scope to the exact host by default."""
 
     def test_exact_host_rejects_other_subdomains(self):
         from lilbee.crawler import _host_scope_filter
@@ -967,7 +967,7 @@ class TestHostScopeFilter:
 
 
 class TestSitemapCounting:
-    """bb-ufyk: best-effort sitemap lookup bounds the crawl progress total."""
+    """best-effort sitemap lookup bounds the crawl progress total."""
 
     def test_returns_unknown_on_http_error(self, monkeypatch):
         import httpx
@@ -1125,7 +1125,7 @@ class TestCrawlAndSave:
 
     @patch("lilbee.crawler.crawl_recursive")
     async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
-        """bb-hpri: whole-site default is exact-host scoping."""
+        """whole-site default is exact-host scoping."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is False

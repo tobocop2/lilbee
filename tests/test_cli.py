@@ -1670,7 +1670,7 @@ class TestAddWithUrls:
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_defaults_include_subdomains_false(self, mock_sync, mock_crawl, mock_avail):
-        """bb-hpri: default scope is the starting host only, no subdomains."""
+        """default scope is the starting host only, no subdomains."""
         result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["include_subdomains"] is False
@@ -1679,7 +1679,7 @@ class TestAddWithUrls:
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_opt_in_include_subdomains(self, mock_sync, mock_crawl, mock_avail):
-        """bb-hpri: --include-subdomains broadens scope to sibling subdomains."""
+        """--include-subdomains broadens scope to sibling subdomains."""
         result = runner.invoke(
             app, ["add", "--crawl", "--include-subdomains", "https://example.com"]
         )

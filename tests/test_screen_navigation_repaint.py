@@ -1,18 +1,7 @@
-"""Regression tests for screen navigation repainting (bb-jz59).
+"""Screen navigation must fully repaint the bottom-bar row.
 
-The repro in bb-jz59 was a chat → task center → chat → task center
-cycle that left ModelBar dropdown fragments, old chat-log lines, and a
-corrupted Footer ("m Modelsdone ? Help t Tasks") on the second
-TaskCenter render.
-
-Root cause was the same as bb-cot0: four or five sibling dock-bottom
-widgets on each screen overlapped at the same edge row, so every
-transition layered old Footer/ViewTabs/hint text on top of the new
-screen. With BottomBars wrapping the bottom stack, each widget
-renders at its own y and the previous screen no longer bleeds
-through in the Footer row. These tests cover the navigation cycle
-and verify that the second Task Center render has a clean layout
-with no leftover widgets from the Chat screen.
+Cycling Chat -> Task Center -> Chat -> Task Center should leave no
+leftover widgets from the previous screen.
 """
 
 from __future__ import annotations

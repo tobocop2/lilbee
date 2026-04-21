@@ -187,7 +187,7 @@ async def test_update_uses_indeterminate_cell_when_flagged() -> None:
 
 @pytest.mark.asyncio
 async def test_update_freezes_indeterminate_bar_in_terminal_states() -> None:
-    """bb-j3q2: once a row goes CANCELLED/FAILED, the indeterminate bar
+    """once a row goes CANCELLED/FAILED, the indeterminate bar
     stops animating. Successive ticks render the same static bar."""
     app = _Host()
     async with app.run_test() as pilot:

@@ -849,7 +849,7 @@ def _apply_result(
         # Log the error message without the traceback: ingest failures are
         # already surfaced to callers via SyncResult.failed, and the raw
         # traceback from log.exception bleeds into the TUI chat pane via the
-        # stderr bridge (bb-j69s). Full stack traces stay reachable by
+        # stderr bridge. Full stack traces stay reachable by
         # lowering LILBEE_LOG_LEVEL to DEBUG.
         log.warning("Failed to ingest %s: %s", result.name, result.error)
         log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)

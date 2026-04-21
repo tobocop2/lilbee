@@ -94,12 +94,12 @@ class TaskCenter(Screen[None]):
         self.set_interval(_POLL_INTERVAL_SECONDS, self._poll)
 
     def _focus_initial_row(self) -> None:
-        """Land initial focus on the topmost active/queued row (bb-5djq).
+        """Land initial focus on the topmost active/queued row.
 
         Users open the Task Center to manage live work, not to review
         history. Without this, focus lands on the first row regardless
-        of status, so an accidental ``c`` on a DONE row used to flip it
-        to CANCELLED (compounded by bb-y1t5).
+        of status, so an accidental ``c`` on a terminal row is a
+        no-op rather than a status flip.
 
         Falls back to the first row if there are no active/queued
         tasks; falls back to no-op if the screen has no rows at all.

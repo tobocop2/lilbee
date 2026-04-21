@@ -68,13 +68,13 @@ def test_indeterminate_cell_wraps_on_long_tick() -> None:
 
 
 def test_frozen_indeterminate_cell_is_fully_filled() -> None:
-    """bb-j3q2: terminal indeterminate rows render a full static bar."""
+    """terminal indeterminate rows render a full static bar."""
     rendered = frozen_indeterminate_cell()
     assert rendered == _FULL * _BAR_WIDTH
 
 
 def test_frozen_indeterminate_cell_drops_trailing_dots() -> None:
-    """bb-j3q2: no '···' tail on frozen bars (that trail reads as 'still
+    """no '···' tail on frozen bars (that trail reads as 'still
     working')."""
     assert "·" not in frozen_indeterminate_cell()
 

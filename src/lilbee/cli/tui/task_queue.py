@@ -252,7 +252,7 @@ class TaskQueue:
         Terminal rows (DONE / FAILED / CANCELLED) are immutable: a cancel
         call against an already-finished task is a no-op and returns
         False so callers that key off the return value (e.g. UI actions)
-        don't treat it as success (bb-y1t5).
+        don't treat it as success.
 
         Appends the cancelled task to ``_history`` so the Task Center
         renders it as a lingering ``cancelled`` row, matching the

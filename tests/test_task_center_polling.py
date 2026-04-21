@@ -272,7 +272,7 @@ async def test_action_cancel_task_uses_focused_task_row() -> None:
 
 @pytest.mark.asyncio
 async def test_initial_focus_lands_on_first_active_row() -> None:
-    """bb-5djq: entering Task Center focuses the first active/queued row,
+    """entering Task Center focuses the first active/queued row,
     not whatever DONE row happens to be at position 0."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -301,7 +301,7 @@ async def test_initial_focus_lands_on_first_active_row() -> None:
 
 @pytest.mark.asyncio
 async def test_initial_focus_prefers_queued_when_no_active() -> None:
-    """bb-5djq: if the only live row is QUEUED, focus lands there instead
+    """if the only live row is QUEUED, focus lands there instead
     of on a DONE history row."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -325,7 +325,7 @@ async def test_initial_focus_prefers_queued_when_no_active() -> None:
 
 @pytest.mark.asyncio
 async def test_initial_focus_noop_when_no_tasks() -> None:
-    """bb-5djq: with an empty queue there is no row to focus -- the
+    """with an empty queue there is no row to focus -- the
     on_mount focus step must not raise."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -340,9 +340,9 @@ async def test_initial_focus_noop_when_no_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_initial_focus_falls_back_when_only_history_present() -> None:
-    """bb-5djq: no active/queued work means _focus_initial_row is a no-op
+    """no active/queued work means _focus_initial_row is a no-op
     and AUTO_FOCUS's row-1 landing (a history row) still holds. The
-    cancel action is a no-op on that focused terminal row (bb-y1t5)."""
+    cancel action is a no-op on that focused terminal row."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -362,7 +362,7 @@ async def test_initial_focus_falls_back_when_only_history_present() -> None:
         screen.action_cancel_task()
         task = app.task_bar.queue.get_task(done_id)
         assert task is not None
-        # Status stays DONE -- bb-y1t5 guard makes cancel a no-op here.
+        # Status stays DONE: cancel is a no-op on terminal rows.
         assert task.status.value == "done"
 
 

@@ -165,7 +165,7 @@ class TaskRow(Widget, can_focus=True):
 
         if task.indeterminate:
             # Terminal rows freeze the bar so a cancelled/failed/done
-            # task doesn't keep reading as live work (bb-j3q2).
+            # task doesn't keep reading as live work.
             if task.status in _TERMINAL_STATUSES:
                 bar.update(frozen_indeterminate_cell())
             else:

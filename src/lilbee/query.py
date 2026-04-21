@@ -179,7 +179,7 @@ def display_source_path(source: str) -> str:
     Source values in the store are stored relative to ``documents_dir`` so the
     database is portable across machines. For display we resolve back to the
     user's filesystem and substitute ``~`` for the home directory so the path
-    is unambiguous without being noisy (bb-2ude).
+    is unambiguous without being noisy.
 
     Falls back to the raw source string if the file no longer exists on disk
     (e.g. the user moved the documents directory since ingestion).

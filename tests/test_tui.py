@@ -379,7 +379,7 @@ class TestCatalogScreenAsync:
     async def test_escape_from_filter_unfocuses_instead_of_leaving(
         self, mock_catalog: mock.MagicMock
     ) -> None:
-        """bb-jdrm: first Escape while filter is focused should move focus to
+        """first Escape while filter is focused should move focus to
         the list or grid, not leave the screen."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from textual.widgets import Input
@@ -407,7 +407,7 @@ class TestCatalogScreenAsync:
     async def test_escape_from_filter_in_list_view_focuses_list(
         self, mock_catalog: mock.MagicMock
     ) -> None:
-        """bb-jdrm: in list view, Escape from filter should focus the list."""
+        """in list view, Escape from filter should focus the list."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from textual.widgets import Input
 
@@ -432,7 +432,7 @@ class TestCatalogScreenAsync:
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_sort_cycle_visits_all_four_columns(self, mock_catalog: mock.MagicMock) -> None:
-        """bb-k00i: cycle must visit Name -> Downloads -> Size -> Params -> Name."""
+        """cycle must visit Name -> Downloads -> Size -> Params -> Name."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen

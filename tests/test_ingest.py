@@ -610,7 +610,7 @@ class TestApplyResultZeroChunks:
         assert "doc.pdf" in added
 
     def test_ingest_error_logs_warning_not_exception(self, caplog):
-        """bb-j69s: ingest errors must not log at exception level.
+        """ingest errors must not log at exception level.
 
         The logger's exception() call routes the full traceback through the
         stderr bridge into the TUI chat pane, even though the functional path

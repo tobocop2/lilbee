@@ -3357,7 +3357,7 @@ class TestParseCrawlFlags:
         assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None, False)
 
     def test_include_subdomains_flag(self):
-        """bb-hpri: --include-subdomains opts into sibling-subdomain crawl."""
+        """--include-subdomains opts into sibling-subdomain crawl."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         assert ChatScreen._parse_crawl_flags(["--include-subdomains"]) == (None, None, True)

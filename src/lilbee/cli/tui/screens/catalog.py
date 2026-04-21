@@ -565,7 +565,7 @@ class CatalogScreen(Screen[None]):
         # _refresh_list replaces the list children asynchronously via
         # mount_all; focusing before the new widgets settle can leave focus
         # on the filter Input, which swallows the next `s` press as text
-        # (bb-k00i). Defer the focus move until after Textual's next refresh
+        # . Defer the focus move until after Textual's next refresh
         # so _list_items() actually returns the new rows.
         self.call_after_refresh(self._focus_list_item, 0)
 
@@ -639,7 +639,7 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def action_go_back(self) -> None:
-        # First Escape press unfocuses the filter input (bb-jdrm); without this
+        # First Escape press unfocuses the filter input; without this
         # the screen-level `s` / `v` keys get typed into the input and the only
         # way to regain screen focus is to leave the screen entirely.
         if isinstance(self.focused, Input):

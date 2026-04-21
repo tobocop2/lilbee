@@ -1,4 +1,4 @@
-"""Tests for /add cancel cleanup (bb-em47).
+"""Tests for /add cancel cleanup.
 
 When a user cancels an in-flight /add, the file copied into documents/
 must be removed so the next sync does not silently re-ingest it.
@@ -77,7 +77,7 @@ class TestRemoveCopiedFiles:
 
 
 class TestDoAddCancelCleanup:
-    """bb-em47: when the sync under /add raises (cancel or crash), the copied
+    """when the sync under /add raises (cancel or crash), the copied
     files must be removed from documents/ so the next sync does not silently
     re-ingest them."""
 
@@ -122,9 +122,8 @@ class TestDoAddCancelCleanup:
     def test_sync_result_failed_triggers_cleanup(self, isolated_documents, monkeypatch):
         """A SyncResult with failed entries must also remove the copied files.
 
-        Without this bb-j69s's error surface (RuntimeError with SYNC_FAILED_FILES)
-        would still leave the failing file in documents/ ready for the next
-        sync to reingest.
+        Without this, a failing sync would still leave the file in
+        documents/ ready for the next sync to re-ingest.
         """
         from unittest.mock import MagicMock, patch
 

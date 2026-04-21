@@ -635,8 +635,7 @@ def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
     progress-hint denominator, so correctness is not load-bearing.
 
     Only fetches sitemap.xml directly at the root of the starting host; does
-    not follow robots.txt references or nested sitemap indexes. A fuller
-    implementation can land later (see bb-ufyk follow-up).
+    not follow robots.txt references or nested sitemap indexes.
     """
     import httpx
 

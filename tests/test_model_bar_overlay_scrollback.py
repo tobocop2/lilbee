@@ -1,20 +1,7 @@
-"""Regression tests for the ModelBar dropdown scrollback bug (bb-bo5p).
+"""ModelBar Select overlay must not leak borders into terminal scrollback.
 
-When the ``Select`` dropdown in ``ModelBar`` expands, its
-``SelectOverlay`` floats with ``overlay: screen`` and can extend below
-the ModelBar row. On collapse, Textual's compositor does not always
-invalidate the cells the overlay covered, so the overlay's top/bottom
-border cells can leak into the terminal's scrollback buffer.
-
-The fix does two things:
-
-1. Caps the overlay's ``max-height`` so it stays inside the screen
-   bounds (so nothing falls off the bottom and scrolls out).
-2. Watches each Select's ``expanded`` reactive and requests a full
-   screen refresh on collapse, forcing the compositor to re-paint the
-   region the overlay covered.
-
-These tests exercise both behaviours.
+The overlay is capped to stay inside the screen, and collapsing it
+forces a full screen refresh so the compositor invalidates the region.
 """
 
 from __future__ import annotations
@@ -60,7 +47,7 @@ def test_model_bar_caps_overlay_height_and_constrains_inside() -> None:
     Without the cap, Textual's default ``max-height: 12`` + ``constrain:
     none inside`` let the overlay extend below the viewport, causing
     border cells to get pushed into the terminal's scrollback buffer
-    when the overlay collapses (bb-bo5p).
+    when the overlay collapses.
     """
     css = ModelBar.DEFAULT_CSS
     assert "max-height: 8" in css
@@ -73,7 +60,7 @@ async def test_collapsing_select_refreshes_screen() -> None:
     We expand then collapse the Select and assert that
     ``Screen.refresh`` was called at least once AFTER the collapse.
     Without this refresh on collapse, the overlay's border cells can
-    linger in the terminal scrollback (bb-bo5p).
+    linger in the terminal scrollback.
     """
     app = _ModelBarApp()
     async with app.run_test(size=(120, 40)) as pilot:

@@ -1,15 +1,8 @@
-"""Regression tests for the bottom-bar stacking fix (bb-cot0).
+"""Every row inside BottomBars must land at its own y coordinate.
 
-Textual's ``dock: bottom`` does not stack siblings -- every dock-bottom
-widget at the same level lands at the same edge row and overlaps. The
-chat screen (and every other lilbee screen) used to compose
-``TaskBar`` + ``ViewTabs`` + ``Footer`` as three sibling dock-bottom
-widgets, so TaskBar and ViewTabs were painted under Footer and never
-visible. The fix wraps them in a single ``BottomBars`` container that
-owns the dock and lays the children out vertically.
-
-These tests assert that after the fix, each row of the bottom stack
-has its own ``y`` coordinate.
+Sibling dock-bottom widgets collide at the same edge row in Textual,
+so the bottom stack has to live inside a single BottomBars container
+that lays children out vertically.
 """
 
 from __future__ import annotations
@@ -112,7 +105,7 @@ async def test_chat_screen_taskbar_row_is_distinct_from_footer() -> None:
 
     Before the BottomBars fix, TaskBar + ViewTabs + Footer were all
     sibling dock-bottom widgets and collided at the same y -- only
-    Footer was visible (bb-cot0).
+    Footer was visible.
     """
     app = _ControllerApp(_chat_screen)
     async with app.run_test(size=(120, 40)) as pilot:

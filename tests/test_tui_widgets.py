@@ -1164,7 +1164,7 @@ class TestTaskQueue:
         assert q.cancel("nonexistent") is False
 
     def test_cancel_done_task_is_noop(self) -> None:
-        """bb-y1t5: terminal rows are immutable. Cancel on DONE returns False
+        """terminal rows are immutable. Cancel on DONE returns False
         and leaves status + completed_at frozen."""
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
@@ -1182,7 +1182,7 @@ class TestTaskQueue:
         assert task_after.completed_at == frozen_completed_at
 
     def test_cancel_failed_task_is_noop(self) -> None:
-        """bb-y1t5: cancel on a FAILED row must not flip it to CANCELLED."""
+        """cancel on a FAILED row must not flip it to CANCELLED."""
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
         q = TaskQueue()
@@ -1195,7 +1195,7 @@ class TestTaskQueue:
         assert task_after.status == TaskStatus.FAILED
 
     def test_cancel_already_cancelled_is_noop(self) -> None:
-        """bb-y1t5: cancelling an already-cancelled row does not re-append
+        """cancelling an already-cancelled row does not re-append
         it to history or reset its completed_at."""
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 

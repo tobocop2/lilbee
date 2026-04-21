@@ -73,7 +73,7 @@ def _make_result(
 
 
 class TestDisplaySourcePath:
-    """bb-2ude: source citations render absolute paths with ~ expansion."""
+    """source citations render absolute paths with ~ expansion."""
 
     def test_expands_under_documents_dir(self, tmp_path):
         from lilbee.query import display_source_path
@@ -367,7 +367,7 @@ class TestAskRaw:
         mock_svc.store.search.return_value = []
         result = get_services().searcher.ask_raw("anything")
         assert "No relevant documents" in result.answer
-        # bb-l78b: copy no longer blames the user for missing docs when only
+        # copy no longer blames the user for missing docs when only
         # this query failed to match.
         assert "ingesting" not in result.answer
         assert "for this query" in result.answer
@@ -441,7 +441,7 @@ class TestAskStream:
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
         assert "No relevant documents" in combined
-        # bb-l78b: stream copy matches the AskResult copy.
+        # stream copy matches the AskResult copy.
         assert "ingesting" not in combined
 
     def test_ask_stream_with_history(self, mock_svc):

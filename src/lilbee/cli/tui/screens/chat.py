@@ -58,7 +58,7 @@ def _remove_copied_files(names: list[str]) -> None:
     """Delete files previously copied into documents/ by a /add invocation.
 
     Called on cancel or failure of the add task so a cancelled file does not
-    re-appear on the next sync (bb-em47). Silently tolerates missing entries;
+    re-appear on the next sync. Silently tolerates missing entries;
     the user may have removed them concurrently, and the goal is just to
     prevent accidental indexing.
     """
@@ -405,7 +405,7 @@ class ChatScreen(Screen[None]):
         except BaseException:
             # On cancel or any failure, remove the files we copied into
             # documents/ so the next sync doesn't silently re-ingest the
-            # file the user just cancelled (bb-em47). Only files copied by
+            # file the user just cancelled. Only files copied by
             # this /add invocation are removed; pre-existing files the user
             # put in documents/ themselves are never touched.
             _remove_copied_files(copied)

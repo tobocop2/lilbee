@@ -1,23 +1,11 @@
-"""BottomBars -- single dock-bottom container for the per-screen bottom stack.
+"""Single dock-bottom container for the per-screen bottom stack.
 
-Textual's ``dock: bottom`` places a widget at the bottom edge of its
-container, but it does NOT stack multiple dock-bottom siblings on top
-of each other -- every dock-bottom widget lands at the SAME edge row
-and overlaps. (See ``textual._arrange._arrange_dock_widgets``: each
-docked widget's region is computed as ``Region(0, height -
-widget_height, ...)`` independently, with no offset for earlier dock
-siblings.) The last-composed widget paints on top, hiding the others.
-
-Every lilbee screen has three dock-bottom widgets -- ``TaskBar``,
-``ViewTabs``, and ``Footer`` -- which collided into the same bottom
-row, leaving only ``Footer`` visible. The chat screen additionally
-has ``#chat-prompt-area`` docked bottom, making it even worse.
-
-The fix is to dock a single container (this widget) to the bottom
-edge and let its children flow vertically inside it. Each screen
-composes exactly one ``BottomBars`` holding ``TaskBar``, ``ViewTabs``,
-and ``Footer`` (and, on the chat screen, the prompt area as the
-first child).
+Textual's ``dock: bottom`` does not stack siblings: every dock-bottom
+widget lands at the same edge row and overlaps, so only the
+last-composed widget paints. Each screen composes exactly one
+``BottomBars`` holding the per-screen bottom widgets
+(``TaskBar``, ``ViewTabs``, ``Footer``, and on chat the prompt area)
+so they stack vertically instead of colliding.
 """
 
 from __future__ import annotations
