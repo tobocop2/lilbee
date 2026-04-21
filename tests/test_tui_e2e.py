@@ -1427,7 +1427,10 @@ class TestCatalogInteractions:
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
                 await search.action_submit()
-                await pilot.pause()
+                for _ in range(10):
+                    await pilot.pause()
+                    if isinstance(app.screen.focused, ModelListItem):
+                        break
                 assert isinstance(app.screen.focused, ModelListItem)
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
