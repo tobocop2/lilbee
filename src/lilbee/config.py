@@ -82,21 +82,137 @@ CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 
-# Regex patterns that reject URLs at link-discovery time during recursive
-# crawls. Defaults block WordPress noise that otherwise balloons a site's
-# crawlable URL count (pagination, archives, tracking query params).
-# Users extend or replace via LILBEE_CRAWL_EXCLUDE_PATTERNS (newline-
-# separated) or a `crawl_exclude_patterns = [...]` list in config.toml.
-DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
+# Default URL-exclusion patterns for recursive crawls. Categorized so each
+# group is inspectable and easy to trim. Users extend or replace via
+# LILBEE_CRAWL_EXCLUDE_PATTERNS (newline-separated) or a
+# `crawl_exclude_patterns = [...]` list in config.toml.
+# All patterns are Python regex (use_glob=False at the call site).
+
+# WordPress scaffolding: admin UIs, API endpoints, RPC endpoints, numeric
+# permalink stubs, and the Elementor page-builder staging area.
+_WP_EXCLUDE: tuple[str, ...] = (
+    r"/wp-admin/",
+    r"/wp-login(\.php)?",
+    r"/wp-json/",
+    r"/xmlrpc\.php",
+    r"/wp-cron\.php",
+    r"/wp-includes/",
+    r"/wp-content/uploads/",
+    r"\?p=\d+",
+    r"\?page_id=\d+",
+    r"\?cat=\d+",
+    r"/elementor-\d+",
+    r"\?elementor_library",
+)
+
+# Pagination and archive permalinks (WP + other CMSes share this shape).
+_ARCHIVE_EXCLUDE: tuple[str, ...] = (
     r"/page/\d+/?$",
+    r"\?paged?=\d+",
+    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$",
     r"/tag/",
     r"/category/",
     r"/author/",
-    r"/20\d{2}/\d{2}/?$",
-    r"/attachment/",
-    r"/feed/?$",
+    r"/archives?/?$",
     r"/comment-page-\d+",
-    r"[?&](utm_|ref=|fbclid=|gclid=)",
+)
+
+# Syndication feeds (content-duplicated in HTML pages).
+_FEED_EXCLUDE: tuple[str, ...] = (
+    r"/feed/?$",
+    r"/feed/atom/?$",
+    r"/feed/rdf/?$",
+    r"/comments/feed/?$",
+    r"/rss/?$",
+)
+
+# Duplicate views of the same canonical page (AMP, print, preview).
+_DUPLICATE_VIEW_EXCLUDE: tuple[str, ...] = (
+    r"/amp/?$",
+    r"\?amp=",
+    r"\?print=",
+    r"/print/?$",
+    r"\?preview=",
+)
+
+# WP attachment URLs (point at media, not content pages).
+_ATTACHMENT_EXCLUDE: tuple[str, ...] = (
+    r"/attachment/",
+    r"\?attachment_id=",
+)
+
+# Auth and account flows (generic across CMSes and e-commerce platforms).
+_AUTH_EXCLUDE: tuple[str, ...] = (
+    r"/login",
+    r"/logout",
+    r"/register",
+    r"/signup",
+    r"/signin",
+    r"/account",
+    r"/my-account/",
+    r"/profile",
+    r"/password-reset",
+    r"/forgot-password",
+)
+
+# E-commerce transactional flows (cart / checkout / compare / etc.).
+_ECOMMERCE_EXCLUDE: tuple[str, ...] = (
+    r"/cart",
+    r"/checkout",
+    r"/wishlist",
+    r"/orders?",
+    r"/compare",
+    r"/products\.json",
+    r"/collections/.+/products/.+\?page=",
+)
+
+# Marketing tracking query parameters. One alternation so the regex engine
+# scans the URL once. Each listed key is a widely-seen tracking field; see
+# https://en.wikipedia.org/wiki/UTM_parameters and vendor docs for origins.
+_TRACKING_EXCLUDE: tuple[str, ...] = (
+    (
+        r"[?&]("
+        r"utm_[a-z_]+"
+        r"|fbclid|gclid|msclkid|yclid"
+        r"|mc_cid|mc_eid"
+        r"|_hsenc|_hsmi|hsCtaTracking"
+        r"|mkt_tok|mkt_[a-z_]+"
+        r"|trk|trkInfo"
+        r"|dm_i"
+        r"|vero_id|vero_conv"
+        r"|oly_anon_id|oly_enc_id"
+        r"|igshid"
+        r"|pk_campaign|pk_source|pk_medium|pk_[a-z_]+"
+        r"|_ga"
+        r"|ref|referrer"
+        r"|affiliate|aff_id|aff_ref|aff|partner"
+        r"|srsltid"
+        r"|share|replytocom"
+        r")="
+    ),
+)
+
+# Site-meta URLs and non-HTML resources. crawl4ai also filters by
+# Content-Type at fetch time; this filter saves the fetch entirely.
+_META_EXCLUDE: tuple[str, ...] = (
+    r"/sitemap[^/]*\.xml",
+    r"/robots\.txt",
+    r"/humans\.txt",
+    r"/favicon\.ico",
+    r"/\.well-known/",
+    r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
+)
+
+DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    *_WP_EXCLUDE,
+    *_ARCHIVE_EXCLUDE,
+    *_FEED_EXCLUDE,
+    *_DUPLICATE_VIEW_EXCLUDE,
+    *_ATTACHMENT_EXCLUDE,
+    *_AUTH_EXCLUDE,
+    *_ECOMMERCE_EXCLUDE,
+    *_TRACKING_EXCLUDE,
+    *_META_EXCLUDE,
 )
 
 
