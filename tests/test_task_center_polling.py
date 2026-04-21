@@ -271,6 +271,102 @@ async def test_action_cancel_task_uses_focused_task_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_initial_focus_lands_on_first_active_row() -> None:
+    """bb-5djq: entering Task Center focuses the first active/queued row,
+    not whatever DONE row happens to be at position 0."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        done_id = app.task_bar.queue.enqueue(lambda: None, "old", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.complete_task(done_id)
+        active_id = app.task_bar.queue.enqueue(lambda: None, "live", TaskType.CRAWL.value)
+        app.task_bar.queue.advance(TaskType.CRAWL.value)
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        # Both rows must have mounted, and the active row gets focus.
+        for _ in range(5):
+            await pilot.pause(delay=0.1)
+            if (
+                active_id in screen._rows
+                and done_id in screen._rows
+                and isinstance(app.focused, TaskRow)
+            ):
+                break
+        assert isinstance(app.focused, TaskRow)
+        assert app.focused is screen._rows[active_id]
+
+
+@pytest.mark.asyncio
+async def test_initial_focus_prefers_queued_when_no_active() -> None:
+    """bb-5djq: if the only live row is QUEUED, focus lands there instead
+    of on a DONE history row."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        done_id = app.task_bar.queue.enqueue(lambda: None, "old", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.complete_task(done_id)
+        # Enqueue but do NOT advance so the task stays QUEUED.
+        queued_id = app.task_bar.queue.enqueue(lambda: None, "next", TaskType.CRAWL.value)
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        for _ in range(5):
+            await pilot.pause(delay=0.1)
+            if queued_id in screen._rows and isinstance(app.focused, TaskRow):
+                break
+        assert isinstance(app.focused, TaskRow)
+        assert app.focused is screen._rows[queued_id]
+
+
+@pytest.mark.asyncio
+async def test_initial_focus_noop_when_no_tasks() -> None:
+    """bb-5djq: with an empty queue there is no row to focus -- the
+    on_mount focus step must not raise."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        # No rows, no crash. AUTO_FOCUS falls back to the scroll container.
+        assert screen._rows == {}
+
+
+@pytest.mark.asyncio
+async def test_initial_focus_falls_back_when_only_history_present() -> None:
+    """bb-5djq: no active/queued work means _focus_initial_row is a no-op
+    and AUTO_FOCUS's row-1 landing (a history row) still holds. The
+    cancel action is a no-op on that focused terminal row (bb-y1t5)."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        done_id = app.task_bar.queue.enqueue(lambda: None, "old", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.complete_task(done_id)
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        for _ in range(5):
+            await pilot.pause(delay=0.1)
+            if done_id in screen._rows:
+                break
+        screen._rows[done_id].focus()
+        await pilot.pause()
+        screen.action_cancel_task()
+        task = app.task_bar.queue.get_task(done_id)
+        assert task is not None
+        # Status stays DONE -- bb-y1t5 guard makes cancel a no-op here.
+        assert task.status.value == "done"
+
+
+@pytest.mark.asyncio
 async def test_poll_swallows_row_remove_exception() -> None:
     """If a row's ``remove`` raises during reconciliation, the poll survives."""
     app = LilbeeApp()
