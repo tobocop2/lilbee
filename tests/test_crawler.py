@@ -2136,6 +2136,86 @@ class TestStreamingFlush:
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
         mock_sync.assert_awaited_once()
 
+    async def test_metadata_flush_is_batched(self, isolated_env):
+        """_flush_metadata fires every METADATA_FLUSH_INTERVAL pages, not every page."""
+        import asyncio as _asyncio
+
+        from lilbee.crawler import METADATA_FLUSH_INTERVAL
+
+        total_pages = METADATA_FLUSH_INTERVAL + 3
+
+        async def _gen():
+            for i in range(1, total_pages + 1):
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._flush_metadata") as mock_flush,
+        ):
+            await crawl_and_save("https://example.com", depth=2, max_pages=total_pages)
+
+        # One flush at the interval boundary + one final flush after the loop.
+        assert mock_flush.call_count == 2
+
+    async def test_final_metadata_flush_fires_on_cancel(self, isolated_env):
+        """Cancel still produces a final metadata flush so on-disk state stays consistent."""
+        import asyncio as _asyncio
+        import threading
+
+        cancel = threading.Event()
+
+        async def _gen():
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            cancel.set()
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch(
+                "lilbee.crawler._flush_metadata", wraps=lilbee_crawler._flush_metadata
+            ) as spy_flush,
+        ):
+            await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
+
+        # One page written, below the interval, so the only flush is the final one.
+        assert spy_flush.call_count == 1
+        meta = load_crawl_metadata()
+        assert "https://example.com/p1" in meta
+
+    async def test_no_final_flush_when_nothing_written(self, isolated_env):
+        """If zero pages were flushed, the post-loop metadata write is skipped."""
+        import asyncio as _asyncio
+
+        async def _gen():
+            await _asyncio.sleep(0)
+            # Empty markdown is skipped by _save_single_result
+            yield _make_crawl4ai_result(url="https://example.com/empty", markdown="")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._flush_metadata") as mock_flush,
+        ):
+            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+        assert paths == []
+        mock_flush.assert_not_called()
+
     async def test_done_event_reports_partial_counts_on_cancel(self, isolated_env):
         """CRAWL_DONE fires even on cancel and reports what was actually flushed."""
         import asyncio as _asyncio

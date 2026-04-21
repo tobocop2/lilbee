@@ -283,6 +283,13 @@ _MAX_FILENAME_LEN = 200
 # Sentinel for index pages (trailing slash or empty path)
 _INDEX_FILENAME = "index.md"
 
+# Batch window for the crawl metadata JSON rewrite. Markdown files are written
+# per page (durable immediately); metadata is flushed every N pages, plus
+# unconditionally at the end of the crawl, so we don't rewrite the full JSON
+# on every streamed result. At 10 pages the worst-case data-loss window on
+# crash is 9 metadata entries, all recoverable from the written markdown.
+METADATA_FLUSH_INTERVAL = 10
+
 
 _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("127.0.0.0/8"),
@@ -1020,19 +1027,26 @@ async def crawl_and_save(
         meta = load_crawl_metadata()
         written_paths: list[Path] = []
         pages_seen = 0
+        pages_since_metadata_flush = 0
 
         def flush_page(result: CrawlResult) -> Path | None:
-            """Save one streamed result to disk and persist metadata.
+            """Save one streamed result and update metadata in memory.
 
-            Metadata is flushed after every successful save. Rewriting the JSON
-            per page is cheap for typical crawls (100s of pages) and makes the
-            cancel path trivially correct: whatever is on disk is consistent.
+            Markdown files are always flushed per page (durable immediately).
+            Metadata JSON rewrite is batched to reduce I/O on large crawls:
+            it flushes every METADATA_FLUSH_INTERVAL pages, and the post-loop
+            block flushes unconditionally so both the success and cancel
+            paths land in a consistent state.
             """
+            nonlocal pages_since_metadata_flush
             path = _save_single_result(result, meta)
             if path is None:
                 return None
             _update_single_metadata(meta, result, datetime.now(UTC).isoformat())
-            _flush_metadata(meta)
+            pages_since_metadata_flush += 1
+            if pages_since_metadata_flush >= METADATA_FLUSH_INTERVAL:
+                _flush_metadata(meta)
+                pages_since_metadata_flush = 0
             written_paths.append(path)
             return path
 
@@ -1054,6 +1068,11 @@ async def crawl_and_save(
                 on_result=flush_page,
             )
             pages_seen = len(results)
+
+        # Final metadata flush covers both clean completion and cancel. Skip
+        # when nothing was written to avoid touching disk for no-op crawls.
+        if written_paths:
+            _flush_metadata(meta)
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:
