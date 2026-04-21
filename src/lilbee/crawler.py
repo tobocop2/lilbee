@@ -1021,7 +1021,13 @@ async def crawl_and_save(
         if depth == 0:
             result = await crawl_single(url, quiet=quiet)
             pages_seen = 1
-            flush_page(result)
+            try:
+                flush_page(result)
+            except OSError:
+                # Mirror the recursive path: a disk-side flush failure must not
+                # masquerade as a crawl failure. Log and return the (empty)
+                # written_paths list.
+                log.exception("Flush failed for %s", result.url)
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
         else:
@@ -1041,7 +1047,14 @@ async def crawl_and_save(
         # when there are no in-memory entries still pending write (nothing
         # written at all, or the stream ended exactly on an interval boundary).
         if pages_since_metadata_flush > 0:
-            _flush_metadata(meta)
+            try:
+                _flush_metadata(meta)
+            except OSError:
+                # Markdown files were already written durably per page; a
+                # failed final metadata flush is observable at next startup
+                # when load_crawl_metadata() loses the last batch of entries,
+                # but it should not fail a crawl that otherwise succeeded.
+                log.exception("Final metadata flush failed")
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:

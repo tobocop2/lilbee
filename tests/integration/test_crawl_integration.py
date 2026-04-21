@@ -236,8 +236,12 @@ class TestSecurity:
         meta: dict[str, CrawlMeta] = {}
         path = _save_single_result(result, meta)
         web_dir = cfg.documents_dir / "_web"
-        if path is not None:
-            assert path.resolve().is_relative_to(web_dir.resolve())
+        # url_to_filename neutralizes ".." segments, so the result MUST be a
+        # concrete path under _web/. A None return would indicate the helper
+        # started rejecting the request at the hash/exists short-circuit, which
+        # is the class of refactor we want to catch.
+        assert path is not None
+        assert path.resolve().is_relative_to(web_dir.resolve())
 
     async def test_max_pages_enforced(self, httpserver, allow_localhost):
         """Max pages config caps the crawl."""

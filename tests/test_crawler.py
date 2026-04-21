@@ -2119,6 +2119,52 @@ class TestStreamingFlush:
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
 
+    @patch("lilbee.crawler.crawl_single")
+    async def test_depth_zero_flush_failure_does_not_fail_the_crawl(
+        self, mock_crawl_single, isolated_env
+    ):
+        """OSError from flush on the single-URL path is logged, not reraised."""
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com/only", markdown="# Only"
+        )
+        with patch("lilbee.crawler._save_single_result", side_effect=OSError("disk full")):
+            # Must not raise even though the depth=0 flush fails.
+            paths = await crawl_and_save("https://example.com/only", depth=0)
+        assert paths == []
+
+    async def test_final_flush_failure_does_not_fail_the_crawl(self, isolated_env):
+        """OSError from the post-loop metadata flush is logged, not reraised."""
+        import asyncio as _asyncio
+
+        async def _gen():
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            await _asyncio.sleep(0)
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        real_flush = lilbee_crawler._flush_metadata
+        call_count = {"n": 0}
+
+        def flush_or_fail(meta):
+            call_count["n"] += 1
+            # Let interval-boundary flushes succeed; fail only the post-loop flush.
+            if call_count["n"] == 1 and len(meta) >= 1:
+                raise OSError("disk full")
+            real_flush(meta)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._flush_metadata", side_effect=flush_or_fail),
+        ):
+            # Markdown was already written durably; the final flush must not
+            # reraise since the caller has already consumed the stream.
+            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+        assert len(paths) == 1
+        assert paths[0].exists()
+
     async def test_final_metadata_flush_fires_on_cancel(self, isolated_env):
         """Cancel still produces a final metadata flush so on-disk state stays consistent."""
         import asyncio as _asyncio
