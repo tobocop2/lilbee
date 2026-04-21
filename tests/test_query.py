@@ -779,9 +779,12 @@ class TestHydeSearch:
 
 class TestTemporalFilter:
     def test_filters_by_date(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
         mock_svc.store.get_sources.return_value = [
-            {"filename": "old.md", "ingested_at": "2025-01-01T00:00:00+00:00"},
-            {"filename": "new.md", "ingested_at": "2026-03-22T12:00:00+00:00"},
+            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
+            {"filename": "new.md", "ingested_at": recent},
         ]
         results = [
             _make_result(source="old.md"),
@@ -789,6 +792,7 @@ class TestTemporalFilter:
         ]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert any(r.source == "new.md" for r in filtered)
+        assert not any(r.source == "old.md" for r in filtered)
 
     def test_no_temporal_keyword_passes_through(self, mock_svc):
         results = [_make_result()]
