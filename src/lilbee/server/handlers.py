@@ -629,12 +629,10 @@ async def get_config_defaults() -> ConfigResponse:
     for name, info in Config.model_fields.items():
         if name not in WRITABLE_CONFIG_FIELDS or name not in _PUBLIC_CONFIG_FIELDS:
             continue
-        if info.default_factory is not None:
-            defaults[name] = info.default_factory()
+        value = info.get_default(call_default_factory=True)
+        if value is PydanticUndefined:
             continue
-        if info.default is PydanticUndefined:
-            continue
-        defaults[name] = info.default
+        defaults[name] = value
     return ConfigResponse(**defaults)
 
 
