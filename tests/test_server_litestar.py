@@ -328,6 +328,25 @@ class TestConfigRoute:
         assert "system_prompt" in resp.json()
 
 
+class TestConfigDefaultsRoute:
+    def test_returns_writable_defaults(self, client):
+        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        resp = client.get("/api/config/defaults")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Scalar defaults present.
+        assert data["chunk_size"] == 512
+        assert data["top_k"] == 10
+        # Nullable defaults come through as null.
+        assert data["crawl_max_depth"] is None
+        assert data["crawl_max_pages"] is None
+        # default_factory fields come through as their evaluated list.
+        assert data["crawl_exclude_patterns"] == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        # Non-writable/non-public fields are not exposed.
+        assert "chat_model" not in data
+
+
 class TestConfigUpdateRoute:
     @mock.patch(
         "lilbee.server.handlers.update_config",

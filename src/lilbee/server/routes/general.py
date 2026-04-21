@@ -38,6 +38,13 @@ async def config_route() -> ConfigResponse:
     return await handlers.get_config()
 
 
+@get("/api/config/defaults")
+@read_only
+async def config_defaults_route() -> ConfigResponse:
+    """Return canonical defaults for every writable, public configuration field."""
+    return await handlers.get_config_defaults()
+
+
 @patch("/api/config")
 async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
     """Partial update of writable configuration fields."""
