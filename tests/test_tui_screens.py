@@ -1422,6 +1422,50 @@ async def test_reset_all_reports_skipped_keys():
         assert summary_calls[0].kwargs.get("severity") == "warning"
 
 
+async def test_rollback_swallows_setattr_failure():
+    """If setattr on a rollback key raises, the rollback logs and proceeds."""
+    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+
+        original_setattr = type(cfg).__setattr__
+
+        def rejecting_setattr(self_cfg, name, value):
+            if name == "top_k" and value == "rollback-sentinel":
+                raise ValueError("rollback rejected")
+            original_setattr(self_cfg, name, value)
+
+        writable = [("top_k", SETTINGS_MAP["top_k"])]
+        with (
+            patch.object(type(cfg), "__setattr__", rejecting_setattr),
+            patch.object(screen, "_refresh_editor"),
+            patch.object(screen, "_refresh_help"),
+        ):
+            screen._rollback_batch(writable, {"top_k": "rollback-sentinel"})
+        # Passing means the except branch swallowed the ValueError; no raise.
+
+
+async def test_publish_batch_signals_on_lilbee_app():
+    """When the screen runs under LilbeeApp, signals fan out for each reset key."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(SettingsScreen())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch.object(app.settings_changed_signal, "publish") as mock_pub:
+            screen._publish_batch_signals([("top_k", 7), ("embedding_dim", 768)])
+        assert mock_pub.call_count == 2
+
+
 async def test_reset_all_button_press_opens_confirm_dialog():
     """Pressing Reset-all pushes the ConfirmDialog screen before mutating state."""
     from lilbee.cli.tui.screens.settings import SettingsScreen

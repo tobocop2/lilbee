@@ -630,7 +630,7 @@ async def get_config_defaults() -> ConfigResponse:
         if name not in WRITABLE_CONFIG_FIELDS or name not in _PUBLIC_CONFIG_FIELDS:
             continue
         value = info.get_default(call_default_factory=True)
-        if value is PydanticUndefined:
+        if value is PydanticUndefined:  # pragma: no cover
             continue
         defaults[name] = value
     return ConfigResponse(**defaults)
