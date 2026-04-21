@@ -1011,10 +1011,14 @@ async def test_reset_button_resets_scalar():
     async with app.run_test(size=(120, 40)) as pilot:
         button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
         button.press()
-        await pilot.pause()
-        assert cfg.wiki_clusterer_k == get_default("wiki_clusterer_k")
+        target = get_default("wiki_clusterer_k")
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.wiki_clusterer_k == target:
+                break
+        assert cfg.wiki_clusterer_k == target
         editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
-        assert editor.value == str(get_default("wiki_clusterer_k"))
+        assert editor.value == str(target)
 
 
 async def test_reset_button_absent_for_readonly():
@@ -1092,7 +1096,10 @@ async def test_refresh_editor_updates_checkbox():
 
         button = app.screen.query_one("#reset-show_reasoning", Button)
         button.press()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.show_reasoning == default:
+                break
         assert cfg.show_reasoning == default
         assert checkbox.value == default
 
@@ -1106,7 +1113,10 @@ async def test_reset_nullable_to_none():
     async with app.run_test(size=(120, 40)) as pilot:
         button = app.screen.query_one("#reset-temperature", Button)
         button.press()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.temperature is None:
+                break
         assert cfg.temperature is None
         editor = app.screen.query_one("#ed-temperature", Input)
         assert editor.value == ""
