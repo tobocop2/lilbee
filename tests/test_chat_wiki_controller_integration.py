@@ -273,7 +273,9 @@ def test_do_crawl_reports_page_progress() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_crawl(url, *, depth, max_pages, on_progress, quiet=False):
+    async def fake_crawl(
+        url, *, depth, max_pages, on_progress, quiet=False, include_subdomains=False
+    ):
         on_progress(
             EventType.CRAWL_PAGE,
             CrawlPageEvent(url="https://x/a", current=1, total=2),

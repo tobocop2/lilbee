@@ -560,7 +560,12 @@ class CatalogScreen(Screen[None]):
         self._sort_column = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._sort_ascending = True
         self._refresh_list()
-        self._focus_list_item(0)
+        # _refresh_list replaces the list children asynchronously via
+        # mount_all; focusing before the new widgets settle can leave focus
+        # on the filter Input, which swallows the next `s` press as text
+        # (bb-k00i). Defer the focus move until after Textual's next refresh
+        # so _list_items() actually returns the new rows.
+        self.call_after_refresh(self._focus_list_item, 0)
 
     def _select_row(self, row: TableRow) -> None:
         """Handle row selection: install or use the model."""
@@ -632,12 +637,25 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def action_go_back(self) -> None:
+        # First Escape press unfocuses the filter input (bb-jdrm); without this
+        # the screen-level `s` / `v` keys get typed into the input and the only
+        # way to regain screen focus is to leave the screen entirely.
+        if isinstance(self.focused, Input):
+            self._focus_list_or_grid()
+            return
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()
+
+    def _focus_list_or_grid(self) -> None:
+        """Move focus from the filter input to the active view's list/grid."""
+        if self._grid_view:
+            self._focus_first_grid()
+        else:
+            self._focus_list_item(0)
 
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""

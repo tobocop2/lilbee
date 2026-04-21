@@ -621,6 +621,85 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> float:
     return effective
 
 
+# Sitemap lookups are best-effort progress hints; never block the actual crawl.
+_SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0
+_SITEMAP_MAX_URLS = 10_000
+_SITEMAP_URL_TAG_RE = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.IGNORECASE)
+
+
+def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
+    """Best-effort count of URLs in the host's /sitemap.xml that match the crawl scope.
+
+    Returns CRAWL_TOTAL_UNKNOWN on any failure (missing sitemap, timeout,
+    parse error, redirect away from the starting host). This is purely a
+    progress-hint denominator, so correctness is not load-bearing.
+
+    Only fetches sitemap.xml directly at the root of the starting host; does
+    not follow robots.txt references or nested sitemap indexes. A fuller
+    implementation can land later (see bb-ufyk follow-up).
+    """
+    import httpx
+
+    parsed = urlparse(start_url)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return CRAWL_TOTAL_UNKNOWN
+    sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+    try:
+        resp = httpx.get(sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+    except (httpx.HTTPError, OSError):
+        return CRAWL_TOTAL_UNKNOWN
+    if resp.status_code >= 400:
+        return CRAWL_TOTAL_UNKNOWN
+
+    count = 0
+    for match in _SITEMAP_URL_TAG_RE.finditer(resp.text):
+        candidate = match.group(1).strip()
+        link_host = (urlparse(candidate).hostname or "").lower()
+        if not link_host:
+            continue
+        if include_subdomains:
+            matches = link_host == host or link_host.endswith(f".{host}")
+        else:
+            matches = link_host == host
+        if matches:
+            count += 1
+        if count >= _SITEMAP_MAX_URLS:
+            break
+    return count if count > 0 else CRAWL_TOTAL_UNKNOWN
+
+
+def _host_scope_filter(start_url: str, *, include_subdomains: bool) -> Any:
+    """Build a URLFilter that scopes a crawl to the starting URL's host.
+
+    Default behavior (``include_subdomains=False``) restricts link-following to
+    the exact host of *start_url*. For ``https://en.wikipedia.org/...`` this
+    excludes ``af.wikipedia.org`` and every other language subdomain.
+
+    When ``include_subdomains=True``, crawl4ai's DomainFilter matches the host
+    plus any of its subdomains (``foo.example.com`` matches ``example.com``),
+    which is the loose "whole registrable domain" behavior users may want.
+    """
+    from crawl4ai.deep_crawling.filters import DomainFilter, URLFilter
+
+    host = (urlparse(start_url).hostname or "").lower()
+    if include_subdomains:
+        return DomainFilter(allowed_domains=host) if host else None
+
+    class _ExactHostFilter(URLFilter):  # type: ignore[misc]
+        def __init__(self, allowed_host: str) -> None:
+            super().__init__()
+            self._host = allowed_host
+
+        def apply(self, url: str) -> bool:
+            link_host = (urlparse(url).hostname or "").lower()
+            ok = link_host == self._host
+            self._update_stats(ok)
+            return ok
+
+    return _ExactHostFilter(host) if host else None
+
+
 async def crawl_recursive(
     url: str,
     max_depth: int | None = None,
@@ -629,6 +708,7 @@ async def crawl_recursive(
     cancel: threading.Event | None = None,
     *,
     quiet: bool = False,
+    include_subdomains: bool = False,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
@@ -637,6 +717,11 @@ async def crawl_recursive(
     Positive ints are explicit caps. CRAWL_PAGE events fire as each page
     completes; total is CRAWL_TOTAL_UNKNOWN since BFS doesn't know the final
     page count up front.
+
+    By default the crawl is scoped to the exact starting host so a Wikipedia
+    article doesn't wander into other language editions. Pass
+    ``include_subdomains=True`` to broaden scope to the starting host plus any
+    subdomains (e.g. ``en.wikipedia.org`` plus ``af.wikipedia.org``).
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
@@ -662,11 +747,13 @@ async def crawl_recursive(
     # filtering later. Patterns are treated as regex (use_glob=False);
     # reverse=True flips the filter's sense from include to exclude.
     exclude_patterns = list(cfg.crawl_exclude_patterns)
-    filter_chain = (
-        FilterChain([URLPatternFilter(exclude_patterns, use_glob=False, reverse=True)])
-        if exclude_patterns
-        else FilterChain()
-    )
+    filters: list[Any] = []
+    host_filter = _host_scope_filter(url, include_subdomains=include_subdomains)
+    if host_filter is not None:
+        filters.append(host_filter)
+    if exclude_patterns:
+        filters.append(URLPatternFilter(exclude_patterns, use_glob=False, reverse=True))
+    filter_chain = FilterChain(filters) if filters else FilterChain()
 
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
@@ -681,6 +768,13 @@ async def crawl_recursive(
         max_range=cfg.crawl_max_delay_range,
         semaphore_count=cfg.crawl_concurrent_requests,
         stream=True,
+    )
+
+    # Best-effort sitemap lookup so the TUI / CLI can render a real page-count
+    # denominator instead of [n/-1]. Falls back to CRAWL_TOTAL_UNKNOWN on any
+    # failure; off the hot path so a slow/missing sitemap never blocks the crawl.
+    sitemap_total = await asyncio.to_thread(
+        _count_sitemap_urls, url, include_subdomains=include_subdomains
     )
 
     results: list[CrawlResult] = []
@@ -699,7 +793,7 @@ async def crawl_recursive(
                     if on_progress:
                         on_progress(
                             EventType.CRAWL_PAGE,
-                            CrawlPageEvent(url=cr.url, current=counter, total=CRAWL_TOTAL_UNKNOWN),
+                            CrawlPageEvent(url=cr.url, current=counter, total=sitemap_total),
                         )
                     if cr.success:
                         results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
@@ -834,6 +928,7 @@ async def crawl_and_save(
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
     quiet: bool = False,
+    include_subdomains: bool = False,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
@@ -841,6 +936,10 @@ async def crawl_and_save(
     recursion. N > 0 = max link-follow depth. max_pages: None = no limit.
     Positive int = cap. cfg.crawl_max_{depth,pages} act as user-opted-in
     ceilings applied only when depth/max_pages are None.
+
+    When recursing, the crawl is scoped to the exact starting host by default.
+    Set ``include_subdomains=True`` to also follow links into sibling
+    subdomains of the starting host.
 
     Uses hash-based change detection: always fetches, but only saves files
     whose content has changed (or is new). When *cancel* is set, returns
@@ -875,6 +974,7 @@ async def crawl_and_save(
                 on_progress=on_progress,
                 cancel=cancel,
                 quiet=quiet,
+                include_subdomains=include_subdomains,
             )
 
         if cancel and cancel.is_set():

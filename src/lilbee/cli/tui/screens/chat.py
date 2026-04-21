@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -51,6 +52,25 @@ log = logging.getLogger(__name__)
 _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
+
+
+def _remove_copied_files(names: list[str]) -> None:
+    """Delete files previously copied into documents/ by a /add invocation.
+
+    Called on cancel or failure of the add task so a cancelled file does not
+    re-appear on the next sync (bb-em47). Silently tolerates missing entries;
+    the user may have removed them concurrently, and the goal is just to
+    prevent accidental indexing.
+    """
+    for name in names:
+        target = cfg.documents_dir / name
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.exists():
+                target.unlink()
+        except OSError:
+            log.debug("Could not remove copied file %s", target, exc_info=True)
 
 
 class ChatStatusLine(Label):
@@ -378,8 +398,18 @@ class ChatScreen(Screen[None]):
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
 
-        sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        try:
+            sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+        except BaseException:
+            # On cancel or any failure, remove the files we copied into
+            # documents/ so the next sync doesn't silently re-ingest the
+            # file the user just cancelled (bb-em47). Only files copied by
+            # this /add invocation are removed; pre-existing files the user
+            # put in documents/ themselves are never touched.
+            _remove_copied_files(copied)
+            raise
         if sync_result.failed:
+            _remove_copied_files(copied)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
@@ -414,8 +444,8 @@ class ChatScreen(Screen[None]):
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        depth, max_pages = self._parse_crawl_flags(parts[1:])
-        self._start_crawl(url, depth, max_pages)
+        depth, max_pages, include_subdomains = self._parse_crawl_flags(parts[1:])
+        self._start_crawl(url, depth, max_pages, include_subdomains=include_subdomains)
 
     def _open_crawl_dialog(self) -> None:
         """Push the crawl modal and handle its result."""
@@ -427,7 +457,14 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
-    def _start_crawl(self, url: str, depth: int | None, max_pages: int | None) -> None:
+    def _start_crawl(
+        self,
+        url: str,
+        depth: int | None,
+        max_pages: int | None,
+        *,
+        include_subdomains: bool = False,
+    ) -> None:
         """Enqueue a crawl task and run it in the background.
 
         Bootstrap Chromium first via the controller helper. If the
@@ -442,7 +479,9 @@ class ChatScreen(Screen[None]):
             self._task_bar.start_task(
                 msg.TASK_NAME_CRAWL.format(url=url),
                 TaskType.CRAWL,
-                lambda reporter: self._do_crawl(url, depth, max_pages, reporter),
+                lambda reporter: self._do_crawl(
+                    url, depth, max_pages, reporter, include_subdomains=include_subdomains
+                ),
                 on_success=lambda: call_from_thread(self, self._run_sync),
             )
 
@@ -450,16 +489,22 @@ class ChatScreen(Screen[None]):
         self._task_bar.ensure_chromium(_kick_off_crawl)
 
     @staticmethod
-    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None]:
-        """Extract --depth and --max-pages from argument tokens.
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None, bool]:
+        """Extract --depth, --max-pages, and --include-subdomains from tokens.
 
-        Returns None for either when the flag is absent so the caller inherits
-        crawl_and_save's unbounded-by-default semantics.
+        Numeric flags return None when absent so the caller inherits
+        crawl_and_save's unbounded-by-default semantics. The boolean
+        ``--include-subdomains`` flag defaults to False (exact-host scope).
         """
         flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
         parsed: dict[str, int | None] = {"depth": None, "max_pages": None}
+        include_subdomains = False
         i = 0
         while i < len(tokens):
+            if tokens[i] == "--include-subdomains":
+                include_subdomains = True
+                i += 1
+                continue
             key = flag_map.get(tokens[i])
             if key and i + 1 < len(tokens):
                 with contextlib.suppress(ValueError):
@@ -467,7 +512,7 @@ class ChatScreen(Screen[None]):
                 i += 2
             else:
                 i += 1
-        return parsed["depth"], parsed["max_pages"]
+        return parsed["depth"], parsed["max_pages"], include_subdomains
 
     def _do_crawl(
         self,
@@ -475,6 +520,8 @@ class ChatScreen(Screen[None]):
         depth: int | None,
         max_pages: int | None,
         reporter: ProgressReporter,
+        *,
+        include_subdomains: bool = False,
     ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
@@ -509,6 +556,7 @@ class ChatScreen(Screen[None]):
                 max_pages=max_pages,
                 on_progress=on_progress,
                 quiet=True,
+                include_subdomains=include_subdomains,
             )
         )
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))

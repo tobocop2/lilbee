@@ -375,6 +375,84 @@ class TestCatalogScreenAsync:
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
 
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_escape_from_filter_unfocuses_instead_of_leaving(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """bb-jdrm: first Escape while filter is focused should move focus to
+        the list or grid, not leave the screen."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            catalog = CatalogScreen()
+            app.push_screen(catalog)
+            await pilot.pause()
+            # Focus the filter input explicitly to match the scenario.
+            catalog.query_one("#catalog-search", Input).focus()
+            await pilot.pause()
+            assert isinstance(catalog.focused, Input)
+            catalog.action_go_back()
+            await pilot.pause()
+            # Still on the catalog screen; focus no longer on the Input.
+            assert isinstance(app.screen, CatalogScreen)
+            assert not isinstance(catalog.focused, Input)
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_escape_from_filter_in_list_view_focuses_list(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """bb-jdrm: in list view, Escape from filter should focus the list."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            catalog = CatalogScreen()
+            app.push_screen(catalog)
+            await pilot.pause()
+            catalog.action_toggle_view()  # switch to list view
+            await pilot.pause()
+            catalog.query_one("#catalog-search", Input).focus()
+            await pilot.pause()
+            assert isinstance(catalog.focused, Input)
+            catalog.action_go_back()
+            await pilot.pause()
+            assert isinstance(app.screen, CatalogScreen)
+            assert not isinstance(catalog.focused, Input)
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_sort_cycle_visits_all_four_columns(self, mock_catalog: mock.MagicMock) -> None:
+        """bb-k00i: cycle must visit Name -> Downloads -> Size -> Params -> Name."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            catalog = CatalogScreen()
+            app.push_screen(catalog)
+            await pilot.pause()
+            # Switch to list view so sort is available.
+            catalog._grid_view = False
+            catalog._sort_column = "Name"
+            observed = []
+            for _ in range(5):
+                catalog.action_cycle_sort()
+                await pilot.pause()
+                observed.append(catalog._sort_column)
+            assert observed == ["Downloads", "Size", "Params", "Name", "Downloads"]
+
 
 class TestSettingsScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
