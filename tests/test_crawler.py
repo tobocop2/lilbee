@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import lilbee.crawler as lilbee_crawler
 from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
@@ -1140,10 +1141,20 @@ class TestCrawlAndSave:
 
     @patch("lilbee.crawler.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):
-        mock_crawl_recursive.return_value = [
+        streamed = [
             CrawlResult(url="https://example.com", markdown="# Home"),
             CrawlResult(url="https://example.com/about", markdown="# About"),
         ]
+
+        async def _fake_recursive(*args, on_result=None, **kwargs):
+            # Mimic the real streaming contract: invoke the flush callback
+            # per-page before returning the full list.
+            if on_result is not None:
+                for r in streamed:
+                    on_result(r)
+            return streamed
+
+        mock_crawl_recursive.side_effect = _fake_recursive
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
 
@@ -1289,15 +1300,21 @@ class TestCrawlAndSave:
         crawler_mod._state.semaphore = None
 
     @patch("lilbee.crawler.crawl_single")
-    async def test_cancel_returns_empty(self, mock_crawl_single, isolated_env):
-        """Setting cancel event causes crawl_and_save to return empty list."""
+    async def test_cancel_keeps_fetched_page(self, mock_crawl_single, isolated_env):
+        """A single-URL crawl that gets cancelled still keeps the page it fetched.
+
+        The new streaming-flush contract: anything already on disk stays on
+        disk. For depth=0, crawl_single has already run by the time cancel is
+        observed, so the page is flushed and returned.
+        """
         import threading
 
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cancel = threading.Event()
         cancel.set()
         paths = await crawl_and_save("https://example.com", depth=0, cancel=cancel)
-        assert paths == []
+        assert len(paths) == 1
+        assert paths[0].exists()
 
 
 class TestPeriodicSync:
@@ -1768,3 +1785,391 @@ class TestCrawlDispatcher:
             crawler = _LilbeeAsyncCrawler(verbose=False, dispatcher="DEFAULT")
             await crawler.arun_many(["u"], dispatcher="EXPLICIT")
         inner.arun_many.assert_awaited_once_with(["u"], config=None, dispatcher="EXPLICIT")
+
+
+class TestSaveSingleResult:
+    """Unit tests for _save_single_result (per-page flush helper)."""
+
+    def test_writes_new_content(self, isolated_env):
+        from lilbee.crawler import _save_single_result
+
+        meta: dict = {}
+        result = CrawlResult(url="https://example.com/new", markdown="# New")
+        path = _save_single_result(result, meta)
+        assert path is not None
+        assert path.exists()
+        assert path.read_text(encoding="utf-8") == "# New"
+
+    def test_returns_none_on_failure(self, isolated_env):
+        from lilbee.crawler import _save_single_result
+
+        result = CrawlResult(url="https://example.com/fail", success=False, error="oops")
+        assert _save_single_result(result, {}) is None
+
+    def test_returns_none_on_empty_markdown(self, isolated_env):
+        from lilbee.crawler import _save_single_result
+
+        result = CrawlResult(url="https://example.com/empty", markdown="   ")
+        assert _save_single_result(result, {}) is None
+
+    def test_hash_match_with_file_present_skips(self, isolated_env):
+        """Prev metadata hash matches AND file exists -> skip."""
+        from lilbee.crawler import _save_single_result
+
+        url = "https://example.com/dup"
+        markdown = "# Dup"
+        # Write the file and seed metadata
+        initial = CrawlResult(url=url, markdown=markdown)
+        meta: dict = {}
+        first_path = _save_single_result(initial, meta)
+        assert first_path is not None
+        meta[url] = CrawlMeta(
+            file=str(first_path.relative_to(cfg.documents_dir / "_web")),
+            content_hash=content_hash(markdown),
+            crawled_at="2026-01-01T00:00:00+00:00",
+        )
+        # Identical content on re-save returns None
+        again = CrawlResult(url=url, markdown=markdown)
+        assert _save_single_result(again, meta) is None
+
+    def test_hash_match_with_missing_file_rewrites(self, isolated_env):
+        """Prev metadata hash matches but file was deleted -> re-write."""
+        from lilbee.crawler import _save_single_result
+
+        url = "https://example.com/gone"
+        markdown = "# Gone"
+        meta: dict = {
+            url: CrawlMeta(
+                file="example.com/gone/index.md",
+                content_hash=content_hash(markdown),
+                crawled_at="2026-01-01T00:00:00+00:00",
+            )
+        }
+        # File does not exist yet
+        result = CrawlResult(url=url, markdown=markdown)
+        path = _save_single_result(result, meta)
+        assert path is not None
+        assert path.exists()
+
+    def test_path_traversal_blocked(self, isolated_env):
+        """A crafted filename escaping _web/ is skipped with a warning."""
+        from lilbee.crawler import _save_single_result
+
+        result = CrawlResult(url="https://evil.com/ok", markdown="# Evil")
+        with patch("lilbee.crawler.url_to_filename", return_value="../../etc/passwd"):
+            path = _save_single_result(result, {})
+        assert path is None
+
+
+class TestUpdateSingleMetadata:
+    def test_updates_in_place(self):
+        """Helper mutates the dict in place with the expected shape."""
+        from lilbee.crawler import _update_single_metadata
+
+        meta: dict = {}
+        result = CrawlResult(url="https://example.com/p", markdown="# P")
+        now = "2026-04-20T00:00:00+00:00"
+        _update_single_metadata(meta, result, now)
+        assert "https://example.com/p" in meta
+        entry = meta["https://example.com/p"]
+        assert entry.crawled_at == now
+        assert entry.content_hash == content_hash("# P")
+        assert entry.file == "example.com/p/index.md"
+
+
+class TestFlushMetadata:
+    def test_atomic_write_leaves_no_tmp(self, isolated_env):
+        """_flush_metadata writes the file and cleans up the temp file."""
+        from lilbee.crawler import _flush_metadata
+
+        meta = {
+            "https://example.com": CrawlMeta(
+                file="example.com/index.md",
+                content_hash="abc",
+                crawled_at="2026-04-20T00:00:00+00:00",
+            )
+        }
+        _flush_metadata(meta)
+        assert (cfg.data_dir / "crawl_meta.json").exists()
+        # No tmp files remain in data_dir
+        leftover = list(cfg.data_dir.glob("*.tmp"))
+        assert leftover == []
+
+    def test_failed_rename_cleans_up_tmp(self, isolated_env):
+        """If rename fails mid-write, the tmp file is removed and the error bubbles up."""
+        from lilbee.crawler import _flush_metadata
+
+        meta = {
+            "https://example.com": CrawlMeta(
+                file="example.com/index.md",
+                content_hash="abc",
+                crawled_at="2026-04-20T00:00:00+00:00",
+            )
+        }
+        with (
+            patch("lilbee.crawler.Path.replace", side_effect=OSError("boom")),
+            pytest.raises(OSError, match="boom"),
+        ):
+            _flush_metadata(meta)
+        # No half-written tmp files
+        leftover = list(cfg.data_dir.glob("*.tmp"))
+        assert leftover == []
+
+
+class TestStreamingFlush:
+    """End-to-end tests for the per-page flush contract in crawl_and_save."""
+
+    def _setup_crawl4ai(self, mock_instance):
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+        mock_deep = MagicMock()
+        mock_deep.BFSDeepCrawlStrategy = MagicMock()
+        mock_dispatcher_mod = MagicMock()
+        mock_dispatcher_mod.RateLimiter = MagicMock()
+        mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        mock_filters_mod = MagicMock()
+        mock_filters_mod.FilterChain = MagicMock()
+        mock_filters_mod.URLPatternFilter = MagicMock()
+        return {
+            "crawl4ai": mock_mod,
+            "crawl4ai.deep_crawling": mock_deep,
+            "crawl4ai.deep_crawling.filters": mock_filters_mod,
+            "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+        }
+
+    async def test_cancel_preserves_written_pages(self, isolated_env):
+        """A cancelled recursive crawl keeps the pages it already streamed."""
+        import asyncio as _asyncio
+        import threading
+
+        cancel = threading.Event()
+
+        async def _gen():
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+            cancel.set()
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p3", markdown="# P3")
+            yield _make_crawl4ai_result(url="https://example.com/p4", markdown="# P4")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            paths = await crawl_and_save(
+                "https://example.com", depth=2, max_pages=10, cancel=cancel
+            )
+
+        # At least p1 and p2 were flushed before cancel stopped the stream.
+        assert len(paths) >= 2
+        for p in paths:
+            assert p.exists()
+        # Metadata reflects what's on disk.
+        meta = load_crawl_metadata()
+        written_urls = {
+            f"https://example.com/p{i}"
+            for i in range(1, 5)
+            if (cfg.documents_dir / "_web" / f"example.com/p{i}/index.md").exists()
+        }
+        for url in written_urls:
+            assert url in meta
+
+    async def test_flushes_per_page_not_batched(self, isolated_env):
+        """_save_single_result is invoked once per streamed page inside the loop."""
+        import asyncio as _asyncio
+
+        call_order: list[str] = []
+
+        async def _gen():
+            for i in range(1, 4):
+                call_order.append(f"yield-{i}")
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        real_save = lilbee_crawler._save_single_result
+
+        def _wrapped(result, meta):
+            call_order.append(f"flush-{result.url.rsplit('/', 1)[-1]}")
+            return real_save(result, meta)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._save_single_result", side_effect=_wrapped),
+        ):
+            await crawl_and_save("https://example.com", depth=2, max_pages=10)
+
+        # Each yield is followed by its own flush before the next yield starts.
+        assert call_order == [
+            "yield-1",
+            "flush-p1",
+            "yield-2",
+            "flush-p2",
+            "yield-3",
+            "flush-p3",
+        ]
+
+    async def test_skips_unchanged_per_page(self, isolated_env):
+        """Per-page flush skips URLs whose hash matches prior metadata."""
+        import asyncio as _asyncio
+
+        # Pre-seed: p1 was crawled last time with this exact content.
+        seed = CrawlResult(url="https://example.com/p1", markdown="# Same")
+        save_crawl_results([seed])
+        update_metadata([seed])
+
+        async def _gen():
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# Same")
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# NewPage")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+
+        # p1 is skipped (unchanged), p2 is written.
+        assert len(paths) == 1
+        assert paths[0].name == "index.md"
+        assert paths[0].read_text(encoding="utf-8") == "# NewPage"
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_single_url_flushes_via_per_page_path(self, mock_crawl_single, isolated_env):
+        """depth=0 uses the same flush_page callback, not the old batch helpers."""
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com/only", markdown="# Only"
+        )
+        with patch(
+            "lilbee.crawler._save_single_result", wraps=lilbee_crawler._save_single_result
+        ) as spy:
+            paths = await crawl_and_save("https://example.com/only", depth=0)
+        assert len(paths) == 1
+        spy.assert_called_once()
+        # Metadata written by the per-page path
+        meta = load_crawl_metadata()
+        assert "https://example.com/only" in meta
+
+    async def test_full_success_matches_prior_behavior(self, isolated_env):
+        """With no cancel, a full successful crawl produces the same on-disk result."""
+        import asyncio as _asyncio
+
+        urls_and_content = [
+            ("https://example.com/a", "# A"),
+            ("https://example.com/b", "# B"),
+            ("https://example.com/c", "# C"),
+        ]
+
+        async def _gen():
+            for url, md in urls_and_content:
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=url, markdown=md)
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+
+        assert len(paths) == 3
+        contents = {p.read_text(encoding="utf-8") for p in paths}
+        assert contents == {"# A", "# B", "# C"}
+
+        meta = load_crawl_metadata()
+        for url, md in urls_and_content:
+            assert url in meta
+            assert meta[url].content_hash == content_hash(md)
+
+    async def test_cancel_does_not_trigger_auto_sync(self, isolated_env):
+        """On cancel, _maybe_periodic_sync is NOT awaited."""
+        import asyncio as _asyncio
+        import threading
+
+        cancel = threading.Event()
+
+        async def _gen():
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            cancel.set()
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+        ):
+            await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
+        mock_sync.assert_not_awaited()
+
+    async def test_success_triggers_auto_sync(self, isolated_env):
+        """On a clean (non-cancelled) crawl, _maybe_periodic_sync IS awaited."""
+        import asyncio as _asyncio
+
+        async def _gen():
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+        ):
+            await crawl_and_save("https://example.com", depth=2, max_pages=10)
+        mock_sync.assert_awaited_once()
+
+    async def test_done_event_reports_partial_counts_on_cancel(self, isolated_env):
+        """CRAWL_DONE fires even on cancel and reports what was actually flushed."""
+        import asyncio as _asyncio
+        import threading
+
+        cancel = threading.Event()
+
+        async def _gen():
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            cancel.set()
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        done_events: list = []
+
+        def on_progress(event_type, data):
+            if event_type == EventType.CRAWL_DONE:
+                done_events.append(data)
+
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            paths = await crawl_and_save(
+                "https://example.com",
+                depth=2,
+                max_pages=10,
+                cancel=cancel,
+                on_progress=on_progress,
+            )
+
+        assert len(done_events) == 1
+        evt = done_events[0]
+        assert evt.files_written == len(paths)
+        assert evt.files_written >= 1

@@ -14,7 +14,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -488,6 +488,47 @@ def update_metadata(results: list[CrawlResult]) -> None:
     save_crawl_metadata(meta)
 
 
+def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Path | None:
+    """Write one crawl result to disk if it's new or changed.
+
+    Per-page equivalent of _filter_changed + save_crawl_results for the streaming
+    flush path. Returns the written path, or None if skipped (failure, empty
+    markdown, unchanged hash with file on disk, or blocked by path traversal).
+    """
+    if not result.success or not result.markdown.strip():
+        return None
+    web_dir = _web_dir()
+    file_path = web_dir / url_to_filename(result.url)
+    new_hash = content_hash(result.markdown)
+    prev = meta.get(result.url)
+    if prev is not None and prev.content_hash == new_hash and file_path.exists():
+        log.info("Content unchanged, skipping save: %s", result.url)
+        return None
+    resolved_web_dir = web_dir.resolve()
+    try:
+        validate_path_within(file_path, resolved_web_dir)
+    except ValueError:
+        log.warning("Path traversal blocked: %s -> %s", result.url, file_path)
+        return None
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(result.markdown, encoding="utf-8")
+    return file_path
+
+
+def _update_single_metadata(meta: dict[str, CrawlMeta], result: CrawlResult, now: str) -> None:
+    """Update the metadata dict in place for one just-saved result."""
+    meta[result.url] = CrawlMeta(
+        file=url_to_filename(result.url),
+        content_hash=content_hash(result.markdown),
+        crawled_at=now,
+    )
+
+
+def _flush_metadata(meta: dict[str, CrawlMeta]) -> None:
+    """Persist the metadata dict atomically. Thin wrapper over save_crawl_metadata."""
+    save_crawl_metadata(meta)
+
+
 def _build_rate_limited_dispatcher() -> Any:
     """Build a SemaphoreDispatcher + RateLimiter from cfg, or None when disabled.
 
@@ -717,6 +758,7 @@ async def crawl_recursive(
     *,
     quiet: bool = False,
     include_subdomains: bool = False,
+    on_result: Callable[[CrawlResult], Path | None] | None = None,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
@@ -730,6 +772,10 @@ async def crawl_recursive(
     article doesn't wander into other language editions. Pass
     ``include_subdomains=True`` to broaden scope to the starting host plus any
     subdomains (e.g. ``en.wikipedia.org`` plus ``af.wikipedia.org``).
+
+    If *on_result* is provided, it's called for each streamed CrawlResult the
+    moment it arrives (before the next page yields). Callers use this to flush
+    pages to disk incrementally so a cancelled crawl keeps its partial output.
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
@@ -804,15 +850,16 @@ async def crawl_recursive(
                             CrawlPageEvent(url=cr.url, current=counter, total=sitemap_total),
                         )
                     if cr.success:
-                        results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
+                        new_result = CrawlResult(url=cr.url, markdown=cr.markdown or "")
                     else:
-                        results.append(
-                            CrawlResult(
-                                url=cr.url,
-                                success=False,
-                                error=cr.error_message or "Unknown error",
-                            )
+                        new_result = CrawlResult(
+                            url=cr.url,
+                            success=False,
+                            error=cr.error_message or "Unknown error",
                         )
+                    results.append(new_result)
+                    if on_result is not None:
+                        on_result(new_result)
                     # Hard cap on visible progress. crawl4ai's BFS uses
                     # max_pages to count successful pages, so failed /
                     # redirected pages can push our per-result counter past
@@ -950,8 +997,9 @@ async def crawl_and_save(
     subdomains of the starting host.
 
     Uses hash-based change detection: always fetches, but only saves files
-    whose content has changed (or is new). When *cancel* is set, returns
-    early with an empty list.
+    whose content has changed (or is new). Pages are flushed to disk as they
+    stream so a cancelled crawl preserves the pages already fetched instead
+    of discarding them.
     """
     # Auto-bootstrap Chromium on first use so every crawl entry point works
     # on a fresh install without a separate setup step. bootstrap_chromium
@@ -969,9 +1017,29 @@ async def crawl_and_save(
             start_depth = depth if depth is not None else 0
             on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
 
+        meta = load_crawl_metadata()
+        written_paths: list[Path] = []
+        pages_seen = 0
+
+        def flush_page(result: CrawlResult) -> Path | None:
+            """Save one streamed result to disk and persist metadata.
+
+            Metadata is flushed after every successful save. Rewriting the JSON
+            per page is cheap for typical crawls (100s of pages) and makes the
+            cancel path trivially correct: whatever is on disk is consistent.
+            """
+            path = _save_single_result(result, meta)
+            if path is None:
+                return None
+            _update_single_metadata(meta, result, datetime.now(UTC).isoformat())
+            _flush_metadata(meta)
+            written_paths.append(path)
+            return path
+
         if depth == 0:
             result = await crawl_single(url, quiet=quiet)
-            results = [result]
+            pages_seen = 1
+            flush_page(result)
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
         else:
@@ -983,23 +1051,23 @@ async def crawl_and_save(
                 cancel=cancel,
                 quiet=quiet,
                 include_subdomains=include_subdomains,
+                on_result=flush_page,
             )
+            pages_seen = len(results)
 
-        if cancel and cancel.is_set():
-            return []
-
-        changed = _filter_changed(results)
-        paths = save_crawl_results(changed)
-        update_metadata(changed)
-        await _maybe_periodic_sync()
+        cancelled = cancel is not None and cancel.is_set()
+        if not cancelled:
+            # Partial crawls skip auto-sync: the client (plugin/TUI) decides
+            # whether to ingest a partial result set.
+            await _maybe_periodic_sync()
 
         if on_progress:
             on_progress(
                 EventType.CRAWL_DONE,
-                CrawlDoneEvent(pages_crawled=len(results), files_written=len(paths)),
+                CrawlDoneEvent(pages_crawled=pages_seen, files_written=len(written_paths)),
             )
 
-        return paths
+        return written_paths
     finally:
         if sem is not None:
             sem.release()
