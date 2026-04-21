@@ -1143,6 +1143,82 @@ async def test_reset_all_suppresses_per_field_toasts():
         assert mock_notify.call_args.args[0] == msg.SETTINGS_RESET_ALL_SUCCESS
 
 
+async def test_reset_all_actually_mutates_cfg():
+    """Batch reset restores cfg values to pydantic defaults (not just the TOML write)."""
+    from lilbee.cli.settings_map import get_default
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    default_top_k = get_default("top_k")
+    cfg.top_k = 999  # deliberately non-default
+    assert cfg.top_k == 999
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch("lilbee.cli.tui.screens.settings.settings.update_values"):
+            screen._on_reset_all_confirmed(True)
+        assert cfg.top_k == default_top_k
+
+
+async def test_reset_all_rolls_back_on_disk_write_failure():
+    """If settings.update_values raises, in-memory cfg reverts so UI and disk stay in sync."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    cfg.top_k = 999
+    cfg.wiki_clusterer_k = 77
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with (
+            patch(
+                "lilbee.cli.tui.screens.settings.settings.update_values",
+                side_effect=OSError("disk full"),
+            ),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # Rollback restored the pre-reset values.
+        assert cfg.top_k == 999
+        assert cfg.wiki_clusterer_k == 77
+        # User sees an error toast, not a success toast.
+        assert mock_notify.called
+        notify_kwargs = mock_notify.call_args.kwargs
+        assert notify_kwargs.get("severity") == "error"
+
+
+async def test_reset_all_reports_skipped_keys():
+    """When setattr rejects a default, the summary toast names the skipped keys."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+
+        original_setattr = type(cfg).__setattr__
+
+        def rejecting_setattr(self_cfg, name, value):
+            if name == "top_k":
+                raise ValueError("rejected for test")
+            original_setattr(self_cfg, name, value)
+
+        with (
+            patch.object(type(cfg), "__setattr__", rejecting_setattr),
+            patch("lilbee.cli.tui.screens.settings.settings.update_values"),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # Summary toast mentions the skipped key and uses warning severity.
+        summary_calls = [c for c in mock_notify.call_args_list if c.args and "top_k" in c.args[0]]
+        assert summary_calls, "expected a toast mentioning the skipped key"
+        assert summary_calls[0].args[0] == msg.SETTINGS_RESET_ALL_PARTIAL.format(skipped="top_k")
+        assert summary_calls[0].kwargs.get("severity") == "warning"
+
+
 async def test_reset_all_button_press_opens_confirm_dialog():
     """Pressing Reset-all pushes the ConfirmDialog screen before mutating state."""
     from lilbee.cli.tui.screens.settings import SettingsScreen

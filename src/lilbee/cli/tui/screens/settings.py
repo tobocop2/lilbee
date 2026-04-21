@@ -365,41 +365,77 @@ class SettingsScreen(Screen[None]):
     def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
         """Apply reset-to-default to every writable SETTINGS_MAP entry on confirm.
 
-        Writes are batched into one atomic config.toml rewrite via
-        settings.update_values so a crash mid-loop cannot leave a partially
-        reset config. Per-field toasts are suppressed; one summary fires at
-        the end.
-
         The pydantic default is applied directly via setattr (skipping the
         _parse_value round-trip) so reset works even for fields where
-        SETTINGS_MAP.nullable does not match the cfg type exactly. An invalid
-        default is logged and skipped; no partial batch is committed for it.
+        SETTINGS_MAP.nullable does not match the cfg type exactly.
+
+        End-to-end atomicity: cfg values are snapshotted first, then mutated
+        in-memory, then persisted in one settings.update_values batch. If the
+        disk write fails, the in-memory state and editor widgets are rolled
+        back to the snapshot so on-disk and on-screen don't desync. The user
+        sees an error toast in that case rather than a misleading success.
+
+        Invalid defaults (e.g. pydantic validator rejects the stored default)
+        are logged and tracked; the summary toast names them so the user
+        isn't misled about which fields actually changed.
         """
         if not confirmed:
             return
+        writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
+        # Snapshot the pre-reset cfg values so we can roll back on a failed
+        # disk write. Read every writable key up front, before any mutation.
+        snapshot: dict[str, object] = {key: getattr(cfg, key) for key, _ in writable}
         updates: dict[str, str] = {}
         signal_payload: list[tuple[str, object]] = []
-        for key, defn in SETTINGS_MAP.items():
-            if not defn.writable:
-                continue
+        skipped: list[str] = []
+        for key, _defn in writable:
             default = get_default(key)
             try:
                 setattr(cfg, key, default)
-            except (ValueError, TypeError):
-                log.warning("Default for %s rejected by cfg; skipping in batch reset", key)
+            except (ValueError, TypeError) as exc:
+                log.warning("Default for %s rejected by cfg (%s); skipping", key, exc)
+                skipped.append(key)
                 continue
             updates[key] = _stringify_default(default)
             signal_payload.append((key, default))
-            self._refresh_editor(key, defn, default)
-            self._refresh_help(key, defn)
         if updates:
-            settings.update_values(cfg.data_root, updates)
+            try:
+                settings.update_values(cfg.data_root, updates)
+            except OSError as exc:
+                # Roll back in-memory cfg so next session reload (which will
+                # read the untouched TOML) doesn't desync from a UI showing
+                # defaults. Editor widgets also revert.
+                for key, prev in snapshot.items():
+                    try:
+                        setattr(cfg, key, prev)
+                    except (ValueError, TypeError):
+                        log.exception("Failed to roll back cfg.%s after update_values error", key)
+                for key, defn in writable:
+                    self._refresh_editor(key, defn, snapshot[key])
+                    self._refresh_help(key, defn)
+                self.notify(
+                    msg.SETTINGS_INVALID_VALUE.format(error=exc),
+                    severity="error",
+                )
+                return
+        # Persist succeeded. Refresh UI and fire signals AFTER the disk write.
+        for key, defn in writable:
+            if key in skipped:
+                continue
+            self._refresh_editor(key, defn, get_default(key))
+            self._refresh_help(key, defn)
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             for pub_key, pub_parsed in signal_payload:
                 self.app.settings_changed_signal.publish((pub_key, pub_parsed))
-        self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
+        if skipped:
+            self.notify(
+                msg.SETTINGS_RESET_ALL_PARTIAL.format(skipped=", ".join(skipped)),
+                severity="warning",
+            )
+        else:
+            self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
 
     def action_reset_focused(self) -> None:
         """Reset the currently-focused setting row to its cfg default."""
