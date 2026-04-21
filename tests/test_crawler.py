@@ -2123,7 +2123,14 @@ class TestStreamingFlush:
     async def test_depth_zero_flush_failure_does_not_fail_the_crawl(
         self, mock_crawl_single, isolated_env
     ):
-        """OSError from flush on the single-URL path is logged, not reraised."""
+        """OSError from flush on the single-URL path is logged, not reraised.
+
+        At depth=0 only `_save_single_result` can raise OSError in flush_page
+        (the interval-based metadata flush is unreachable with just one page),
+        so `paths == []` reliably means "the page was never written". If a
+        future change moves `written_paths.append` before the write, update
+        this test to explicitly mock the failing helper.
+        """
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/only", markdown="# Only"
         )
