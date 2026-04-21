@@ -1827,6 +1827,55 @@ class TestCrawlUrlsBlocking:
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["quiet"] is True
 
+    @mock.patch("lilbee.cli.commands._run_crawl_with_signal_cancel")
+    def test_cancel_event_breaks_multi_url_loop(self, mock_run, isolated_env):
+        """If the SIGINT handler sets cancel mid-run, the next URL is skipped."""
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        call_log = []
+
+        def fake_run(url, *, depth, max_pages, on_progress, cancel_event, crawl_and_save):
+            call_log.append(url)
+            # Simulate SIGINT landing during the first URL's crawl:
+            cancel_event.set()
+            return []
+
+        mock_run.side_effect = fake_run
+        _crawl_urls_blocking(
+            ["https://example.com/a", "https://example.com/b"],
+            crawl=False,
+            depth=None,
+            max_pages=None,
+        )
+        # Second URL must be skipped because cancel was set during the first.
+        assert call_log == ["https://example.com/a"]
+
+    def test_sigint_handler_sets_cancel_event(self, isolated_env):
+        """The signal handler installed by _run_crawl_with_signal_cancel sets the event."""
+        import signal
+        import threading
+
+        from lilbee.cli.commands import _run_crawl_with_signal_cancel
+
+        cancel_event = threading.Event()
+
+        async def fake_crawl(*args, **kwargs):
+            # Capture the handler that was installed by _run_crawl_with_signal_cancel
+            handler = signal.getsignal(signal.SIGINT)
+            # Call it directly to simulate a SIGINT firing
+            handler(signal.SIGINT, None)
+            return []
+
+        _run_crawl_with_signal_cancel(
+            "https://example.com",
+            depth=0,
+            max_pages=None,
+            on_progress=None,
+            cancel_event=cancel_event,
+            crawl_and_save=fake_crawl,
+        )
+        assert cancel_event.is_set()
+
 
 class TestTopicsCommand:
     def test_not_installed_shows_error(self):

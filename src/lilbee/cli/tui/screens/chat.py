@@ -427,7 +427,7 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
-    def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
+    def _start_crawl(self, url: str, depth: int | None, max_pages: int | None) -> None:
         """Enqueue a crawl task and run it in the background.
 
         Bootstrap Chromium first via the controller helper. If the
@@ -450,10 +450,14 @@ class ChatScreen(Screen[None]):
         self._task_bar.ensure_chromium(_kick_off_crawl)
 
     @staticmethod
-    def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
-        """Extract --depth and --max-pages from argument tokens."""
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None]:
+        """Extract --depth and --max-pages from argument tokens.
+
+        Returns None for either when the flag is absent so the caller inherits
+        crawl_and_save's unbounded-by-default semantics.
+        """
         flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
-        parsed: dict[str, int] = {"depth": 0, "max_pages": 0}
+        parsed: dict[str, int | None] = {"depth": None, "max_pages": None}
         i = 0
         while i < len(tokens):
             key = flag_map.get(tokens[i])
@@ -465,15 +469,36 @@ class ChatScreen(Screen[None]):
                 i += 1
         return parsed["depth"], parsed["max_pages"]
 
-    def _do_crawl(self, url: str, depth: int, max_pages: int, reporter: ProgressReporter) -> None:
+    def _do_crawl(
+        self,
+        url: str,
+        depth: int | None,
+        max_pages: int | None,
+        reporter: ProgressReporter,
+    ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
-        from lilbee.progress import CrawlPageEvent
+        from lilbee.progress import CrawlPageEvent, SetupProgressEvent
 
         reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            if event_type == EventType.CRAWL_PAGE and isinstance(data, CrawlPageEvent):
+            if event_type == EventType.SETUP_START:
+                reporter.update(0, msg.SETUP_CHROMIUM_NAME)
+            elif event_type == EventType.SETUP_PROGRESS and isinstance(data, SetupProgressEvent):
+                if data.total_bytes:
+                    pct = int(data.downloaded_bytes * 100 / data.total_bytes)
+                    detail = msg.SETUP_CHROMIUM_DETAIL.format(
+                        done=data.downloaded_bytes // (1024 * 1024),
+                        total=data.total_bytes // (1024 * 1024),
+                    )
+                else:
+                    pct = 0
+                    detail = msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(
+                        done=data.downloaded_bytes // (1024 * 1024),
+                    )
+                reporter.update(pct, detail)
+            elif event_type == EventType.CRAWL_PAGE and isinstance(data, CrawlPageEvent):
                 pct = int(data.current * 100 / data.total) if data.total > 0 else 50
                 reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
 

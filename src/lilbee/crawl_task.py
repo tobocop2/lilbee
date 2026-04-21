@@ -27,12 +27,16 @@ class TaskStatus(StrEnum):
 
 @dataclass
 class CrawlTask:
-    """Tracks a single crawl operation."""
+    """Tracks a single crawl operation.
+
+    depth / max_pages follow the crawl_and_save three-state convention: None =
+    unbounded, 0 (depth only) = single URL, positive int = explicit cap.
+    """
 
     task_id: str
     url: str
-    depth: int
-    max_pages: int
+    depth: int | None
+    max_pages: int | None
     status: TaskStatus = TaskStatus.PENDING
     pages_crawled: int = 0
     pages_total: int | None = None
@@ -124,10 +128,12 @@ def _evict_completed() -> None:
 
 def start_crawl(
     url: str,
-    depth: int = 0,
-    max_pages: int = 0,
+    depth: int | None = None,
+    max_pages: int | None = None,
 ) -> str:
     """Create a crawl task and launch it as an asyncio background task.
+
+    Defaults to whole-site unbounded recursion. Pass depth=0 for single URL.
     Returns the task_id for status polling.
     """
     _evict_completed()

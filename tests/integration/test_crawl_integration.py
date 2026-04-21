@@ -115,7 +115,7 @@ class TestSinglePageCrawl:
     async def test_crawl_single_page_saves_markdown(self, test_site, allow_localhost):
         """Real crawl4ai fetches a page and saves as .md."""
         url = test_site.url_for("/")
-        paths = await crawl_and_save(str(url))
+        paths = await crawl_and_save(str(url), depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
         assert "_web" in str(paths[0])
@@ -125,7 +125,7 @@ class TestSinglePageCrawl:
     async def test_crawl_saves_metadata(self, test_site, allow_localhost):
         """Crawl metadata records the URL and content hash."""
         url = str(test_site.url_for("/"))
-        paths = await crawl_and_save(url)
+        paths = await crawl_and_save(url, depth=0)
         assert len(paths) == 1
         meta = load_crawl_metadata()
         assert url in meta
@@ -140,7 +140,7 @@ class TestSinglePageCrawl:
         def on_progress(event_type: EventType, data: dict) -> None:
             events.append(str(event_type))
 
-        await crawl_and_save(url, on_progress=on_progress)
+        await crawl_and_save(url, depth=0, on_progress=on_progress)
         assert "crawl_start" in events
         assert "crawl_page" in events
         assert "crawl_done" in events
@@ -163,14 +163,14 @@ class TestContentChangeDetection:
     async def test_unchanged_content_skips_save(self, test_site, allow_localhost):
         """Crawl same URL twice with same content — second skips save."""
         url = str(test_site.url_for("/"))
-        paths1 = await crawl_and_save(url)
+        paths1 = await crawl_and_save(url, depth=0)
         assert len(paths1) == 1
         mtime1 = paths1[0].stat().st_mtime
 
         # Small delay to ensure mtime would differ if file were rewritten
         time.sleep(0.1)
 
-        paths2 = await crawl_and_save(url)
+        paths2 = await crawl_and_save(url, depth=0)
         assert paths2 == []
         # File was not rewritten
         assert paths1[0].stat().st_mtime == mtime1
@@ -182,14 +182,14 @@ class TestContentChangeDetection:
             content_type="text/html",
         )
         url = str(httpserver.url_for("/changing"))
-        paths1 = await crawl_and_save(url)
+        paths1 = await crawl_and_save(url, depth=0)
         assert len(paths1) == 1
 
         # Change the server content
         httpserver.clear()
         v2 = "<html><body><h1>Version 2</h1><p>New content.</p></body></html>"
         httpserver.expect_request("/changing").respond_with_data(v2, content_type="text/html")
-        paths2 = await crawl_and_save(url)
+        paths2 = await crawl_and_save(url, depth=0)
         assert len(paths2) == 1
         new_content = paths2[0].read_text(encoding="utf-8")
         assert len(new_content) > 0
@@ -260,14 +260,14 @@ class TestErrors:
         url = str(httpserver.url_for("/notfound"))
         # crawl4ai may return success=False or empty markdown for 404s
         # Either way, crawl_and_save should not raise
-        paths = await crawl_and_save(url)
+        paths = await crawl_and_save(url, depth=0)
         # May be 0 (failed) or 1 (crawl4ai returned something) — just verify no crash
         assert isinstance(paths, list)
 
     async def test_crawl_unreachable_host(self):
         """Crawling an unreachable host returns empty without crashing."""
         # Use a non-routable IP to ensure connection failure
-        paths = await crawl_and_save("http://192.0.2.1:9999/nowhere")
+        paths = await crawl_and_save("http://192.0.2.1:9999/nowhere", depth=0)
         assert paths == []
 
 
@@ -298,7 +298,7 @@ class TestCrawlConcurrency:
         crawler_mod._state.semaphore = None
 
         urls = [str(httpserver.url_for(f"/conc{i}")) for i in range(3)]
-        tasks = [asyncio.create_task(crawl_and_save(url)) for url in urls]
+        tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]
         await asyncio.gather(*tasks)
 
         assert len(request_times) == 3
@@ -322,7 +322,7 @@ class TestCrawlConcurrency:
         crawler_mod._state.semaphore = None
 
         urls = [str(httpserver.url_for(f"/par{i}")) for i in range(3)]
-        tasks = [asyncio.create_task(crawl_and_save(url)) for url in urls]
+        tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]
         results = await asyncio.gather(*tasks)
 
         assert len(results) == 3

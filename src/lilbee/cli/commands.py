@@ -178,10 +178,20 @@ def rebuild(
 
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
-_crawl_option = typer.Option(False, "--crawl", help="Recursively crawl URLs (follow links).")
-_depth_option = typer.Option(None, "--depth", help="Maximum crawl depth (default: from config).")
+_crawl_option = typer.Option(
+    False,
+    "--crawl",
+    help="Recursively crawl URLs (whole site by default; see --depth and --max-pages).",
+)
+_depth_option = typer.Option(
+    None,
+    "--depth",
+    help="Cap link-follow depth for --crawl. Unset = unbounded; 0 = single URL only.",
+)
 _max_pages_option = typer.Option(
-    None, "--max-pages", help="Maximum pages to crawl (default: from config)."
+    None,
+    "--max-pages",
+    help="Cap total pages for --crawl. Unset = no limit; positive int = hard cap.",
 )
 
 
@@ -200,14 +210,33 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
 def _crawl_urls_blocking(
     urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
 ) -> list[Path]:
-    """Crawl URLs synchronously (for CLI), returning paths written."""
+    """Crawl URLs synchronously (for CLI), returning paths written.
+
+    Without --crawl, each URL is fetched as a single page (depth=0).
+    With --crawl, the default is whole-site unbounded (depth=None, pages=None).
+    Explicit --depth / --max-pages override both.
+
+    Ctrl-C is handled by running the crawl through _run_crawl_with_signal_cancel,
+    which installs a signal.signal handler that sets a threading.Event passed
+    into crawl_and_save. crawl_recursive polls the event between pages so the
+    signal flows through as a clean cancel instead of asyncio.run's default
+    KeyboardInterrupt-raising (which left browser contexts mid-teardown).
+    """
+    import threading
+
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
     from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
 
-    effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
-    effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
+    if crawl:
+        effective_depth = depth
+        effective_pages = max_pages
+    else:
+        effective_depth = 0
+        effective_pages = None
+
+    cancel_event = threading.Event()
 
     from rich.console import Console as RichConsole
 
@@ -221,6 +250,8 @@ def _crawl_urls_blocking(
         disable=cfg.json_mode,
     ) as progress:
         for url in urls:
+            if cancel_event.is_set():
+                break
             ptask = progress.add_task(f"Crawling {url}...", total=None)
 
             def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
@@ -228,24 +259,77 @@ def _crawl_urls_blocking(
                     if event_type == EventType.CRAWL_PAGE:
                         if not isinstance(data, CrawlPageEvent):
                             raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
+                        total_str = str(data.total) if data.total > 0 else "?"
                         progress.update(
-                            _t, description=f"Crawled {data.current}/{data.total}: {data.url}"
+                            _t,
+                            description=f"Crawled {data.current}/{total_str}: {data.url}",
                         )
 
                 return on_progress
 
-            paths = asyncio.run(
-                crawl_and_save(
-                    url,
-                    depth=effective_depth,
-                    max_pages=effective_pages,
-                    on_progress=_make_callback(),
-                    quiet=cfg.json_mode,
-                )
+            paths = _run_crawl_with_signal_cancel(
+                url,
+                depth=effective_depth,
+                max_pages=effective_pages,
+                on_progress=_make_callback(),
+                cancel_event=cancel_event,
+                crawl_and_save=crawl_and_save,
             )
             all_paths.extend(paths)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
     return all_paths
+
+
+def _run_crawl_with_signal_cancel(
+    url: str,
+    *,
+    depth: int | None,
+    max_pages: int | None,
+    on_progress: object,
+    cancel_event: object,
+    crawl_and_save: object,
+) -> list[Path]:
+    """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
+
+    asyncio.run() installs its own SIGINT handler that raises
+    KeyboardInterrupt, which tears the crawl down ungracefully. Registering a
+    plain signal.signal handler on the main thread AND running the crawl on a
+    loop we own (instead of asyncio.run) lets Ctrl-C set our threading.Event,
+    which crawl_recursive polls between pages so it can close the stream and
+    stop dispatch cleanly.
+    """
+    import signal
+
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(_signum: int, _frame: object) -> None:
+        # Set the cancel event that crawl_recursive polls between pages, so
+        # a Ctrl-C flows through as a clean cancel instead of asyncio.run's
+        # default KeyboardInterrupt-raising dance.
+        cancel_event.set()  # type: ignore[attr-defined]
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    # Manage the event loop explicitly. In the CLI this runs once per process,
+    # but under pytest-xdist the same worker thread runs many tests; leaving a
+    # closed loop set as the "current" loop for the thread poisons every later
+    # asyncio.get_event_loop() call and hangs macOS 3.12/3.13 unit-test CI.
+    # Always clear the thread-current loop in finally.
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        coro = crawl_and_save(  # type: ignore[operator]
+            url,
+            depth=depth,
+            max_pages=max_pages,
+            on_progress=on_progress,
+            cancel=cancel_event,
+            quiet=cfg.json_mode,
+        )
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+        signal.signal(signal.SIGINT, previous_handler)
 
 
 @app.command()

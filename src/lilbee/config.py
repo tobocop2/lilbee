@@ -82,6 +82,140 @@ CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 
+# Default URL-exclusion patterns for recursive crawls. Categorized so each
+# group is inspectable and easy to trim. Users extend or replace via
+# LILBEE_CRAWL_EXCLUDE_PATTERNS (newline-separated) or a
+# `crawl_exclude_patterns = [...]` list in config.toml.
+# All patterns are Python regex (use_glob=False at the call site).
+
+# WordPress scaffolding: admin UIs, API endpoints, RPC endpoints, numeric
+# permalink stubs, and the Elementor page-builder staging area.
+_WP_EXCLUDE: tuple[str, ...] = (
+    r"/wp-admin/",
+    r"/wp-login(\.php)?",
+    r"/wp-json/",
+    r"/xmlrpc\.php",
+    r"/wp-cron\.php",
+    r"/wp-includes/",
+    r"/wp-content/uploads/",
+    r"\?p=\d+",
+    r"\?page_id=\d+",
+    r"\?cat=\d+",
+    r"/elementor-\d+",
+    r"\?elementor_library",
+)
+
+# Pagination and archive permalinks (WP + other CMSes share this shape).
+_ARCHIVE_EXCLUDE: tuple[str, ...] = (
+    r"/page/\d+/?$",
+    r"\?paged?=\d+",
+    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$",
+    r"/tag/",
+    r"/category/",
+    r"/author/",
+    r"/archives?/?$",
+    r"/comment-page-\d+",
+)
+
+# Syndication feeds (content-duplicated in HTML pages).
+_FEED_EXCLUDE: tuple[str, ...] = (
+    r"/feed/?$",
+    r"/feed/atom/?$",
+    r"/feed/rdf/?$",
+    r"/comments/feed/?$",
+    r"/rss/?$",
+)
+
+# Duplicate views of the same canonical page (AMP, print, preview).
+_DUPLICATE_VIEW_EXCLUDE: tuple[str, ...] = (
+    r"/amp/?$",
+    r"\?amp=",
+    r"\?print=",
+    r"/print/?$",
+    r"\?preview=",
+)
+
+# WP attachment URLs (point at media, not content pages).
+_ATTACHMENT_EXCLUDE: tuple[str, ...] = (
+    r"/attachment/",
+    r"\?attachment_id=",
+)
+
+# Auth and account flows (generic across CMSes and e-commerce platforms).
+_AUTH_EXCLUDE: tuple[str, ...] = (
+    r"/login",
+    r"/logout",
+    r"/register",
+    r"/signup",
+    r"/signin",
+    r"/account",
+    r"/my-account/",
+    r"/profile",
+    r"/password-reset",
+    r"/forgot-password",
+)
+
+# E-commerce transactional flows (cart / checkout / compare / etc.).
+_ECOMMERCE_EXCLUDE: tuple[str, ...] = (
+    r"/cart",
+    r"/checkout",
+    r"/wishlist",
+    r"/orders?",
+    r"/compare",
+    r"/products\.json",
+    r"/collections/.+/products/.+\?page=",
+)
+
+# Marketing tracking query parameters. One alternation so the regex engine
+# scans the URL once. Each listed key is a widely-seen tracking field; see
+# https://en.wikipedia.org/wiki/UTM_parameters and vendor docs for origins.
+_TRACKING_EXCLUDE: tuple[str, ...] = (
+    (
+        r"[?&]("
+        r"utm_[a-z_]+"
+        r"|fbclid|gclid|msclkid|yclid"
+        r"|mc_cid|mc_eid"
+        r"|_hsenc|_hsmi|hsCtaTracking"
+        r"|mkt_tok|mkt_[a-z_]+"
+        r"|trk|trkInfo"
+        r"|dm_i"
+        r"|vero_id|vero_conv"
+        r"|oly_anon_id|oly_enc_id"
+        r"|igshid"
+        r"|pk_campaign|pk_source|pk_medium|pk_[a-z_]+"
+        r"|_ga"
+        r"|ref|referrer"
+        r"|affiliate|aff_id|aff_ref|aff|partner"
+        r"|srsltid"
+        r"|share|replytocom"
+        r")="
+    ),
+)
+
+# Site-meta URLs and non-HTML resources. crawl4ai also filters by
+# Content-Type at fetch time; this filter saves the fetch entirely.
+_META_EXCLUDE: tuple[str, ...] = (
+    r"/sitemap[^/]*\.xml",
+    r"/robots\.txt",
+    r"/humans\.txt",
+    r"/favicon\.ico",
+    r"/\.well-known/",
+    r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
+)
+
+DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    *_WP_EXCLUDE,
+    *_ARCHIVE_EXCLUDE,
+    *_FEED_EXCLUDE,
+    *_DUPLICATE_VIEW_EXCLUDE,
+    *_ATTACHMENT_EXCLUDE,
+    *_AUTH_EXCLUDE,
+    *_ECOMMERCE_EXCLUDE,
+    *_TRACKING_EXCLUDE,
+    *_META_EXCLUDE,
+)
+
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a precise, direct assistant grounded in the provided context. "
     "Answer using only the context — if it doesn't contain enough information, "
@@ -249,11 +383,12 @@ class Config(BaseSettings):
     show_reasoning: bool = ConfigField(default=False, writable=True)
 
     # Web crawling settings
-    # Maximum link-following depth for recursive crawls.
-    crawl_max_depth: int = ConfigField(default=2, ge=0, writable=True)
+    # Optional global ceiling on recursion depth. None (default) = no ceiling;
+    # callers decide. Set a positive int in config.toml as a safety cap.
+    crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
 
-    # Maximum pages to fetch in a single crawl operation.
-    crawl_max_pages: int = ConfigField(default=50, ge=1, writable=True)
+    # Optional global ceiling on total pages per crawl. None (default) = no ceiling.
+    crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
 
     # Per-page timeout in seconds for fetching a URL.
     crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
@@ -263,6 +398,41 @@ class Config(BaseSettings):
 
     # Seconds between periodic syncs during crawl (0 = sync only at end).
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
+
+    # Uniform delay between in-flight requests within a single crawl.
+    # crawl4ai's own defaults are 0.1 / 0.3; ours are friendlier to hosts.
+    crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, writable=True)
+
+    # Random jitter added to crawl_mean_delay (seconds).
+    crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, writable=True)
+
+    # Concurrent in-flight requests within a single crawl. crawl4ai default
+    # is 5; we use 3 by default to be gentler.
+    crawl_concurrent_requests: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Enable the per-domain RateLimiter that backs off on HTTP 429/503 and
+    # retries. Set False to disable the dispatcher entirely.
+    crawl_retry_on_rate_limit: bool = ConfigField(default=True, writable=True)
+
+    # Randomized base-delay range the RateLimiter picks from on rate-limit
+    # responses (seconds). Pair: (min, max).
+    crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, writable=True)
+    crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, writable=True)
+
+    # Upper bound on any single backoff wait (seconds).
+    crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, writable=True)
+
+    # Retry count per URL when rate-limit codes come back.
+    crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
+
+    # Regex patterns that skip URLs at link-discovery time during recursive
+    # crawls. Defaults block WordPress scaffolding (pagination, archives,
+    # tracking query params) that inflates useful-page count by 5-7x without
+    # adding content. Empty list disables the filter.
+    crawl_exclude_patterns: list[str] = ConfigField(
+        default_factory=lambda: list(DEFAULT_CRAWL_EXCLUDE_PATTERNS),
+        writable=True,
+    )
 
     # Fraction of GPU/unified memory available for loaded models.
     # 0.75 leaves headroom for the OS and other processes.
@@ -464,6 +634,19 @@ class Config(BaseSettings):
     def _split_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("crawl_exclude_patterns", mode="before")
+    @classmethod
+    def _split_crawl_exclude_patterns(cls, v: Any) -> Any:
+        """Accept newline-separated strings from env vars / plain-text config.
+
+        Regex commonly uses commas (e.g. `{2,4}`) and pipes (alternation), so
+        newline is the only separator safe to use for this field. TOML lists
+        and JSON arrays pass through unchanged.
+        """
+        if isinstance(v, str):
+            return [p.strip() for p in v.splitlines() if p.strip()]
         return v
 
     @field_validator("ignore_dirs", mode="before")

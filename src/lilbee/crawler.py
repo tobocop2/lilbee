@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -22,6 +23,7 @@ from urllib.parse import urlparse
 
 from lilbee.config import cfg
 from lilbee.progress import (
+    CRAWL_TOTAL_UNKNOWN,
     CrawlDoneEvent,
     CrawlPageEvent,
     CrawlStartEvent,
@@ -486,13 +488,78 @@ def update_metadata(results: list[CrawlResult]) -> None:
     save_crawl_metadata(meta)
 
 
+def _build_rate_limited_dispatcher() -> Any:
+    """Build a SemaphoreDispatcher + RateLimiter from cfg, or None when disabled.
+
+    BFSDeepCrawlStrategy calls crawler.arun_many() without a dispatcher kwarg,
+    so per-domain rate limiting is only reachable by threading a dispatcher
+    through AsyncWebCrawler itself. This helper centralizes the cfg read so the
+    TUI / CLI / server all get identical behavior.
+    """
+    if not cfg.crawl_retry_on_rate_limit:
+        return None
+    from crawl4ai.async_dispatcher import RateLimiter, SemaphoreDispatcher
+
+    rate_limiter = RateLimiter(
+        base_delay=(cfg.crawl_retry_base_delay_min, cfg.crawl_retry_base_delay_max),
+        max_delay=cfg.crawl_retry_max_backoff,
+        max_retries=cfg.crawl_retry_max_attempts,
+    )
+    return SemaphoreDispatcher(
+        semaphore_count=cfg.crawl_concurrent_requests,
+        rate_limiter=rate_limiter,
+    )
+
+
+class _LilbeeAsyncCrawler:
+    """AsyncWebCrawler wrapper that injects a default dispatcher on arun_many.
+
+    crawl4ai's BFSDeepCrawlStrategy hard-codes crawler.arun_many(urls, config)
+    without a dispatcher kwarg, so per-domain rate limiting and 429/503 retries
+    can't be wired via CrawlerRunConfig. By giving the crawler a default
+    dispatcher, every strategy-originated arun_many picks it up. An explicit
+    dispatcher= on the call still wins.
+    """
+
+    def __init__(self, *, verbose: bool, dispatcher: Any) -> None:
+        from crawl4ai import AsyncWebCrawler
+
+        self._inner = AsyncWebCrawler(verbose=verbose)
+        self._dispatcher = dispatcher
+
+    async def __aenter__(self) -> "_LilbeeAsyncCrawler":
+        await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        return await self._inner.__aexit__(exc_type, exc, tb)
+
+    async def arun(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._inner.arun(*args, **kwargs)
+
+    async def arun_many(
+        self, urls: Any, config: Any = None, dispatcher: Any = None, **kwargs: Any
+    ) -> Any:
+        return await self._inner.arun_many(
+            urls,
+            config=config,
+            dispatcher=dispatcher if dispatcher is not None else self._dispatcher,
+            **kwargs,
+        )
+
+
 @contextlib.asynccontextmanager
-async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
-    """Open an AsyncWebCrawler, suppressing stdout when quiet.
+async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
+    """Open a crawler.
 
     Raises :class:`CrawlerBrowserMissing` early if the Chromium binary
     hasn't been downloaded. Without this guard Playwright prints a full
     ASCII install banner that leaks into the TUI.
+
+    When *dispatcher* is provided, wrap AsyncWebCrawler in _LilbeeAsyncCrawler
+    so every strategy-originated arun_many call picks it up. The single-URL
+    path (crawl_single) doesn't need a dispatcher because arun() doesn't accept
+    one, so it passes None and gets a bare AsyncWebCrawler.
     """
     if not chromium_installed():
         raise CrawlerBrowserMissing(
@@ -505,8 +572,12 @@ async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
     stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     stderr_ctx = contextlib.redirect_stderr(io.StringIO()) if quiet else contextlib.nullcontext()
     with stdout_ctx, stderr_ctx:
-        async with AsyncWebCrawler(verbose=not quiet) as crawler:
-            yield crawler
+        if dispatcher is not None:
+            async with _LilbeeAsyncCrawler(verbose=not quiet, dispatcher=dispatcher) as crawler:
+                yield crawler
+        else:
+            async with AsyncWebCrawler(verbose=not quiet) as crawler:
+                yield crawler
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
@@ -535,64 +606,192 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
         return CrawlResult(url=url, success=False, error=str(exc))
 
 
+def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> float:
+    """Resolve a caller-provided crawl limit to the number crawl4ai consumes.
+
+    None    -> cfg_ceiling (itself may be None, which collapses to math.inf)
+    n > 0   -> n (explicit caller intent; cfg is not a ceiling here)
+    n <= 0  -> ValueError (use None for unbounded, not 0)
+    """
+    effective = value if value is not None else cfg_ceiling
+    if effective is None:
+        return math.inf
+    if effective <= 0:
+        raise ValueError("crawl limit must be a positive int or None")
+    return effective
+
+
 async def crawl_recursive(
     url: str,
-    max_depth: int = 0,
-    max_pages: int = 0,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
+    cancel: threading.Event | None = None,
     *,
     quiet: bool = False,
 ) -> list[CrawlResult]:
-    """Crawl a URL recursively using BFS, returning results for all pages.
-    Uses crawl4ai's deep crawl strategy for link discovery.
-    Falls back to cfg defaults when max_depth/max_pages are 0.
+    """Crawl a URL recursively using BFS, streaming per-page progress.
+
+    None values for max_depth / max_pages mean unbounded (constrained only by
+    whatever ceiling the user has set in cfg.crawl_max_{depth,pages}, if any).
+    Positive ints are explicit caps. CRAWL_PAGE events fire as each page
+    completes; total is CRAWL_TOTAL_UNKNOWN since BFS doesn't know the final
+    page count up front.
     """
     validate_crawl_url(url)
+    depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
+    pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+
+    # Fail fast before pulling in crawl4ai submodules so callers get a clear
+    # CrawlerBrowserMissing instead of a Playwright install banner or a
+    # dispatcher import path.
+    if not chromium_installed():
+        raise CrawlerBrowserMissing(
+            "Playwright Chromium browser not installed. "
+            "Run 'uv run playwright install chromium' to enable /crawl."
+        )
+
     from crawl4ai import CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
+    from crawl4ai.deep_crawling.filters import FilterChain, URLPatternFilter
 
-    depth = max_depth if max_depth > 0 else cfg.crawl_max_depth
-    pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
+    def _should_cancel() -> bool:
+        return cancel is not None and cancel.is_set()
+
+    # Reject noise URLs at link-discovery time instead of fetching and
+    # filtering later. Patterns are treated as regex (use_glob=False);
+    # reverse=True flips the filter's sense from include to exclude.
+    exclude_patterns = list(cfg.crawl_exclude_patterns)
+    filter_chain = (
+        FilterChain([URLPatternFilter(exclude_patterns, use_glob=False, reverse=True)])
+        if exclude_patterns
+        else FilterChain()
+    )
 
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
         max_pages=pages,
+        should_cancel=_should_cancel,
+        filter_chain=filter_chain,
     )
     config = CrawlerRunConfig(
         deep_crawl_strategy=strategy,
         page_timeout=cfg.crawl_timeout * 1000,
+        mean_delay=cfg.crawl_mean_delay,
+        max_range=cfg.crawl_max_delay_range,
+        semaphore_count=cfg.crawl_concurrent_requests,
+        stream=True,
     )
 
     results: list[CrawlResult] = []
+    counter = 0
+    dispatcher = _build_rate_limited_dispatcher()
+    stream: Any = None
     try:
-        async with _open_crawler(quiet=quiet) as crawler:
-            crawl_results = await crawler.arun(url=url, config=config)
-        if not isinstance(crawl_results, list):
-            crawl_results = [crawl_results]
-        for i, cr in enumerate(crawl_results):
-            if on_progress:
-                on_progress(
-                    EventType.CRAWL_PAGE,
-                    CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
-                )
-            if cr.success:
-                results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
-            else:
-                results.append(
-                    CrawlResult(
-                        url=cr.url,
-                        success=False,
-                        error=cr.error_message or "Unknown error",
-                    )
-                )
+        async with _open_crawler(quiet=quiet, dispatcher=dispatcher) as crawler:
+            stream = await crawler.arun(url=url, config=config)
+            try:
+                async for cr in _iter_crawl_stream(stream):
+                    if _should_cancel():
+                        _safe_strategy_cancel(strategy)
+                        break
+                    counter += 1
+                    if on_progress:
+                        on_progress(
+                            EventType.CRAWL_PAGE,
+                            CrawlPageEvent(url=cr.url, current=counter, total=CRAWL_TOTAL_UNKNOWN),
+                        )
+                    if cr.success:
+                        results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
+                    else:
+                        results.append(
+                            CrawlResult(
+                                url=cr.url,
+                                success=False,
+                                error=cr.error_message or "Unknown error",
+                            )
+                        )
+                    # Hard cap on visible progress. crawl4ai's BFS uses
+                    # max_pages to count successful pages, so failed /
+                    # redirected pages can push our per-result counter past
+                    # the cap even after crawl4ai has stopped dispatching.
+                    # Break explicitly so the user-visible count never
+                    # exceeds the number they asked for.
+                    if counter >= pages:
+                        _safe_strategy_cancel(strategy)
+                        break
+            finally:
+                # Close the async generator (if it is one) before the crawler
+                # context exits, so Playwright tears down in-flight URLs in
+                # order. Skipping this is what produced the "BrowserContext.
+                # new_page: Connection closed" spam on cancel.
+                await _safe_aclose(stream)
     except CrawlerBrowserMissing:
         raise
     except Exception as exc:
-        log.warning("Recursive crawl of %s failed: %s", url, exc)
-        if not results:
-            results.append(CrawlResult(url=url, success=False, error=str(exc)))
+        # After cancel, crawl4ai may raise BrowserContext teardown errors as
+        # in-flight URLs bail. That's expected noise, not a failure worth
+        # surfacing. Log at debug and drop the synthetic error result.
+        if _should_cancel():
+            log.debug("Recursive crawl of %s ended during cancel teardown: %s", url, exc)
+        else:
+            log.warning("Recursive crawl of %s failed: %s", url, exc)
+            if not results:
+                results.append(CrawlResult(url=url, success=False, error=str(exc)))
 
     return results
+
+
+def _safe_strategy_cancel(strategy: Any) -> None:
+    """Call strategy.cancel() if available, swallowing if the method is missing.
+
+    BFSDeepCrawlStrategy has .cancel() in crawl4ai 0.8.6. Older versions or
+    third-party strategies may not. Belt-and-suspenders: should_cancel already
+    gates between BFS levels, but cancel() also short-circuits arun_many.
+    """
+    cancel_method = getattr(strategy, "cancel", None)
+    if callable(cancel_method):
+        try:
+            cancel_method()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("strategy.cancel() raised: %s", exc)
+
+
+async def _safe_aclose(stream: Any) -> None:
+    """Close an async generator stream if that is what it is.
+
+    _iter_crawl_stream normalizes over async-generator / list / single-result
+    shapes; only the generator shape has an aclose() to call. A list or single
+    object is a no-op.
+    """
+    import inspect
+
+    if stream is None:
+        return
+    if inspect.isasyncgen(stream):
+        with contextlib.suppress(Exception):
+            await stream.aclose()
+
+
+async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:
+    """Normalize crawl4ai's arun() return to an async iterator.
+
+    With stream=True on CrawlerRunConfig, crawl4ai 0.8 returns an async
+    generator. Older call sites and some crawl4ai code paths return a list
+    (batch mode) or a single CrawlResult. Accept all three shapes so tests
+    that mock arun() with a plain list keep working.
+    """
+    import inspect
+
+    if inspect.isasyncgen(stream):
+        async for item in stream:
+            yield item
+        return
+    if isinstance(stream, list):
+        for item in stream:
+            yield item
+        return
+    yield stream
 
 
 async def _maybe_periodic_sync() -> None:
@@ -630,19 +829,23 @@ async def _maybe_periodic_sync() -> None:
 async def crawl_and_save(
     url: str,
     *,
-    depth: int = 0,
-    max_pages: int = 0,
+    depth: int | None = None,
+    max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
     quiet: bool = False,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
-    Uses hash-based change detection: always fetches, but only saves files
-    whose content has changed (or is new).
-    When *cancel* is set, returns early with an empty list.
-    """
-    max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
+    depth: None = whole-site unbounded recursion (default). 0 = single URL, no
+    recursion. N > 0 = max link-follow depth. max_pages: None = no limit.
+    Positive int = cap. cfg.crawl_max_{depth,pages} act as user-opted-in
+    ceilings applied only when depth/max_pages are None.
+
+    Uses hash-based change detection: always fetches, but only saves files
+    whose content has changed (or is new). When *cancel* is set, returns
+    early with an empty list.
+    """
     # Auto-bootstrap Chromium on first use so every crawl entry point works
     # on a fresh install without a separate setup step. bootstrap_chromium
     # short-circuits when Chromium is already installed. Any progress is
@@ -656,17 +859,23 @@ async def crawl_and_save(
         await sem.acquire()
     try:
         if on_progress:
-            on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=depth))
+            start_depth = depth if depth is not None else 0
+            on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
 
-        if depth > 0:
-            results = await crawl_recursive(
-                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress, quiet=quiet
-            )
-        else:
+        if depth == 0:
             result = await crawl_single(url, quiet=quiet)
             results = [result]
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+        else:
+            results = await crawl_recursive(
+                url,
+                max_depth=depth,
+                max_pages=max_pages,
+                on_progress=on_progress,
+                cancel=cancel,
+                quiet=quiet,
+            )
 
         if cancel and cancel.is_set():
             return []
