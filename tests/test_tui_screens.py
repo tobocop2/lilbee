@@ -617,14 +617,15 @@ async def test_settings_crawl_exclude_patterns_renders_collapsible():
     """crawl_exclude_patterns renders as a Collapsible with line count in title."""
     from textual.widgets import Collapsible
 
-    from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+    from lilbee.config import cfg
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
         assert collapsible.collapsed is True
         assert "crawl_exclude_patterns" in collapsible.title
-        assert str(len(DEFAULT_CRAWL_EXCLUDE_PATTERNS)) in collapsible.title
+        current = cfg.crawl_exclude_patterns or []
+        assert f"({len(current)} lines)" in collapsible.title
 
 
 async def test_settings_list_editor_can_be_expanded():
