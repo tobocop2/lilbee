@@ -99,4 +99,23 @@ SettingsScreen {
     Input.-invalid {
         border: tall $error 60%;
     }
+
+    .setting-list-editor {
+        height: 16;
+        border: solid $surface;
+        margin-bottom: 1;
+    }
+
+    .setting-list-error {
+        color: $error;
+        display: none;
+    }
+
+    .setting-list-error.-visible {
+        display: block;
+    }
+
+    .setting-list-restore {
+        margin-top: 1;
+    }
 }

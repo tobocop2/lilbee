@@ -130,6 +130,9 @@ SETTINGS_RESET_ALL_CONFIRM_MESSAGE = (
 )
 SETTINGS_RESET_ALL_SUCCESS = "All settings reset to defaults"
 SETTINGS_RESET_ALL_PARTIAL = "Settings reset with skips: {skipped}"
+SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
+SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
+SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
 WIKI_EMPTY_STATE = "No wiki pages found"
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"

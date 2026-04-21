@@ -1,9 +1,10 @@
-"""Settings screen — grouped, type-aware configuration editor."""
+"""Settings screen. Grouped, type-aware configuration editor."""
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import defaultdict
 from typing import ClassVar
 
@@ -13,14 +14,16 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
+from textual.widget import Widget
+from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
 from lilbee import settings
-from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef, get_default
+from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
-from lilbee.config import cfg
+from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
 _ROW_ID_PREFIX = "row-"
 _EDITOR_ID_PREFIX = "ed-"
@@ -40,11 +43,17 @@ _TYPE_COLORS: dict[str, tuple[str, str]] = {
 
 _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
 
+_LIST_RESTORE_PREFIX = "list-restore-"
+_LIST_ERROR_ID_PREFIX = "err-"
+_LIST_ERROR_VISIBLE_CLASS = "-visible"
+
 
 def _effective_value(key: str) -> str:
     """Return the effective value for a setting, including model defaults."""
     user_value = getattr(cfg, key, None)
     if user_value is not None:
+        if isinstance(user_value, list):
+            return f"{len(user_value)} lines"
         return str(user_value)
     defaults = cfg.model_defaults
     if defaults is None:
@@ -123,14 +132,43 @@ def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
     return dict(groups)
 
 
-def _make_editor(key: str, defn: SettingDef) -> Input | Checkbox | Select[str]:
+def _make_editor(key: str, defn: SettingDef) -> Widget:
     """Create the appropriate editor widget for a setting."""
+    if defn.render is RenderStyle.LIST_COLLAPSED:
+        return _make_list_editor(key)
     value = _effective_value(key)
     if defn.choices:
         return _make_select(key, defn, value)
     if defn.type is bool:
         return _make_checkbox(key, value)
     return _make_input(key, value)
+
+
+def _make_list_editor(key: str) -> Collapsible:
+    """Create a Collapsible with a line-numbered TextArea for list[str] settings."""
+    current = getattr(cfg, key, None) or []
+    title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
+    editor = ListTextArea(
+        text="\n".join(current),
+        show_line_numbers=True,
+        name=key,
+        id=f"ed-{key}",
+        classes="setting-list-editor",
+    )
+    error = Static("", id=f"{_LIST_ERROR_ID_PREFIX}{key}", classes="setting-list-error")
+    reset = Button(
+        msg.SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS,
+        id=f"{_LIST_RESTORE_PREFIX}{key}",
+        classes="setting-list-restore",
+    )
+    return Collapsible(
+        editor,
+        error,
+        reset,
+        title=title,
+        collapsed=True,
+        id=f"collapsible-{key}",
+    )
 
 
 def _make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
@@ -302,7 +340,7 @@ class SettingsScreen(Screen[None]):
         try:
             parsed = self._parse_value(defn, raw)
             setattr(cfg, key, parsed)
-            persisted = str(parsed) if parsed is not None else ""
+            persisted = self._stringify_for_toml(parsed)
             settings.set_value(cfg.data_root, key, persisted)
             if not quiet:
                 self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
@@ -320,7 +358,81 @@ class SettingsScreen(Screen[None]):
             return None
         if defn.type is bool:
             return raw.lower() in ("true", "1", "yes", "on")
+        if defn.type is list:
+            return [line.strip() for line in raw.split("\n") if line.strip()]
         return defn.type(raw)
+
+    @staticmethod
+    def _stringify_for_toml(parsed: object) -> str:
+        """Serialize a parsed value for the TOML settings store."""
+        if parsed is None:
+            return ""
+        if isinstance(parsed, list):
+            return "\n".join(parsed)
+        return str(parsed)
+
+    @staticmethod
+    def _validate_regex_list(lines: list[str]) -> tuple[int, str] | None:
+        """Return the 1-indexed line number and error for the first bad regex, or None."""
+        for i, line in enumerate(lines, 1):
+            try:
+                re.compile(line)
+            except re.error as exc:
+                return (i, str(exc))
+        return None
+
+    @on(ListTextArea.Blurred, ".setting-list-editor")
+    def _on_list_blur_save(self, event: ListTextArea.Blurred) -> None:
+        """Validate and save list values when a ListTextArea loses focus."""
+        ta = event.control
+        key = ta.name
+        if key is None:
+            return
+        defn = SETTINGS_MAP.get(key)
+        if defn is None:
+            return
+        raw = ta.text
+        parsed = self._parse_value(defn, raw)
+        assert isinstance(parsed, list)  # narrow for mypy; defn.type is list above
+        err = self._validate_regex_list(parsed)
+        error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
+        if err is not None:
+            line_no, err_text = err
+            error_widget.update(
+                msg.SETTINGS_LIST_EDITOR_INVALID_REGEX.format(n=line_no, error=err_text)
+            )
+            error_widget.add_class(_LIST_ERROR_VISIBLE_CLASS)
+            return
+        error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
+        self._persist_value(key, defn, raw)
+        self._refresh_list_title(key, len(parsed))
+
+    @on(Button.Pressed, ".setting-list-restore")
+    def _on_list_restore(self, event: Button.Pressed) -> None:
+        """Restore defaults for a LIST_COLLAPSED setting."""
+        btn_id = event.button.id
+        if btn_id is None or not btn_id.startswith(_LIST_RESTORE_PREFIX):
+            return
+        key = btn_id.removeprefix(_LIST_RESTORE_PREFIX)
+        defn = SETTINGS_MAP.get(key)
+        if defn is None:
+            return
+        defaults = list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        text = "\n".join(defaults)
+        ta = self.query_one(f"#ed-{key}", ListTextArea)
+        ta.load_text(text)
+        self._persist_value(key, defn, text)
+        error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
+        error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
+        self._refresh_list_title(key, len(defaults))
+
+    def _refresh_list_title(self, key: str, count: int) -> None:
+        """Update the Collapsible title to reflect the current line count."""
+        try:
+            collapsible = self.query_one(f"#collapsible-{key}", Collapsible)
+            collapsible.title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=count)
+        except Exception:
+            log.debug("Failed to refresh collapsible title for %s", key, exc_info=True)
 
     def _refresh_help(self, key: str, defn: SettingDef) -> None:
         """Update the help text after a value change."""
