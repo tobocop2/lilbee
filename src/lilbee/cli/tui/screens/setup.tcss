@@ -17,8 +17,10 @@
     padding: 0 1;
 }
 
+/* setup-enter-hint lives inside the BottomBars wrapper; docking directly
+ * here would overlap with the TaskBar above the Footer (see BottomBars
+ * docstring). */
 #setup-enter-hint {
-    dock: bottom;
     height: 1;
     width: 100%;
     text-align: center;

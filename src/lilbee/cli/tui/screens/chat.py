@@ -130,22 +130,24 @@ class ChatScreen(Screen[None]):
         return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
         yield ChatStatusLine(id="chat-status-line")
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        with PromptArea(id="chat-prompt-area"):
-            yield NavAwareInput(
-                placeholder=msg.CHAT_INPUT_PLACEHOLDER,
-                id="chat-input",
-                suggester=SlashSuggester(use_cache=False),
-            )
-        yield TaskBar()
-        yield ViewTabs()
-        yield Footer()
+        with BottomBars():
+            with PromptArea(id="chat-prompt-area"):
+                yield NavAwareInput(
+                    placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                    id="chat-input",
+                    suggester=SlashSuggester(use_cache=False),
+                )
+            yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
 
     def on_mount(self) -> None:
         self._update_input_style()

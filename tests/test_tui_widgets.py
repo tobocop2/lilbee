@@ -1580,10 +1580,19 @@ class TestViewTabs:
             await pilot.pause()
             assert bar.mode_text == msg.MODE_NORMAL
 
-    async def test_dock_bottom_in_css(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+    async def test_bottom_bars_container_docks_bottom(self) -> None:
+        """BottomBars owns the dock; ViewTabs/TaskBar must not dock themselves.
 
-        assert "dock: bottom" in ViewTabs.DEFAULT_CSS
+        Sibling dock-bottom widgets overlap at the same edge row in Textual
+        (see BottomBars docstring). Keep the dock on the single container.
+        """
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        assert "dock: bottom" in BottomBars.DEFAULT_CSS
+        assert "dock: bottom" not in ViewTabs.DEFAULT_CSS
+        assert "dock: bottom" not in TaskBar.DEFAULT_CSS
 
     async def test_nav_views_contains_all_screens(self) -> None:
         from lilbee.cli.tui.messages import get_nav_views

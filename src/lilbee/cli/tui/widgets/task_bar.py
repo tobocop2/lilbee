@@ -420,9 +420,11 @@ class TaskBar(Static):
     the Task Center screen, accessible via ``t``.
     """
 
+    # NOTE: no ``dock: bottom`` here. TaskBar is always mounted inside a
+    # ``BottomBars`` container that owns the dock; multiple dock-bottom
+    # siblings overlap at the same row in Textual (see BottomBars docstring).
     DEFAULT_CSS = """
     TaskBar {
-        dock: bottom;
         height: 1;
         max-height: 1;
         padding: 0 1;
