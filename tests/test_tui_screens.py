@@ -1102,27 +1102,45 @@ async def test_reset_all_cancel_does_nothing():
             mock_reset.assert_not_called()
 
 
-async def test_reset_all_confirm_resets_every_writable():
-    """Confirming the dialog calls _reset_to_default for every writable SETTINGS_MAP key."""
+async def test_reset_all_confirm_batches_writes_atomically():
+    """Confirming the dialog issues a single settings.update_values batch write."""
     from lilbee.cli.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     writable_keys = {k for k, d in SETTINGS_MAP.items() if d.writable}
     readonly_keys = {k for k, d in SETTINGS_MAP.items() if not d.writable}
-    # Make sure we have at least one readonly key to validate the skip path.
     assert readonly_keys, "test invariant: SETTINGS_MAP must contain a readonly field"
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        with patch.object(screen, "_reset_to_default") as mock_reset:
+        with patch("lilbee.cli.tui.screens.settings.settings.update_values") as mock_batch:
             screen._on_reset_all_confirmed(True)
-        called_keys = {call.args[0] for call in mock_reset.call_args_list}
-        assert called_keys == writable_keys
-        # All batch calls must pass notify=False to avoid per-field toast spam.
-        for call in mock_reset.call_args_list:
-            assert call.kwargs.get("notify") is False
+        mock_batch.assert_called_once()
+        written_keys = set(mock_batch.call_args.args[1].keys())
+        # Every writable key appears in the batch; no readonly key leaks in.
+        assert written_keys == writable_keys
+        assert not written_keys & readonly_keys
+
+
+async def test_reset_all_suppresses_per_field_toasts():
+    """Reset-all fires exactly one summary toast; no per-field CMD_SET_SUCCESS spam."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with (
+            patch("lilbee.cli.tui.screens.settings.settings.update_values"),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # Exactly one notify call: the summary toast.
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.args[0] == msg.SETTINGS_RESET_ALL_SUCCESS
 
 
 async def test_reset_all_button_press_opens_confirm_dialog():

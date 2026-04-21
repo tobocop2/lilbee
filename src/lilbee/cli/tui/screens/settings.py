@@ -106,6 +106,20 @@ def _title_content(key: str, defn: SettingDef) -> Content:
     return Content.assemble(*parts)
 
 
+def _stringify_default(default: object) -> str:
+    """Serialize a reset-to-default value for the TOML settings store.
+
+    Lists become newline-joined so pydantic's splitlines validator round-trips
+    cleanly on reload. None collapses to the empty string. Other scalars use
+    str() directly.
+    """
+    if default is None:
+        return ""
+    if isinstance(default, list):
+        return "\n".join(default)
+    return str(default)
+
+
 def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
     """Group settings by their group field, preserving insertion order."""
     groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
@@ -288,14 +302,19 @@ class SettingsScreen(Screen[None]):
             return
         self._persist_value(name, defn, value)
 
-    def _persist_value(self, key: str, defn: SettingDef, raw: str) -> None:
-        """Parse, apply, and persist a setting value."""
+    def _persist_value(self, key: str, defn: SettingDef, raw: str, *, quiet: bool = False) -> None:
+        """Parse, apply, and persist a setting value.
+
+        When *quiet* is True, the per-field CMD_SET_SUCCESS toast is suppressed.
+        Used by batch paths (e.g. reset-all) that fire one summary toast instead.
+        """
         try:
             parsed = self._parse_value(defn, raw)
             setattr(cfg, key, parsed)
             persisted = str(parsed) if parsed is not None else ""
             settings.set_value(cfg.data_root, key, persisted)
-            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
+            if not quiet:
+                self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
             from lilbee.cli.tui.app import LilbeeApp
 
@@ -344,12 +363,42 @@ class SettingsScreen(Screen[None]):
         )
 
     def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
-        """Apply reset-to-default to every writable SETTINGS_MAP entry on confirm."""
+        """Apply reset-to-default to every writable SETTINGS_MAP entry on confirm.
+
+        Writes are batched into one atomic config.toml rewrite via
+        settings.update_values so a crash mid-loop cannot leave a partially
+        reset config. Per-field toasts are suppressed; one summary fires at
+        the end.
+
+        The pydantic default is applied directly via setattr (skipping the
+        _parse_value round-trip) so reset works even for fields where
+        SETTINGS_MAP.nullable does not match the cfg type exactly. An invalid
+        default is logged and skipped; no partial batch is committed for it.
+        """
         if not confirmed:
             return
+        updates: dict[str, str] = {}
+        signal_payload: list[tuple[str, object]] = []
         for key, defn in SETTINGS_MAP.items():
-            if defn.writable:
-                self._reset_to_default(key, notify=False)
+            if not defn.writable:
+                continue
+            default = get_default(key)
+            try:
+                setattr(cfg, key, default)
+            except (ValueError, TypeError):
+                log.warning("Default for %s rejected by cfg; skipping in batch reset", key)
+                continue
+            updates[key] = _stringify_default(default)
+            signal_payload.append((key, default))
+            self._refresh_editor(key, defn, default)
+            self._refresh_help(key, defn)
+        if updates:
+            settings.update_values(cfg.data_root, updates)
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            for pub_key, pub_parsed in signal_payload:
+                self.app.settings_changed_signal.publish((pub_key, pub_parsed))
         self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
 
     def action_reset_focused(self) -> None:
@@ -364,26 +413,19 @@ class SettingsScreen(Screen[None]):
                 self._reset_to_default(key)
                 return
 
-    def _reset_to_default(self, key: str, *, notify: bool = True) -> None:
-        """Restore a setting to its cfg default via the normal persist path.
+    def _reset_to_default(self, key: str) -> None:
+        """Restore a single setting to its cfg default via the normal persist path.
 
-        Set *notify* to False when called in a batch (e.g. reset-all) to
-        avoid firing a separate toast per field.
+        _persist_value already surfaces a `{key} = {value}` toast, so a second
+        reset-specific toast would just double up for every per-row click.
         """
         defn = SETTINGS_MAP.get(key)
         if defn is None or not defn.writable:
             return
         default = get_default(key)
-        if default is None:
-            stringified = ""
-        elif isinstance(default, list):
-            stringified = "\n".join(default)
-        else:
-            stringified = str(default)
+        stringified = _stringify_default(default)
         self._persist_value(key, defn, stringified)
         self._refresh_editor(key, defn, default)
-        if notify:
-            self.notify(msg.SETTINGS_RESET_TO_DEFAULT_SUCCESS.format(key=key))
 
     def _refresh_editor(self, key: str, defn: SettingDef, value: object) -> None:
         """Update the editor widget to reflect a new value (e.g. after reset)."""
