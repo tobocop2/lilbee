@@ -12,9 +12,10 @@ from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
-    _filter_changed,
     _get_crawl_semaphore,
     _maybe_periodic_sync,
+    _save_single_result,
+    _update_single_metadata,
     content_hash,
     crawl_and_save,
     crawl_recursive,
@@ -23,8 +24,6 @@ from lilbee.crawler import (
     load_crawl_metadata,
     require_valid_crawl_url,
     save_crawl_metadata,
-    save_crawl_results,
-    update_metadata,
     url_to_filename,
     validate_crawl_url,
 )
@@ -114,60 +113,6 @@ class TestUrlToFilename:
         assert ".." not in result
 
 
-class TestSaveCrawlResults:
-    def test_saves_successful_results(self, isolated_env):
-        results = [
-            CrawlResult(url="https://example.com/page1", markdown="# Page 1\nContent"),
-            CrawlResult(url="https://example.com/page2", markdown="# Page 2\nMore content"),
-        ]
-        paths = save_crawl_results(results)
-        assert len(paths) == 2
-        for p in paths:
-            assert p.exists()
-            assert p.suffix == ".md"
-
-    def test_skips_failed_results(self, isolated_env):
-        results = [
-            CrawlResult(url="https://example.com/ok", markdown="# OK"),
-            CrawlResult(url="https://example.com/fail", success=False, error="404"),
-        ]
-        paths = save_crawl_results(results)
-        assert len(paths) == 1
-
-    def test_skips_empty_markdown(self, isolated_env):
-        results = [
-            CrawlResult(url="https://example.com/empty", markdown="   "),
-        ]
-        paths = save_crawl_results(results)
-        assert len(paths) == 0
-
-    def test_creates_nested_dirs(self, isolated_env):
-        results = [
-            CrawlResult(url="https://docs.example.com/a/b/c/page.html", markdown="# Deep"),
-        ]
-        paths = save_crawl_results(results)
-        assert len(paths) == 1
-        assert "docs.example.com" in str(paths[0])
-
-    def test_content_written_correctly(self, isolated_env):
-        content = "# Hello\n\nThis is a test page."
-        results = [CrawlResult(url="https://example.com/test", markdown=content)]
-        paths = save_crawl_results(results)
-        assert paths[0].read_text(encoding="utf-8") == content
-
-    def test_path_traversal_blocked(self, isolated_env):
-        """Symlinks or crafted filenames that escape _web/ are skipped."""
-        results = [
-            CrawlResult(url="https://evil.com/../../etc/passwd", markdown="# Malicious"),
-        ]
-        paths = save_crawl_results(results)
-        # File is saved because url_to_filename neutralizes .., but let's verify
-        # the containment check itself by mocking url_to_filename
-        with patch("lilbee.crawler.url_to_filename", return_value="../../etc/passwd"):
-            paths = save_crawl_results(results)
-        assert paths == []
-
-
 class TestCrawlMetadata:
     def test_load_empty(self, isolated_env):
         meta = load_crawl_metadata()
@@ -218,16 +163,6 @@ class TestCrawlMetadata:
         tmp_path = cfg.data_dir / "crawl_meta.tmp"
         assert not tmp_path.exists()
 
-    def test_update_metadata(self, isolated_env):
-        results = [
-            CrawlResult(url="https://example.com/p1", markdown="Content 1"),
-            CrawlResult(url="https://example.com/p2", success=False, error="oops"),
-        ]
-        update_metadata(results)
-        meta = load_crawl_metadata()
-        assert "https://example.com/p1" in meta
-        assert "https://example.com/p2" not in meta
-
 
 class TestContentHash:
     def test_consistent(self):
@@ -235,48 +170,6 @@ class TestContentHash:
 
     def test_different_for_different_content(self):
         assert content_hash("hello") != content_hash("world")
-
-
-class TestFilterChanged:
-    def test_new_url_passes_through(self, isolated_env):
-        results = [CrawlResult(url="https://example.com/new", markdown="# New")]
-        changed = _filter_changed(results)
-        assert len(changed) == 1
-
-    def test_unchanged_content_filtered(self, isolated_env):
-        """When metadata hash matches and file exists, result is filtered out."""
-        result = CrawlResult(url="https://example.com/same", markdown="# Same")
-        # Save first, then update metadata
-        save_crawl_results([result])
-        update_metadata([result])
-        changed = _filter_changed([result])
-        assert changed == []
-
-    def test_changed_content_passes_through(self, isolated_env):
-        """When content hash differs, result passes through."""
-        original = CrawlResult(url="https://example.com/page", markdown="# Original")
-        save_crawl_results([original])
-        update_metadata([original])
-        updated = CrawlResult(url="https://example.com/page", markdown="# Updated")
-        changed = _filter_changed([updated])
-        assert len(changed) == 1
-
-    def test_missing_file_passes_through(self, isolated_env):
-        """If metadata exists but file was deleted, re-save."""
-        result = CrawlResult(url="https://example.com/gone", markdown="# Gone")
-        update_metadata([result])  # metadata exists but file does not
-        changed = _filter_changed([result])
-        assert len(changed) == 1
-
-    def test_failed_results_filtered(self, isolated_env):
-        results = [CrawlResult(url="https://example.com/fail", success=False, error="404")]
-        changed = _filter_changed(results)
-        assert changed == []
-
-    def test_empty_markdown_filtered(self, isolated_env):
-        results = [CrawlResult(url="https://example.com/empty", markdown="   ")]
-        changed = _filter_changed(results)
-        assert changed == []
 
 
 def _make_crawl4ai_result(url="https://example.com", markdown="# Test", success=True, error=None):
@@ -2021,9 +1914,16 @@ class TestStreamingFlush:
         import asyncio as _asyncio
 
         # Pre-seed: p1 was crawled last time with this exact content.
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        from lilbee.crawler import _flush_metadata
+
         seed = CrawlResult(url="https://example.com/p1", markdown="# Same")
-        save_crawl_results([seed])
-        update_metadata([seed])
+        seed_meta: dict[str, CrawlMeta] = {}
+        _save_single_result(seed, seed_meta)
+        _update_single_metadata(seed_meta, seed, _datetime.now(_UTC).isoformat())
+        _flush_metadata(seed_meta)
 
         async def _gen():
             yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# Same")
@@ -2162,6 +2062,62 @@ class TestStreamingFlush:
 
         # One flush at the interval boundary + one final flush after the loop.
         assert mock_flush.call_count == 2
+
+    async def test_exact_interval_boundary_does_not_double_flush(self, isolated_env):
+        """Ending on an exact METADATA_FLUSH_INTERVAL boundary runs one flush, not two."""
+        import asyncio as _asyncio
+
+        from lilbee.crawler import METADATA_FLUSH_INTERVAL
+
+        async def _gen():
+            for i in range(1, METADATA_FLUSH_INTERVAL + 1):
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._flush_metadata") as mock_flush,
+        ):
+            await crawl_and_save("https://example.com", depth=2, max_pages=METADATA_FLUSH_INTERVAL)
+
+        # Interval boundary triggers the only flush; post-loop skipped because
+        # no entries remain pending after the counter reset.
+        assert mock_flush.call_count == 1
+
+    async def test_flush_callback_failure_does_not_fail_the_crawl(self, isolated_env):
+        """An OSError from the flush callback is logged, not reraised as a crawl error."""
+        import asyncio as _asyncio
+
+        async def _gen():
+            for i in range(1, 3):
+                await _asyncio.sleep(0)
+                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        call_count = {"n": 0}
+
+        def failing_save(result, meta):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OSError("disk full")
+            return None  # second page falls through unchanged
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.crawler._save_single_result", side_effect=failing_save),
+        ):
+            # Must not raise even though the first page write fails.
+            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+        assert paths == []
 
     async def test_final_metadata_flush_fires_on_cancel(self, isolated_env):
         """Cancel still produces a final metadata flush so on-disk state stays consistent."""

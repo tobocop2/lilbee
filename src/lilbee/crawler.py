@@ -399,29 +399,6 @@ def _web_dir() -> Path:
     return cfg.documents_dir / "_web"
 
 
-def save_crawl_results(results: list[CrawlResult]) -> list[Path]:
-    """Write successful crawl results as .md files under documents/_web/.
-    Returns list of paths written.
-    """
-    written: list[Path] = []
-    web_dir = _web_dir()
-    resolved_web_dir = web_dir.resolve()
-    for result in results:
-        if not result.success or not result.markdown.strip():
-            continue
-        rel = url_to_filename(result.url)
-        dest = web_dir / rel
-        try:
-            validate_path_within(dest, resolved_web_dir)
-        except ValueError:
-            log.warning("Path traversal blocked: %s → %s", result.url, dest)
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(result.markdown, encoding="utf-8")
-        written.append(dest)
-    return written
-
-
 def _crawl_meta_path() -> Path:
     """Path to the crawl metadata sidecar JSON."""
     return cfg.data_dir / "crawl_meta.json"
@@ -481,41 +458,26 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def update_metadata(results: list[CrawlResult]) -> None:
-    """Update crawl metadata with successful results."""
-    meta = load_crawl_metadata()
-    now = datetime.now(UTC).isoformat()
-    for r in results:
-        if r.success and r.markdown.strip():
-            meta[r.url] = CrawlMeta(
-                file=url_to_filename(r.url),
-                content_hash=content_hash(r.markdown),
-                crawled_at=now,
-            )
-    save_crawl_metadata(meta)
-
-
 def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Path | None:
     """Write one crawl result to disk if it's new or changed.
 
-    Per-page equivalent of _filter_changed + save_crawl_results for the streaming
-    flush path. Returns the written path, or None if skipped (failure, empty
-    markdown, unchanged hash with file on disk, or blocked by path traversal).
+    Returns the written path, or None if skipped (failure, empty markdown,
+    unchanged hash with file on disk, or blocked by path traversal).
     """
     if not result.success or not result.markdown.strip():
         return None
     web_dir = _web_dir()
     file_path = web_dir / url_to_filename(result.url)
-    new_hash = content_hash(result.markdown)
-    prev = meta.get(result.url)
-    if prev is not None and prev.content_hash == new_hash and file_path.exists():
-        log.info("Content unchanged, skipping save: %s", result.url)
-        return None
     resolved_web_dir = web_dir.resolve()
     try:
         validate_path_within(file_path, resolved_web_dir)
     except ValueError:
         log.warning("Path traversal blocked: %s -> %s", result.url, file_path)
+        return None
+    new_hash = content_hash(result.markdown)
+    prev = meta.get(result.url)
+    if prev is not None and prev.content_hash == new_hash and file_path.exists():
+        log.info("Content unchanged, skipping save: %s", result.url)
         return None
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(result.markdown, encoding="utf-8")
@@ -765,7 +727,7 @@ async def crawl_recursive(
     *,
     quiet: bool = False,
     include_subdomains: bool = False,
-    on_result: Callable[[CrawlResult], Path | None] | None = None,
+    on_result: Callable[[CrawlResult], Any] | None = None,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
@@ -866,7 +828,13 @@ async def crawl_recursive(
                         )
                     results.append(new_result)
                     if on_result is not None:
-                        on_result(new_result)
+                        try:
+                            on_result(new_result)
+                        except OSError:
+                            # A disk-side flush failure must not masquerade as
+                            # a crawl failure. Log and keep streaming; the
+                            # caller still sees the result in its returned list.
+                            log.exception("Flush callback failed for %s", new_result.url)
                     # Hard cap on visible progress. crawl4ai's BFS uses
                     # max_pages to count successful pages, so failed /
                     # redirected pages can push our per-result counter past
@@ -1070,8 +1038,9 @@ async def crawl_and_save(
             pages_seen = len(results)
 
         # Final metadata flush covers both clean completion and cancel. Skip
-        # when nothing was written to avoid touching disk for no-op crawls.
-        if written_paths:
+        # when there are no in-memory entries still pending write (nothing
+        # written at all, or the stream ended exactly on an interval boundary).
+        if pages_since_metadata_flush > 0:
             _flush_metadata(meta)
 
         cancelled = cancel is not None and cancel.is_set()
@@ -1090,21 +1059,3 @@ async def crawl_and_save(
     finally:
         if sem is not None:
             sem.release()
-
-
-def _filter_changed(results: list[CrawlResult]) -> list[CrawlResult]:
-    """Return only results whose content differs from the last crawl."""
-    meta = load_crawl_metadata()
-    web_dir = _web_dir()
-    changed: list[CrawlResult] = []
-    for r in results:
-        if not r.success or not r.markdown.strip():
-            continue
-        prev = meta.get(r.url)
-        file_path = web_dir / url_to_filename(r.url)
-        new_hash = content_hash(r.markdown)
-        if prev is not None and prev.content_hash == new_hash and file_path.exists():
-            log.info("Content unchanged, skipping save: %s", r.url)
-            continue
-        changed.append(r)
-    return changed
