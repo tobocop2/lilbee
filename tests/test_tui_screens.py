@@ -696,8 +696,14 @@ async def test_settings_list_editor_invalid_regex_blocks_save():
         ta.load_text("[")
         search = app.screen.query_one("#settings-search", Input)
         search.focus()
-        await pilot.pause()
         err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
+        # Focus change → blur handler → regex validation → error widget
+        # class toggle are all async. Single pilot.pause is not enough on
+        # slower runners; poll until the -visible class lands.
+        for _ in range(10):
+            await pilot.pause()
+            if err.has_class("-visible"):
+                break
         assert err.has_class("-visible")
         assert "line 1" in str(err.render())
         assert cfg.crawl_exclude_patterns == ["keep"]
