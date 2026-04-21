@@ -345,6 +345,9 @@ class TestConfigDefaultsRoute:
         assert data["crawl_exclude_patterns"] == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
         # Non-writable/non-public fields are not exposed.
         assert "chat_model" not in data
+        # Wiki cfg fields are writable and appear with their declared defaults.
+        assert data["wiki_prune_raw"] is False
+        assert data["wiki_faithfulness_threshold"] == 0.7
 
 
 class TestConfigUpdateRoute:
