@@ -51,12 +51,23 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         exclude:
-          # Ubuntu 3.11 unit tests wedge past the 60-min timeout at
-          # test_store.py::TestSuppressLancedbThreadError regardless of
-          # xdist vs serial execution. The lancedb tokio thread + CPython
-          # 3.11 ubuntu interaction survived multiple fix attempts
-          # (see commit 03b9367 for the investigation trail). 3.11
-          # coverage remains on macOS + Windows.
+          # Ubuntu 3.11 unit tests wedge past the 60-min timeout,
+          # non-deterministically between 40-70% through the run.
+          # Root cause traced via a Docker repro + faulthandler dumps:
+          # a cumulative Textual + litestar thread / resource leak that
+          # surfaces only under the glibc 3.11 thread-shutdown order.
+          # faulthandler shows ~90 accumulated daemon threads (mostly
+          # QueueListener._monitor) at hang time; the main thread is
+          # stuck in a C extension which blocks Python-level SIGALRM
+          # delivery, so pytest-timeout and `signal.alarm` can't kill
+          # individual tests. Attempted fixes: daemonify tokio + Queue-
+          # Listener threads (conftest Thread.__init__ patch); split
+          # suite into chunks via shell glob (fragile, misses files);
+          # pytest-forked (subprocess per test) — works but coverage
+          # drops to ~29% because forks exit via os._exit, skipping
+          # coverage's atexit save. None bring CI green without
+          # significant restructuring. 3.11 coverage stays on macOS +
+          # Windows; ubuntu covers 3.12 + 3.13.
           - os: ubuntu-latest
             python-version: "3.11"
 
