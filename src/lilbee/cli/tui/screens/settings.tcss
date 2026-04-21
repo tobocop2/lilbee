@@ -1,7 +1,18 @@
 SettingsScreen {
-    #settings-search {
+    #settings-top-row {
         dock: top;
+        height: auto;
         margin: 0 1;
+    }
+
+    #settings-top-row #settings-search {
+        width: 1fr;
+    }
+
+    .reset-all-button {
+        width: auto;
+        margin-left: 1;
+        color: $text-muted;
     }
 
     #settings-scroll {
@@ -55,6 +66,22 @@ SettingsScreen {
 
     .setting-editor {
         margin: 0 0 0 0;
+    }
+
+    .setting-editor-row {
+        layout: horizontal;
+        height: auto;
+    }
+
+    .setting-editor-row .setting-editor {
+        width: 1fr;
+    }
+
+    .setting-reset-button {
+        width: 3;
+        min-width: 3;
+        margin-left: 1;
+        color: $text-muted;
     }
 
     Input, Select SelectCurrent, Checkbox {

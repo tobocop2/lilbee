@@ -742,6 +742,499 @@ async def test_settings_select_save():
             mock_persist.assert_called_once_with("test_select", defn, "chosen")
 
 
+def test_get_default_for_scalar():
+    """get_default returns the cfg default for a simple scalar field."""
+    from lilbee.cli.settings_map import get_default
+    from lilbee.config import Config
+
+    expected = Config.model_fields["top_k"].default
+    assert get_default("top_k") == expected
+    assert isinstance(get_default("top_k"), int)
+
+
+def test_get_default_for_nullable_scalar():
+    """Nullable fields whose default is None return None."""
+    from lilbee.cli.settings_map import get_default
+
+    assert get_default("temperature") is None
+
+
+def test_get_default_for_list_factory():
+    """List-valued fields built by a factory return a fresh copy of the default list."""
+    from lilbee.cli.settings_map import get_default
+    from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+    result = get_default("crawl_exclude_patterns")
+    assert result == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+
+
+def test_get_default_handles_pydantic_undefined():
+    """When a field has no default and no factory, get_default returns None."""
+    from types import SimpleNamespace
+
+    from pydantic_core import PydanticUndefined
+
+    from lilbee.cli.settings_map import get_default
+    from lilbee.config import cfg
+
+    fake = SimpleNamespace(default=PydanticUndefined, default_factory=None)
+    original = dict(type(cfg).model_fields)
+    patched = dict(original)
+    patched["_fake_field"] = fake
+    with patch.object(type(cfg), "model_fields", patched):
+        assert get_default("_fake_field") is None
+
+
+async def test_reset_button_resets_scalar():
+    """Pressing the reset button restores a scalar setting to its cfg default."""
+    from textual.widgets import Button, Input
+
+    from lilbee.cli.settings_map import get_default
+
+    cfg.wiki_clusterer_k = 99
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
+        button.press()
+        await pilot.pause()
+        assert cfg.wiki_clusterer_k == get_default("wiki_clusterer_k")
+        editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
+        assert editor.value == str(get_default("wiki_clusterer_k"))
+
+
+async def test_reset_button_absent_for_readonly():
+    """Read-only rows (e.g. chat_model) do not render a reset button."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        chat_row = app.screen.query_one("#row-chat_model")
+        buttons = chat_row.query(".setting-reset-button")
+        assert len(buttons) == 0
+
+
+async def test_ctrl_r_resets_focused_row():
+    """Ctrl+R walks up from the focused editor to reset its row."""
+    from textual.widgets import Input
+
+    from lilbee.cli.settings_map import get_default
+
+    cfg.top_k = 99
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-top_k", Input)
+        editor.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert cfg.top_k == get_default("top_k")
+
+
+async def test_ctrl_r_with_no_focus_is_noop():
+    """action_reset_focused is a no-op when nothing is focused."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch.object(screen, "_reset_to_default") as mock_reset:
+            screen.focused = None  # type: ignore[misc]
+            screen.action_reset_focused()
+            mock_reset.assert_not_called()
+
+
+async def test_ctrl_r_on_non_row_focus_is_noop():
+    """action_reset_focused ignores focus that isn't inside a setting row."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        search = screen.query_one("#settings-search", Input)
+        search.focus()
+        await pilot.pause()
+        with patch.object(screen, "_reset_to_default") as mock_reset:
+            screen.action_reset_focused()
+            mock_reset.assert_not_called()
+
+
+async def test_refresh_editor_updates_checkbox():
+    """Resetting a boolean setting syncs the Checkbox widget to the default."""
+    from textual.widgets import Checkbox
+
+    from lilbee.cli.settings_map import get_default
+
+    default = bool(get_default("show_reasoning"))
+    cfg.show_reasoning = not default
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
+        checkbox.value = not default
+        await pilot.pause()
+        from textual.widgets import Button
+
+        button = app.screen.query_one("#reset-show_reasoning", Button)
+        button.press()
+        await pilot.pause()
+        assert cfg.show_reasoning == default
+        assert checkbox.value == default
+
+
+async def test_reset_nullable_to_none():
+    """Resetting a nullable scalar clears cfg and empties the Input widget."""
+    from textual.widgets import Button, Input
+
+    cfg.temperature = 0.9
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        button = app.screen.query_one("#reset-temperature", Button)
+        button.press()
+        await pilot.pause()
+        assert cfg.temperature is None
+        editor = app.screen.query_one("#ed-temperature", Input)
+        assert editor.value == ""
+
+
+async def test_reset_select_clears_when_default_none():
+    """Resetting a Select-backed field to a None default clears the widget."""
+    from textual.widgets import Select
+
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        # Find any existing Select editor (wiki_clusterer is a choice-based field).
+        select_widget = screen.query_one("#ed-wiki_clusterer", Select)
+        # Seed a non-default choice so we can detect the clear.
+        select_widget.value = "embedding"
+        defn = SettingDef(type=str, nullable=True, group="Wiki", choices=("embedding", "concepts"))
+        screen._refresh_editor("wiki_clusterer", defn, None)
+        # clear() yields the "no selection" sentinel; value should no longer be the seeded choice.
+        assert select_widget.value != "embedding"
+        assert select_widget.value not in {"embedding", "concepts"}
+
+
+async def test_reset_select_sets_value_when_default_provided():
+    """Resetting a Select to a concrete string sets widget.value accordingly."""
+    from textual.widgets import Select
+
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        select_widget = screen.query_one("#ed-wiki_clusterer", Select)
+        select_widget.value = "embedding"
+        defn = SettingDef(type=str, nullable=False, group="Wiki", choices=("embedding", "concepts"))
+        screen._refresh_editor("wiki_clusterer", defn, "concepts")
+        assert select_widget.value == "concepts"
+
+
+async def test_refresh_editor_missing_widget_is_logged(caplog):
+    """Missing editor widget on refresh logs a debug message instead of raising."""
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        defn = SettingDef(type=str, nullable=True, group="General")
+        with caplog.at_level("DEBUG", logger="lilbee.cli.tui.screens.settings"):
+            screen._refresh_editor("nonexistent_key_xyz", defn, "irrelevant")
+        assert any("nonexistent_key_xyz" in record.message for record in caplog.records)
+
+
+async def test_refresh_editor_updates_textarea_list(monkeypatch):
+    """Future-proofing: _refresh_editor loads list values into a TextArea."""
+    from textual.widgets import TextArea
+
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        fake = MagicMock(spec=TextArea)
+        monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
+        defn = SettingDef(type=list, nullable=False, group="Crawling")
+        screen._refresh_editor("fake_list", defn, ["a", "b"])
+        fake.load_text.assert_called_once_with("a\nb")
+
+
+async def test_refresh_editor_updates_textarea_scalar(monkeypatch):
+    """TextArea non-list scalar values go through load_text as plain str."""
+    from textual.widgets import TextArea
+
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        fake = MagicMock(spec=TextArea)
+        monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
+        defn = SettingDef(type=str, nullable=False, group="General")
+        screen._refresh_editor("fake_str", defn, "hello")
+        fake.load_text.assert_called_once_with("hello")
+
+
+async def test_refresh_editor_updates_textarea_none(monkeypatch):
+    """TextArea with None value loads an empty string."""
+    from textual.widgets import TextArea
+
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        fake = MagicMock(spec=TextArea)
+        monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
+        defn = SettingDef(type=str, nullable=True, group="General")
+        screen._refresh_editor("fake_str", defn, None)
+        fake.load_text.assert_called_once_with("")
+
+
+async def test_reset_to_default_ignores_readonly_keys():
+    """_reset_to_default is a no-op for read-only settings."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch.object(screen, "_persist_value") as mock_persist:
+            screen._reset_to_default("chat_model")
+            mock_persist.assert_not_called()
+
+
+async def test_reset_to_default_ignores_unknown_keys():
+    """_reset_to_default is a no-op when the key is not in SETTINGS_MAP."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch.object(screen, "_persist_value") as mock_persist:
+            screen._reset_to_default("nonexistent_key_xyz")
+            mock_persist.assert_not_called()
+
+
+async def test_reset_button_with_malformed_id_is_noop():
+    """Button press events with unexpected ids are gracefully ignored."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        event = MagicMock()
+        event.button.id = "not-a-reset-button"
+        with patch.object(screen, "_reset_to_default") as mock_reset:
+            screen._on_reset_pressed(event)
+            mock_reset.assert_not_called()
+        event.button.id = None
+        with patch.object(screen, "_reset_to_default") as mock_reset:
+            screen._on_reset_pressed(event)
+            mock_reset.assert_not_called()
+
+
+async def test_reset_list_default_joins_newlines():
+    """Resetting a list-valued setting stringifies via newline join."""
+    from lilbee.cli.settings_map import SettingDef, get_default
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        defn = SettingDef(type=list, nullable=False, writable=True, group="Crawling")
+        expected = "\n".join(get_default("crawl_exclude_patterns"))
+        with (
+            patch.dict(
+                "lilbee.cli.tui.screens.settings.SETTINGS_MAP",
+                {"crawl_exclude_patterns": defn},
+            ),
+            patch.object(screen, "_persist_value") as mock_persist,
+            patch.object(screen, "_refresh_editor"),
+        ):
+            screen._reset_to_default("crawl_exclude_patterns")
+            mock_persist.assert_called_once_with("crawl_exclude_patterns", defn, expected)
+
+
+async def test_reset_all_button_mounts_in_top_row():
+    """The Reset-all button renders alongside the search input."""
+    from textual.widgets import Button
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        button = app.screen.query_one("#reset-all-defaults", Button)
+        assert button is not None
+        top_row = app.screen.query_one("#settings-top-row")
+        assert button in list(top_row.query(Button))
+
+
+async def test_reset_all_cancel_does_nothing():
+    """Dismissing the confirm dialog with False leaves cfg untouched."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch.object(screen, "_reset_to_default") as mock_reset:
+            screen._on_reset_all_confirmed(False)
+            mock_reset.assert_not_called()
+        with patch.object(screen, "_reset_to_default") as mock_reset:
+            screen._on_reset_all_confirmed(None)
+            mock_reset.assert_not_called()
+
+
+async def test_reset_all_confirm_batches_writes_atomically():
+    """Confirming the dialog issues a single settings.update_values batch write."""
+    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    writable_keys = {k for k, d in SETTINGS_MAP.items() if d.writable}
+    readonly_keys = {k for k, d in SETTINGS_MAP.items() if not d.writable}
+    assert readonly_keys, "test invariant: SETTINGS_MAP must contain a readonly field"
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch("lilbee.cli.tui.screens.settings.settings.update_values") as mock_batch:
+            screen._on_reset_all_confirmed(True)
+        mock_batch.assert_called_once()
+        written_keys = set(mock_batch.call_args.args[1].keys())
+        # Every writable key appears in the batch; no readonly key leaks in.
+        assert written_keys == writable_keys
+        assert not written_keys & readonly_keys
+
+
+async def test_reset_all_suppresses_per_field_toasts():
+    """Reset-all fires exactly one summary toast; no per-field CMD_SET_SUCCESS spam."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with (
+            patch("lilbee.cli.tui.screens.settings.settings.update_values"),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # Exactly one notify call: the summary toast.
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.args[0] == msg.SETTINGS_RESET_ALL_SUCCESS
+
+
+async def test_reset_all_actually_mutates_cfg():
+    """Batch reset restores cfg values to pydantic defaults (not just the TOML write)."""
+    from lilbee.cli.settings_map import get_default
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    default_top_k = get_default("top_k")
+    cfg.top_k = 999  # deliberately non-default
+    assert cfg.top_k == 999
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch("lilbee.cli.tui.screens.settings.settings.update_values"):
+            screen._on_reset_all_confirmed(True)
+        assert cfg.top_k == default_top_k
+
+
+async def test_reset_all_rolls_back_on_disk_write_failure():
+    """If settings.update_values raises, in-memory cfg reverts so UI and disk stay in sync."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    cfg.top_k = 999
+    cfg.wiki_clusterer_k = 77
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with (
+            patch(
+                "lilbee.cli.tui.screens.settings.settings.update_values",
+                side_effect=OSError("disk full"),
+            ),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # Rollback restored the pre-reset values.
+        assert cfg.top_k == 999
+        assert cfg.wiki_clusterer_k == 77
+        # User sees an error toast, not a success toast.
+        assert mock_notify.called
+        notify_kwargs = mock_notify.call_args.kwargs
+        assert notify_kwargs.get("severity") == "error"
+
+
+async def test_reset_all_reports_skipped_keys():
+    """When setattr rejects a default, the summary toast names the skipped keys."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+
+        original_setattr = type(cfg).__setattr__
+
+        def rejecting_setattr(self_cfg, name, value):
+            if name == "top_k":
+                raise ValueError("rejected for test")
+            original_setattr(self_cfg, name, value)
+
+        with (
+            patch.object(type(cfg), "__setattr__", rejecting_setattr),
+            patch("lilbee.cli.tui.screens.settings.settings.update_values"),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # Summary toast mentions the skipped key and uses warning severity.
+        summary_calls = [c for c in mock_notify.call_args_list if c.args and "top_k" in c.args[0]]
+        assert summary_calls, "expected a toast mentioning the skipped key"
+        assert summary_calls[0].args[0] == msg.SETTINGS_RESET_ALL_PARTIAL.format(skipped="top_k")
+        assert summary_calls[0].kwargs.get("severity") == "warning"
+
+
+async def test_reset_all_button_press_opens_confirm_dialog():
+    """Pressing Reset-all pushes the ConfirmDialog screen before mutating state."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        with patch.object(screen.app, "push_screen") as mock_push:
+            screen._on_reset_all_pressed()
+        mock_push.assert_called_once()
+        pushed_screen = mock_push.call_args.args[0]
+        assert isinstance(pushed_screen, ConfirmDialog)
+
+
 class StatusTestApp(App[None]):
     CSS = ""
 
