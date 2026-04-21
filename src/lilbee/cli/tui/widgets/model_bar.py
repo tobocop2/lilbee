@@ -166,6 +166,16 @@ _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
+    # ``SelectOverlay`` uses ``overlay: screen`` (floats over siblings) with
+    # ``constrain: none inside`` in Textual's default CSS. On a short
+    # terminal the overlay's max-height of 12 rows can exceed the viewport
+    # below ModelBar, and the compositor's paint for the overflowing
+    # border cells gets promoted to the terminal scrollback buffer when
+    # the overlay collapses, leaving ghost borders in history (bb-bo5p).
+    #
+    # We cap the overlay height to 8 rows and constrain it fully inside
+    # the screen, and on collapse we force a full screen refresh so the
+    # region the overlay covered is re-painted cleanly by the compositor.
     DEFAULT_CSS = """
     ModelBar {
         dock: top;
@@ -183,6 +193,10 @@ class ModelBar(Widget, can_focus=False):
     ModelBar Select {
         width: 1fr;
         margin: 0 1 0 0;
+    }
+    ModelBar Select > SelectOverlay {
+        max-height: 8;
+        constrain: inside inside;
     }
     """
 
@@ -218,7 +232,28 @@ class ModelBar(Widget, can_focus=False):
         if cfg.embedding_model:
             embed_sel.value = cfg.embedding_model
 
+        self._watch_overlay_collapse(chat_sel)
+        self._watch_overlay_collapse(embed_sel)
+
         self._scan_models()
+
+    def _watch_overlay_collapse(self, sel: Select) -> None:
+        """Force a full screen refresh when a Select overlay collapses.
+
+        Textual's ``SelectOverlay`` floats with ``overlay: screen`` and
+        does not always invalidate the cells it covered when it
+        collapses to ``display: none``. On some terminals this leaves
+        ghost borders in the scrollback buffer (bb-bo5p). Watching the
+        widget's ``expanded`` reactive lets us request a full compositor
+        repaint on collapse so the overlay region is re-drawn cleanly.
+        """
+
+        def _on_expanded_change(expanded: bool) -> None:
+            if not expanded and self.is_mounted:
+                with contextlib.suppress(Exception):
+                    self.screen.refresh()
+
+        self.watch(sel, "expanded", _on_expanded_change, init=False)
 
     @work(thread=True)
     def _scan_models(self) -> None:
