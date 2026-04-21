@@ -659,7 +659,10 @@ async def test_settings_list_editor_saves_on_blur():
         ta.load_text("foo\nbar")
         search = app.screen.query_one("#settings-search", Input)
         search.focus()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.crawl_exclude_patterns == ["foo", "bar"]:
+                break
         assert cfg.crawl_exclude_patterns == ["foo", "bar"]
 
 
@@ -677,7 +680,10 @@ async def test_settings_list_editor_strips_blanks():
         ta.load_text("a\n\nb\n")
         search = app.screen.query_one("#settings-search", Input)
         search.focus()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.crawl_exclude_patterns == ["a", "b"]:
+                break
         assert cfg.crawl_exclude_patterns == ["a", "b"]
 
 
