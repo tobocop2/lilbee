@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import sys
 from multiprocessing import get_context
 from pathlib import Path
 from unittest import mock
@@ -26,7 +27,6 @@ from lilbee.providers.worker_process import (
     _worker_main,
     config_snapshot_from_cfg,
 )
-from lilbee.providers.worker_process import _redirect_stdio as _redirect_stdio_real
 
 
 @pytest.fixture(autouse=True)
@@ -910,50 +910,40 @@ class TestLoadVisionModel:
         mock_load.assert_called_once_with(vision_path)
 
 
-def test_redirect_stdio_points_stdout_stderr_to_devnull() -> None:
-    """``_redirect_stdio`` dup2's /dev/null onto fds 1 and 2 and repoints sys.stdout/stderr.
+def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:
+    """``_redirect_stdio`` points sys.stdout/stderr to devnull.
 
-    Verified with mocks rather than a real subprocess: calling the function
-    in-process without mocking would close the pytest-xdist worker pipes, and
-    the subprocess-based flavor deadlocked CI under xdist on ubuntu 3.11.
-
-    Mocks only ``os.open``/``os.dup2``/``os.close`` to prevent actual fd
-    manipulation. Does NOT patch ``builtins.open``: the two
-    ``open(os.devnull, "w")`` calls at the tail of the function run for real,
-    producing real /dev/null handles that get discarded when ``sys.stdout`` and
-    ``sys.stderr`` are restored. Globally patching ``builtins.open`` deadlocks
-    ubuntu-3.11 under xdist: any pytest / coverage / xdist internal ``open()``
-    call during the ``with`` block receives a MagicMock and the worker wedges.
-
-    Uses ``_redirect_stdio_real`` (bound at module import, before the
-    ``_no_stdio_redirect`` autouse fixture swaps the module attribute for a
-    MagicMock) so the real function actually runs.
+    Runs in a fresh subprocess because the function closes fds 1 and 2
+    in its caller's process; doing that inside the pytest process would
+    deadlock pytest-xdist's worker pipe. A child process has its own
+    fds so the close is harmless here (see bb-7w37). The verdict is
+    written to a sentinel file rather than stdout because the real
+    ``_redirect_stdio`` call eats stdout on its way.
     """
-    import contextlib
-    import os
-    import sys
+    import json
+    import subprocess
+    import textwrap
 
-    opened_fd = 42
-    real_stdout, real_stderr = sys.stdout, sys.stderr
-    try:
-        with (
-            mock.patch("os.open", return_value=opened_fd) as mock_open_fd,
-            mock.patch("os.dup2") as mock_dup2,
-            mock.patch("os.close") as mock_close,
-        ):
-            _redirect_stdio_real()
-            open_calls = mock_open_fd.call_args_list
-            dup2_calls = mock_dup2.call_args_list
-            close_calls = mock_close.call_args_list
-            new_stdout, new_stderr = sys.stdout, sys.stderr
-    finally:
-        sys.stdout, sys.stderr = real_stdout, real_stderr
-        for handle in (new_stdout, new_stderr):
-            with contextlib.suppress(Exception):
-                handle.close()
+    verdict = tmp_path / "verdict.json"
+    script = textwrap.dedent(
+        f"""
+        import json, os, sys
+        from lilbee.providers.worker_process import _redirect_stdio
 
-    assert open_calls == [mock.call(os.devnull, os.O_RDWR)]
-    assert dup2_calls == [mock.call(opened_fd, 1), mock.call(opened_fd, 2)]
-    assert close_calls == [mock.call(opened_fd)]
-    assert new_stdout is not real_stdout
-    assert new_stderr is not real_stderr
+        _redirect_stdio()
+        with open({str(verdict)!r}, "w") as fh:
+            json.dump(
+                {{
+                    "stdout_name": sys.stdout.name,
+                    "stderr_name": sys.stderr.name,
+                    "devnull": os.devnull,
+                }},
+                fh,
+            )
+        """
+    ).strip()
+
+    subprocess.run([sys.executable, "-c", script], timeout=30, check=True)
+    body = json.loads(verdict.read_text())
+    assert body["stdout_name"] == body["devnull"]
+    assert body["stderr_name"] == body["devnull"]

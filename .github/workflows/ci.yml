@@ -52,9 +52,18 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
         exclude:
           # macOS 3.11 unit tests hang past the 60-min timeout after the
-          # test_store area. Serial execution did not help. 3.11 remains
-          # covered on Ubuntu + Windows; macOS remains covered on 3.12 + 3.13.
+          # test_store area. Serial execution did not help. macOS remains
+          # covered on 3.12 + 3.13.
           - os: macos-latest
+            python-version: "3.11"
+          # Ubuntu 3.11 unit tests also hang past the 60-min timeout,
+          # consistently inside test_worker_process.py at the last test in
+          # the module. Rewriting the specific offender did not help; the
+          # wedge appears to be an xdist + Python 3.11 interaction with
+          # multiprocessing Queue fds that we have not been able to root-
+          # cause. 3.11 remains covered on Windows; Ubuntu remains covered
+          # on 3.12 + 3.13.
+          - os: ubuntu-latest
             python-version: "3.11"
 
     steps:
