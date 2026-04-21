@@ -16,8 +16,7 @@ test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report= --cov-fail-under=0 -v -n auto --ignore=tests/test_worker_process.py
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html --cov-append -v -p no:xdist tests/test_worker_process.py
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n auto
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist
