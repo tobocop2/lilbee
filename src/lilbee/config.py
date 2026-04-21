@@ -82,6 +82,24 @@ CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 
+# Regex patterns that reject URLs at link-discovery time during recursive
+# crawls. Defaults block WordPress noise that otherwise balloons a site's
+# crawlable URL count (pagination, archives, tracking query params).
+# Users extend or replace via LILBEE_CRAWL_EXCLUDE_PATTERNS (newline-
+# separated) or a `crawl_exclude_patterns = [...]` list in config.toml.
+DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    r"/page/\d+/?$",
+    r"/tag/",
+    r"/category/",
+    r"/author/",
+    r"/20\d{2}/\d{2}/?$",
+    r"/attachment/",
+    r"/feed/?$",
+    r"/comment-page-\d+",
+    r"[?&](utm_|ref=|fbclid=|gclid=)",
+)
+
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a precise, direct assistant grounded in the provided context. "
     "Answer using only the context — if it doesn't contain enough information, "
@@ -281,6 +299,15 @@ class Config(BaseSettings):
 
     # Retry count per URL when rate-limit codes come back.
     crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
+
+    # Regex patterns that skip URLs at link-discovery time during recursive
+    # crawls. Defaults block WordPress scaffolding (pagination, archives,
+    # tracking query params) that inflates useful-page count by 5-7x without
+    # adding content. Empty list disables the filter.
+    crawl_exclude_patterns: list[str] = ConfigField(
+        default_factory=lambda: list(DEFAULT_CRAWL_EXCLUDE_PATTERNS),
+        writable=True,
+    )
 
     # Fraction of GPU/unified memory available for loaded models.
     # 0.75 leaves headroom for the OS and other processes.
@@ -482,6 +509,19 @@ class Config(BaseSettings):
     def _split_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("crawl_exclude_patterns", mode="before")
+    @classmethod
+    def _split_crawl_exclude_patterns(cls, v: Any) -> Any:
+        """Accept newline-separated strings from env vars / plain-text config.
+
+        Regex commonly uses commas (e.g. `{2,4}`) and pipes (alternation), so
+        newline is the only separator safe to use for this field. TOML lists
+        and JSON arrays pass through unchanged.
+        """
+        if isinstance(v, str):
+            return [p.strip() for p in v.splitlines() if p.strip()]
         return v
 
     @field_validator("ignore_dirs", mode="before")

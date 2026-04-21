@@ -434,14 +434,26 @@ async def crawl_recursive(
 
     from crawl4ai import CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
+    from crawl4ai.deep_crawling.filters import FilterChain, URLPatternFilter
 
     def _should_cancel() -> bool:
         return cancel is not None and cancel.is_set()
+
+    # Reject noise URLs at link-discovery time instead of fetching and
+    # filtering later. Patterns are treated as regex (use_glob=False);
+    # reverse=True flips the filter's sense from include to exclude.
+    exclude_patterns = list(cfg.crawl_exclude_patterns)
+    filter_chain = (
+        FilterChain([URLPatternFilter(exclude_patterns, use_glob=False, reverse=True)])
+        if exclude_patterns
+        else FilterChain()
+    )
 
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
         max_pages=pages,
         should_cancel=_should_cancel,
+        filter_chain=filter_chain,
     )
     config = CrawlerRunConfig(
         deep_crawl_strategy=strategy,

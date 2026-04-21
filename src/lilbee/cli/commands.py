@@ -307,9 +307,14 @@ def _run_crawl_with_signal_cancel(
         cancel_event.set()  # type: ignore[attr-defined]
 
     signal.signal(signal.SIGINT, _on_sigint)
+    # Manage the event loop explicitly. In the CLI this runs once per process,
+    # but under pytest-xdist the same worker thread runs many tests; leaving a
+    # closed loop set as the "current" loop for the thread poisons every later
+    # asyncio.get_event_loop() call and hangs macOS 3.12/3.13 unit-test CI.
+    # Always clear the thread-current loop in finally.
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
+        asyncio.set_event_loop(loop)
         coro = crawl_and_save(  # type: ignore[operator]
             url,
             depth=depth,
@@ -321,6 +326,7 @@ def _run_crawl_with_signal_cancel(
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+        asyncio.set_event_loop(None)
         signal.signal(signal.SIGINT, previous_handler)
 
 

@@ -493,9 +493,15 @@ class TestCrawlRecursive:
         mock_dispatcher_mod = MagicMock()
         mock_dispatcher_mod.RateLimiter = MagicMock()
         mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        # Recursive crawls also build a FilterChain with URLPatternFilter to
+        # exclude WordPress noise patterns. Stub both.
+        mock_filters_mod = MagicMock()
+        mock_filters_mod.FilterChain = MagicMock()
+        mock_filters_mod.URLPatternFilter = MagicMock()
         return {
             "crawl4ai": mock_mod,
             "crawl4ai.deep_crawling": mock_deep,
+            "crawl4ai.deep_crawling.filters": mock_filters_mod,
             "crawl4ai.async_dispatcher": mock_dispatcher_mod,
         }
 
@@ -987,9 +993,13 @@ class TestCrawlCancel:
         mock_dispatcher_mod = MagicMock()
         mock_dispatcher_mod.RateLimiter = MagicMock()
         mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        mock_filters_mod = MagicMock()
+        mock_filters_mod.FilterChain = MagicMock()
+        mock_filters_mod.URLPatternFilter = MagicMock()
         return {
             "crawl4ai": mock_mod,
             "crawl4ai.deep_crawling": mock_deep,
+            "crawl4ai.deep_crawling.filters": mock_filters_mod,
             "crawl4ai.async_dispatcher": mock_dispatcher_mod,
         }, mock_bfs_cls
 
@@ -1174,10 +1184,14 @@ class TestCrawlDispatcher:
         mock_sd = MagicMock()
         mock_dispatcher_mod.RateLimiter = mock_rl
         mock_dispatcher_mod.SemaphoreDispatcher = mock_sd
+        mock_filters_mod = MagicMock()
+        mock_filters_mod.FilterChain = MagicMock()
+        mock_filters_mod.URLPatternFilter = MagicMock()
         return (
             {
                 "crawl4ai": mock_mod,
                 "crawl4ai.deep_crawling": mock_deep,
+                "crawl4ai.deep_crawling.filters": mock_filters_mod,
                 "crawl4ai.async_dispatcher": mock_dispatcher_mod,
             },
             mock_rl,
@@ -1255,6 +1269,46 @@ class TestCrawlDispatcher:
             crawler = _LilbeeAsyncCrawler(verbose=False, dispatcher="DEFAULT")
             await crawler.arun_many(["u"], config="C")
         inner.arun_many.assert_awaited_once_with(["u"], config="C", dispatcher="DEFAULT")
+
+    async def test_exclude_patterns_build_filter_chain(self):
+        """cfg.crawl_exclude_patterns feeds URLPatternFilter into BFS strategy."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        modules, _, _ = self._setup_crawl4ai(mock_instance)
+        bfs_cls = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
+        url_pattern_cls = modules["crawl4ai.deep_crawling.filters"].URLPatternFilter
+        filter_chain_cls = modules["crawl4ai.deep_crawling.filters"].FilterChain
+
+        cfg.crawl_exclude_patterns = ["/page/\\d+", "/tag/"]
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+
+        # URLPatternFilter gets the patterns with reverse=True, use_glob=False
+        url_pattern_cls.assert_called_once()
+        call = url_pattern_cls.call_args
+        assert call.args[0] == ["/page/\\d+", "/tag/"]
+        assert call.kwargs.get("reverse") is True
+        assert call.kwargs.get("use_glob") is False
+        # FilterChain gets a list containing the pattern filter
+        filter_chain_cls.assert_called_once()
+        # BFS strategy receives the filter_chain
+        assert "filter_chain" in bfs_cls.call_args.kwargs
+
+    async def test_empty_exclude_patterns_uses_empty_filter_chain(self):
+        """cfg.crawl_exclude_patterns=[] means no URLPatternFilter is constructed."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        modules, _, _ = self._setup_crawl4ai(mock_instance)
+        url_pattern_cls = modules["crawl4ai.deep_crawling.filters"].URLPatternFilter
+
+        cfg.crawl_exclude_patterns = []
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        url_pattern_cls.assert_not_called()
 
     async def test_lilbee_async_crawler_explicit_dispatcher_wins(self):
         """An explicit dispatcher= on arun_many beats the default."""

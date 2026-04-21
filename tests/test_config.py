@@ -865,6 +865,29 @@ class TestParseEnableOcrFallback:
         assert Config._parse_enable_ocr(0) is False
 
 
+class TestCrawlExcludePatternsValidator:
+    def test_newline_separated_string_splits(self):
+        """Env vars come in as strings; validator splits by newline."""
+        from lilbee.config import Config
+
+        result = Config._split_crawl_exclude_patterns("/page/\\d+\n/tag/\n/category/")
+        assert result == ["/page/\\d+", "/tag/", "/category/"]
+
+    def test_list_passes_through_unchanged(self):
+        """TOML lists and programmatic lists pass through the validator."""
+        from lilbee.config import Config
+
+        result = Config._split_crawl_exclude_patterns(["/page/", "/tag/"])
+        assert result == ["/page/", "/tag/"]
+
+    def test_empty_string_yields_empty_list(self):
+        """Empty env var collapses to an empty list, disabling the filter."""
+        from lilbee.config import Config
+
+        assert Config._split_crawl_exclude_patterns("") == []
+        assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = _clean_env(tmp_path)
