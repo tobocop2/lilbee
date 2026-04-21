@@ -30,7 +30,7 @@ test-integration:
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 
 install:
-	uv tool install . --force --reinstall --compile-bytecode
+	uv tool install ".[crawler]" --force --reinstall --compile-bytecode
 
 crawl-setup:  ## Download Playwright Chromium for /crawl
 	uv run playwright install chromium
