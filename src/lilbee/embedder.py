@@ -41,14 +41,14 @@ def is_model_available(model: str, provider: LLMProvider) -> bool:
     """Return True if *model* resolves via *provider* or the native registry.
 
     Remote-prefixed refs (``ollama/`` and API providers) skip the native
-    probe since they resolve through litellm at call time.
+    probe since they resolve through the SDK backend at call time.
     """
     if not model:
         return False
     ref = parse_model_ref(model)
     if _remote_sees_model(ref, provider):
         return True
-    if ref.needs_litellm:
+    if ref.is_remote:
         return False
     return _native_has_model(model)
 

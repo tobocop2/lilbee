@@ -10,13 +10,12 @@ from pathlib import Path
 
 import httpx
 
-from lilbee.config import cfg
+from lilbee.config import DEFAULT_HTTP_TIMEOUT, cfg
 from lilbee.models import ModelTask
+from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
-
-_LITELLM_TIMEOUT = 30.0
 
 
 class ModelSource(Enum):
@@ -78,7 +77,7 @@ class ModelManager:
         """List models from the litellm backend via its HTTP API."""
         url = f"{self._litellm_base_url}/api/tags"
         try:
-            resp = httpx.get(url, timeout=_LITELLM_TIMEOUT)
+            resp = httpx.get(url, timeout=DEFAULT_HTTP_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
@@ -216,7 +215,7 @@ class ModelManager:
                 url,
                 content=json.dumps({"model": model}).encode(),
                 headers={"Content-Type": "application/json"},
-                timeout=_LITELLM_TIMEOUT,
+                timeout=DEFAULT_HTTP_TIMEOUT,
             )
             if resp.status_code == 200:
                 log.info("Removed litellm model %s", model)
@@ -371,8 +370,8 @@ def classify_remote_models(
     return result
 
 
-def _has_provider_key(provider_name: str, cfg_field: str, env_var: str) -> bool:
-    """Return True if a usable API key exists for *provider_name*."""
+def _has_provider_key(cfg_field: str, env_var: str) -> bool:
+    """Return True if a usable API key exists via env var or lilbee config."""
     if os.environ.get(env_var):
         return True
     return bool(getattr(cfg, cfg_field, ""))
@@ -382,46 +381,37 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
     """Return frontier chat models grouped by provider.
 
     Checks which provider API keys are available (env vars or config),
-    then queries ``litellm.models_by_provider`` for each. Only chat
-    models are returned. Returns an empty dict when litellm is not
-    installed or no keys are configured.
+    then asks the active provider's backend for each provider's chat
+    catalog. Going through ``SdkLLMProvider.list_chat_models`` ensures
+    ``cfg.json_mode`` suppression is applied before the SDK import,
+    so ``lilbee --json status`` does not leak a debug banner.
 
-    Short-circuits before importing litellm when no keys are present,
-    avoiding the expensive import on CI or headless environments.
+    Short-circuits before touching the SDK when no keys are present.
     """
-    from lilbee.providers.litellm_provider import PROVIDER_KEYS
-
-    # Check for any configured key before paying the litellm import cost.
     active = [
         (prov, cfg_f, env, label)
         for prov, cfg_f, env, label in PROVIDER_KEYS
-        if _has_provider_key(prov, cfg_f, env)
+        if _has_provider_key(cfg_f, env)
     ]
     if not active:
         return {}
 
-    try:
-        import litellm
-    except ImportError:
-        return {}
+    from lilbee.services import get_services
+
+    provider = get_services().provider
 
     result: dict[str, list[RemoteModel]] = {}
-    for provider, _cfg_field, _env_var, display_name in active:
-        models = litellm.models_by_provider.get(provider, set())
-        chat_models: list[RemoteModel] = []
-        for model_name in sorted(models):
-            info = litellm.model_cost.get(model_name, {})
-            if info.get("mode") != "chat":
-                continue
-            chat_models.append(
-                RemoteModel(
-                    name=model_name,
-                    task=ModelTask.CHAT,
-                    family="",
-                    parameter_size="",
-                    provider=display_name,
-                )
+    for prov, _cfg_field, _env_var, display_name in active:
+        chat_models = [
+            RemoteModel(
+                name=model_name,
+                task=ModelTask.CHAT,
+                family="",
+                parameter_size="",
+                provider=display_name,
             )
+            for model_name in provider.list_chat_models(prov)
+        ]
         if chat_models:
             result[display_name] = chat_models
     return result

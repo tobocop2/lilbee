@@ -14,8 +14,8 @@ import pytest
 from lilbee.config import cfg
 
 if TYPE_CHECKING:
-    from lilbee.providers.litellm_provider import LiteLLMProvider
     from lilbee.providers.routing_provider import RoutingProvider
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -234,6 +234,11 @@ class TestLlamaCppProvider:
         provider = self._make_provider()
         with pytest.raises(NotImplementedError, match="cannot pull"):
             provider.pull_model("some-model")
+
+    def test_list_chat_models_empty(self) -> None:
+        # Native llama-cpp has no frontier-provider catalog.
+        provider = self._make_provider()
+        assert provider.list_chat_models("openai") == []
 
     def test_show_model_returns_none(self) -> None:
         from lilbee.providers.base import ProviderError
@@ -517,7 +522,7 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "hello"
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
 
         result = rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         assert result == "hello"
@@ -527,7 +532,7 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "hello"
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
 
         result = rp.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:8b")
         assert result == "hello"
@@ -555,7 +560,7 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.embed.return_value = [[0.1, 0.2]]
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
 
         cfg.embedding_model = "ollama/nomic-embed-text:latest"
         result = rp.embed(["test"])
@@ -584,7 +589,7 @@ class TestRoutingProvider:
         mock_litellm = mock.MagicMock()
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.9, 1.0]]
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
         rp._llama_cpp = mock_llama
 
         cfg.embedding_model = "mistral:latest"
@@ -601,17 +606,45 @@ class TestRoutingProvider:
         rp._llama_cpp = mock_llama
 
         with mock.patch(
-            "lilbee.providers.litellm_provider.litellm_available",
+            "lilbee.providers.routing_provider.litellm_available",
             return_value=False,
         ):
             result = rp.list_models()
         assert result == ["local.gguf"]
 
+    def test_list_chat_models_empty_when_litellm_unavailable(self) -> None:
+        # list_chat_models must skip the SDK backend entirely when litellm
+        # is not installed; native llama-cpp never has a frontier catalog.
+        rp = self._make_provider()
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=False,
+        ):
+            assert rp.list_chat_models("openai") == []
+
+    def test_list_chat_models_delegates_through_sdk_provider(self) -> None:
+        # Pins the suppression chain: list_chat_models must reach the SDK
+        # provider (not the adapter directly), so SdkLLMProvider._ensure_initialized
+        # can apply cfg.json_mode before any SDK import inside the backend.
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.list_chat_models.return_value = ["openai/gpt-4o", "openai/gpt-4o-mini"]
+        rp._sdk_provider = mock_sdk
+
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=True,
+        ):
+            result = rp.list_chat_models("openai")
+
+        assert result == ["openai/gpt-4o", "openai/gpt-4o-mini"]
+        mock_sdk.list_chat_models.assert_called_once_with("openai")
+
     def test_show_model_delegates_by_prefix(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.show_model.return_value = {"parameters": "temp 0.7"}
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
 
         result = rp.show_model("ollama/qwen3:8b")
         assert result == {"parameters": "temp 0.7"}
@@ -635,7 +668,7 @@ class TestRoutingProvider:
 
         with (
             mock.patch(
-                "lilbee.providers.litellm_provider.litellm_available",
+                "lilbee.providers.routing_provider.litellm_available",
                 return_value=False,
             ),
             pytest.raises(ProviderError, match="no pull-capable backend"),
@@ -646,7 +679,7 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "saw it"
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
 
         cfg.chat_model = "local-model:latest"
         result = rp.chat(
@@ -660,7 +693,7 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.get_capabilities.return_value = ["completion", "vision"]
-        rp._litellm = mock_litellm
+        rp._sdk_provider = mock_litellm
 
         caps = rp.get_capabilities("ollama/llava:7b")
         assert caps == ["completion", "vision"]
@@ -674,7 +707,7 @@ class TestRoutingProvider:
 
 class TestLitellmAvailable:
     def test_returns_false_when_not_installed(self) -> None:
-        from lilbee.providers.litellm_provider import litellm_available
+        from lilbee.providers.litellm_sdk import litellm_available
 
         with mock.patch.dict("sys.modules", {"litellm": None}):
             assert litellm_available() is False
@@ -682,23 +715,24 @@ class TestLitellmAvailable:
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
 
         cfg.llm_provider = "litellm"
         with (
-            mock.patch.object(LiteLLMProvider, "available", return_value=False),
+            mock.patch.object(LitellmSdkBackend, "available", return_value=False),
             pytest.raises(ProviderError, match="litellm is not installed"),
         ):
             create_provider(cfg)
 
 
 class TestLiteLLMShowModelCapabilities:
-    """Tests for LiteLLMProvider.show_model capabilities parsing."""
+    """Tests for SdkLLMProvider.show_model capabilities parsing via litellm backend."""
 
-    def _make_provider(self) -> LiteLLMProvider:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+    def _make_provider(self) -> SdkLLMProvider:
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        return LiteLLMProvider(base_url="http://localhost:11434")
+        return SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
 
     def test_show_model_returns_capabilities(self) -> None:
         provider = self._make_provider()
@@ -2183,64 +2217,71 @@ class TestReadMmprojProjectorTypePartial:
 
 class TestIsOllama:
     def test_localhost_default_port(self) -> None:
-        from lilbee.providers.litellm_provider import _is_ollama
+        from lilbee.providers.litellm_sdk import _is_ollama
 
         assert _is_ollama("http://localhost:11434") is True
 
     def test_127_default_port(self) -> None:
-        from lilbee.providers.litellm_provider import _is_ollama
+        from lilbee.providers.litellm_sdk import _is_ollama
 
         assert _is_ollama("http://127.0.0.1:11434") is True
 
     def test_ollama_in_url(self) -> None:
-        from lilbee.providers.litellm_provider import _is_ollama
+        from lilbee.providers.litellm_sdk import _is_ollama
 
         assert _is_ollama("https://ollama.example.com") is True
 
     def test_openai_url(self) -> None:
-        from lilbee.providers.litellm_provider import _is_ollama
+        from lilbee.providers.litellm_sdk import _is_ollama
 
         assert _is_ollama("https://api.openai.com") is False
 
     def test_custom_url(self) -> None:
-        from lilbee.providers.litellm_provider import _is_ollama
+        from lilbee.providers.litellm_sdk import _is_ollama
 
         assert _is_ollama("http://myserver:8080") is False
 
 
 class TestRouteModel:
-    """Tests for LiteLLMProvider._model_name which routes via parse_model_ref."""
+    """Wire-format routing lives in ``LitellmSdkBackend._route_model``.
+
+    These tests exercise the helper directly so we do not depend on the
+    internal composition of ``SdkLLMProvider`` + backend.
+    """
 
     def test_ollama_url_adds_prefix(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
-        assert provider._model_name("qwen3:8b") == "ollama/qwen3:8b"
+        ref = parse_model_ref("qwen3:8b")
+        assert _route_model(ref, "http://localhost:11434") == "ollama/qwen3:8b"
 
     def test_non_ollama_url_no_prefix(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
 
-        provider = LiteLLMProvider(base_url="https://api.openai.com")
-        assert provider._model_name("gpt-4o") == "gpt-4o:latest"
+        ref = parse_model_ref("gpt-4o")
+        # No Ollama hint and no API provider prefix: preserve raw name.
+        assert _route_model(ref, "https://api.openai.com") == "gpt-4o:latest"
 
     def test_already_prefixed_passes_through(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
-        assert provider._model_name("openai/gpt-4o") == "openai/gpt-4o"
+        ref = parse_model_ref("openai/gpt-4o")
+        assert _route_model(ref, "http://localhost:11434") == "openai/gpt-4o"
 
     def test_provider_prefixed_on_non_ollama(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
 
-        provider = LiteLLMProvider(base_url="https://api.anthropic.com")
-        assert provider._model_name("anthropic/claude-sonnet-4-6") == (
-            "anthropic/claude-sonnet-4-6"
-        )
+        ref = parse_model_ref("anthropic/claude-sonnet-4-6")
+        assert _route_model(ref, "https://api.anthropic.com") == "anthropic/claude-sonnet-4-6"
 
 
 class TestInjectProviderKeys:
     def test_injects_keys_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.litellm_provider import inject_provider_keys
+        from lilbee.providers.sdk_llm_provider import inject_provider_keys
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -2258,7 +2299,7 @@ class TestInjectProviderKeys:
         assert os.environ.get("GEMINI_API_KEY") is None
 
     def test_does_not_override_existing_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.litellm_provider import inject_provider_keys
+        from lilbee.providers.sdk_llm_provider import inject_provider_keys
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-existing")
         cfg.openai_api_key = "sk-from-config"
@@ -2272,9 +2313,10 @@ class TestInjectProviderKeys:
 
 class TestLiteLLMListModelsRouting:
     def test_ollama_url_uses_api_tags(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"models": [{"name": "llama3:8b"}]}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -2287,9 +2329,12 @@ class TestLiteLLMListModelsRouting:
         assert result == ["llama3:8b"]
 
     def test_non_ollama_url_uses_v1_models(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="https://api.openai.com", api_key="sk-test")
+        provider = SdkLLMProvider(
+            LitellmSdkBackend(), base_url="https://api.openai.com", api_key="sk-test"
+        )
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -2302,9 +2347,10 @@ class TestLiteLLMListModelsRouting:
         assert result == ["gpt-4o", "gpt-4o-mini"]
 
     def test_non_ollama_returns_empty_on_error(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="https://api.openai.com")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="https://api.openai.com")
 
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
             result = provider.list_models()
@@ -2312,9 +2358,12 @@ class TestLiteLLMListModelsRouting:
         assert result == []
 
     def test_v1_models_sends_auth_header(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="https://api.openai.com", api_key="sk-secret")
+        provider = SdkLLMProvider(
+            LitellmSdkBackend(), base_url="https://api.openai.com", api_key="sk-secret"
+        )
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"data": []}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -2365,9 +2414,10 @@ class TestChatApiBaseRouting:
         return fake
 
     def test_ollama_model_passes_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         fake = self._make_fake_litellm()
 
         with mock.patch.dict("sys.modules", {"litellm": fake}):
@@ -2378,9 +2428,10 @@ class TestChatApiBaseRouting:
         assert call_kwargs["model"] == "ollama/qwen3:0.6b"
 
     def test_frontier_model_omits_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         fake = self._make_fake_litellm()
 
         with mock.patch.dict("sys.modules", {"litellm": fake}):
@@ -2391,9 +2442,10 @@ class TestChatApiBaseRouting:
         assert call_kwargs["model"] == "openai/gpt-4o"
 
     def test_anthropic_model_omits_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         fake = self._make_fake_litellm()
 
         with mock.patch.dict("sys.modules", {"litellm": fake}):
@@ -2403,14 +2455,15 @@ class TestChatApiBaseRouting:
         assert "api_base" not in call_kwargs
 
     def test_chat_calls_inject_provider_keys(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         fake = self._make_fake_litellm()
 
         with (
             mock.patch.dict("sys.modules", {"litellm": fake}),
-            mock.patch("lilbee.providers.litellm_provider.inject_provider_keys") as mock_inject,
+            mock.patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject,
         ):
             provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
 
@@ -2421,9 +2474,10 @@ class TestEmbedApiBaseRouting:
     """Verify that embed() omits api_base for non-Ollama provider-prefixed models."""
 
     def test_ollama_embed_passes_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         cfg.embedding_model = "nomic-embed-text"
         fake = mock.MagicMock()
         fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
@@ -2435,9 +2489,10 @@ class TestEmbedApiBaseRouting:
         assert call_kwargs["api_base"] == "http://localhost:11434"
 
     def test_prefixed_embed_omits_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
         cfg.embedding_model = "openai/text-embedding-3-small"
         fake = mock.MagicMock()
         fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}

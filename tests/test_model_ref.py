@@ -63,17 +63,17 @@ class TestProviderModelRefProperties:
         ref = parse_model_ref("openai/gpt-4o")
         assert ref.is_api is True
         assert ref.is_local is False
-        assert ref.needs_litellm is True
+        assert ref.is_remote is True
 
     def test_local_model_is_local(self) -> None:
         ref = parse_model_ref("qwen3:8b")
         assert ref.is_local is True
         assert ref.is_api is False
-        assert ref.needs_litellm is False
+        assert ref.is_remote is False
 
-    def test_ollama_model_needs_litellm(self) -> None:
+    def test_ollama_model_is_remote(self) -> None:
         ref = parse_model_ref("ollama/qwen3:8b")
-        assert ref.needs_litellm is True
+        assert ref.is_remote is True
         assert ref.is_api is False
         assert ref.is_local is False
 
@@ -90,22 +90,22 @@ class TestProviderModelRefProperties:
         assert ref.needs_api_base is True
 
 
-class TestForLitellm:
+class TestForOpenaiPrefix:
     def test_ollama_model(self) -> None:
         ref = parse_model_ref("ollama/qwen3:8b")
-        assert ref.for_litellm() == "ollama/qwen3:8b"
+        assert ref.for_openai_prefix() == "ollama/qwen3:8b"
 
     def test_openai_model(self) -> None:
         ref = parse_model_ref("openai/gpt-4o")
-        assert ref.for_litellm() == "openai/gpt-4o"
+        assert ref.for_openai_prefix() == "openai/gpt-4o"
 
     def test_anthropic_model(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
-        assert ref.for_litellm() == "anthropic/claude-sonnet-4-20250514"
+        assert ref.for_openai_prefix() == "anthropic/claude-sonnet-4-20250514"
 
     def test_local_model(self) -> None:
         ref = parse_model_ref("qwen3:8b")
-        assert ref.for_litellm() == "qwen3:8b"
+        assert ref.for_openai_prefix() == "qwen3:8b"
 
 
 class TestForDisplay:

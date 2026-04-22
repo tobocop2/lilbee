@@ -204,7 +204,7 @@ class ChatScreen(Screen[None]):
         from lilbee.providers.llama_cpp_provider import resolve_model_path
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
-            if parse_model_ref(model).needs_litellm:
+            if parse_model_ref(model).is_remote:
                 continue
             try:
                 resolve_model_path(model)

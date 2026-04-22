@@ -358,20 +358,71 @@ class TestChat:
         assert "error" in data
         assert "terminal" in data["error"].lower() or "json" in data["error"].lower()
 
-    def test_json_mode_suppresses_litellm_debug(self) -> None:
-        """--json sets litellm.suppress_debug_info when litellm is installed."""
-        fake_litellm = mock.MagicMock()
-        fake_litellm.suppress_debug_info = False
-        with mock.patch.dict("sys.modules", {"litellm": fake_litellm}):
-            result = runner.invoke(app, ["--json", "chat"])
-            assert result.exit_code == 1
-            assert fake_litellm.suppress_debug_info is True
+    def test_json_mode_sets_json_flag_for_lazy_backend_suppression(self) -> None:
+        """--json sets cfg.json_mode so the SDK backend suppresses debug on first use."""
+        result = runner.invoke(app, ["--json", "chat"])
+        assert result.exit_code == 1
+        # The backend reads cfg.json_mode lazily when a provider call happens;
+        # the callback only needs to flip the flag so the provider picks it up.
+        assert cfg.json_mode is True
 
-    def test_json_mode_suppresses_litellm_without_litellm(self) -> None:
-        """When litellm is not installed, the ImportError is silently caught."""
-        with mock.patch.dict("sys.modules", {"litellm": None}):
-            result = runner.invoke(app, ["--json", "chat"])
-            assert result.exit_code == 1
+    def test_json_mode_propagates_through_provider_to_backend(self) -> None:
+        """End-to-end chain: --json -> cfg.json_mode -> backend.configure_logging(True).
+
+        Pins the full wiring: a CLI flag flips the flag, and the first
+        provider call propagates it to ``backend.configure_logging`` with
+        the correct value. Prevents a regression where the chain is
+        broken at either hop.
+        """
+        from lilbee.providers.base import ProviderError  # noqa: F401
+        from lilbee.providers.sdk_backend import (
+            CompletionRequest,
+            CompletionResult,
+            EmbeddingRequest,
+            EmbeddingResult,
+            StreamChunk,
+        )
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        class _RecordingBackend:
+            provider_name = "recording"
+
+            def __init__(self) -> None:
+                self.logging_calls: list[bool] = []
+
+            def available(self) -> bool:
+                return True
+
+            def configure_logging(self, *, suppress_debug: bool) -> None:
+                self.logging_calls.append(suppress_debug)
+
+            def complete(self, request: CompletionRequest) -> CompletionResult:
+                return CompletionResult(content="ok")
+
+            def complete_stream(self, request: CompletionRequest):
+                yield StreamChunk(content="ok")
+
+            def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+                return EmbeddingResult(vectors=[[0.0]])
+
+            def list_models(self, *, base_url: str, api_key: str) -> list[str]:
+                return []
+
+            def list_chat_models(self, provider: str) -> list[str]:
+                return []
+
+            def pull_model(self, model, *, base_url, on_progress=None) -> None:
+                raise NotImplementedError
+
+            def show_model(self, model, *, base_url):
+                return None
+
+        # Simulate --json: flip the flag before the provider is instantiated.
+        cfg.json_mode = True
+        backend = _RecordingBackend()
+        provider = SdkLLMProvider(backend)
+        provider.chat([{"role": "user", "content": "hi"}])
+        assert backend.logging_calls == [True]
 
 
 class TestApplyOverrides:
