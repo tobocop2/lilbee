@@ -677,8 +677,8 @@ async def models_catalog(
         offset=offset,
     )
 
-    provider = get_services().provider
-    installed_names = set(provider.list_models())
+    registry = get_services().registry
+    installed_names = {f"{m.name}:{m.tag}" for m in registry.list_installed()}
     enriched = enrich_catalog(result, installed_names)
 
     return ModelsCatalogResponse(
