@@ -1064,49 +1064,6 @@ class TestLockedStreamIterator:
         lock.release()
 
 
-class TestSkipGgufValue:
-    def test_string_type(self) -> None:
-        import io
-        import struct
-
-        from lilbee.providers.llama_cpp_provider import _skip_gguf_value
-
-        data = struct.pack("<Q", 5) + b"hello"
-        f = io.BytesIO(data)
-        _skip_gguf_value(f, 8)
-        assert f.tell() == len(data)
-
-    def test_array_type(self) -> None:
-        import io
-        import struct
-
-        from lilbee.providers.llama_cpp_provider import _skip_gguf_value
-
-        # array of 2 uint32 elements (type 4, size 4 bytes each)
-        data = struct.pack("<I", 4) + struct.pack("<Q", 2) + b"\x00" * 8
-        f = io.BytesIO(data)
-        _skip_gguf_value(f, 9)
-        assert f.tell() == len(data)
-
-    def test_known_type(self) -> None:
-        import io
-
-        from lilbee.providers.llama_cpp_provider import _skip_gguf_value
-
-        f = io.BytesIO(b"\x00\x00\x00\x00")
-        _skip_gguf_value(f, 4)  # uint32 = 4 bytes
-        assert f.tell() == 4
-
-    def test_unknown_type_skips_8_bytes(self) -> None:
-        import io
-
-        from lilbee.providers.llama_cpp_provider import _skip_gguf_value
-
-        f = io.BytesIO(b"\x00" * 8)
-        _skip_gguf_value(f, 255)  # unknown type
-        assert f.tell() == 8
-
-
 class TestReadMmprojProjectorType:
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
@@ -1135,6 +1092,35 @@ class TestReadMmprojProjectorType:
         from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
+
+    def test_reads_projector_type_past_bool_kv(self, tmp_path: Path) -> None:
+        """Parser must skip bool KV pairs (1 byte each) to reach projector_type.
+        LightOn OCR2's mmproj has ``clip.has_vision_encoder`` (bool) preceding
+        ``clip.projector_type``. A bool skip-size regression would over-advance
+        the stream and parse_header of the next key would raise.
+        """
+        import struct
+
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)
+        buf += struct.pack("<Q", 0)
+        buf += struct.pack("<Q", 2)  # 2 KV pairs
+        bool_key = b"clip.has_vision_encoder"
+        buf += struct.pack("<Q", len(bool_key)) + bool_key
+        buf += struct.pack("<I", 7)  # bool
+        buf += b"\x01"  # single byte
+        proj_key = b"clip.projector_type"
+        buf += struct.pack("<Q", len(proj_key)) + proj_key
+        buf += struct.pack("<I", 8)  # string
+        proj_val = b"lightonocr"  # the real regression case
+        buf += struct.pack("<Q", len(proj_val)) + proj_val
+
+        f = tmp_path / "mmproj.gguf"
+        f.write_bytes(bytes(buf))
+        assert read_mmproj_projector_type(f) == "lightonocr"
 
 
 class TestResolveVisionHandler:
@@ -2135,6 +2121,26 @@ class TestFindMmprojForModel:
             pytest.raises(ProviderError, match="No mmproj"),
         ):
             find_mmproj_for_model(model_path)
+
+    def test_hf_cache_blob_walks_to_snapshots(self, tmp_path: Path) -> None:
+        """HF cache resolves main GGUFs to blob paths; the mmproj lives next to the
+        snapshot symlink, not in blobs/. find_mmproj_for_model must walk up to the
+        sibling snapshots/ tree when the model path lives under blobs/.
+        """
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+
+        model_root = tmp_path / "models--org--Repo-GGUF"
+        blobs = model_root / "blobs"
+        snap = model_root / "snapshots" / "abc123"
+        blobs.mkdir(parents=True)
+        snap.mkdir(parents=True)
+        blob_path = blobs / "deadbeef"
+        blob_path.touch()
+        (snap / "mmproj-f16.gguf").touch()
+
+        with mock.patch("lilbee.catalog.find_mmproj_file", return_value=None):
+            result = find_mmproj_for_model(blob_path)
+        assert result == snap / "mmproj-f16.gguf"
 
 
 class TestReadMmprojProjectorTypePartial:
