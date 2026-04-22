@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from gguf import GGUFReader, GGUFValueType
+
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.services import get_services
@@ -490,8 +492,6 @@ _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
-    from gguf import GGUFReader, GGUFValueType
-
     try:
         reader = GGUFReader(str(mmproj_path))
         field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
