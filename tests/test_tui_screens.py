@@ -565,7 +565,10 @@ async def test_settings_checkbox_persist():
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
         cb.toggle()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.show_reasoning != original:
+                break
         assert cfg.show_reasoning != original
 
 
@@ -584,7 +587,10 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
                 break
         assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
         await pilot.press("space")
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.show_reasoning != original:
+                break
         assert cfg.show_reasoning != original
 
 
