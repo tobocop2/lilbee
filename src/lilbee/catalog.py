@@ -914,30 +914,30 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
 
 
 def find_mmproj_file(model_name: str) -> Path | None:
-    """Find the mmproj file for a vision model in the models directory.
-    Searches ``cfg.models_dir`` recursively (both legacy flat layouts and the
-    HF cache tree under ``models--ORG--NAME/snapshots/<rev>/``) for files
-    matching common mmproj naming patterns. Returns the path if found, None
-    otherwise.
+    """Find the mmproj file for a featured vision model in the models directory.
+
+    Returns a path only when ``model_name`` matches a ``FEATURED_VISION`` entry
+    (by ``name`` or ``hf_repo`` substring) and an mmproj file for that entry is
+    present under ``cfg.models_dir``. Returns ``None`` otherwise.
+
+    Never falls back to an arbitrary mmproj file: doing so cross-contaminates
+    non-vision chat models (e.g. ``qwen3:8b`` would inherit LightOn OCR2's
+    mmproj and be misreported as vision-capable).
     """
     models_dir = cfg.models_dir
     if not models_dir.exists():
         return None
 
-    # Check VISION_MMPROJ_FILES mapping via catalog entries
+    import fnmatch
+
     for entry in FEATURED_VISION:
-        if model_name in entry.name or model_name in entry.hf_repo:
-            pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, "")
-            if pattern:
-                import fnmatch
-
-                for p in models_dir.rglob("*.gguf"):
-                    if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
-                        return p
-
-    # Generic fallback: look for any mmproj .gguf anywhere under models_dir
-    mmproj_files = sorted(models_dir.rglob("*mmproj*.gguf"))
-    return mmproj_files[0] if mmproj_files else None
+        if model_name not in entry.name and model_name not in entry.hf_repo:
+            continue
+        pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
+        for p in models_dir.rglob("*.gguf"):
+            if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
+                return p
+    return None
 
 
 _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")

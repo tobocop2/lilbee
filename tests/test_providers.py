@@ -1097,6 +1097,19 @@ class TestSkipGgufValue:
         _skip_gguf_value(f, 4)  # uint32 = 4 bytes
         assert f.tell() == 4
 
+    def test_bool_type_advances_one_byte(self) -> None:
+        """GGUF bool (value_type 7) is a single byte per spec.
+        Regression: an earlier ``sizes`` entry had ``7: 8`` which over-read
+        7 bytes into the next KV pair and broke every subsequent key.
+        """
+        import io
+
+        from lilbee.providers.llama_cpp_provider import _skip_gguf_value
+
+        f = io.BytesIO(b"\x01" + b"\x00" * 16)  # bool + trailing padding
+        _skip_gguf_value(f, 7)
+        assert f.tell() == 1
+
     def test_unknown_type_skips_8_bytes(self) -> None:
         import io
 
@@ -1135,6 +1148,35 @@ class TestReadMmprojProjectorType:
         from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
+
+    def test_reads_projector_type_past_bool_kv(self, tmp_path: Path) -> None:
+        """Parser must skip bool KV pairs (1 byte each) to reach projector_type.
+        LightOn OCR2's mmproj has ``clip.has_vision_encoder`` (bool) preceding
+        ``clip.projector_type``. A bool skip-size regression would over-advance
+        the stream and parse_header of the next key would raise.
+        """
+        import struct
+
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)
+        buf += struct.pack("<Q", 0)
+        buf += struct.pack("<Q", 2)  # 2 KV pairs
+        bool_key = b"clip.has_vision_encoder"
+        buf += struct.pack("<Q", len(bool_key)) + bool_key
+        buf += struct.pack("<I", 7)  # bool
+        buf += b"\x01"  # single byte
+        proj_key = b"clip.projector_type"
+        buf += struct.pack("<Q", len(proj_key)) + proj_key
+        buf += struct.pack("<I", 8)  # string
+        proj_val = b"lightonocr"  # the real regression case
+        buf += struct.pack("<Q", len(proj_val)) + proj_val
+
+        f = tmp_path / "mmproj.gguf"
+        f.write_bytes(bytes(buf))
+        assert read_mmproj_projector_type(f) == "lightonocr"
 
 
 class TestResolveVisionHandler:

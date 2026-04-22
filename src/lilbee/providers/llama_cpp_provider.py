@@ -426,8 +426,10 @@ def _is_vision_model(model: str) -> bool:
 
 def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
-    Searches the same directory as the model for mmproj .gguf files.
-    Raises ProviderError if no mmproj file is found.
+
+    Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``, then
+    (2) a same-directory glob for sideloaded models that keep the mmproj next
+    to the main GGUF. Raises ``ProviderError`` if neither step finds a file.
     """
     from lilbee.catalog import find_mmproj_file
 
@@ -490,7 +492,9 @@ def _skip_gguf_value(f: Any, value_type: int) -> None:
     """Skip over a GGUF metadata value based on its type."""
     import struct
 
-    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 8, 8: 0, 10: 8, 11: 8, 12: 8}
+    # Per GGUF spec: UINT8/INT8 = 1, UINT16/INT16 = 2, UINT32/INT32/FLOAT32 = 4,
+    # BOOL (7) = 1 byte, UINT64/INT64/FLOAT64 = 8.
+    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 8: 0, 10: 8, 11: 8, 12: 8}
     if value_type == 8:  # string
         str_len = struct.unpack("<Q", f.read(8))[0]
         f.read(str_len)
