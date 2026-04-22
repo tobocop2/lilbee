@@ -1110,6 +1110,35 @@ class TestSkipGgufValue:
         _skip_gguf_value(f, 7)
         assert f.tell() == 1
 
+    def test_scalar_format_widths_match_gguf_spec(self) -> None:
+        """Every scalar format code in ``_GGUF_SCALAR_FORMAT`` resolves to the
+        byte width the GGUF spec requires. This locks the bool=1-byte invariant
+        to ``struct.calcsize`` rather than a hand-authored table, so a future
+        edit cannot re-introduce the 7:8 regression silently.
+        """
+        import struct
+
+        from lilbee.providers.llama_cpp_provider import (
+            _GGUF_SCALAR_FORMAT,
+            GgufValueType,
+        )
+
+        expected = {
+            GgufValueType.UINT8: 1,
+            GgufValueType.INT8: 1,
+            GgufValueType.UINT16: 2,
+            GgufValueType.INT16: 2,
+            GgufValueType.UINT32: 4,
+            GgufValueType.INT32: 4,
+            GgufValueType.FLOAT32: 4,
+            GgufValueType.BOOL: 1,
+            GgufValueType.UINT64: 8,
+            GgufValueType.INT64: 8,
+            GgufValueType.FLOAT64: 8,
+        }
+        for vt, width in expected.items():
+            assert struct.calcsize(_GGUF_SCALAR_FORMAT[vt]) == width, vt.name
+
     def test_unknown_type_skips_8_bytes(self) -> None:
         import io
 
