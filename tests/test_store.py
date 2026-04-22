@@ -619,6 +619,54 @@ class TestCitationCrud:
         assert store.get_citations_for_wiki("wiki/summaries/doc.md") == []
 
 
+def _make_structure(source_filename: str = "doc.pdf", hash_: str = "abcd") -> dict:
+    return {
+        "source_filename": source_filename,
+        "source_hash": hash_,
+        "document_json": '{"nodes": []}',
+        "kreuzberg_version": "0.0.0",
+        "created_at": "2026-04-21T00:00:00+00:00",
+    }
+
+
+class TestDocumentStructureCrud:
+    def test_upsert_and_retrieve(self, store):
+        store.upsert_document_structure(_make_structure(source_filename="doc.pdf"))
+        got = store.get_document_structure("doc.pdf")
+        assert got is not None
+        assert got["source_filename"] == "doc.pdf"
+        assert got["document_json"] == '{"nodes": []}'
+
+    def test_get_missing_returns_none(self, store):
+        assert store.get_document_structure("never.pdf") is None
+
+    def test_upsert_replaces_existing_row(self, store):
+        store.upsert_document_structure(_make_structure(source_filename="doc.pdf", hash_="old"))
+        store.upsert_document_structure(_make_structure(source_filename="doc.pdf", hash_="new"))
+        got = store.get_document_structure("doc.pdf")
+        assert got is not None
+        assert got["source_hash"] == "new"
+
+    def test_delete_removes_row(self, store):
+        store.upsert_document_structure(_make_structure())
+        store.delete_document_structure("doc.pdf")
+        assert store.get_document_structure("doc.pdf") is None
+
+    def test_delete_nonexistent_is_noop(self, store):
+        store.delete_document_structure("never.pdf")
+
+    def test_delete_source_also_removes_structure(self, store):
+        store.upsert_source("doc.pdf", "hash123", 3)
+        store.upsert_document_structure(_make_structure(source_filename="doc.pdf"))
+        store.delete_source("doc.pdf")
+        assert store.get_document_structure("doc.pdf") is None
+
+    def test_drop_all_clears_structure(self, store):
+        store.upsert_document_structure(_make_structure())
+        store.drop_all()
+        assert store.get_document_structure("doc.pdf") is None
+
+
 class TestHybridSearchDirect:
     def test_returns_search_chunks(self, store, test_config):
         """_hybrid_search returns SearchChunk instances from hybrid query."""

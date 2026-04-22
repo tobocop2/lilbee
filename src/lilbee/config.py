@@ -78,6 +78,7 @@ DEFAULT_IGNORE_DIRS = frozenset(
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
+STRUCTURE_TABLE = "_structure"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"

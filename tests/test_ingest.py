@@ -62,7 +62,12 @@ def mock_svc():
     svc_mod.set_services(None)
 
 
-def _make_kreuzberg_result(text="Some extracted text. " * 20, num_chunks=1, has_pages=False):
+def _make_kreuzberg_result(
+    text="Some extracted text. " * 20,
+    num_chunks=1,
+    has_pages=False,
+    document=None,
+):
     """Build a mock kreuzberg ExtractionResult."""
     chunks = []
     for i in range(num_chunks):
@@ -85,6 +90,7 @@ def _make_kreuzberg_result(text="Some extracted text. " * 20, num_chunks=1, has_
     result = mock.MagicMock()
     result.chunks = chunks
     result.content = text
+    result.document = document
     return result
 
 
@@ -93,6 +99,7 @@ def _make_empty_result():
     result = mock.MagicMock()
     result.chunks = []
     result.content = ""
+    result.document = None
     return result
 
 
@@ -462,6 +469,55 @@ class TestIngestHelpers:
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def testingest_document_persists_document_structure(self, mock_kf, isolated_env):
+        """When kreuzberg returns a document tree, it is forwarded to the store."""
+        document = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Top"},
+                    "page": 1,
+                    "children": [],
+                }
+            ]
+        }
+        mock_kf.return_value = _make_kreuzberg_result(
+            text="Long enough extracted text for the meaningful-text gate. " * 5,
+            num_chunks=1,
+            has_pages=True,
+            document=document,
+        )
+        from lilbee.ingest import ingest_document
+        from lilbee.services import get_services
+
+        f = isolated_env / "doc.pdf"
+        f.write_bytes(b"fake")
+        await ingest_document(f, "doc.pdf", "pdf")
+        store = get_services().store
+        store.upsert_document_structure.assert_called_once()
+        record = store.upsert_document_structure.call_args[0][0]
+        assert record["source_filename"] == "doc.pdf"
+        assert '"node_type": "heading"' in record["document_json"]
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def testingest_document_skips_structure_when_none(self, mock_kf, isolated_env):
+        """No-op when kreuzberg did not emit a document tree (e.g. plain text)."""
+        mock_kf.return_value = _make_kreuzberg_result(
+            text="Long enough extracted text for the meaningful-text gate. " * 5,
+            num_chunks=1,
+            has_pages=False,
+            document=None,
+        )
+        from lilbee.ingest import ingest_document
+        from lilbee.services import get_services
+
+        f = isolated_env / "plain.txt"
+        f.write_text("content")
+        await ingest_document(f, "plain.txt", "text")
+        store = get_services().store
+        store.upsert_document_structure.assert_not_called()
 
 
 class TestCancellation:
