@@ -73,6 +73,18 @@ class TestParseWikiCitations:
         assert len(result) == 1
         assert result[0].citation_key == "src1"
 
+    def test_parses_footnote_definitions_without_block_comment(self):
+        """Looser models skip the --- / <!-- comment --> header; still parse their footnotes."""
+        md = (
+            "# Summary\n\n"
+            "Some claim [^src1] and another [^src2].\n\n"
+            '[^src1]: doc.md, excerpt: "first quote"\n'
+            '[^src2]: doc.md, excerpt: "second quote"\n'
+        )
+        result = parse_wiki_citations(md)
+        assert [r.citation_key for r in result] == ["src1", "src2"]
+        assert result[0].source_ref == 'doc.md, excerpt: "first quote"'
+
 
 class TestRenderCitationBlock:
     def test_renders_with_lines(self):

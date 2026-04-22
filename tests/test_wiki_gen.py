@@ -181,6 +181,20 @@ class TestExtractExcerpt:
     def test_unclosed_quote_returns_rest(self):
         assert _extract_excerpt('doc.md, excerpt: "trailing text') == "trailing text"
 
+    def test_decodes_escaped_newlines(self):
+        """Models that emit ``\\n`` as a backslash-n escape get the real newline back."""
+        result = _extract_excerpt('doc.md, excerpt: "Warning\\nWhen you see this symbol"')
+        assert result == "Warning\nWhen you see this symbol"
+
+    def test_decodes_escaped_tab_and_backslash_and_quote(self):
+        result = _extract_excerpt('doc.md, excerpt: "a\\tb\\\\c')  # unclosed so raw path runs too
+        assert result == "a\tb\\c"
+
+    def test_leaves_unknown_escape_untouched(self):
+        """An unrecognized escape (``\\x``) is kept verbatim, not mangled."""
+        result = _extract_excerpt('doc.md, excerpt: "hex \\x41"')
+        assert result == "hex \\x41"
+
 
 class TestResolveCitations:
     def test_resolves_excerpt_to_chunk_location(self):
@@ -395,6 +409,15 @@ class TestCheckFaithfulness:
         _, kwargs = provider.chat.call_args
         assert kwargs["options"]["max_tokens"] == 42
 
+    def test_uses_wiki_temperature(self):
+        """Faithfulness chat uses the lower wiki temperature, not the chat default."""
+        provider = MagicMock()
+        provider.chat.return_value = "0.85"
+        cfg.wiki_temperature = 0.05
+        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
+        _, kwargs = provider.chat.call_args
+        assert kwargs["options"]["temperature"] == 0.05
+
 
 class TestGenerateSummaryPage:
     def test_generates_summary_page(self, tmp_path: Path):
@@ -487,6 +510,26 @@ class TestGenerateSummaryPage:
         # Two calls: [0] = summary generate, [1] = faithfulness check.
         gen_call = provider.chat.call_args_list[0]
         assert gen_call.kwargs["options"]["max_tokens"] == 777
+
+    def test_summary_generate_passes_wiki_temperature(self, tmp_path: Path):
+        """Summary generation uses the low wiki_temperature for deterministic output."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        cfg.wiki_temperature = 0.2
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        generate_summary_page("doc.md", chunks, provider, store)
+        gen_call = provider.chat.call_args_list[0]
+        assert gen_call.kwargs["options"]["temperature"] == 0.2
 
     def test_low_score_goes_to_drafts(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
@@ -1304,6 +1347,28 @@ class TestGenerateInnerNode:
         reduce_call, faith_call = provider.chat.call_args_list
         assert reduce_call.kwargs["options"]["max_tokens"] == 500
         assert faith_call.kwargs["options"]["max_tokens"] == 50
+
+    def test_inner_node_passes_wiki_temperature(self, isolated_env: Path):
+        """Inner-node reduce call uses wiki_temperature, not the chat default."""
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ["# Section\n\n> Section body.\n", "0.9"]
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        cfg.wiki_temperature = 0.15
+        _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        reduce_call = provider.chat.call_args_list[0]
+        assert reduce_call.kwargs["options"]["temperature"] == 0.15
 
     def test_writes_index_md(self, isolated_env: Path):
         leaf_path = self._setup(isolated_env)

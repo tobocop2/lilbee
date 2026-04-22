@@ -472,6 +472,13 @@ class Config(BaseSettings):
     wiki_summary_max_tokens: int = ConfigField(default=2048, ge=256, writable=True)
     wiki_faithfulness_max_tokens: int = ConfigField(default=256, ge=32, writable=True)
 
+    # Wiki generation is a structured-output task: the model must emit the
+    # block separators, the citation footnotes, and verbatim quotes. The
+    # usual chat default (~0.8) is too creative for that — lowering the
+    # sampling temperature makes the model stick to the template and quote
+    # more faithfully. 0.1 leaves just enough slack to avoid hard loops.
+    wiki_temperature: float = ConfigField(default=0.1, ge=0.0, le=2.0, writable=True)
+
     # Fraction of citations that must be stale before a wiki page is flagged
     # for regeneration during pruning. 0.5 = flag when >50% are stale.
     wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)

@@ -43,17 +43,20 @@ class ParsedCitation:
 
 
 def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
-    """Extract citation footnote definitions from the auto-generated citation block.
-    Returns a ParsedCitation for each ``[^srcN]: ...`` line found after the
-    citation block separator.
+    """Extract citation footnote definitions from wiki markdown.
+
+    When the auto-generated block comment is present, scans from that
+    line onward. When a looser model leaves the comment out, falls back
+    to scanning the whole document for ``[^srcN]: ...`` definition lines
+    — the pattern unambiguously identifies a citation footnote and can
+    only appear at the block level.
     """
     block_start = _find_citation_block_start(markdown)
-    if block_start is None:
-        return []
+    start = block_start if block_start is not None else 0
 
     lines = markdown.splitlines()
     citations: list[ParsedCitation] = []
-    for line_idx in range(block_start, len(lines)):
+    for line_idx in range(start, len(lines)):
         match = _FOOTNOTE_RE.match(lines[line_idx])
         if match:
             citations.append(

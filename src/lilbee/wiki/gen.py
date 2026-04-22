@@ -205,6 +205,13 @@ def _parse_faithfulness_score(response: str) -> float:
 def _extract_excerpt(source_ref: str) -> str:
     """Extract the quoted excerpt from a citation source_ref string.
     e.g. 'doc.md, excerpt: "Python supports typing."' → 'Python supports typing.'
+
+    Common JSON-style escape sequences inside the quoted span (``\\n``,
+    ``\\t``, ``\\"``, ``\\\\``) are decoded to their literal characters so
+    they round-trip against the source text. Some models "helpfully"
+    encode real newlines as ``\\n`` when emitting a quoted excerpt; the
+    source chunk they came from has real newlines, so skipping this
+    step leaves otherwise-faithful citations unverifiable.
     """
     marker = 'excerpt: "'
     idx = source_ref.find(marker)
@@ -212,9 +219,28 @@ def _extract_excerpt(source_ref: str) -> str:
         return ""
     start = idx + len(marker)
     end = source_ref.find('"', start)
-    if end == -1:
-        return source_ref[start:].strip()
-    return source_ref[start:end].strip()
+    raw = source_ref[start:].strip() if end == -1 else source_ref[start:end].strip()
+    return _decode_excerpt_escapes(raw)
+
+
+def _decode_excerpt_escapes(raw: str) -> str:
+    """Decode the JSON-style escapes models commonly emit inside quoted strings."""
+    if "\\" not in raw:
+        return raw
+    result: list[str] = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            mapped = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(nxt)
+            if mapped is not None:
+                result.append(mapped)
+                i += 2
+                continue
+        result.append(ch)
+        i += 1
+    return "".join(result)
 
 
 def _find_excerpt_location(
@@ -390,7 +416,10 @@ def _check_faithfulness(
     template = config.wiki_faithfulness_prompt
     prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
     messages = _build_wiki_messages(prompt, provider, config)
-    options = config.generation_options(max_tokens=config.wiki_faithfulness_max_tokens)
+    options = config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_faithfulness_max_tokens,
+    )
     try:
         response = provider.chat(messages, stream=False, options=options)
         return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
@@ -517,7 +546,10 @@ def _generate_page(
 
     messages = _build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
-    options = config.generation_options(max_tokens=config.wiki_summary_max_tokens)
+    options = config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_summary_max_tokens,
+    )
     try:
         response = provider.chat(messages, stream=False, options=options)
         wiki_text = strip_reasoning(cast(str, response)).strip()
@@ -838,7 +870,10 @@ def _generate_inner_node(
     )
 
     _emit("generating", source=label)
-    options = config.generation_options(max_tokens=config.wiki_summary_max_tokens)
+    options = config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_summary_max_tokens,
+    )
     try:
         response = provider.chat(
             _build_wiki_messages(prompt, provider, config), stream=False, options=options
