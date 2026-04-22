@@ -213,6 +213,102 @@ class TestLintAll:
         report = lint_all(store)
         assert report.issues == []
 
+    def test_lints_nested_per_source_pages(self, tmp_path: Path):
+        """Pages under per-source subdirectories (stage-1 layout) are lint-scanned."""
+        source = write_source(tmp_path, "cv-manual.pdf", "Content.")
+        write_wiki_page(
+            tmp_path,
+            "summaries",
+            "cv-manual/page-0001",
+            '> Content.[^src1]\n\n[^src1]: cv-manual.pdf, excerpt: "Content."\n',
+        )
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(
+                wiki_source="wiki/summaries/cv-manual/page-0001.md",
+                source_filename="cv-manual.pdf",
+                source_hash=source_hash(source),
+                excerpt="Content.",
+            )
+        ]
+        report = lint_all(store)
+        # Reverse lookup must have been called with the nested wiki_source key.
+        store.get_citations_for_wiki.assert_any_call("wiki/summaries/cv-manual/page-0001.md")
+        assert report.error_count == 0
+
+
+class TestLintWritesLogEntry:
+    def test_lint_all_appends_lint_entry_to_log(self, tmp_path: Path) -> None:
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        lint_all(store)
+        log_path = tmp_path / "wiki" / "log.md"
+        assert log_path.exists()
+        content = log_path.read_text()
+        assert "lint |" in content
+
+
+class TestOrphanDetection:
+    def test_orphan_concept_flagged(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "concepts", "linked", "# Linked\n\nText.\n")
+        # Someone links to "linked" but nobody links to "braking".
+        write_wiki_page(tmp_path, "summaries", "doc", "See [[linked]] for details.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_issues = [
+            i for i in report.issues if i.issue_type is not None and i.issue_type.value == "orphan"
+        ]
+        slugs = {issue.wiki_source for issue in orphan_issues}
+        assert "wiki/concepts/braking.md" in slugs
+        assert "wiki/concepts/linked.md" not in slugs
+
+    def test_orphan_detection_ignores_non_concept_subdirs(self, tmp_path: Path):
+        # Summaries/synthesis pages are never flagged as orphans even if
+        # nobody links to them; the graph centerpiece is concepts+entities.
+        write_wiki_page(tmp_path, "summaries", "loose-doc", "# Loose doc\n\nText.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_issues = [
+            i for i in report.issues if i.issue_type is not None and i.issue_type.value == "orphan"
+        ]
+        assert orphan_issues == []
+
+    def test_entity_page_with_incoming_link_is_not_orphan(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "entities", "henry-ford", "# Henry Ford\n\nText.\n")
+        write_wiki_page(
+            tmp_path,
+            "concepts",
+            "motor-company",
+            "Linked via [[henry-ford]] alias.\n",
+        )
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_slugs = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert "wiki/entities/henry-ford.md" not in orphan_slugs
+
+    def test_alias_link_form_counts_as_inbound(self, tmp_path: Path):
+        # [[slug|display text]] should still count — slug is the left side.
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "summaries", "doc", "See [[braking|the brake chapter]].\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_slugs = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert "wiki/concepts/braking.md" not in orphan_slugs
+
 
 class TestPathTraversalDefense:
     def test_citation_with_traversal_path_returns_error(self, tmp_path: Path):

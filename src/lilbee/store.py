@@ -17,7 +17,13 @@ if TYPE_CHECKING:
     import lancedb
     import lancedb.table
 
-from lilbee.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, Config, cfg
+from lilbee.config import (
+    CHUNKS_TABLE,
+    CITATIONS_TABLE,
+    SOURCES_TABLE,
+    Config,
+    cfg,
+)
 from lilbee.lock import write_lock
 from lilbee.security import validate_path_within
 

@@ -138,6 +138,15 @@ class TestUpdateWikiIndex:
         path = update_wiki_index(config=cfg)
         assert path.exists()
 
+    def test_lists_nested_per_source_pages(self, isolated_env: Path):
+        """Pages under per-source subdirectories (stage-1 layout) are listed with nested slugs."""
+        write_wiki_page(isolated_env, "summaries", "cv-manual/page-0001", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "cv-manual/page-0042", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "[My Document](summaries/cv-manual/page-0001.md)" in content
+        assert "[My Document](summaries/cv-manual/page-0042.md)" in content
+
 
 class TestAppendWikiLog:
     def test_creates_log_file(self, isolated_env: Path):
@@ -158,10 +167,11 @@ class TestAppendWikiLog:
     def test_timestamp_format(self, isolated_env: Path):
         path = append_wiki_log("test", "details")
         content = path.read_text(encoding="utf-8")
-        # Should contain a date like [2026-04-04]
+        # Format includes minutes so repeated actions within the same build
+        # don't collide on the same header.
         import re
 
-        assert re.search(r"## \[\d{4}-\d{2}-\d{2}\]", content)
+        assert re.search(r"## \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]", content)
 
     def test_preserves_header(self, isolated_env: Path):
         append_wiki_log("first", "a")
@@ -178,3 +188,61 @@ class TestAppendWikiLog:
     def test_accepts_explicit_config(self, isolated_env: Path):
         path = append_wiki_log("test", "details", config=cfg)
         assert path.exists()
+
+
+class TestIndexSectioning:
+    """The index groups pages under type-specific headers in a fixed order."""
+
+    def test_concepts_and_entities_get_their_own_sections(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "concepts", "braking-systems", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "entities", "henry-ford", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "## Concepts" in content
+        assert "## Entities" in content
+        concepts_pos = content.index("## Concepts")
+        entities_pos = content.index("## Entities")
+        assert concepts_pos < entities_pos
+
+    def test_empty_sections_are_omitted(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "concepts", "tire-pressure", _CONCEPT_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "## Concepts" in content
+        assert "## Entities" not in content
+        assert "## Source Summaries" not in content
+
+    def test_sections_ordered_concepts_entities_summaries_synthesis(
+        self, isolated_env: Path
+    ) -> None:
+        write_wiki_page(isolated_env, "summaries", "s", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "synthesis", "x", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "concepts", "c", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "entities", "e", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        positions = [
+            content.index("## Concepts"),
+            content.index("## Entities"),
+            content.index("## Source Summaries"),
+            content.index("## Synthesis"),
+        ]
+        assert positions == sorted(positions)
+
+
+class TestLogActionConstants:
+    """New ops (build, update, ingest, lint) land as importable constants."""
+
+    def test_action_constants_exist(self):
+        from lilbee.wiki.shared import (
+            WIKI_LOG_ACTION_BUILD,
+            WIKI_LOG_ACTION_GENERATED,
+            WIKI_LOG_ACTION_INGEST,
+            WIKI_LOG_ACTION_LINT,
+        )
+
+        assert WIKI_LOG_ACTION_BUILD == "build"
+        assert WIKI_LOG_ACTION_INGEST == "ingest"
+        assert WIKI_LOG_ACTION_LINT == "lint"
+        # Pre-existing constant is unchanged so old log entries still read the same.
+        assert WIKI_LOG_ACTION_GENERATED == "generated"

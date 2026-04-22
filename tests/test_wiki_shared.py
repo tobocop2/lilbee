@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from lilbee.wiki.shared import (
     ARCHIVE_SUBDIR,
+    CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
+    ENTITIES_SUBDIR,
     SUBDIR_TO_TYPE,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
@@ -19,6 +21,8 @@ class TestSubdirToType:
         assert set(SUBDIR_TO_TYPE) == {
             SUMMARIES_SUBDIR,
             SYNTHESIS_SUBDIR,
+            CONCEPTS_SUBDIR,
+            ENTITIES_SUBDIR,
             DRAFTS_SUBDIR,
             ARCHIVE_SUBDIR,
         }
@@ -26,6 +30,8 @@ class TestSubdirToType:
     def test_values(self):
         assert SUBDIR_TO_TYPE[SUMMARIES_SUBDIR] is WikiPageType.SUMMARY
         assert SUBDIR_TO_TYPE[SYNTHESIS_SUBDIR] is WikiPageType.SYNTHESIS
+        assert SUBDIR_TO_TYPE[CONCEPTS_SUBDIR] is WikiPageType.CONCEPT
+        assert SUBDIR_TO_TYPE[ENTITIES_SUBDIR] is WikiPageType.ENTITY
         assert SUBDIR_TO_TYPE[DRAFTS_SUBDIR] is WikiPageType.DRAFT
         assert SUBDIR_TO_TYPE[ARCHIVE_SUBDIR] is WikiPageType.ARCHIVE
 

@@ -8,11 +8,9 @@ from typing import Any
 from litestar import get, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
-from litestar.response import Stream
 
 from lilbee import services as svc_mod
 from lilbee.config import cfg
-from lilbee.security import validate_path_within
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     WikiCitationRecord,
@@ -129,25 +127,6 @@ async def wiki_lint_route() -> WikiLintResult:
         errors=report.error_count,
         warnings=report.warning_count,
     )
-
-
-@post("/api/wiki/generate/{source:path}")
-async def wiki_generate_route(source: str) -> Stream:
-    """Trigger wiki generation for a source document (SSE stream).
-    Emits ``progress`` events for each pipeline stage and a final ``done``
-    event with the generation result.
-    """
-    from lilbee.server import handlers
-
-    _require_wiki()
-    source = source.lstrip("/")
-
-    try:
-        validate_path_within(cfg.documents_dir / source, cfg.documents_dir)
-    except ValueError:
-        raise NotFoundException(detail=f"invalid source path: {source}") from None
-
-    return Stream(handlers.wiki_generate_stream(source), media_type="text/event-stream")
 
 
 @post("/api/wiki/prune")

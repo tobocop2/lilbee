@@ -1,4 +1,4 @@
-"""Wiki screen — browse wiki pages with sidebar navigation and markdown preview."""
+"""Wiki screen: browse wiki pages as a navigable tree with markdown preview."""
 
 from __future__ import annotations
 
@@ -15,17 +15,21 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Input, Markdown, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import Input, Markdown, Static, Tree
+from textual.widgets.tree import TreeNode
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.task_bar import TaskBar
-from lilbee.cli.tui.wiki_worker import generate_wiki_pages, resolve_wiki_targets
 from lilbee.config import cfg
 from lilbee.wiki.browse import read_page
 
 log = logging.getLogger(__name__)
+
+# Tree node data carries the full wiki-page slug when present. Group folders
+# (page-type headings, per-source branches, inner-section branches) use None.
+_LEAF_SUFFIX = ""
+_INDEX_STEM = "index"
 
 
 def _wiki_root() -> Path:
@@ -53,20 +57,36 @@ def _format_page_header(
     return "".join(parts)
 
 
+def _short_label(slug_part: str) -> str:
+    """Render a slug component as a human-friendly tree label."""
+    return slug_part.replace("-", " ").replace("_", " ").strip()
+
+
+def _breadcrumb_for_slug(slug: str, title: str) -> str:
+    """Build a dim-themed breadcrumb string: chapter > section > page."""
+    parts = slug.split("/")
+    if len(parts) <= 1:
+        return ""
+    display_parts = [_short_label(p) for p in parts[:-1]]
+    display_parts.append(title)
+    return " [dim]>[/] ".join(display_parts)
+
+
 class WikiScreen(Screen[None]):
-    """Wiki page browser with sidebar and markdown content viewer."""
+    """Wiki page browser with a tree sidebar and markdown content viewer."""
 
     CSS_PATH = "wiki.tcss"
     AUTO_FOCUS = "#wiki-page-list"
-    HELP = "Browse wiki pages.\n\nUse / to search, Enter to select a page, Escape to clear search."
+    HELP = "Browse wiki pages. h/l collapse/expand, j/k navigate, Enter opens a page, / searches."
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "dismiss_or_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("r", "regenerate", "Regen", show=True, priority=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
+        Binding("h", "cursor_left", "Collapse", show=False),
+        Binding("l", "cursor_right", "Expand", show=False),
         Binding("g", "jump_top", "Top", show=False),
         Binding("G", "jump_bottom", "End", show=False),
     ]
@@ -81,16 +101,19 @@ class WikiScreen(Screen[None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
+        tree: Tree[str | None] = Tree("Wiki", id="wiki-page-list")
+        tree.show_root = False
         yield Horizontal(
             Vertical(
                 NavAwareInput(
                     placeholder=msg.WIKI_SEARCH_PLACEHOLDER,
                     id="wiki-search",
                 ),
-                OptionList(id="wiki-page-list"),
+                tree,
                 id="wiki-sidebar",
             ),
             Vertical(
+                Static("", id="wiki-breadcrumb"),
                 Static("", id="wiki-page-header"),
                 VerticalScroll(
                     Markdown("", id="wiki-content"),
@@ -113,15 +136,15 @@ class WikiScreen(Screen[None]):
         self._load_pages()
 
     def _load_pages(self, filter_text: str = "") -> None:
-        """Populate the sidebar with wiki pages, optionally filtered."""
+        """Populate the sidebar tree with wiki pages, optionally filtered."""
         from lilbee.wiki.browse import list_pages
 
-        option_list = self.query_one("#wiki-page-list", OptionList)
-        option_list.clear_options()
+        tree = self.query_one("#wiki-page-list", Tree)
+        tree.reset("Wiki")
         self._page_slugs = []
 
         if not cfg.wiki:
-            option_list.add_option(Option(msg.WIKI_EMPTY_STATE, disabled=True))
+            tree.root.add_leaf(msg.WIKI_EMPTY_STATE)
             self._show_placeholder()
             return
 
@@ -137,29 +160,76 @@ class WikiScreen(Screen[None]):
             all_pages = [p for p in all_pages if needle in p.title.lower()]
 
         if not all_pages:
-            option_list.add_option(Option(msg.WIKI_EMPTY_STATE, disabled=True))
+            tree.root.add_leaf(msg.WIKI_EMPTY_STATE)
             self._show_placeholder()
             return
 
-        grouped = _group_pages(all_pages)
-        for page_type, pages in grouped:
+        self._populate_tree(tree, all_pages)
+
+    def _populate_tree(self, tree: Tree[str | None], pages: list[WikiPageInfo]) -> None:
+        """Build the sidebar tree from a flat list of wiki pages.
+
+        Slugs like ``summaries/cv-manual/01-brakes/page-0042`` become nested
+        branches under their page-type group, with leaves for leaf pages and
+        expandable branches for intermediate heading folders. ``index.md``
+        and ``log.md`` at the wiki root are surfaced as top-level leaves.
+        """
+        self._add_root_shortcut(tree, "index", msg.WIKI_INDEX_LABEL)
+        self._add_root_shortcut(tree, "log", msg.WIKI_LOG_LABEL)
+        grouped = _group_pages(pages)
+        for page_type, group_pages in grouped:
             heading = msg.WIKI_TYPE_HEADINGS.get(page_type, page_type.capitalize())
-            option_list.add_option(Option(f"── {heading} ──", disabled=True))
-            for page in pages:
+            group_node = tree.root.add(heading, expand=True)
+            for page in group_pages:
                 self._page_slugs.append(page.slug)
-                label = f"  {page.title}"
-                option_list.add_option(Option(label, id=page.slug))
+                self._insert_page(group_node, page)
+
+    def _add_root_shortcut(self, tree: Tree[str | None], slug: str, label: str) -> None:
+        """Add a top-level leaf for an auto-generated page (index.md, log.md)."""
+        if not (_wiki_root() / f"{slug}.md").is_file():
+            return
+        tree.root.add_leaf(label, data=slug)
+        self._page_slugs.append(slug)
+
+    def _insert_page(self, group_node: TreeNode[str | None], page: WikiPageInfo) -> None:
+        """Walk the slug path and add/reuse branches until the leaf position.
+
+        Slugs begin with the page-type prefix (``summaries/``/``synthesis/``),
+        which is already reflected in the enclosing group node. The remaining
+        path components form the nested tree inside the group.
+        """
+        parts = page.slug.split("/")
+        if len(parts) <= 1:
+            group_node.add_leaf(page.title, data=page.slug)
+            return
+
+        # Skip the leading page-type component since the group node represents it.
+        inner_parts = parts[1:]
+        node = group_node
+        *branch_parts, leaf_part = inner_parts
+        for part in branch_parts:
+            node = _find_or_add_branch(node, part)
+
+        if leaf_part == _INDEX_STEM:
+            # An inner-node index.md file: show its title on the enclosing branch.
+            node.label = page.title
+            node.data = page.slug
+            return
+
+        label = _short_label(leaf_part)
+        node.add_leaf(page.title if page.title else label, data=page.slug)
 
     def _show_placeholder(self) -> None:
         """Show the no-content placeholder in the main area."""
+        self.query_one("#wiki-breadcrumb", Static).update("")
         self.query_one("#wiki-page-header", Static).update("")
         self.query_one("#wiki-content", Markdown).update(msg.WIKI_NO_CONTENT)
 
-    @on(OptionList.OptionSelected, "#wiki-page-list")
-    def _on_page_selected(self, event: OptionList.OptionSelected) -> None:
-        """Load and display the selected wiki page."""
-        slug = event.option.id
-        if slug is None:
+    @on(Tree.NodeSelected, "#wiki-page-list")
+    def _on_node_selected(self, event: Tree.NodeSelected[str | None]) -> None:
+        """Load and display the selected wiki page when the node carries a slug."""
+        slug = event.node.data
+        if not isinstance(slug, str):
             return
         self._display_page(slug)
 
@@ -170,6 +240,7 @@ class WikiScreen(Screen[None]):
         root = _wiki_root()
         page = read_page(root, slug)
         if page is None:
+            self.query_one("#wiki-breadcrumb", Static).update("")
             self.query_one("#wiki-page-header", Static).update("")
             self.query_one("#wiki-content", Markdown).update(msg.WIKI_NO_CONTENT)
             return
@@ -196,6 +267,7 @@ class WikiScreen(Screen[None]):
             created_at=str(created_at),
             faithfulness=faith_val,
         )
+        self.query_one("#wiki-breadcrumb", Static).update(_breadcrumb_for_slug(slug, page.title))
         self.query_one("#wiki-page-header", Static).update(header_text)
         self.query_one("#wiki-content", Markdown).update(page.content)
 
@@ -206,32 +278,14 @@ class WikiScreen(Screen[None]):
 
     def _selected_source(self) -> str | None:
         """Return the source name for the highlighted wiki page, or None."""
-        option_list = self.query_one("#wiki-page-list", OptionList)
-        highlighted = option_list.highlighted
-        if highlighted is None:
+        tree = self.query_one("#wiki-page-list", Tree)
+        node = tree.cursor_node
+        if node is None:
             return None
-        slug = option_list.get_option_at_index(highlighted).id
-        if slug is None:
+        slug = node.data
+        if not isinstance(slug, str):
             return None
         return self._source_for_slug(slug)
-
-    def action_regenerate(self) -> None:
-        """Regenerate wiki page(s). Selected page's source, or all sources."""
-        if not cfg.wiki:
-            self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
-            return
-
-        requested = self._selected_source()
-        targets = resolve_wiki_targets(requested)
-        if targets is None:
-            if requested is not None:
-                self.notify(msg.CMD_WIKI_NOT_FOUND.format(name=requested), severity="error")
-            else:
-                self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
-            return
-
-        self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
-        self._submit_wiki_task(targets)
 
     def _source_for_slug(self, slug: str) -> str | None:
         """Extract the primary source filename from a wiki page's frontmatter."""
@@ -244,32 +298,6 @@ class WikiScreen(Screen[None]):
         if isinstance(sources, list) and sources:
             return str(sources[0])
         return None
-
-    def _submit_wiki_task(self, sources: list[str]) -> None:
-        """Submit wiki generation to the app-level TaskBarController."""
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.task_queue import TaskType
-        from lilbee.cli.tui.thread_safe import call_from_thread
-        from lilbee.cli.tui.widgets.task_bar import ProgressReporter
-
-        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            return
-        total = len(sources)
-
-        def _target(reporter: ProgressReporter) -> None:
-            generated = generate_wiki_pages(sources, reporter)
-            call_from_thread(
-                self,
-                self.notify,
-                msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total),
-            )
-
-        self.app.task_bar.start_task(
-            msg.TASK_NAME_WIKI.format(count=total),
-            TaskType.WIKI,
-            _target,
-            on_success=lambda: call_from_thread(self, self.reload),
-        )
 
     def action_focus_search(self) -> None:
         """Focus the search input -- bound to / key."""
@@ -291,37 +319,65 @@ class WikiScreen(Screen[None]):
         else:
             self.app.pop_screen()
 
-    def action_cursor_down(self) -> None:
+    def _tree_or_none(self) -> Tree[str | None] | None:
         if isinstance(self.focused, Input):
-            return
-        self.query_one("#wiki-page-list", OptionList).action_cursor_down()
+            return None
+        return self.query_one("#wiki-page-list", Tree)
+
+    def action_cursor_down(self) -> None:
+        tree = self._tree_or_none()
+        if tree is not None:
+            tree.action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        self.query_one("#wiki-page-list", OptionList).action_cursor_up()
+        tree = self._tree_or_none()
+        if tree is not None:
+            tree.action_cursor_up()
+
+    def action_cursor_left(self) -> None:
+        tree = self._tree_or_none()
+        if tree is not None:
+            tree.action_cursor_parent()
+
+    def action_cursor_right(self) -> None:
+        tree = self._tree_or_none()
+        if tree is not None:
+            tree.action_toggle_node()
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        option_list = self.query_one("#wiki-page-list", OptionList)
-        option_list.scroll_home()
+        tree = self._tree_or_none()
+        if tree is not None:
+            tree.scroll_home()
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        option_list = self.query_one("#wiki-page-list", OptionList)
-        option_list.scroll_end()
+        tree = self._tree_or_none()
+        if tree is not None:
+            tree.scroll_end()
+
+
+def _find_or_add_branch(parent: TreeNode[str | None], label_part: str) -> TreeNode[str | None]:
+    """Return the child branch whose raw label matches *label_part*, adding it if absent."""
+    display = _short_label(label_part)
+    for child in parent.children:
+        existing = child.label.plain if hasattr(child.label, "plain") else str(child.label)
+        if existing == display:
+            return child
+    return parent.add(display, expand=True)
 
 
 def _group_pages(
     pages: list[WikiPageInfo],
 ) -> list[tuple[str, list[WikiPageInfo]]]:
-    """Group pages by page_type, maintaining order: summaries first, then synthesis."""
+    """Group pages by page_type in sidebar order: concepts, entities, then legacy."""
     from lilbee.wiki.shared import WikiPageType
 
     groups: dict[str, list[WikiPageInfo]] = {}
-    type_order: tuple[str, ...] = (WikiPageType.SUMMARY, WikiPageType.SYNTHESIS)
+    type_order: tuple[str, ...] = (
+        WikiPageType.CONCEPT,
+        WikiPageType.ENTITY,
+        WikiPageType.SUMMARY,
+        WikiPageType.SYNTHESIS,
+    )
     for t in type_order:
         group = [p for p in pages if p.page_type == t]
         if group:

@@ -9,7 +9,10 @@ _citations table is the source of truth; markdown footnotes are rendered from it
 from __future__ import annotations
 
 import difflib
+import functools
+import hashlib
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,14 +30,20 @@ from lilbee.wiki.citation import (
     render_citation_block,
     strip_citation_block,
 )
+from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
+from lilbee.wiki.links import rewrite_wiki_links
 from lilbee.wiki.shared import (
+    CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
+    ENTITIES_SUBDIR,
     MIN_CLUSTER_SOURCES,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
+    WIKI_LOG_ACTION_GENERATED,
     PageTarget,
     make_slug,
+    parse_frontmatter,
 )
 
 log = logging.getLogger(__name__)
@@ -55,6 +64,37 @@ _CONTEXT_BUDGET_FRACTION = 0.75
 # Approximate characters per token for budget estimation. 4 chars/token
 # is a widely used heuristic for English text.
 _CHARS_PER_TOKEN = 4
+
+# Directive recognized by chat templates that support a reasoning mode
+# (Qwen3, DeepSeek-R1, etc.). Wiki generation is a summarization task
+# where chain-of-thought adds wall-clock cost without improving output,
+# so we suppress it whenever the provider reports the capability.
+_NO_THINK_DIRECTIVE = "/no_think"
+
+# Capability string returned by llama-cpp providers for reasoning models
+# (Qwen3, DeepSeek-R1). Defined locally so gen.py doesn't depend on a
+# specific provider-layer constant name.
+_CAPABILITY_THINKING = "thinking"
+
+# JSON-style escape sequences that may appear inside quoted excerpts the
+# model emits. Any backslash-prefixed character not in this map stays
+# verbatim (e.g. ``\\x`` passes through unchanged).
+_EXCERPT_ESCAPES: dict[str, str] = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+
+
+def _build_wiki_messages(
+    prompt: str, provider: LLMProvider, config: Config
+) -> list[dict[str, str]]:
+    """Build the chat messages list for a wiki-gen call.
+
+    When the provider reports the ``thinking`` capability for the active
+    chat model, prepends ``/no_think`` so the chat template disables the
+    reasoning mode. Otherwise the prompt passes through unchanged.
+    """
+    capabilities = provider.get_capabilities(config.chat_model)
+    if _CAPABILITY_THINKING in capabilities:
+        prompt = f"{_NO_THINK_DIRECTIVE}\n\n{prompt}"
+    return [{"role": "user", "content": prompt}]
 
 
 def _truncate_chunks_to_budget(
@@ -89,6 +129,52 @@ def _truncate_chunks_to_budget(
     return kept
 
 
+def _group_chunks_by_page(
+    chunks: list[SearchChunk],
+) -> list[tuple[int, list[SearchChunk]]]:
+    """Group chunks by ``page_start``, preserving in-document order within a page.
+
+    Returns ``(page_start, chunks)`` tuples sorted ascending by page number.
+    Chunks with ``page_start=0`` (non-paginated sources) collapse to a single
+    entry keyed at 0, so a markdown or code source still emits exactly one
+    summary file until structure detection arrives in a later stage.
+    """
+    grouped: dict[int, list[SearchChunk]] = {}
+    for chunk in chunks:
+        grouped.setdefault(chunk.page_start, []).append(chunk)
+    return sorted(grouped.items())
+
+
+def _leaf_hash(chunks: list[SearchChunk]) -> str:
+    """SHA-256 over concatenated chunk content (null-separated, in given order).
+
+    Acts as the cache key for incremental rebuild: an existing page whose
+    frontmatter ``leaf_hash`` matches this value has already summarized the
+    exact same input and can be reused without a new LLM call.
+    """
+    h = hashlib.sha256()
+    for chunk in chunks:
+        h.update(chunk.chunk.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _find_cached_leaf(wiki_root: Path, slug: str, leaf_hash: str) -> Path | None:
+    """Return an existing page whose ``leaf_hash`` frontmatter matches, or ``None``.
+
+    Checks both ``summaries/`` and ``drafts/`` so an unchanged draft stays in
+    drafts rather than triggering a speculative regeneration.
+    """
+    for subdir in (SUMMARIES_SUBDIR, DRAFTS_SUBDIR):
+        candidate = wiki_root / subdir / f"{slug}.md"
+        if not candidate.is_file():
+            continue
+        fm = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+        if fm.get("leaf_hash") == leaf_hash:
+            return candidate
+    return None
+
+
 def _chunks_to_text(chunks: list[SearchChunk]) -> str:
     """Format chunks as numbered text blocks for the LLM prompt."""
     parts: list[str] = []
@@ -119,6 +205,13 @@ def _parse_faithfulness_score(response: str) -> float:
 def _extract_excerpt(source_ref: str) -> str:
     """Extract the quoted excerpt from a citation source_ref string.
     e.g. 'doc.md, excerpt: "Python supports typing."' → 'Python supports typing.'
+
+    Common JSON-style escape sequences inside the quoted span (``\\n``,
+    ``\\t``, ``\\"``, ``\\\\``) are decoded to their literal characters so
+    they round-trip against the source text. Some models "helpfully"
+    encode real newlines as ``\\n`` when emitting a quoted excerpt; the
+    source chunk they came from has real newlines, so skipping this
+    step leaves otherwise-faithful citations unverifiable.
     """
     marker = 'excerpt: "'
     idx = source_ref.find(marker)
@@ -126,9 +219,26 @@ def _extract_excerpt(source_ref: str) -> str:
         return ""
     start = idx + len(marker)
     end = source_ref.find('"', start)
-    if end == -1:
-        return source_ref[start:].strip()
-    return source_ref[start:end].strip()
+    raw = source_ref[start:].strip() if end == -1 else source_ref[start:end].strip()
+    return _decode_excerpt_escapes(raw)
+
+
+def _decode_excerpt_escapes(raw: str) -> str:
+    """Decode the JSON-style escapes models commonly emit inside quoted strings."""
+    if "\\" not in raw:
+        return raw
+    result: list[str] = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        mapped = _EXCERPT_ESCAPES.get(raw[i + 1]) if ch == "\\" and i + 1 < len(raw) else None
+        if mapped is not None:
+            result.append(mapped)
+            i += 2
+        else:
+            result.append(ch)
+            i += 1
+    return "".join(result)
 
 
 def _find_excerpt_location(
@@ -239,9 +349,9 @@ def _divert_to_drafts(
     diff_text: str,
 ) -> Path:
     """Write new content to wiki/drafts/ with a drift note instead of overwriting."""
-    drafts_dir.mkdir(parents=True, exist_ok=True)
     draft_path = drafts_dir / f"{slug}.md"
-    note = f"<!-- DRIFT: {change_ratio:.0%} content changed — flagged for human review -->\n\n"
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    note = f"<!-- DRIFT: {change_ratio:.0%} content changed - flagged for human review -->\n\n"
     draft_path.write_text(note + new_content, encoding="utf-8")
     log.warning(
         "Drift detected for %s (%.0f%% changed), diverted to drafts. Diff:\n%s",
@@ -252,6 +362,21 @@ def _divert_to_drafts(
     return draft_path
 
 
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of whitespace to a single space and strip the edges.
+
+    PDF extractors preserve line breaks mid-sentence (``vehicle,\\nthe greater``)
+    while LLMs paraphrase the same quote as a single-spaced string
+    (``vehicle, the greater``). A strict substring check rejects a faithful
+    citation on whitespace alone, so both sides are normalized before
+    comparison.
+    """
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
 def _verify_citations(
     citation_records: list[CitationRecord],
     chunks: list[SearchChunk],
@@ -260,7 +385,7 @@ def _verify_citations(
 ) -> list[CitationRecord]:
     """Filter citation records, keeping only those whose excerpts are in the chunks."""
     wiki_prefix = config.wiki_dir + "/"
-    all_chunk_text = " ".join(c.chunk for c in chunks)
+    all_chunk_text = _normalize_whitespace(" ".join(c.chunk for c in chunks))
     verified: list[CitationRecord] = []
     for rec in citation_records:
         if rec["source_filename"].startswith(wiki_prefix):
@@ -269,7 +394,7 @@ def _verify_citations(
         if rec["claim_type"] == "inference" or not rec["excerpt"]:
             verified.append(rec)
             continue
-        if rec["excerpt"] in all_chunk_text:
+        if _normalize_whitespace(rec["excerpt"]) in all_chunk_text:
             verified.append(rec)
         else:
             log.debug("Citation %s excerpt not found in %s, dropping", rec["citation_key"], label)
@@ -288,9 +413,13 @@ def _check_faithfulness(
         config = cfg
     template = config.wiki_faithfulness_prompt
     prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
-    messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+    messages = _build_wiki_messages(prompt, provider, config)
+    options = config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_faithfulness_max_tokens,
+    )
     try:
-        response = provider.chat(messages, stream=False)
+        response = provider.chat(messages, stream=False, options=options)
         return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
     except Exception as exc:
         log.warning("Faithfulness check failed for %s: %s", label, exc)
@@ -301,15 +430,22 @@ def _build_frontmatter(
     config: Config,
     source_names: list[str],
     score: float,
+    leaf_hash: str = "",
 ) -> str:
-    """Build YAML frontmatter for a wiki page."""
+    """Build YAML frontmatter for a wiki page.
+
+    When ``leaf_hash`` is non-empty it is written so incremental rebuild can
+    skip regeneration on a subsequent sync whose chunks produce the same hash.
+    """
     sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
+    hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
         f"generated_at: {datetime.now(UTC).isoformat()}\n"
         f"sources: [{sources_yaml}]\n"
         f"faithfulness_score: {score:.2f}\n"
+        f"{hash_line}"
         f"---\n\n"
     )
 
@@ -321,10 +457,13 @@ def _write_page(
     full_content: str,
     drift_threshold: float,
 ) -> Path:
-    """Write page to disk with drift detection. Returns path written to."""
-    page_dir = wiki_root / subdir
-    page_dir.mkdir(parents=True, exist_ok=True)
-    page_path = page_dir / f"{slug}.md"
+    """Write page to disk with drift detection. Returns path written to.
+
+    ``slug`` may contain forward slashes (e.g. ``cv-manual/page-0042``);
+    any intermediate directories are created before writing.
+    """
+    page_path = wiki_root / subdir / f"{slug}.md"
+    page_path.parent.mkdir(parents=True, exist_ok=True)
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
@@ -373,7 +512,7 @@ def _persist_and_finalize(
 
     update_wiki_index(config)
     append_wiki_log(
-        "generated",
+        WIKI_LOG_ACTION_GENERATED,
         f"{target.page_type} page for {target.label} -> {target.subdir}/{target.slug}.md",
         config,
     )
@@ -393,6 +532,7 @@ def _generate_page(
     store: Store,
     config: Config,
     on_progress: WikiProgressCallback | None = None,
+    leaf_hash: str = "",
 ) -> Path | None:
     """Core generation pipeline shared by summary and synthesis pages."""
 
@@ -402,10 +542,14 @@ def _generate_page(
 
     _emit("preparing", chunks=len(chunks), source=label)
 
-    messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+    messages = _build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
+    options = config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_summary_max_tokens,
+    )
     try:
-        response = provider.chat(messages, stream=False)
+        response = provider.chat(messages, stream=False, options=options)
         wiki_text = strip_reasoning(cast(str, response)).strip()
     except Exception as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
@@ -432,7 +576,7 @@ def _generate_page(
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)
-    frontmatter = _build_frontmatter(config, source_names, score)
+    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash)
     citation_block = render_citation_block(verified)
     full_content = _assemble_content(frontmatter, wiki_text, citation_block)
 
@@ -455,53 +599,6 @@ def _generate_page(
         len(verified),
     )
     return page_path
-
-
-def generate_summary_page(
-    source_name: str,
-    chunks: list[SearchChunk],
-    provider: LLMProvider,
-    store: Store,
-    config: Config | None = None,
-    on_progress: WikiProgressCallback | None = None,
-) -> Path | None:
-    """Generate a wiki summary page for a source document.
-    Returns the path to the generated page, or None on failure.
-    The page goes to wiki/summaries/ if it passes the quality gate,
-    or wiki/drafts/ if it fails.
-    """
-    if config is None:
-        config = cfg
-    if not chunks:
-        log.warning("No chunks for source %s, skipping wiki generation", source_name)
-        return None
-
-    chunks = _truncate_chunks_to_budget(chunks, config)
-    chunks_text = _chunks_to_text(chunks)
-    template = config.wiki_summary_prompt
-    prompt = template.format(source_name=source_name, chunks_text=chunks_text)
-    slug = source_name.replace("/", "--").rsplit(".", 1)[0]
-
-    source_path = config.documents_dir / source_name
-    source_hash = file_hash(source_path) if source_path.exists() else ""
-
-    def resolver(parsed: list[ParsedCitation]) -> list[CitationRecord]:
-        return _resolve_citations(parsed, source_name, source_hash, chunks)
-
-    return _generate_page(
-        label=source_name,
-        prompt=prompt,
-        chunks=chunks,
-        chunks_text=chunks_text,
-        citation_resolver=resolver,
-        page_type=SUMMARIES_SUBDIR,
-        slug=slug,
-        source_names=[source_name],
-        provider=provider,
-        store=store,
-        config=config,
-        on_progress=on_progress,
-    )
 
 
 def _resolve_multi_source_citations(
@@ -663,3 +760,286 @@ def generate_synthesis_pages(
 
     log.info("Generated %d synthesis pages", len(pages))
     return pages
+
+
+def _apply_per_source_cap(chunks: list[SearchChunk], cap: int) -> list[SearchChunk]:
+    """Cap how many chunks from any single source survive, preserving order."""
+    if cap <= 0:
+        return chunks
+    seen: dict[str, int] = {}
+    out: list[SearchChunk] = []
+    for chunk in chunks:
+        count = seen.get(chunk.source, 0)
+        if count >= cap:
+            continue
+        seen[chunk.source] = count + 1
+        out.append(chunk)
+    return out
+
+
+def _gather_chunks_for_label(
+    label: str,
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+) -> list[SearchChunk]:
+    """Retrieve the chunks most relevant to *label* for a concept/entity page.
+
+    Embeds the label, runs the store's hybrid search over the raw chunk
+    table to build a candidate pool, then either scores the pool through
+    the native GGUF reranker (when ``cfg.reranker_model`` is set and
+    supported) or leaves the hybrid-ranked order in place. A per-source
+    diversity cap is applied last so one loud document does not own the
+    page.
+    """
+    if not label.strip():
+        return []
+
+    top_k = config.wiki_concept_max_chunks_per_page
+    pool_size = top_k * config.candidate_multiplier
+
+    try:
+        vectors = provider.embed([label])
+    except Exception as exc:
+        log.warning("Embedding failed for wiki label %r: %s", label, exc)
+        return []
+    if not vectors:
+        return []
+
+    candidates = store.search(
+        query_vector=vectors[0],
+        top_k=pool_size,
+        query_text=label,
+        chunk_type="raw",
+    )
+    if not candidates:
+        return []
+
+    if config.reranker_model and provider.supports_rerank():
+        try:
+            scores = provider.rerank(label, [c.chunk for c in candidates])
+        except Exception as exc:
+            log.warning("Rerank failed for %r, keeping hybrid order: %s", label, exc)
+        else:
+            if len(scores) == len(candidates):
+                candidates = [
+                    chunk
+                    for _, chunk in sorted(
+                        zip(scores, candidates, strict=True),
+                        key=lambda pair: pair[0],
+                        reverse=True,
+                    )
+                ]
+
+    capped = _apply_per_source_cap(candidates, config.diversity_max_per_source)
+    return capped[:top_k]
+
+
+def _generate_concept_like_page(
+    label: str,
+    kind: str,
+    page_type: str,
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+) -> Path | None:
+    """Shared body for ``generate_concept_page`` and ``generate_entity_page``."""
+    chunks = _gather_chunks_for_label(label, provider, store, config)
+    if not chunks:
+        log.info("No chunks found for %s %r, skipping wiki page", kind, label)
+        return None
+
+    chunks = _truncate_chunks_to_budget(chunks, config)
+    chunks_by_source: dict[str, list[SearchChunk]] = {}
+    for chunk in chunks:
+        chunks_by_source.setdefault(chunk.source, []).append(chunk)
+    source_names = sorted(chunks_by_source)
+    chunks_text = _chunks_to_text(chunks)
+    source_list = "\n".join(f"- {name}" for name in source_names)
+
+    prompt = config.wiki_concept_prompt.format(
+        topic=label,
+        kind=kind,
+        source_list=source_list,
+        chunks_text=chunks_text,
+        related_max=config.wiki_related_max,
+    )
+
+    source_hashes = _hash_existing_sources(source_names, config.documents_dir)
+    resolver = functools.partial(
+        _resolve_multi_source_citations,
+        source_names=source_names,
+        source_hashes=source_hashes,
+        chunks_by_source=chunks_by_source,
+    )
+
+    return _generate_page(
+        label=label,
+        prompt=prompt,
+        chunks=chunks,
+        chunks_text=chunks_text,
+        citation_resolver=resolver,
+        page_type=page_type,
+        slug=make_slug(label),
+        source_names=source_names,
+        provider=provider,
+        store=store,
+        config=config,
+    )
+
+
+def _hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict[str, str]:
+    """Hash each source file that still exists on disk (used for citation staleness)."""
+    out: dict[str, str] = {}
+    for name in source_names:
+        source_path = documents_dir / name
+        if source_path.exists():
+            out[name] = file_hash(source_path)
+    return out
+
+
+def generate_concept_page(
+    label: str,
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+) -> Path | None:
+    """Generate one wiki page for a noun-phrase concept label."""
+    return _generate_concept_like_page(
+        label=label,
+        kind="concept",
+        page_type=CONCEPTS_SUBDIR,
+        provider=provider,
+        store=store,
+        config=config,
+    )
+
+
+def generate_entity_page(
+    label: str,
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+) -> Path | None:
+    """Generate one wiki page for a proper-noun entity label."""
+    return _generate_concept_like_page(
+        label=label,
+        kind="entity",
+        page_type=ENTITIES_SUBDIR,
+        provider=provider,
+        store=store,
+        config=config,
+    )
+
+
+def build_wiki(
+    entities: list[ExtractedEntity],
+    provider: LLMProvider,
+    store: Store,
+    config: Config | None = None,
+) -> list[Path]:
+    """Produce concept and entity pages for each extracted record.
+
+    Dispatches to :func:`generate_concept_page` for ``EntityKind.CONCEPT``
+    records and :func:`generate_entity_page` for ``EntityKind.ENTITY``
+    records. After all pages are written, runs the ``[[wiki link]]``
+    rewriter across every markdown under ``wiki/`` so new pages and
+    existing ones alike cross-reference the freshly extracted slugs.
+    Pages that fail to ground a single citation are silently skipped by
+    ``_generate_page``; the returned list is the set of pages that
+    landed on disk.
+    """
+    if config is None:
+        config = cfg
+
+    pages: list[Path] = []
+    for entity in entities:
+        if entity.kind is EntityKind.CONCEPT:
+            page = generate_concept_page(entity.label, provider, store, config)
+        else:
+            page = generate_entity_page(entity.label, provider, store, config)
+        if page is not None:
+            pages.append(page)
+
+    _rewrite_links_across_wiki(entities, config)
+    log.info("Generated %d concept/entity pages", len(pages))
+    return pages
+
+
+def _entity_surface_map(entities: list[ExtractedEntity]) -> dict[str, str]:
+    """Build the surface-form -> slug map for the ``[[link]]`` rewriter.
+
+    Includes both the entity's human label (e.g. *"Henry Ford"*) and
+    the slug-with-hyphens-as-spaces variant (*"henry ford"*) so the
+    rewriter catches either form in body text.
+    """
+    mapping: dict[str, str] = {}
+    for entity in entities:
+        mapping[entity.label] = entity.slug
+        spaced = entity.slug.replace("-", " ")
+        if spaced and spaced != entity.label:
+            mapping[spaced] = entity.slug
+    return mapping
+
+
+_ENTITY_LIKE_SUBDIRS: tuple[str, ...] = (CONCEPTS_SUBDIR, ENTITIES_SUBDIR)
+_LINK_REWRITE_SUBDIRS: tuple[str, ...] = (
+    CONCEPTS_SUBDIR,
+    ENTITIES_SUBDIR,
+    SUMMARIES_SUBDIR,
+    SYNTHESIS_SUBDIR,
+)
+
+
+def _augment_surface_map_with_existing_pages(
+    surface_to_slug: dict[str, str], wiki_root: Path
+) -> None:
+    """Mutate *surface_to_slug* in place, adding slugs for pages already
+    on disk so an incremental rebuild of one concept still links to its
+    unchanged neighbors. Only enriches the map with the hyphen-to-space
+    surface form because frontmatter labels aren't read here; body prose
+    typically uses the spaced form so this covers the common case.
+    """
+    for subdir in _ENTITY_LIKE_SUBDIRS:
+        subdir_path = wiki_root / subdir
+        if not subdir_path.is_dir():
+            continue
+        for md_path in subdir_path.rglob("*.md"):
+            slug = md_path.stem
+            spaced = slug.replace("-", " ")
+            surface_to_slug.setdefault(spaced, slug)
+
+
+def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) -> None:
+    """Rewrite ``[[slug]]`` links on every page under ``wiki/`` content subdirs.
+
+    A page never receives a link to itself: the rewriter drops the
+    owning page's slug from its local surface map before writing.
+    Callers pass whichever entities they just (re-)generated; the map
+    is augmented with slugs from the existing on-disk corpus so a
+    touched page still links to untouched neighbors.
+    """
+    surface_to_slug = _entity_surface_map(entities)
+    wiki_root = config.data_root / config.wiki_dir
+    _augment_surface_map_with_existing_pages(surface_to_slug, wiki_root)
+    if not surface_to_slug:
+        return
+
+    for subdir in _LINK_REWRITE_SUBDIRS:
+        subdir_path = wiki_root / subdir
+        if not subdir_path.is_dir():
+            continue
+        is_entity_subdir = subdir in _ENTITY_LIKE_SUBDIRS
+        for md_path in subdir_path.rglob("*.md"):
+            owning_slug = md_path.stem if is_entity_subdir else None
+            page_map = (
+                {s: slug for s, slug in surface_to_slug.items() if slug != owning_slug}
+                if owning_slug
+                else surface_to_slug
+            )
+            if not page_map:
+                continue
+            original = md_path.read_text(encoding="utf-8")
+            rewritten = rewrite_wiki_links(original, page_map)
+            if rewritten != original:
+                md_path.write_text(rewritten, encoding="utf-8")

@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.config import ClustererBackend, cfg
+from lilbee.config import ClustererBackend, WikiEntityMode, cfg
 
 
 class RenderStyle(StrEnum):
@@ -197,6 +197,45 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text="Synthesis clusterer backend (embedding or concepts)",
         choices=tuple(b.value for b in ClustererBackend),
+    ),
+    "wiki_entity_mode": SettingDef(
+        str,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Entity extraction strategy "
+            "(ner_concepts = default, NER + noun-phrase clusters; "
+            "plus_llm_types = NER + LLM-proposed schema; "
+            "llm_tagged = LLM tags every chunk)"
+        ),
+        choices=tuple(m.value for m in WikiEntityMode),
+    ),
+    "wiki_entity_min_mentions": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Minimum chunk mentions before an entity or concept gets its own page",
+    ),
+    "wiki_concept_max_chunks_per_page": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Maximum chunks passed into each concept or entity page generation call",
+    ),
+    "wiki_related_max": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Maximum related concepts listed in the `## Related` section of each page",
+    ),
+    "wiki_ingest_update_cap": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Touched-page cap for auto-update after sync. "
+            "Beyond this count, run `lilbee wiki update` manually."
+        ),
     ),
     "wiki_clusterer_k": SettingDef(
         int,

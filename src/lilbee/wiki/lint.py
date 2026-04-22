@@ -8,6 +8,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -21,7 +22,18 @@ from lilbee.wiki.citation import (
     find_unmarked_claims,
     verify_citation,
 )
-from lilbee.wiki.shared import WIKI_CONTENT_SUBDIRS, parse_frontmatter
+from lilbee.wiki.index import append_wiki_log
+from lilbee.wiki.shared import (
+    CONCEPTS_SUBDIR,
+    ENTITIES_SUBDIR,
+    WIKI_CONTENT_SUBDIRS,
+    WIKI_LOG_ACTION_LINT,
+    parse_frontmatter,
+)
+
+_WIKI_LINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+
+_ORPHAN_CANDIDATE_SUBDIRS: tuple[str, ...] = (CONCEPTS_SUBDIR, ENTITIES_SUBDIR)
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +54,7 @@ class IssueType(Enum):
     EXCERPT_MISSING = "excerpt_missing"
     MODEL_CHANGED = "model_changed"
     UNMARKED_CLAIM = "unmarked_claim"
+    ORPHAN = "orphan"
 
 
 @dataclass(frozen=True)
@@ -194,10 +207,13 @@ def lint_changed_sources(
     store: Store,
     config: Config | None = None,
 ) -> LintReport:
-    """Lightweight lint: check only wiki pages citing changed/removed sources.
-    Intended to run automatically after sync.
+    """Lightweight lint for wiki pages citing changed or removed sources.
+
+    Callable from tools that already know the set of changed sources
+    (e.g. a future `lilbee wiki check <source>` command); the sync
+    pipeline uses `_incremental_wiki_update` instead, which runs full
+    extraction rather than citation replay.
     """
-    # TODO: wire into sync pipeline
     if config is None:
         config = cfg
     report = LintReport()
@@ -238,9 +254,52 @@ def lint_all(
         subdir_path = wiki_root / subdir
         if not subdir_path.is_dir():
             continue
-        for md_path in sorted(subdir_path.glob("*.md")):
+        for md_path in sorted(subdir_path.rglob("*.md")):
             relative = md_path.relative_to(wiki_root)
-            wiki_source = f"{config.wiki_dir}/{relative}"
+            wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
             report.issues.extend(lint_wiki_page(wiki_source, store, config))
 
+    report.issues.extend(_lint_orphans(wiki_root, config))
+    append_wiki_log(
+        WIKI_LOG_ACTION_LINT,
+        f"{report.error_count} error(s), {report.warning_count} warning(s)",
+        config,
+    )
     return report
+
+
+def _collect_inbound_links(wiki_root: Path) -> set[str]:
+    """Return every slug that appears as an ``[[slug]]`` link anywhere in the wiki."""
+    referenced: set[str] = set()
+    for md_path in wiki_root.rglob("*.md"):
+        text = md_path.read_text(encoding="utf-8", errors="replace")
+        for match in _WIKI_LINK_RE.finditer(text):
+            slug = match.group(1).split("|", 1)[0].strip().lower()
+            if slug:
+                referenced.add(slug)
+    return referenced
+
+
+def _lint_orphans(wiki_root: Path, config: Config) -> list[LintIssue]:
+    """Flag concept/entity pages that no other page links back to."""
+    referenced = _collect_inbound_links(wiki_root)
+    issues: list[LintIssue] = []
+    for subdir in _ORPHAN_CANDIDATE_SUBDIRS:
+        subdir_path = wiki_root / subdir
+        if not subdir_path.is_dir():
+            continue
+        for md_path in sorted(subdir_path.rglob("*.md")):
+            slug = md_path.stem.lower()
+            if slug in referenced:
+                continue
+            relative = md_path.relative_to(wiki_root)
+            wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
+            issues.append(
+                LintIssue(
+                    wiki_source=wiki_source,
+                    severity=IssueSeverity.WARNING,
+                    issue_type=IssueType.ORPHAN,
+                    message=f"Orphan: no inbound [[{slug}]] links from any other page",
+                )
+            )
+    return issues

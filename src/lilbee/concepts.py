@@ -75,6 +75,15 @@ def _ensure_spacy_model() -> Any:
             ) from exc
 
 
+def load_spacy_pipeline() -> Any:
+    """Public wrapper around the shared spaCy NER + noun-chunk pipeline.
+
+    Raises ``ImportError`` if spaCy or the ``en_core_web_sm`` model cannot
+    be installed.
+    """
+    return _ensure_spacy_model()
+
+
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
     """Extract deduplicated, filtered noun chunks from a spaCy doc."""
     seen: set[str] = set()

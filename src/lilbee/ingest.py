@@ -216,11 +216,17 @@ def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     ocr = OcrConfig(backend=_TESSERACT_BACKEND)
     builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
         ExtractMode.MARKDOWN: lambda: ExtractionConfig(
-            chunking=chunking, output_format=_MARKDOWN_OUTPUT
+            chunking=chunking,
+            output_format=_MARKDOWN_OUTPUT,
         ),
-        ExtractMode.PAGINATED: lambda: ExtractionConfig(chunking=chunking, pages=pages),
+        ExtractMode.PAGINATED: lambda: ExtractionConfig(
+            chunking=chunking,
+            pages=pages,
+        ),
         ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
-            chunking=chunking, pages=pages, ocr=ocr
+            chunking=chunking,
+            pages=pages,
+            ocr=ocr,
         ),
     }
     return builders[mode]()
@@ -549,6 +555,70 @@ async def _rebuild_concept_clusters() -> None:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
 
+async def _incremental_wiki_update(changed_sources: set[str]) -> None:
+    """Regenerate only the wiki pages touched by *changed_sources*.
+
+    Runs after a successful sync. Builds a fresh ``ExtractedEntity``
+    set from the current corpus, keeps the records that either have no
+    page on disk yet or whose chunk trail includes one of the changed
+    sources, and regenerates just those. Above
+    ``cfg.wiki_ingest_update_cap`` touched pages the auto-update
+    bails out and logs a manual-update hint instead.
+    """
+    if not cfg.wiki or not changed_sources:
+        return
+    from lilbee.store import SearchChunk
+    from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
+    from lilbee.wiki.entity_extractor import EntityKind, get_entity_extractor
+    from lilbee.wiki.shared import (
+        CONCEPTS_SUBDIR,
+        ENTITIES_SUBDIR,
+        WIKI_LOG_ACTION_INGEST,
+    )
+
+    svc = get_services()
+    extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
+
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+    entities = await asyncio.to_thread(extractor.extract, chunks)
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    touched = []
+    for entity in entities:
+        subdir = CONCEPTS_SUBDIR if entity.kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
+        page_path = wiki_root / subdir / f"{entity.slug}.md"
+        if not page_path.exists():
+            touched.append(entity)
+            continue
+        if any(ref.source in changed_sources for ref in entity.chunk_refs):
+            touched.append(entity)
+
+    if not touched:
+        return
+
+    if len(touched) > cfg.wiki_ingest_update_cap:
+        log.info(
+            "Wiki auto-update skipped: %d pages touched (cap %d). "
+            "Run 'lilbee wiki update' to refresh.",
+            len(touched),
+            cfg.wiki_ingest_update_cap,
+        )
+        append_wiki_log(
+            WIKI_LOG_ACTION_INGEST,
+            f"skipped: {len(touched)} pages exceeds cap {cfg.wiki_ingest_update_cap}",
+        )
+        return
+
+    pages = await asyncio.to_thread(build_wiki, touched, svc.provider, svc.store, cfg)
+    update_wiki_index()
+    append_wiki_log(
+        WIKI_LOG_ACTION_INGEST,
+        f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}",
+    )
+
+
 async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
     """Extract and index concepts for ingested chunks. No-op if disabled."""
     if not cfg.concept_graph or not records:
@@ -677,6 +747,7 @@ async def sync(
     if files_to_process or removed:
         _store.ensure_fts_index()
         await _rebuild_concept_clusters()
+        await _incremental_wiki_update(set(added) | set(updated) | set(removed))
 
     result = SyncResult(
         added=added,

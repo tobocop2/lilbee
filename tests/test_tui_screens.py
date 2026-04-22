@@ -625,10 +625,7 @@ async def test_settings_checkbox_persist():
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
         cb.toggle()
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.show_reasoning != original:
-                break
+        await pilot.pause()
         assert cfg.show_reasoning != original
 
 
@@ -652,10 +649,7 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
                 break
         assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
         await pilot.press("space")
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.show_reasoning != original:
-                break
+        await pilot.pause()
         assert cfg.show_reasoning != original
 
 
@@ -5277,10 +5271,9 @@ class WikiTestApp(App[None]):
 
 
 def _create_wiki_page(wiki_root, subdir, slug, title, content_body="Some content"):
-    """Create a wiki markdown file with frontmatter."""
-    d = wiki_root / subdir
-    d.mkdir(parents=True, exist_ok=True)
-    page = d / f"{slug}.md"
+    """Create a wiki markdown file with frontmatter (creates nested dirs for slashy slugs)."""
+    page = wiki_root / subdir / f"{slug}.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(
         f"---\ntitle: {title}\ngenerated_at: 2025-01-01\nsource_count: 3\n"
         f"faithfulness_score: 0.85\n---\n{content_body}\n"
@@ -5302,12 +5295,20 @@ class TestWikiScreenCompose:
         """WikiScreen has sidebar and main content areas."""
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import Input, OptionList
+            from textual.widgets import Input, Tree
 
             assert app.screen.query_one("#wiki-sidebar") is not None
             assert app.screen.query_one("#wiki-main") is not None
             assert app.screen.query_one("#wiki-search", Input) is not None
-            assert app.screen.query_one("#wiki-page-list", OptionList) is not None
+            assert app.screen.query_one("#wiki-page-list", Tree) is not None
+
+
+def _count_descendants(node):
+    """Count every descendant branch + leaf beneath *node*."""
+    total = 0
+    for child in node.children:
+        total += 1 + _count_descendants(child)
+    return total
 
 
 class TestWikiScreenEmptyState:
@@ -5316,13 +5317,13 @@ class TestWikiScreenEmptyState:
         cfg.wiki = False
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import OptionList
+            from textual.widgets import Tree
 
             from lilbee.cli.tui import messages as msg
 
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            assert option_list.option_count == 1
-            assert msg.WIKI_EMPTY_STATE in str(option_list.get_option_at_index(0).prompt)
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            labels = [str(c.label) for c in tree.root.children]
+            assert any(msg.WIKI_EMPTY_STATE in label for label in labels)
 
     async def test_shows_empty_when_no_pages(self, tmp_path):
         """Shows empty state when wiki is enabled but no pages exist."""
@@ -5332,10 +5333,10 @@ class TestWikiScreenEmptyState:
         wiki_dir.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import OptionList
+            from textual.widgets import Tree
 
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            assert option_list.option_count >= 1
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            assert len(tree.root.children) >= 1
 
 
 class TestWikiScreenWithPages:
@@ -5349,10 +5350,11 @@ class TestWikiScreenWithPages:
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import OptionList
+            from textual.widgets import Tree
 
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            assert option_list.option_count >= 2
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            # Two group nodes (Summaries + Synthesis) each with at least one child.
+            assert _count_descendants(tree.root) >= 2
 
     async def test_displays_selected_page_content(self, tmp_path):
         """Selecting a page renders its content."""
@@ -5395,6 +5397,90 @@ class TestWikiScreenWithPages:
             header = app.screen.query_one("#wiki-page-header", Static)
             header_text = header.content
             assert "85%" in header_text
+
+
+class TestWikiRootShortcuts:
+    """index.md and log.md surface as top-level tree leaves when they exist."""
+
+    async def test_index_and_log_appear_as_top_level_leaves(self, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "concepts", "braking", "Braking")
+        (wiki_root / "index.md").write_text("# Wiki Index\n")
+        (wiki_root / "log.md").write_text("# Wiki Log\n")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            top_labels = [str(c.label) for c in tree.root.children]
+            assert "Index" in top_labels
+            assert "Log" in top_labels
+
+    async def test_root_shortcut_skipped_when_file_missing(self, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "concepts", "braking", "Braking")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            top_labels = [str(c.label) for c in tree.root.children]
+            assert "Index" not in top_labels
+            assert "Log" not in top_labels
+
+
+class TestWikiSelectedSource:
+    """_selected_source covers all three branches: no-cursor, group-node, leaf.
+
+    Patches ``query_one`` to swap in a faked Tree whose ``cursor_node``
+    is set explicitly per branch. Directly invoking the real widget
+    cursor is flaky because setting ``cursor_line = -1`` doesn't always
+    nullify ``cursor_node`` in the Textual version in use.
+    """
+
+    async def test_all_branches(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from textual.widgets import Tree
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "my-doc", "My Doc")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            real_tree = screen.query_one("#wiki-page-list", Tree)
+            fake_tree = MagicMock(spec=Tree)
+
+            # Branch 1: cursor_node is None → returns None (line 284).
+            fake_tree.cursor_node = None
+            with patch.object(screen, "query_one", return_value=fake_tree):
+                assert screen._selected_source() is None
+
+            # Branch 2: group node carries data=None, not a slug string.
+            group_node = real_tree.root.children[0]
+            fake_tree.cursor_node = group_node
+            with patch.object(screen, "query_one", return_value=fake_tree):
+                assert screen._selected_source() is None
+
+            # Branch 3: leaf with a real slug reaches line 288 and delegates
+            # to _source_for_slug. The return value may be None when the
+            # frontmatter omits a source; the point is line 288 is executed.
+            leaf_node = group_node.children[0]
+            fake_tree.cursor_node = leaf_node
+            with patch.object(screen, "query_one", return_value=fake_tree):
+                screen._selected_source()
 
 
 class TestWikiScreenSearch:
@@ -5532,6 +5618,103 @@ class TestWikiFormatPageHeader:
         assert "sources" not in result
 
 
+class TestWikiBreadcrumb:
+    def test_single_part_slug_returns_empty(self):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        assert _breadcrumb_for_slug("doc", "Title") == ""
+
+    def test_multi_part_slug_builds_chain(self):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        result = _breadcrumb_for_slug("summaries/cv-manual/01-brakes/page-0042", "Page 42")
+        assert "summaries" in result
+        assert "cv manual" in result
+        assert "01 brakes" in result
+        assert "Page 42" in result
+
+
+class TestWikiShortLabel:
+    def test_dashes_to_spaces(self):
+        from lilbee.cli.tui.screens.wiki import _short_label
+
+        assert _short_label("cv-manual") == "cv manual"
+
+    def test_underscores_to_spaces(self):
+        from lilbee.cli.tui.screens.wiki import _short_label
+
+        assert _short_label("test_doc") == "test doc"
+
+
+class TestWikiInsertHelpers:
+    async def test_single_part_slug_adds_leaf_directly(self, tmp_path):
+        """A page whose slug has no '/' becomes a direct child of the group node."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "top", "Top-Level Page")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+            from lilbee.wiki.browse import WikiPageInfo
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            group = tree.root.add("Summaries", expand=True)
+            info = WikiPageInfo(
+                slug="rootonly", title="Direct", page_type="summary", source_count=0, created_at=""
+            )
+            screen._insert_page(group, info)
+            labels = [str(c.label) for c in group.children]
+            assert any("Direct" in label for label in labels)
+
+    async def test_index_stem_sets_branch_label_and_data(self, tmp_path):
+        """An index.md leaf promotes its enclosing branch to clickable."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "doc/01-chapter/index", "Chapter Title")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+
+            def _collect_data(node):
+                out: list[object] = [node.data]
+                for child in node.children:
+                    out.extend(_collect_data(child))
+                return out
+
+            data_values = _collect_data(tree.root)
+            # The inner-node branch should carry its slug so clicking opens its index.md.
+            assert "summaries/doc/01-chapter/index" in data_values
+
+
+class TestWikiFindOrAddBranch:
+    async def test_reuses_existing_branch(self, tmp_path):
+        """_find_or_add_branch matches on display label and reuses the existing branch."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            from lilbee.cli.tui.screens.wiki import _find_or_add_branch
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            first = _find_or_add_branch(tree.root, "cv-manual")
+            second = _find_or_add_branch(tree.root, "cv-manual")
+            assert first is second
+            assert len(tree.root.children) == 1
+
+
 class TestWikiGroupPages:
     def test_groups_by_type(self):
         from lilbee.cli.tui.screens.wiki import _group_pages
@@ -5552,6 +5735,20 @@ class TestWikiGroupPages:
         from lilbee.cli.tui.screens.wiki import _group_pages
 
         assert _group_pages([]) == []
+
+    def test_concepts_and_entities_lead_the_order(self):
+        """Concepts and Entities should appear before Summaries and Synthesis."""
+        from lilbee.cli.tui.screens.wiki import _group_pages
+        from lilbee.wiki.browse import WikiPageInfo
+
+        pages = [
+            WikiPageInfo("summaries/a", "A", "summary", 1, ""),
+            WikiPageInfo("synthesis/b", "B", "synthesis", 2, ""),
+            WikiPageInfo("concepts/c", "C", "concept", 1, ""),
+            WikiPageInfo("entities/e", "E", "entity", 1, ""),
+        ]
+        types = [g[0] for g in _group_pages(pages)]
+        assert types == ["concept", "entity", "summary", "synthesis"]
 
 
 class TestWikiDisplayPageMissing:
@@ -5590,7 +5787,7 @@ class TestWikiCoverageEdgeCases:
             await pilot.pause()
 
     async def test_on_page_selected_none_id(self, tmp_path):
-        """Selecting an option with no id (heading) is a no-op."""
+        """Selecting a branch node (no slug data) is a no-op."""
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -5601,10 +5798,9 @@ class TestWikiCoverageEdgeCases:
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
-            # Simulate selecting a disabled heading (id=None)
             fake_event = MagicMock()
-            fake_event.option = MagicMock(id=None)
-            screen._on_page_selected(fake_event)
+            fake_event.node = MagicMock(data=None)
+            screen._on_node_selected(fake_event)
             await pilot.pause()
 
     async def test_action_focus_search(self, tmp_path):
@@ -5692,7 +5888,7 @@ class TestWikiCoverageEdgeCases:
             assert inp.has_focus
 
     async def test_on_page_selected_valid_slug(self, tmp_path):
-        """Selecting a page with a valid slug displays it."""
+        """Selecting a leaf node with a slug displays it."""
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -5704,12 +5900,12 @@ class TestWikiCoverageEdgeCases:
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             fake_event = MagicMock()
-            fake_event.option = MagicMock(id="summaries/hello")
-            screen._on_page_selected(fake_event)
+            fake_event.node = MagicMock(data="summaries/hello")
+            screen._on_node_selected(fake_event)
             await pilot.pause()
 
     async def test_vim_nav_when_not_input_focused(self, tmp_path):
-        """Vim nav dispatches to OptionList when Input is not focused."""
+        """Vim nav dispatches to Tree when Input is not focused."""
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -5717,17 +5913,19 @@ class TestWikiCoverageEdgeCases:
         _create_wiki_page(wiki_root, "summaries", "b", "Page B")
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            from textual.widgets import OptionList as TextualOptionList
+            from textual.widgets import Tree as TextualTree
 
-            ol = app.screen.query_one("#wiki-page-list", TextualOptionList)
-            ol.focus()
+            tree = app.screen.query_one("#wiki-page-list", TextualTree)
+            tree.focus()
             await pilot.pause()
             app.screen.action_cursor_down()
             app.screen.action_cursor_up()
+            app.screen.action_cursor_left()
+            app.screen.action_cursor_right()
             app.screen.action_jump_top()
             app.screen.action_jump_bottom()
             await pilot.pause()
-            assert ol.has_focus
+            assert tree.has_focus
 
     def test_group_pages_unknown_type(self):
         """Pages with unknown type get their own group."""
@@ -7833,69 +8031,6 @@ async def test_task_bar_indeterminate_flag_propagated():
         assert bar.display is True
 
 
-def test_resolve_wiki_targets_all():
-    """Returns all source names when no specific source requested."""
-    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
-    fake_store = MagicMock()
-    fake_store.get_sources.return_value = [
-        {"filename": "a.txt"},
-        {"filename": "b.txt"},
-    ]
-    fake_svc = MagicMock(store=fake_store)
-    with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
-        result = resolve_wiki_targets()
-    assert result == ["a.txt", "b.txt"]
-
-
-def test_resolve_wiki_targets_specific():
-    """Returns only the requested source when it exists."""
-    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
-    fake_store = MagicMock()
-    fake_store.get_sources.return_value = [
-        {"filename": "a.txt"},
-        {"filename": "b.txt"},
-    ]
-    fake_svc = MagicMock(store=fake_store)
-    with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
-        result = resolve_wiki_targets("b.txt")
-    assert result == ["b.txt"]
-
-
-def test_resolve_wiki_targets_unknown():
-    """Returns None for an unknown source name."""
-    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
-    fake_store = MagicMock()
-    fake_store.get_sources.return_value = [{"filename": "a.txt"}]
-    fake_svc = MagicMock(store=fake_store)
-    with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
-        assert resolve_wiki_targets("missing.txt") is None
-
-
-def test_resolve_wiki_targets_empty_sources():
-    """Returns None when no sources are indexed."""
-    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
-    fake_store = MagicMock()
-    fake_store.get_sources.return_value = []
-    fake_svc = MagicMock(store=fake_store)
-    with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
-        assert resolve_wiki_targets() is None
-
-
-def test_resolve_wiki_targets_get_sources_error():
-    """Returns None when get_sources raises."""
-    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
-    fake_store = MagicMock()
-    fake_store.get_sources.side_effect = RuntimeError("db gone")
-    fake_svc = MagicMock(store=fake_store)
-    with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
-        assert resolve_wiki_targets() is None
-
-
 def _direct_call(_widget, fn, *args, **kwargs):
     """Stub for call_from_thread that calls fn directly (no Textual app needed)."""
     fn(*args, **kwargs)
@@ -7927,39 +8062,6 @@ async def test_wiki_screen_reload():
         with patch.object(app.screen, "_load_pages") as mock_load:
             app.screen.reload()
             mock_load.assert_called_once()
-
-
-async def test_wiki_screen_regenerate_disabled():
-    """Regenerate notifies when wiki is disabled."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with (
-            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
-            patch.object(app.screen, "notify") as mock_notify,
-        ):
-            mock_cfg.wiki = False
-            await pilot.press("r")
-            mock_notify.assert_called_once()
-
-
-async def test_wiki_screen_regenerate_no_sources():
-    """Regenerate notifies when no indexed sources found."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with (
-            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
-            patch(
-                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
-                return_value=None,
-            ),
-            patch.object(app.screen, "notify") as mock_notify,
-        ):
-            mock_cfg.wiki = True
-
-            await pilot.press("r")
-            mock_notify.assert_called_once()
 
 
 async def test_chat_open_crawl_dialog():
@@ -8045,56 +8147,22 @@ async def test_wiki_source_for_slug_returns_none_for_empty_sources():
         assert result is None
 
 
-async def test_wiki_selected_source_returns_none_for_option_without_id():
-    """_selected_source returns None when highlighted option has no id."""
-    from textual.widgets import OptionList
-    from textual.widgets.option_list import Option
+async def test_wiki_selected_source_returns_none_for_branch_without_slug():
+    """_selected_source returns None when the highlighted tree node is a branch (no slug)."""
+    from textual.widgets import Tree
 
     app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        option_list = app.screen.query_one("#wiki-page-list", OptionList)
-        option_list.clear_options()
-        option_list.add_option(Option("no-id page"))  # id defaults to None
-        option_list.focus()
+        tree = app.screen.query_one("#wiki-page-list", Tree)
+        tree.reset("Wiki")
+        tree.root.add("Branch")  # branch with no data=slug
+        tree.focus()
         await pilot.pause()
         await pilot.press("down")
         await pilot.pause()
         result = app.screen._selected_source()
         assert result is None
-
-
-async def test_wiki_regenerate_selected_page_not_found():
-    """action_regenerate with a selected page whose source isn't indexed shows error."""
-    from textual.widgets import OptionList
-    from textual.widgets.option_list import Option
-
-    app = _make_wiki_app(with_task_bar=True)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        option_list = app.screen.query_one("#wiki-page-list", OptionList)
-        option_list.clear_options()
-        option_list.add_option(Option("test page", id="summaries/test"))
-        option_list.focus()
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": ["gone.txt"]}
-        with (
-            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page),
-            patch(
-                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
-                return_value=None,
-            ),
-            patch.object(app.screen, "notify") as mock_notify,
-        ):
-            mock_cfg.wiki = True
-            await pilot.press("r")
-            await pilot.pause()
-        mock_notify.assert_called_once()
-        assert "Source not found" in mock_notify.call_args[0][0]
 
 
 # =============================================================================

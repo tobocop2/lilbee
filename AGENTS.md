@@ -316,3 +316,69 @@ See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 - `platform.py` — OS helpers, `find_local_root()` for `.lilbee/` discovery
 - `cli.py` — Typer CLI with --model, --data-dir, --version, and --json flags
 - `mcp.py` — MCP server exposing search, ask, status, sync, init as tools
+
+## Wiki Conventions
+
+lilbee's wiki layer is modelled after Karpathy's LLM Wiki: concept and
+entity pages that compound across sources rather than one page per
+document. The layout under `$data_root/$wiki_dir/` is:
+
+```
+concepts/    one page per noun-phrase topic (e.g. braking-systems.md)
+entities/    one page per proper-noun entity (e.g. henry-ford.md)
+summaries/   legacy per-source pages (still supported, not the default)
+synthesis/   cross-source pages produced by `wiki synthesize`
+drafts/      low-faithfulness drafts that missed the threshold
+archive/     pages retired by `wiki prune`
+index.md     auto-generated table of contents, grouped by page type
+log.md       append-only audit trail (## [YYYY-MM-DD HH:MM] op | details)
+```
+
+**Slugs** are lowercase, hyphen-separated filenames that also double as
+the `[[link]]` target (`braking-systems`, not `Braking Systems`). The
+slug generator lives at `wiki/shared.py:make_slug`.
+
+**Page lifecycle**. `lilbee wiki build` extracts entities from the
+chunk store using `cfg.wiki_entity_mode` (default `ner_concepts`:
+spaCy NER + noun phrases), generates a page per record via
+`wiki/gen.py:build_wiki`, refreshes `index.md`, and appends a `build`
+entry to `log.md`. `lilbee sync` runs `_incremental_wiki_update` after
+a successful sync: pages whose chunk trail cites a changed source, or
+pages that don't exist yet, are regenerated. The cap is
+`cfg.wiki_ingest_update_cap` (default 20); above that the hook logs a
+manual-update hint and exits.
+
+**Retrieval inside wiki/gen.py**. Each page is grounded in the top
+`cfg.wiki_concept_max_chunks_per_page` chunks returned by the store's
+hybrid search, optionally reordered by the native GGUF reranker when
+`cfg.reranker_model` is set. Every path respects
+`cfg.diversity_max_per_source` so one loud document can't monopolize a
+topic page.
+
+**`[[wiki links]]`**. After each build, `wiki/links.py:rewrite_wiki_links`
+rewrites plain-text slug surface forms to Obsidian `[[slug]]` links
+in the page body, skipping YAML frontmatter, code fences, and the
+auto-generated citation block. The graph view in Obsidian is the point;
+orphan detection in `lilbee wiki lint` flags concept or entity pages
+with zero inbound `[[links]]`.
+
+**Adding a new entity-extraction strategy**. Implement
+`EntityExtractor` from `wiki/entity_extractor/base.py`, add a new
+`WikiEntityMode` enum value in `config.py`, wire it into
+`wiki/entity_extractor/factory.py:_EXTRACTOR_BY_MODE`, and extend the
+`wiki_entity_mode` entry in `cli/settings_map.py` (its `choices` field
+reads from the enum, so no update needed there).
+
+**Adding a new config knob**. All wiki settings live under the `Wiki`
+group in `config.py` and `cli/settings_map.py`. Prefix with `wiki_`
+(for module-level behaviour) or `wiki_concept_` / `wiki_entity_`
+(for strategy-scoped knobs). Use `ConfigField(writable=True)` so the
+setting appears in `/settings`, the HTTP `/set` route, and
+`LILBEE_*` env vars.
+
+**Writing to log.md**. Use `append_wiki_log(action, details)` from
+`wiki/index.py` with one of the `WIKI_LOG_ACTION_*` constants in
+`wiki/shared.py` (`BUILD`, `INGEST`, `LINT`, `GENERATED`).
+Don't hand-roll timestamps; the helper writes
+`## [YYYY-MM-DD HH:MM] action | details` so `grep '## \['` still
+surfaces every entry.

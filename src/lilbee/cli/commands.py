@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -51,10 +51,6 @@ from lilbee.services import get_services
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
-    WIKI_DISABLED_ERROR,
-    WIKI_EMPTY_SOURCE_ERROR,
-    WIKI_STATUS_FAILED,
-    WIKI_STATUS_GENERATED,
 )
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
@@ -1099,86 +1095,35 @@ def wiki_status(
         console.print("  Lint: all clean")
 
 
-@wiki_app.command(name="generate")
-def wiki_generate(
-    source: str = typer.Argument(..., help="Source filename (e.g. cv-manual.pdf)."),
+@wiki_app.command(name="synthesize")
+def wiki_synthesize(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """Generate a wiki summary page for a source document."""
+    """Generate synthesis pages for concept clusters spanning 3+ sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.gen import generate_synthesis_pages
 
-    if not cfg.wiki:
-        _fail_wiki_generate(WIKI_DISABLED_ERROR)
-    if not source or not source.strip():
-        _fail_wiki_generate(WIKI_EMPTY_SOURCE_ERROR)
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
 
-    from lilbee.wiki.gen import generate_summary_page
-
-    services = get_services()
-    chunks = services.store.get_chunks_by_source(source)
-    if not chunks:
-        _fail_wiki_generate(f"No indexed chunks for source: {source}")
-
-    on_progress = None if cfg.json_mode else _wiki_progress_to_stderr
-    result_path = generate_summary_page(
-        source, chunks, services.provider, services.store, on_progress=on_progress
-    )
-
-    if result_path is None:
-        _emit_wiki_generate_failure(source)
-    _emit_wiki_generate_success(source, str(result_path))
-
-
-def _fail_wiki_generate(error: str) -> NoReturn:
-    """Emit a wiki_generate validation error (pre-generation) as {"error": ...} and exit 1.
-
-    Distinct from _emit_wiki_generate_failure, which emits a soft-failure result
-    (generator ran but returned no page) in the full wiki_generate JSON shape.
-    """
-    if cfg.json_mode:
-        json_output({"error": error})
-    else:
-        typer.echo(error, err=True)
-    raise typer.Exit(1)
-
-
-def _emit_wiki_generate_success(source: str, path: str) -> None:
-    """Emit the wiki_generate success result in JSON or default mode."""
     if cfg.json_mode:
         json_output(
             {
-                "command": "wiki_generate",
-                "source": source,
-                "status": WIKI_STATUS_GENERATED,
-                "paths": [path],
+                "command": "wiki_synthesize",
+                "paths": [str(p) for p in paths],
+                "count": len(paths),
             }
         )
         return
-    console.print(f"Generated [{theme.ACCENT}]{path}[/{theme.ACCENT}]")
 
+    if not paths:
+        console.print("No synthesis pages generated (need 3+ sources per cluster).")
+        return
 
-def _emit_wiki_generate_failure(source: str) -> NoReturn:
-    """Emit the wiki_generate soft-failure (generator returned None) and exit non-zero."""
-    if cfg.json_mode:
-        json_output(
-            {
-                "command": "wiki_generate",
-                "source": source,
-                "status": WIKI_STATUS_FAILED,
-                "paths": [],
-            }
-        )
-    else:
-        typer.echo(f"Generation failed for {source}", err=True)
-    raise typer.Exit(1)
-
-
-def _wiki_progress_to_stderr(stage: str, data: dict[str, object]) -> None:
-    """Print wiki generation stage updates to stderr in default (non-JSON) mode."""
-    chunk_count = data.get("chunks")
-    detail = f" ({chunk_count} chunks)" if chunk_count is not None else ""
-    typer.echo(f"[{stage}]{detail}", err=True)
+    console.print(f"Generated [{theme.LABEL}]{len(paths)}[/{theme.LABEL}] synthesis pages:")
+    for path in paths:
+        console.print(f"  {path}")
 
 
 @wiki_app.command(name="prune")
@@ -1223,3 +1168,65 @@ def _count_md_files(directory: Path) -> int:
     if not directory.exists():
         return 0
     return len(list(directory.rglob("*.md")))
+
+
+@wiki_app.command(name="build")
+def wiki_build(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Build the concept and entity wiki across all ingested sources."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.store import SearchChunk
+    from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
+    from lilbee.wiki.entity_extractor import get_entity_extractor
+    from lilbee.wiki.shared import WIKI_LOG_ACTION_BUILD
+
+    svc = get_services()
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+
+    extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
+    entities = extractor.extract(chunks)
+    pages = build_wiki(entities, svc.provider, svc.store, cfg)
+    update_wiki_index()
+    append_wiki_log(
+        WIKI_LOG_ACTION_BUILD,
+        f"{len(pages)} pages from {len(entities)} records",
+    )
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_build",
+                "paths": [str(p) for p in pages],
+                "entities": len(entities),
+                "count": len(pages),
+            }
+        )
+        return
+
+    if not pages:
+        console.print("No concept or entity pages generated.")
+        return
+
+    console.print(
+        f"Generated [{theme.LABEL}]{len(pages)}[/{theme.LABEL}] "
+        f"wiki pages from {len(entities)} extracted records:"
+    )
+    for path in pages:
+        console.print(f"  {path}")
+
+
+@wiki_app.command(name="update")
+def wiki_update(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Refresh the concept and entity wiki after an ingest.
+
+    Currently a full rebuild. The incremental touched-slug regeneration
+    lands in the ingest-hook task and will re-route this command then.
+    """
+    wiki_build(data_dir=data_dir, use_global=use_global)

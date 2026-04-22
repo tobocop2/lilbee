@@ -22,6 +22,14 @@ class ClustererBackend(StrEnum):
     CONCEPTS = "concepts"
 
 
+class WikiEntityMode(StrEnum):
+    """Strategy used to extract concepts and entities for the wiki."""
+
+    NER_CONCEPTS = "ner_concepts"
+    NER_CONCEPTS_PLUS_LLM_TYPES = "ner_concepts_plus_llm_types"
+    LLM_TAGGED = "llm_tagged"
+
+
 def ConfigField(
     *args: Any,
     writable: bool = False,
@@ -518,6 +526,22 @@ class Config(BaseSettings):
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
     wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
+    # Per-call output token caps for wiki generation. Without these, a
+    # reasoning model (Qwen3, DeepSeek-R1) can burn the full context
+    # window emitting <think> tokens before the actual answer, taking
+    # minutes per page. Defaults leave headroom for a typical reasoning
+    # budget plus a real response: summary ~1000 tokens of output + ~1000
+    # slack for thinking; faithfulness ~32 tokens of answer + ~200 slack.
+    wiki_summary_max_tokens: int = ConfigField(default=2048, ge=256, writable=True)
+    wiki_faithfulness_max_tokens: int = ConfigField(default=256, ge=32, writable=True)
+
+    # Wiki generation is a structured-output task: the model must emit the
+    # block separators, the citation footnotes, and verbatim quotes. The
+    # usual chat default (~0.8) is too creative for that. Lowering the
+    # sampling temperature makes the model stick to the template and quote
+    # more faithfully. 0.1 leaves just enough slack to avoid hard loops.
+    wiki_temperature: float = ConfigField(default=0.1, ge=0.0, le=2.0, writable=True)
+
     # Fraction of citations that must be stale before a wiki page is flagged
     # for regeneration during pruning. 0.5 = flag when >50% are stale.
     wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -581,6 +605,30 @@ class Config(BaseSettings):
         "Chunks:\n{chunks_text}\n\n"
         "Write the synthesis page now. Start with a heading."
     )
+    # Used when reducing a set of child-node summaries (leaves or inner nodes)
+    # into a single section or chapter summary. Overridable via
+    # LILBEE_WIKI_REDUCE_PROMPT. Must contain the expected {placeholders}.
+    wiki_reduce_prompt: str = (
+        "You are a knowledge compiler. Given a section of a source document and the "
+        "summaries of its subsections (and/or pages), write a concise section-level "
+        "wiki summary in markdown.\n\n"
+        "Rules:\n"
+        "1. Preserve factual claims from the child summaries verbatim where they "
+        "carry citations; do not introduce new facts that aren't in the inputs.\n"
+        "2. Every factual claim MUST retain its inline citation [^src1], [^src2], etc. "
+        "from the child summary it came from.\n"
+        "3. For observations about how the subsections relate, use [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. End with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
+        '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
+        "Source document: {source_name}\n"
+        "Section title: {section_title}\n\n"
+        "Child summaries:\n{children_text}\n\n"
+        "Write the section-level summary now. Start with a heading."
+    )
 
     # Wiki synthesis clusterer backend. EMBEDDING (default, no extra deps)
     # runs chunk-level mutual kNN + label propagation over chunk embeddings.
@@ -612,6 +660,62 @@ class Config(BaseSettings):
     # Maximum noun-phrase concepts extracted per chunk.
     # Caps extraction to avoid noise from very long chunks.
     concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
+
+    # Strategy used to extract concepts and entities for the concept/entity
+    # wiki. NER_CONCEPTS (default) combines spaCy NER with noun-phrase
+    # clusters. NER_CONCEPTS_PLUS_LLM_TYPES layers an LLM-proposed domain
+    # schema on top. LLM_TAGGED asks the LLM to tag every chunk (most
+    # expensive). Unimplemented modes fall back to NER_CONCEPTS.
+    wiki_entity_mode: WikiEntityMode = ConfigField(
+        default=WikiEntityMode.NER_CONCEPTS, writable=True
+    )
+
+    # Minimum distinct chunk mentions before an entity or concept earns
+    # its own wiki page. Filters one-off noise.
+    wiki_entity_min_mentions: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Maximum chunks passed into each concept or entity page generation
+    # call. Caps context size so one page does not blow the context
+    # window on a prolific topic.
+    wiki_concept_max_chunks_per_page: int = ConfigField(default=25, ge=1, writable=True)
+
+    # Maximum number of related concepts the model is asked to list in
+    # the `## Related` section of each page.
+    wiki_related_max: int = ConfigField(default=8, ge=0, writable=True)
+
+    # Auto-update cap: if a single sync touches more than this many
+    # concept or entity pages, skip the per-slug regeneration and tell
+    # the user to run `lilbee wiki update` explicitly. Keeps a surprise
+    # bulk import from firing hundreds of LLM calls.
+    wiki_ingest_update_cap: int = ConfigField(default=20, ge=1, writable=True)
+
+    # Prompt template for concept and entity wiki pages. Must contain
+    # {topic}, {kind}, {source_list}, {chunks_text}, and {related_max}
+    # placeholders.
+    wiki_concept_prompt: str = (
+        "You are a knowledge compiler. Given source chunks that mention the "
+        "{kind} '{topic}', write a wiki page in markdown that explains what "
+        "the {kind} is, how it appears across the sources, and how it connects "
+        "to related ideas.\n\n"
+        "Rules:\n"
+        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+        "3. For connections or patterns you identify across sources, mark with [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. End the body with a `## Related` section listing at most {related_max} "
+        "other concepts or entities that co-occur with '{topic}' in the chunks. "
+        "One per line as a bullet.\n"
+        "6. After `## Related`, end with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+        '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+        "Topic: {topic}\n"
+        "Kind: {kind}\n\n"
+        "Sources:\n{source_list}\n\n"
+        "Chunks:\n{chunks_text}\n\n"
+        "Write the page now. Start with a heading."
+    )
 
     # Class variable — not a settings field
     _toml_cache: ClassVar[dict[str, Any]] = {}

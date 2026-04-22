@@ -56,7 +56,6 @@ from lilbee.server.routes.setup import (
 from lilbee.server.wiki import (
     wiki_citations_reverse_route,
     wiki_drafts_route,
-    wiki_generate_route,
     wiki_lint_route,
     wiki_list_route,
     wiki_prune_route,
@@ -135,7 +134,6 @@ def create_app() -> Litestar:
             wiki_drafts_route,
             wiki_citations_reverse_route,
             wiki_lint_route,
-            wiki_generate_route,
             wiki_prune_route,
         ],
         request_max_body_size=10 * 1024 * 1024,

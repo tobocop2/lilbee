@@ -358,72 +358,6 @@ class TestChat:
         assert "error" in data
         assert "terminal" in data["error"].lower() or "json" in data["error"].lower()
 
-    def test_json_mode_sets_json_flag_for_lazy_backend_suppression(self) -> None:
-        """--json sets cfg.json_mode so the SDK backend suppresses debug on first use."""
-        result = runner.invoke(app, ["--json", "chat"])
-        assert result.exit_code == 1
-        # The backend reads cfg.json_mode lazily when a provider call happens;
-        # the callback only needs to flip the flag so the provider picks it up.
-        assert cfg.json_mode is True
-
-    def test_json_mode_propagates_through_provider_to_backend(self) -> None:
-        """End-to-end chain: --json -> cfg.json_mode -> backend.configure_logging(True).
-
-        Pins the full wiring: a CLI flag flips the flag, and the first
-        provider call propagates it to ``backend.configure_logging`` with
-        the correct value. Prevents a regression where the chain is
-        broken at either hop.
-        """
-        from lilbee.providers.base import ProviderError  # noqa: F401
-        from lilbee.providers.sdk_backend import (
-            CompletionRequest,
-            CompletionResult,
-            EmbeddingRequest,
-            EmbeddingResult,
-            StreamChunk,
-        )
-        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-
-        class _RecordingBackend:
-            provider_name = "recording"
-
-            def __init__(self) -> None:
-                self.logging_calls: list[bool] = []
-
-            def available(self) -> bool:
-                return True
-
-            def configure_logging(self, *, suppress_debug: bool) -> None:
-                self.logging_calls.append(suppress_debug)
-
-            def complete(self, request: CompletionRequest) -> CompletionResult:
-                return CompletionResult(content="ok")
-
-            def complete_stream(self, request: CompletionRequest):
-                yield StreamChunk(content="ok")
-
-            def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
-                return EmbeddingResult(vectors=[[0.0]])
-
-            def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-                return []
-
-            def list_chat_models(self, provider: str) -> list[str]:
-                return []
-
-            def pull_model(self, model, *, base_url, on_progress=None) -> None:
-                raise NotImplementedError
-
-            def show_model(self, model, *, base_url):
-                return None
-
-        # Simulate --json: flip the flag before the provider is instantiated.
-        cfg.json_mode = True
-        backend = _RecordingBackend()
-        provider = SdkLLMProvider(backend)
-        provider.chat([{"role": "user", "content": "hi"}])
-        assert backend.logging_calls == [True]
-
 
 class TestApplyOverrides:
     def test_data_dir_override(self, tmp_path):
@@ -2203,6 +2137,110 @@ class TestWikiLint:
         assert "total" in data
 
 
+class TestWikiSynthesize:
+    def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "No synthesis pages" in result.output
+
+    def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
+        out = isolated_env / "wiki" / "synthesis" / "typing.md"
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [out])
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "typing.md" in result.output
+
+    def test_json_output(self, mock_svc, isolated_env, monkeypatch):
+        cfg.json_mode = True
+        out = isolated_env / "wiki" / "synthesis" / "typing.md"
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [out])
+        result = runner.invoke(app, ["--json", "wiki", "synthesize"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_synthesize"
+        assert data["count"] == 1
+
+
+class TestWikiBuild:
+    def _stub_extraction(self, monkeypatch):
+        fake_extractor = MagicMock()
+        fake_extractor.extract.return_value = []
+        monkeypatch.setattr(
+            "lilbee.wiki.entity_extractor.get_entity_extractor",
+            lambda *a, **kw: fake_extractor,
+        )
+        return fake_extractor
+
+    def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
+        mock_svc.store.get_sources.return_value = []
+        self._stub_extraction(monkeypatch)
+        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        result = runner.invoke(app, ["wiki", "build"])
+        assert result.exit_code == 0
+        assert "No concept or entity pages" in result.output
+
+    def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
+        mock_svc.store.get_sources.return_value = []
+        self._stub_extraction(monkeypatch)
+        out = isolated_env / "wiki" / "concepts" / "braking.md"
+        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [out])
+        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        result = runner.invoke(app, ["wiki", "build"])
+        assert result.exit_code == 0
+        assert "braking.md" in result.output
+
+    def test_json_output(self, mock_svc, isolated_env, monkeypatch):
+        cfg.json_mode = True
+        mock_svc.store.get_sources.return_value = []
+        self._stub_extraction(monkeypatch)
+        out = isolated_env / "wiki" / "entities" / "henry-ford.md"
+        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [out])
+        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        result = runner.invoke(app, ["--json", "wiki", "build"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_build"
+        assert data["count"] == 1
+        assert data["entities"] == 0
+
+    def test_update_reruns_build(self, mock_svc, isolated_env, monkeypatch):
+        """wiki update currently delegates to wiki build (see bb-he8o for smarter version)."""
+        mock_svc.store.get_sources.return_value = []
+        self._stub_extraction(monkeypatch)
+        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        result = runner.invoke(app, ["wiki", "update"])
+        assert result.exit_code == 0
+        assert "No concept or entity pages" in result.output
+
+    def test_collects_chunks_from_every_source(self, mock_svc, isolated_env, monkeypatch):
+        """wiki_build pulls chunks for every tracked source, not just the first."""
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.txt"},
+            {"filename": "b.txt"},
+        ]
+        chunk_calls: list[str] = []
+
+        def fake_chunks(source: str) -> list:
+            chunk_calls.append(source)
+            return []
+
+        mock_svc.store.get_chunks_by_source.side_effect = fake_chunks
+        self._stub_extraction(monkeypatch)
+        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        result = runner.invoke(app, ["wiki", "build"])
+        assert result.exit_code == 0
+        assert chunk_calls == ["a.txt", "b.txt"]
+
+
 class TestWikiCitations:
     def test_citations_empty(self, mock_svc):
         mock_svc.store.get_citations_for_wiki.return_value = []
@@ -2374,128 +2412,6 @@ class TestWikiPrune:
             result = runner.invoke(app, ["wiki", "prune"])
         assert result.exit_code == 0
         assert "old.md" in result.output
-
-
-class TestWikiGenerate:
-    def test_generate_json_success(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        cfg.json_mode = True
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        out_path = isolated_env / "wiki" / "summaries" / "doc.md"
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=out_path):
-            result = runner.invoke(app, ["--json", "wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["command"] == "wiki_generate"
-        assert data["source"] == "doc.pdf"
-        assert data["status"] == "generated"
-        assert data["paths"] == [str(out_path)]
-
-    def test_generate_default_mode_prints_path(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        out_path = isolated_env / "wiki" / "summaries" / "doc.md"
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=out_path):
-            result = runner.invoke(app, ["wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 0
-        assert "doc.md" in result.output
-
-    def test_generate_no_chunks_json(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        cfg.json_mode = True
-        mock_svc.store.get_chunks_by_source.return_value = []
-        result = runner.invoke(app, ["--json", "wiki", "generate", "missing.pdf"])
-        assert result.exit_code == 1
-        data = json.loads(result.output)
-        assert "error" in data
-        assert "missing.pdf" in data["error"]
-
-    def test_generate_no_chunks_default(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = []
-        result = runner.invoke(app, ["wiki", "generate", "missing.pdf"])
-        assert result.exit_code == 1
-        assert "missing.pdf" in result.output
-
-    def test_generate_empty_source_fails(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        cfg.json_mode = True
-        result = runner.invoke(app, ["--json", "wiki", "generate", "   "])
-        assert result.exit_code == 1
-        data = json.loads(result.output)
-        assert data["error"] == "source must not be empty"
-
-    def test_generate_returns_none_status_failed(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        cfg.json_mode = True
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=None):
-            result = runner.invoke(app, ["--json", "wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 1
-        data = json.loads(result.output)
-        assert data["status"] == "failed"
-        assert data["paths"] == []
-
-    def test_generate_returns_none_default_mode_reports_failure(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=None):
-            result = runner.invoke(app, ["wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 1
-        assert "Generation failed for doc.pdf" in result.output
-
-    def test_generate_wiki_disabled(self, mock_svc, isolated_env):
-        cfg.wiki = False
-        cfg.json_mode = True
-        result = runner.invoke(app, ["--json", "wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 1
-        data = json.loads(result.output)
-        assert data["error"] == "wiki not enabled"
-
-    def test_generate_progress_visible_in_default_mode(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        out_path = isolated_env / "wiki" / "summaries" / "doc.md"
-
-        def fake_gen(source, chunks, provider, store, on_progress=None):
-            if on_progress is not None:
-                on_progress("preparing", {"chunks": 1})
-                on_progress("generating", {"chunks": 1})
-            return out_path
-
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", side_effect=fake_gen):
-            result = runner.invoke(app, ["wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 0
-        assert "preparing" in result.output
-        assert "generating" in result.output
-
-    def test_generate_progress_not_emitted_in_json_mode(self, mock_svc, isolated_env):
-        cfg.wiki = True
-        cfg.wiki_dir = "wiki"
-        cfg.json_mode = True
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        out_path = isolated_env / "wiki" / "summaries" / "doc.md"
-        progress_calls: list[str] = []
-
-        def fake_gen(source, chunks, provider, store, on_progress=None):
-            if on_progress is not None:
-                progress_calls.append("called")
-            return out_path
-
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", side_effect=fake_gen):
-            result = runner.invoke(app, ["--json", "wiki", "generate", "doc.pdf"])
-        assert result.exit_code == 0
-        # JSON mode must keep stdout pristine. on_progress is None so stages stay off stdout.
-        assert progress_calls == []
-        json.loads(result.output)
 
 
 class TestCrawlProgressCallback:

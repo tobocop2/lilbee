@@ -7,7 +7,6 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import threading
@@ -54,7 +53,6 @@ from lilbee.server.models import (
     SyncSummary,
 )
 from lilbee.services import get_services
-from lilbee.wiki.shared import WIKI_STATUS_FAILED, WIKI_STATUS_GENERATED
 
 if TYPE_CHECKING:
     from lilbee.catalog import CatalogModel
@@ -886,56 +884,6 @@ async def crawl_stream(
             return
         paths = task.result()
         yield sse_done({"files_written": [str(p) for p in paths]})
-
-
-async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
-    """Yield SSE progress events while generating a wiki page for *source*.
-    Emits ``progress`` events for each pipeline stage (preparing, generating,
-    faithfulness_check) and a final ``done`` event with the result.
-    """
-    from lilbee.wiki.gen import generate_summary_page
-
-    yield ""  # force generator
-
-    svc = get_services()
-    chunks = svc.store.get_chunks_by_source(source)
-    if not chunks:
-        yield sse_error(f"No indexed chunks for source: {source}")
-        return
-
-    sse = SseStream()
-    result_holder: list[Path | None] = []
-    error_holder: list[str] = []
-
-    def _on_progress(stage: str, data: dict[str, object]) -> None:
-        payload = sse_event(SseEvent.PROGRESS, {"stage": stage, **data})
-        sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
-
-    def _run_blocking() -> None:
-        try:
-            result = generate_summary_page(
-                source, chunks, svc.provider, svc.store, on_progress=_on_progress
-            )
-            result_holder.append(result)
-        except Exception as exc:
-            error_holder.append(str(exc))
-        finally:
-            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
-
-    task = asyncio.ensure_future(asyncio.to_thread(_run_blocking))
-    async for event in sse.drain(task, "Wiki generate stream"):
-        yield event
-
-    # Ensure the blocking task has fully resolved before reading results
-    with contextlib.suppress(Exception):
-        await task
-
-    if error_holder:
-        yield sse_error(error_holder[0])
-    elif not sse.cancel.is_set() and not task.cancelled():
-        path = str(result_holder[0]) if result_holder and result_holder[0] is not None else None
-        status = WIKI_STATUS_GENERATED if path else WIKI_STATUS_FAILED
-        yield sse_done({"status": status, "source": source, "path": path or ""})
 
 
 _EXTERNAL_MODELS_TTL = 60

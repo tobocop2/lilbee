@@ -18,9 +18,6 @@ from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
     WIKI_DISABLED_ERROR,
-    WIKI_EMPTY_SOURCE_ERROR,
-    WIKI_STATUS_FAILED,
-    WIKI_STATUS_GENERATED,
 )
 
 if TYPE_CHECKING:
@@ -373,6 +370,28 @@ def wiki_read(slug: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def wiki_synthesize() -> dict[str, Any]:
+    """Generate synthesis pages for concept clusters spanning three or more sources.
+
+    Returns the list of synthesis page paths written to disk. When no
+    cluster meets the 3+ source threshold, returns an empty list and
+    ``count: 0``.
+    """
+    if not cfg.wiki:
+        return {"error": WIKI_DISABLED_ERROR}
+
+    from lilbee.wiki.gen import generate_synthesis_pages
+
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
+    return {
+        "command": "wiki_synthesize",
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
+    }
+
+
+@mcp.tool()
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
     Archives pages whose sources are all deleted or whose concept cluster
@@ -387,45 +406,6 @@ def wiki_prune() -> dict[str, Any]:
         "records": [r.to_dict() for r in report.records],
         "archived": report.archived_count,
         "flagged": report.flagged_count,
-    }
-
-
-@mcp.tool()
-def wiki_generate(source: str) -> dict[str, Any]:
-    """Generate a wiki summary page for a source document.
-
-    Args:
-        source: Source filename as indexed (e.g. 'cv-manual.pdf').
-
-    Returns {"command", "source", "status", "paths"} on success,
-    or {"error": "..."} when the source has no indexed chunks,
-    wiki is disabled, or the input is empty.
-    """
-    from lilbee.wiki.gen import generate_summary_page
-
-    if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
-    if not source or not source.strip():
-        return {"error": WIKI_EMPTY_SOURCE_ERROR}
-
-    services = get_services()
-    chunks = services.store.get_chunks_by_source(source)
-    if not chunks:
-        return {"error": f"No indexed chunks for source: {source}"}
-
-    result_path = generate_summary_page(source, chunks, services.provider, services.store)
-    if result_path is None:
-        return {
-            "command": "wiki_generate",
-            "source": source,
-            "status": WIKI_STATUS_FAILED,
-            "paths": [],
-        }
-    return {
-        "command": "wiki_generate",
-        "source": source,
-        "status": WIKI_STATUS_GENERATED,
-        "paths": [str(result_path)],
     }
 
 

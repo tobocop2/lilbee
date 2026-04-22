@@ -17,15 +17,17 @@ from lilbee.wiki.gen import (
     _diff_summary,
     _divert_to_drafts,
     _extract_excerpt,
+    _find_cached_leaf,
     _find_excerpt_source,
     _generate_synthesis_page,
+    _group_chunks_by_page,
+    _leaf_hash,
     _match_citation_source,
     _parse_faithfulness_score,
     _resolve_citations,
     _resolve_multi_source_citations,
     _truncate_chunks_to_budget,
     _verify_citations,
-    generate_summary_page,
     generate_synthesis_pages,
 )
 from lilbee.wiki.shared import make_slug
@@ -53,9 +55,16 @@ def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
     return SearchChunk(**defaults)
 
 
-def _mock_provider(wiki_text: str, faith_score: str = "0.85") -> MagicMock:
+def _mock_provider(
+    wiki_text: str,
+    faith_score: str = "0.85",
+    capabilities: list[str] | None = None,
+) -> MagicMock:
     provider = MagicMock()
     provider.chat.side_effect = [wiki_text, faith_score]
+    provider.get_capabilities.return_value = (
+        list(capabilities) if capabilities is not None else ["completion"]
+    )
     return provider
 
 
@@ -155,6 +164,20 @@ class TestExtractExcerpt:
     def test_unclosed_quote_returns_rest(self):
         assert _extract_excerpt('doc.md, excerpt: "trailing text') == "trailing text"
 
+    def test_decodes_escaped_newlines(self):
+        """Models that emit ``\\n`` as a backslash-n escape get the real newline back."""
+        result = _extract_excerpt('doc.md, excerpt: "Warning\\nWhen you see this symbol"')
+        assert result == "Warning\nWhen you see this symbol"
+
+    def test_decodes_escaped_tab_and_backslash_and_quote(self):
+        result = _extract_excerpt('doc.md, excerpt: "a\\tb\\\\c')  # unclosed so raw path runs too
+        assert result == "a\tb\\c"
+
+    def test_leaves_unknown_escape_untouched(self):
+        """An unrecognized escape (``\\x``) is kept verbatim, not mangled."""
+        result = _extract_excerpt('doc.md, excerpt: "hex \\x41"')
+        assert result == "hex \\x41"
+
 
 class TestResolveCitations:
     def test_resolves_excerpt_to_chunk_location(self):
@@ -197,6 +220,38 @@ class TestVerifyCitations:
                 "line_start": 0,
                 "line_end": 0,
                 "excerpt": "Python supports typing.",
+                "created_at": "now",
+            }
+        ]
+        verified = _verify_citations(recs, chunks, "test", cfg)
+        assert len(verified) == 1
+
+    def test_keeps_excerpts_that_differ_only_in_whitespace(self):
+        """Source with a mid-sentence newline still matches an LLM quote that collapsed it."""
+        from lilbee.store import CitationRecord
+
+        chunks = [
+            _make_chunk(
+                "Congratulations on acquiring your new Ford Motor Company product.\n"
+                "Please take the time to get well acquainted with your vehicle."
+            )
+        ]
+        recs: list[CitationRecord] = [
+            {
+                "wiki_source": "",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": (
+                    "Ford Motor Company product. Please take the time "
+                    "to get well acquainted with your vehicle."
+                ),
                 "created_at": "now",
             }
         ]
@@ -273,6 +328,44 @@ class TestVerifyCitations:
         assert len(verified) == 0
 
 
+class TestBuildWikiMessages:
+    def test_thinking_capability_prepends_no_think_directive(self):
+        from lilbee.wiki.gen import _build_wiki_messages
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = ["completion", "thinking"]
+        cfg.chat_model = "any-model"
+
+        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert content.startswith("/no_think\n\n")
+        assert "Summarize these chunks." in content
+        provider.get_capabilities.assert_called_once()
+
+    def test_no_thinking_capability_passes_prompt_through(self):
+        from lilbee.wiki.gen import _build_wiki_messages
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = ["completion"]
+        cfg.chat_model = "any-model"
+
+        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+        assert messages == [{"role": "user", "content": "Summarize these chunks."}]
+
+    def test_empty_capabilities_passes_prompt_through(self):
+        """Backends that don't report capabilities leave the prompt untouched."""
+        from lilbee.wiki.gen import _build_wiki_messages
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = []
+        cfg.chat_model = "any-model"
+
+        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+        assert messages == [{"role": "user", "content": "Summarize these chunks."}]
+
+
 class TestCheckFaithfulness:
     def test_returns_score(self):
         provider = MagicMock()
@@ -286,309 +379,130 @@ class TestCheckFaithfulness:
         score = _check_faithfulness("chunks", "wiki", provider, "test")
         assert score == 0.0
 
+    def test_passes_faithfulness_max_tokens_cap(self):
+        """Faithfulness chat is capped by cfg.wiki_faithfulness_max_tokens.
 
-class TestGenerateSummaryPage:
-    def test_generates_summary_page(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
-
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert result.exists()
-        assert "summaries" in str(result)
-        content = result.read_text()
-        assert "generated_by: test-model" in content
-        assert "faithfulness_score: 0.85" in content
-        store.add_citations.assert_called_once()
-
-    def test_low_score_goes_to_drafts(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-
-        wiki_text = (
-            "# Draft\n\n"
-            "> Content.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Content"'
-        )
-        provider = _mock_provider(wiki_text, faith_score="0.3")
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)
-
-    def test_empty_chunks_returns_none(self):
+        Without this cap a reasoning model (Qwen3, DeepSeek-R1) can burn
+        the whole context window thinking before emitting the number.
+        """
         provider = MagicMock()
-        store = _mock_store()
-        result = generate_summary_page("doc.md", [], provider, store)
-        assert result is None
-        provider.chat.assert_not_called()
+        provider.chat.return_value = "0.85"
+        cfg.wiki_faithfulness_max_tokens = 42
+        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
+        _, kwargs = provider.chat.call_args
+        assert kwargs["options"]["max_tokens"] == 42
 
-    def test_llm_failure_returns_none(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
+    def test_uses_wiki_temperature(self):
+        """Faithfulness chat uses the lower wiki temperature, not the chat default."""
         provider = MagicMock()
-        provider.chat.side_effect = ConnectionError("LLM down")
-        store = _mock_store()
+        provider.chat.return_value = "0.85"
+        cfg.wiki_temperature = 0.05
+        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
+        _, kwargs = provider.chat.call_args
+        assert kwargs["options"]["temperature"] == 0.05
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
 
-    def test_no_valid_citations_returns_none(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
+class TestGroupChunksByPage:
+    def test_empty_returns_empty(self):
+        assert _group_chunks_by_page([]) == []
 
-        wiki_text = (
-            "# Bad\n\n"
-            "> Fabricated claim.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "This text is not in any chunk at all"'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
-
-    def test_no_valid_citations_emits_failed_progress(self, tmp_path: Path):
-        """Progress callback receives 'failed' stage when no citations verify."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-
-        wiki_text = (
-            "# Bad\n\n"
-            "> Fabricated claim.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "This text is not in any chunk at all"'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
-        events: list[tuple[str, dict[str, object]]] = []
-
-        def on_progress(stage: str, data: dict[str, object]) -> None:
-            events.append((stage, data))
-
-        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
-        failed_events = [(s, d) for s, d in events if s == "failed"]
-        assert len(failed_events) == 1
-        assert "citation" in str(failed_events[0][1]["error"]).lower()
-
-    def test_faithfulness_check_failure_uses_zero(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-
-        wiki_text = (
-            "# Test\n\n"
-            "> Content.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Content"'
-        )
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, ConnectionError("LLM down")]
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)  # score=0.0 < threshold=0.7
-
-    def test_llm_returns_empty_string(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-        provider = _mock_provider("   ")  # whitespace-only -> empty after strip
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
-
-    def test_provider_error_returns_none(self, tmp_path: Path):
-        """ProviderError from chat() is caught and returns None."""
-        from lilbee.providers.base import ProviderError
-
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-        provider = MagicMock()
-        provider.chat.side_effect = ProviderError("model not found", provider="litellm")
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
-
-    def test_unexpected_exception_returns_none(self, tmp_path: Path):
-        """Unexpected exceptions (ValueError, KeyError, etc.) are caught."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-        provider = MagicMock()
-        provider.chat.side_effect = ValueError("context window exceeded")
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is None
-
-    def test_llm_failure_emits_failed_progress(self, tmp_path: Path):
-        """Progress callback receives 'failed' stage with error on LLM failure."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-        provider = MagicMock()
-        provider.chat.side_effect = RuntimeError("GPU OOM")
-        store = _mock_store()
-        events: list[tuple[str, dict[str, object]]] = []
-
-        def on_progress(stage: str, data: dict[str, object]) -> None:
-            events.append((stage, data))
-
-        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
-        failed_events = [(s, d) for s, d in events if s == "failed"]
-        assert len(failed_events) == 1
-        assert "GPU OOM" in str(failed_events[0][1]["error"])
-
-    def test_empty_response_emits_failed_progress(self, tmp_path: Path):
-        """Progress callback receives 'failed' stage when model returns empty."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-        provider = _mock_provider("   ")
-        store = _mock_store()
-        events: list[tuple[str, dict[str, object]]] = []
-
-        def on_progress(stage: str, data: dict[str, object]) -> None:
-            events.append((stage, data))
-
-        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
-        failed_events = [(s, d) for s, d in events if s == "failed"]
-        assert len(failed_events) == 1
-        assert "empty" in str(failed_events[0][1]["error"]).lower()
-
-    def test_faithfulness_provider_error_uses_zero(self, tmp_path: Path):
-        """ProviderError during faithfulness check returns score 0.0."""
-        from lilbee.providers.base import ProviderError
-
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content")
-        chunks = [_make_chunk("Content")]
-
-        wiki_text = (
-            "# Test\n\n"
-            "> Content.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Content"'
-        )
-        provider = MagicMock()
-        provider.chat.side_effect = [
-            wiki_text,
-            ProviderError("timeout", provider="litellm"),
+    def test_single_page_preserves_chunk_order(self):
+        chunks = [
+            _make_chunk("a", page_start=1, chunk_index=0),
+            _make_chunk("b", page_start=1, chunk_index=1),
         ]
-        store = _mock_store()
+        result = _group_chunks_by_page(chunks)
+        assert len(result) == 1
+        page_num, group = result[0]
+        assert page_num == 1
+        assert [c.chunk for c in group] == ["a", "b"]
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)  # score=0.0 < threshold=0.7
+    def test_sorts_by_page_number(self):
+        chunks = [
+            _make_chunk("z", page_start=5, chunk_index=0),
+            _make_chunk("a", page_start=1, chunk_index=1),
+            _make_chunk("m", page_start=3, chunk_index=2),
+        ]
+        result = _group_chunks_by_page(chunks)
+        assert [page for page, _ in result] == [1, 3, 5]
 
-    def test_inference_citations_pass_verification(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Content here.")
-        chunks = [_make_chunk("Content here.")]
+    def test_non_contiguous_pages_kept_separately(self):
+        chunks = [
+            _make_chunk("a", page_start=1, chunk_index=0),
+            _make_chunk("b", page_start=7, chunk_index=1),
+        ]
+        result = _group_chunks_by_page(chunks)
+        assert [page for page, _ in result] == [1, 7]
 
-        wiki_text = (
-            "# Summary\n\n"
-            "This is an observation.[*inference*]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            "[^src1]: doc.md, no excerpt"
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
+    def test_non_paginated_source_single_bucket(self):
+        """Chunks with page_start=0 (markdown, code, HTML) collapse to one entry."""
+        chunks = [_make_chunk(f"c{i}", chunk_index=i) for i in range(4)]
+        result = _group_chunks_by_page(chunks)
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert len(result[0][1]) == 4
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        store.add_citations.assert_called_once()
 
-    def test_prune_raw_deletes_source_chunks(self, tmp_path: Path):
-        cfg.wiki_prune_raw = True
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
+class TestLeafHash:
+    def test_empty_returns_hash_of_empty(self):
+        """Deterministic hash even for no chunks."""
+        h = _leaf_hash([])
+        assert isinstance(h, str)
+        assert len(h) == 64  # sha256 hex digest
 
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
+    def test_same_chunks_same_hash(self):
+        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
+        b = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
+        assert _leaf_hash(a) == _leaf_hash(b)
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        store.delete_by_source.assert_called_once_with("doc.md")
+    def test_order_sensitive(self):
+        a = [_make_chunk("one"), _make_chunk("two", chunk_index=1)]
+        b = [_make_chunk("two", chunk_index=1), _make_chunk("one")]
+        assert _leaf_hash(a) != _leaf_hash(b)
 
-    def test_citations_cleared_before_adding(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
+    def test_content_change_changes_hash(self):
+        a = [_make_chunk("one")]
+        b = [_make_chunk("two")]
+        assert _leaf_hash(a) != _leaf_hash(b)
 
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
+    def test_null_separator_prevents_concat_collision(self):
+        """Chunk boundaries must affect the hash, not just the concatenated bytes."""
+        a = [_make_chunk("ab"), _make_chunk("c", chunk_index=1)]
+        b = [_make_chunk("a"), _make_chunk("bc", chunk_index=1)]
+        assert _leaf_hash(a) != _leaf_hash(b)
 
-        generate_summary_page("doc.md", chunks, provider, store)
-        store.delete_citations_for_wiki.assert_called_once()
-        store.add_citations.assert_called_once()
 
-    def test_think_tags_stripped_from_wiki_output(self, tmp_path: Path):
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
+class TestFindCachedLeaf:
+    def _write(self, tmp_path: Path, subdir: str, slug: str, leaf_hash: str) -> Path:
+        path = tmp_path / subdir / f"{slug}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fm = f"---\nleaf_hash: {leaf_hash}\n---\nBody.\n" if leaf_hash else "Body.\n"
+        path.write_text(fm, encoding="utf-8")
+        return path
 
-        wiki_text_with_think = (
-            "<think>\nLet me reason about this...\n</think>\n"
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text_with_think)
-        store = _mock_store()
+    def test_no_file_returns_none(self, tmp_path: Path):
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "h") is None
 
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        content = result.read_text()
-        assert "<think>" not in content
-        assert "Let me reason" not in content
-        assert "# Doc Summary" in content
+    def test_returns_summaries_path_on_match(self, tmp_path: Path):
+        p = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
+
+    def test_returns_drafts_path_on_match(self, tmp_path: Path):
+        p = self._write(tmp_path, "drafts", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == p
+
+    def test_summaries_wins_when_both_match(self, tmp_path: Path):
+        s = self._write(tmp_path, "summaries", "src/page-0001", "abcd")
+        self._write(tmp_path, "drafts", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") == s
+
+    def test_mismatch_returns_none(self, tmp_path: Path):
+        self._write(tmp_path, "summaries", "src/page-0001", "abcd")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "different") is None
+
+    def test_missing_hash_in_frontmatter_is_not_a_match(self, tmp_path: Path):
+        self._write(tmp_path, "summaries", "src/page-0001", "")
+        assert _find_cached_leaf(tmp_path, "src/page-0001", "abcd") is None
 
 
 class TestMakeSlug:
@@ -986,73 +900,6 @@ class TestDivertToDrafts:
         assert content in text
 
 
-class TestSummaryDriftDetection:
-    """Drift detection during summary page regeneration."""
-
-    def test_drift_diverts_to_drafts(self, tmp_path: Path):
-        """When >30% of content changes, new version goes to drafts."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
-
-        # Write an existing page with very different content
-        wiki_root = tmp_path / "wiki" / "summaries"
-        wiki_root.mkdir(parents=True)
-        existing = wiki_root / "doc.md"
-        existing.write_text("---\ngenerated_by: old-model\n---\n\nCompletely different content.\n")
-
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store)
-        assert result is not None
-        assert "drafts" in str(result)
-        # Original page should be unchanged
-        assert "Completely different content" in existing.read_text()
-        # Draft should have drift note
-        draft_text = result.read_text()
-        assert "DRIFT" in draft_text
-
-    def test_small_change_overwrites(self, tmp_path: Path):
-        """When content barely changes, existing page is overwritten normally."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
-
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-
-        # Write an existing page with nearly identical content (only timestamp differs)
-        provider = _mock_provider(wiki_text, faith_score="0.85")
-        store = _mock_store()
-
-        # First generation
-        result1 = generate_summary_page("doc.md", chunks, provider, store)
-        assert result1 is not None
-        assert "summaries" in str(result1)
-
-        # Regenerate with same content — provider returns same text
-        provider2 = _mock_provider(wiki_text, faith_score="0.85")
-        store2 = _mock_store()
-        result2 = generate_summary_page("doc.md", chunks, provider2, store2)
-        # Small diff (only timestamp) should overwrite, not divert
-        assert result2 is not None
-        # Should still be in summaries (not drafts) since content is nearly identical
-        assert "summaries" in str(result2)
-
-
 class TestSynthesisDriftDetection:
     """Drift detection during synthesis page regeneration."""
 
@@ -1082,53 +929,3 @@ class TestSynthesisDriftDetection:
         assert "drafts" in str(result)
         # Original should be unchanged
         assert "Totally different synthesis" in existing.read_text()
-
-
-class TestProgressCallback:
-    """Test the on_progress callback in generate_summary_page."""
-
-    def test_callback_receives_stages(self, tmp_path: Path):
-        """on_progress is called with preparing, generating, faithfulness_check stages."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
-
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
-
-        stages: list[str] = []
-
-        def on_progress(stage: str, data: dict) -> None:
-            stages.append(stage)
-
-        result = generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
-        assert result is not None
-        assert "preparing" in stages
-        assert "generating" in stages
-        assert "faithfulness_check" in stages
-
-    def test_callback_none_is_safe(self, tmp_path: Path):
-        """on_progress=None (default) does not raise."""
-        source = tmp_path / "documents" / "doc.md"
-        source.write_text("Python supports gradual typing.")
-        chunks = [_make_chunk("Python supports gradual typing.")]
-
-        wiki_text = (
-            "# Doc Summary\n\n"
-            "> Python supports gradual typing.[^src1]\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
-        )
-        provider = _mock_provider(wiki_text)
-        store = _mock_store()
-
-        result = generate_summary_page("doc.md", chunks, provider, store, on_progress=None)
-        assert result is not None
