@@ -40,7 +40,12 @@ SETUP_CHAT_GRID_ID = "setup-chat-grid"
 
 
 def _scan_installed_models() -> tuple[list[str], list[str]]:
-    """List installed models from the registry, split into chat vs embedding."""
+    """List installed models from the registry, split into chat vs embedding.
+
+    The setup wizard is scoped to chat + embedding by design; rerank
+    entries in the registry are intentionally ignored here and are
+    configured later via the settings screen's reranker picker.
+    """
     try:
         from lilbee.registry import ModelRegistry
 
@@ -48,11 +53,10 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         chat: list[str] = []
         embed: list[str] = []
         for m in registry.list_installed():
-            name = f"{m.name}:{m.tag}"
             if m.task == ModelTask.EMBEDDING:
-                embed.append(name)
+                embed.append(f"{m.name}:{m.tag}")
             elif m.task == ModelTask.CHAT:
-                chat.append(name)
+                chat.append(f"{m.name}:{m.tag}")
         return sorted(chat), sorted(embed)
     except Exception:
         return [], []

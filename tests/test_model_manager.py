@@ -695,6 +695,37 @@ class TestRemoteModelProvider:
         model = RemoteModel(name="test", task="chat", family="llama", parameter_size="8B")
         assert model.provider == "Remote"
 
+    def test_classify_remote_models_detects_rerank(self) -> None:
+        from lilbee.model_manager import classify_remote_models
+        from lilbee.models import ModelTask
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {
+            "models": [
+                {
+                    "name": "cohere/rerank-english-v3.0",
+                    "details": {"family": "cohere", "parameter_size": ""},
+                },
+                {
+                    "name": "bge-reranker-v2-m3",
+                    "details": {"family": "bert", "parameter_size": ""},
+                },
+            ]
+        }
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            result = classify_remote_models("http://localhost:11434")
+
+        # rerank wins over chat for names containing "rerank"
+        cohere = next(m for m in result if m.name == "cohere/rerank-english-v3.0")
+        assert cohere.task == ModelTask.RERANK
+        # bge-reranker looks like both an embedding (family=bert) and a
+        # reranker (name), but embedding family check runs first — matches
+        # the rest of the classifier's precedence rules.
+        bge = next(m for m in result if m.name == "bge-reranker-v2-m3")
+        assert bge.task == ModelTask.EMBEDDING
+
 
 class TestIsVisionCapable:
     """Tests for is_vision_capable() — 4-tier detection."""

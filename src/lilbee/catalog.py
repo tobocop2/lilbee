@@ -258,7 +258,10 @@ class ModelFamily:
 
 
 def _load_featured() -> tuple[
-    tuple[CatalogModel, ...], tuple[CatalogModel, ...], tuple[CatalogModel, ...]
+    tuple[CatalogModel, ...],
+    tuple[CatalogModel, ...],
+    tuple[CatalogModel, ...],
+    tuple[CatalogModel, ...],
 ]:
     """Load featured models from the TOML file, cached after first call."""
     import tomllib
@@ -286,10 +289,15 @@ def _load_featured() -> tuple[
             for m in data.get(task, [])
         )
 
-    return _build(ModelTask.CHAT), _build(ModelTask.EMBEDDING), _build(ModelTask.VISION)
+    return (
+        _build(ModelTask.CHAT),
+        _build(ModelTask.EMBEDDING),
+        _build(ModelTask.VISION),
+        _build(ModelTask.RERANK),
+    )
 
 
-FEATURED_CHAT, FEATURED_EMBEDDING, FEATURED_VISION = _load_featured()
+FEATURED_CHAT, FEATURED_EMBEDDING, FEATURED_VISION, FEATURED_RERANK = _load_featured()
 
 # Maps vision catalog entries to their mmproj (CLIP projection) filenames.
 # Vision models need both the main GGUF and the mmproj file to work.
@@ -301,7 +309,9 @@ VISION_MMPROJ_FILES: dict[str, str] = {
     "noctrex/LightOnOCR-2-1B-GGUF": _DEFAULT_MMPROJ_PATTERN,
 }
 
-FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
+FEATURED_ALL: tuple[CatalogModel, ...] = (
+    FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION + FEATURED_RERANK
+)
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
@@ -385,6 +395,7 @@ def get_families() -> list[ModelFamily]:
         _build_families(FEATURED_CHAT, ModelTask.CHAT)
         + _build_families(FEATURED_EMBEDDING, ModelTask.EMBEDDING)
         + _build_families(FEATURED_VISION, ModelTask.VISION)
+        + _build_families(FEATURED_RERANK, ModelTask.RERANK)
     )
 
 
@@ -627,6 +638,7 @@ def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:
         ModelTask.CHAT: ("text-generation", None),
         ModelTask.EMBEDDING: ("feature-extraction", "sentence-transformers"),
         ModelTask.VISION: ("image-text-to-text", None),
+        ModelTask.RERANK: ("text-classification", None),
     }
     return mapping.get(task or ModelTask.CHAT, ("text-generation", None))
 
@@ -636,6 +648,7 @@ _PIPELINE_TO_TASK: dict[str, str] = {
     "feature-extraction": ModelTask.EMBEDDING,
     "image-text-to-text": ModelTask.VISION,
     "image-to-text": ModelTask.VISION,
+    "text-classification": ModelTask.RERANK,
 }
 
 
@@ -702,6 +715,26 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     idx = _build_catalog_index()
     q = query.lower()
     return idx.by_ref.get(q) or idx.by_name.get(q) or idx.by_display.get(q) or idx.by_hf_repo.get(q)
+
+
+def is_rerank_ref(model_ref: str) -> bool:
+    """Return True iff *model_ref* exactly matches a rerank catalog entry.
+
+    Uses exact ref / hf_repo comparison (case-insensitive). Substring
+    matching would wrongly flag short queries like ``"base"`` as
+    ``bge-reranker-base`` — callers rely on this returning False for
+    any input that isn't a canonical rerank identifier.
+    """
+    if not model_ref:
+        return False
+    ref_lower = model_ref.lower()
+    entry = find_catalog_entry(model_ref)
+    if entry is not None and entry.task == ModelTask.RERANK:
+        return True
+    return any(
+        entry.ref.lower() == ref_lower or entry.hf_repo.lower() == ref_lower
+        for entry in FEATURED_RERANK
+    )
 
 
 def _is_hf_repo_id(value: str) -> bool:

@@ -22,9 +22,17 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from lilbee import settings
+from lilbee.catalog import (
+    FEATURED_RERANK,
+    CatalogModel,
+    enrich_catalog,
+    find_catalog_entry,
+    get_catalog,
+)
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import Config, cfg
 from lilbee.model_manager import ModelSource, get_model_manager
+from lilbee.models import ModelTask, ensure_tag
 from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.sdk_backend import API_KEY_FIELDS
@@ -90,7 +98,7 @@ def _derive_field_sets() -> tuple[
     for name, info in Config.model_fields.items():
         if _get_extra(info, "writable"):
             writable[name] = _is_nullable(info)
-            if not _get_extra(info, "write_only") and _get_extra(info, "public", default=True):
+            if not _get_extra(info, "write_only"):
                 public.add(name)
             if _get_extra(info, "reindex"):
                 reindex.add(name)
@@ -124,6 +132,7 @@ class ModelsResponse(BaseModel):
     """Response for the list-models endpoint."""
 
     chat: ModelCatalogSection
+    reranker: ModelCatalogSection | None = None
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -451,31 +460,76 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
 
 
 async def list_models() -> ModelsResponse:
-    """Return chat model catalog with installed status."""
+    """Return chat and reranker model catalogs with installed status."""
     from lilbee.models import MODEL_CATALOG, list_installed_models
 
     installed = set(list_installed_models())
+    chat_section = ModelCatalogSection(
+        active=cfg.chat_model,
+        catalog=[
+            ModelCatalogEntry(
+                name=m.display_name,
+                size_gb=m.size_gb,
+                min_ram_gb=m.min_ram_gb,
+                description=m.description,
+                installed=m.ref in installed,
+            )
+            for m in MODEL_CATALOG
+        ],
+        installed=sorted(installed),
+    )
+    reranker_section = _build_reranker_section(FEATURED_RERANK, installed)
+    return ModelsResponse(chat=chat_section, reranker=reranker_section)
 
-    return ModelsResponse(
-        chat=ModelCatalogSection(
-            active=cfg.chat_model,
-            catalog=[
-                ModelCatalogEntry(
-                    name=m.display_name,
-                    size_gb=m.size_gb,
-                    min_ram_gb=m.min_ram_gb,
-                    description=m.description,
-                    installed=m.ref in installed,
-                )
-                for m in MODEL_CATALOG
-            ],
-            installed=sorted(installed),
-        ),
+
+def _build_reranker_section(
+    featured: tuple[CatalogModel, ...], installed: set[str]
+) -> ModelCatalogSection | None:
+    """Build the reranker section when the provider supports rerank."""
+    if not _provider_has_rerank():
+        return None
+    rerank_installed = sorted(_filter_installed_by_task(list(installed), ModelTask.RERANK))
+    return ModelCatalogSection(
+        active=cfg.reranker_model,
+        catalog=[
+            ModelCatalogEntry(
+                name=m.display_name,
+                size_gb=m.size_gb,
+                min_ram_gb=m.min_ram_gb,
+                description=m.description,
+                installed=m.ref in installed,
+            )
+            for m in featured
+        ],
+        installed=rerank_installed,
     )
 
 
+def _provider_has_rerank() -> bool:
+    """Return True when the active provider advertises rerank capability.
+
+    ``hasattr(provider, "rerank")`` is meaningless now that ``rerank`` is
+    part of the ``LLMProvider`` protocol — every backend declares the
+    method. Instead we probe the provider-level ``supports_rerank()``
+    helper, which checks whether the underlying runtime (llama-cpp-python
+    with rank pooling, or the ``litellm`` extra) can actually service
+    the configured reranker model.
+    """
+    try:
+        provider = get_services().provider
+    except Exception:
+        return False
+    supports = getattr(provider, "supports_rerank", None)
+    if callable(supports):
+        try:
+            return bool(supports())
+        except Exception:
+            return False
+    return False
+
+
 async def _set_model(
-    field: Literal["chat_model", "embedding_model"],
+    field: Literal["chat_model", "embedding_model", "reranker_model"],
     model: str,
 ) -> SetModelResponse:
     """Shared helper for switching a model field."""
@@ -486,8 +540,6 @@ async def _set_model(
 
 def _require_model_available(model: str) -> str:
     """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
-    from lilbee.models import ensure_tag
-
     normalized = ensure_tag(model)
     available = get_services().provider.list_models()
     # ``available`` lists bare tags from /api/tags; stored refs may carry an
@@ -496,6 +548,26 @@ def _require_model_available(model: str) -> str:
     if normalized not in available and bare not in available:
         raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
     return normalized
+
+
+def _require_reranker_available(model: str) -> str:
+    """Validate a reranker model. Accepts empty string as disable-request.
+
+    Returns the normalized model name (or the empty string when disabling).
+    Raises ``ValueError`` when *model* is non-empty and not installed and
+    not a known catalog/hosted reranker entry.
+    """
+    if not model:
+        return ""
+    normalized = ensure_tag(model)
+    available = get_services().provider.list_models()
+    bare = parse_model_ref(normalized).name
+    if normalized in available or bare in available:
+        return normalized
+    entry = find_catalog_entry(model) or find_catalog_entry(normalized)
+    if entry is not None and entry.task == ModelTask.RERANK:
+        return normalized
+    raise ValueError(f"Reranker '{normalized}' is not available. Pull it first or check the name.")
 
 
 async def set_chat_model(model: str) -> SetModelResponse:
@@ -508,6 +580,12 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     """Switch embedding model. Validates the model exists before accepting."""
     normalized = _require_model_available(model)
     return await _set_model("embedding_model", normalized)
+
+
+async def set_reranker_model(model: str) -> SetModelResponse:
+    """Switch reranker model. Empty string disables reranking."""
+    normalized = _require_reranker_available(model)
+    return await _set_model("reranker_model", normalized)
 
 
 _MIN_CHUNK_SIZE = 64
@@ -613,14 +691,15 @@ async def list_documents(
 
 
 async def get_config() -> ConfigResponse:
-    """Return all user-facing configuration values."""
-    from lilbee.reranker import reranker_available
+    """Return all user-facing configuration values.
 
+    Always includes the reranker fields plus a ``reranker_available``
+    flag derived from provider capability. Clients render a disabled
+    UI when the flag is False, rather than hiding the feature.
+    """
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
-    if reranker_available():
-        result["reranker_model"] = dumped["reranker_model"]
-        result["rerank_candidates"] = dumped["rerank_candidates"]
+    result["reranker_available"] = _provider_has_rerank()
     return ConfigResponse(**result)
 
 
@@ -664,8 +743,6 @@ async def models_catalog(
     offset: int = 0,
 ) -> ModelsCatalogResponse:
     """Return paginated model catalog with installed status."""
-    from lilbee.catalog import enrich_catalog, get_catalog
-
     result = get_catalog(
         task=task,
         search=search,
@@ -677,6 +754,10 @@ async def models_catalog(
         offset=offset,
     )
 
+    # Use the native registry (on-disk GGUFs) rather than the provider's
+    # list_models() — the routing provider returns the union of native +
+    # litellm-routable refs, which would incorrectly mark litellm-only
+    # models as installed. Fixed originally by PR #151.
     registry = get_services().registry
     installed_names = {f"{m.name}:{m.tag}" for m in registry.list_installed()}
     enriched = enrich_catalog(result, installed_names)
@@ -708,16 +789,34 @@ async def models_catalog(
     )
 
 
-async def models_installed() -> ModelsInstalledResponse:
-    """Return list of installed models with their source."""
+async def models_installed(task: ModelTask | None = None) -> ModelsInstalledResponse:
+    """Return list of installed models with their source.
+
+    When *task* is provided, only installed models whose catalog entry
+    matches that task are returned. Unknown ad-hoc installations (no
+    catalog entry) are dropped from a filtered listing.
+    """
     manager = get_model_manager()
     names = manager.list_installed()
+    names = _filter_installed_by_task(names, task)
     models = []
     for name in names:
         src = manager.get_source(name)
         source_str = src.value if src is not None else ModelSource.LITELLM.value
         models.append(InstalledModelEntry(name=name, source=source_str))
     return ModelsInstalledResponse(models=models)
+
+
+def _filter_installed_by_task(names: list[str], task: ModelTask | None) -> list[str]:
+    """Keep only installed model refs whose catalog entry matches *task*."""
+    if task is None:
+        return names
+    kept: list[str] = []
+    for name in names:
+        entry = find_catalog_entry(name)
+        if entry is not None and entry.task == task:
+            kept.append(name)
+    return kept
 
 
 async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:

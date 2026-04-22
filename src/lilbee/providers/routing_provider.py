@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from lilbee.catalog import is_rerank_ref
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend, litellm_available
@@ -106,9 +107,51 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(model)
         return self._pick_backend(ref).get_capabilities(model)
 
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
+
+        GGUF refs present in the native rerank catalog go to llama-cpp;
+        everything else (Cohere, Voyage, Jina, Together AI, HF TEI) is
+        treated as a hosted reranker and goes through the SDK provider.
+        Hosted dispatch requires the ``litellm`` extra; otherwise we
+        raise with a user-facing hint, mirroring ``pull_model`` /
+        ``list_models``.
+        """
+        if _is_native_rerank_ref(cfg.reranker_model):
+            return self._get_llama_cpp().rerank(query, candidates)
+        if not litellm_available():
+            raise ProviderError(
+                f"Cannot rerank with {cfg.reranker_model!r}: litellm extra not installed"
+            )
+        return self._get_sdk_provider().rerank(query, candidates)
+
+    def supports_rerank(self) -> bool:
+        """Delegate to the backend that would handle ``cfg.reranker_model``.
+
+        An empty reranker model (= reranking disabled) always counts as
+        "supported" since disabling is a valid user choice — the UI
+        should still surface the picker so the user can re-enable it.
+        """
+        model = cfg.reranker_model
+        if not model:
+            return True
+        if _is_native_rerank_ref(model):
+            return self._get_llama_cpp().supports_rerank()
+        return litellm_available()
+
     def shutdown(self) -> None:
         """Shut down sub-providers to release resources."""
         if self._llama_cpp is not None:
             self._llama_cpp.shutdown()
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
+
+
+def _is_native_rerank_ref(model: str) -> bool:
+    """Return True if *model* resolves to a featured rerank catalog entry.
+
+    Thin alias over :func:`lilbee.catalog.is_rerank_ref` so the rerank
+    dispatch logic and the llama-cpp provider both go through the same
+    canonical check.
+    """
+    return is_rerank_ref(model)

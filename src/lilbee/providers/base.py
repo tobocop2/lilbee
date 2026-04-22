@@ -89,6 +89,29 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Score *candidates* for their relevance to *query*.
+
+        Lifecycle: the backend resolves the reranker model from
+        ``cfg.reranker_model`` (the caller never passes a path). The
+        returned list MUST have one float per candidate, preserving input
+        order, with higher scores indicating greater relevance. An empty
+        ``candidates`` list returns ``[]``. Backends that don't support
+        reranking raise :class:`ProviderError`.
+        """
+        ...
+
+    def supports_rerank(self) -> bool:
+        """Return True when this provider can rerank the currently configured model.
+
+        Default is False. Concrete backends override: llama-cpp checks
+        for the ``LLAMA_POOLING_TYPE_RANK`` binding, the SDK provider
+        checks whether its backend's SDK is importable, and the routing
+        provider delegates to whichever backend handles
+        ``cfg.reranker_model``.
+        """
+        return False
+
     def shutdown(self) -> None:
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...

@@ -232,6 +232,7 @@ class ModelManager:
 
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
 _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
+_RERANK_NAME_PATTERNS = frozenset({"rerank", "cross-encoder", "reranker"})
 
 _vision_cache: dict[str, bool] = {}
 
@@ -321,11 +322,13 @@ def detect_provider(base_url: str) -> str:
 
 
 def _classify_remote_task(name: str, family: str) -> str:
-    """Classify a remote model as chat, embedding, or vision."""
+    """Classify a remote model as chat, embedding, vision, or rerank."""
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
         return ModelTask.EMBEDDING
     name_lower = name.lower()
+    if any(rp in name_lower for rp in _RERANK_NAME_PATTERNS):
+        return ModelTask.RERANK
     if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
         return ModelTask.VISION
     return ModelTask.CHAT

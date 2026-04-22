@@ -46,10 +46,15 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     Uses registry manifests for native models and the litellm backend's
     backend metadata for remote models. Filters out mmproj files.
     """
+    # Rerank is bucketed alongside the other tasks so manifests tagged
+    # RERANK don't fall through the default branch; the model bar itself
+    # only exposes chat + embedding Selects, and the reranker is picked
+    # via the settings screen's dedicated reranker dropdown.
     buckets: dict[str, list[ModelOption]] = {
         ModelTask.CHAT: [],
         ModelTask.EMBEDDING: [],
         ModelTask.VISION: [],
+        ModelTask.RERANK: [],
     }
     seen: set[str] = set()
 

@@ -367,8 +367,9 @@ def _apply_config_snapshot(config: ConfigSnapshot) -> None:
 def _load_embed_model(model_name: str) -> Any:
     """Load an embedding model in the child process."""
     from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
+    from lilbee.providers.model_cache import MODE_EMBED
 
-    return load_llama(resolve_model_path(model_name), embedding=True)
+    return load_llama(resolve_model_path(model_name), mode=MODE_EMBED)
 
 
 def _load_vision_model(model_name: str) -> Any:

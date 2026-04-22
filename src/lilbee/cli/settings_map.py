@@ -80,12 +80,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Models",
         help_text="Model used to embed document chunks",
     ),
-    "reranker_model": SettingDef(
-        str,
-        nullable=True,
-        group="Models",
-        help_text="Cross-encoder model for result reranking",
-    ),
+    # ``reranker_model`` is managed exclusively by the dedicated
+    # ``PUT /api/models/reranker`` route — exposing it here would let
+    # callers bypass the validation + normalization that endpoint performs.
     "temperature": SettingDef(
         float,
         nullable=True,

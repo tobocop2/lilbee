@@ -855,10 +855,12 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
         r for r in rows if r.task == ModelTask.EMBEDDING and not r.featured and not r.installed
     ]
     vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
+    rerank = [r for r in rows if r.task == ModelTask.RERANK and not r.featured and not r.installed]
     return [
         GridSection(msg.HEADING_OUR_PICKS, recommended),
         GridSection(msg.HEADING_INSTALLED, installed),
         GridSection(ModelTask.CHAT.capitalize(), chat),
         GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
         GridSection(ModelTask.VISION.capitalize(), vision),
+        GridSection(ModelTask.RERANK.capitalize(), rerank),
     ]

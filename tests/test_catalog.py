@@ -13,6 +13,7 @@ from lilbee.catalog import (
     FEATURED_ALL,
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
+    FEATURED_RERANK,
     FEATURED_VISION,
     QUANT_TIERS,
     CatalogModel,
@@ -31,6 +32,7 @@ from lilbee.catalog import (
     get_families,
     quant_tier,
 )
+from lilbee.models import ModelTask
 
 _EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
@@ -140,8 +142,23 @@ class TestFeaturedModels:
     def test_vision_not_empty(self) -> None:
         assert len(FEATURED_VISION) > 0
 
+    def test_rerank_not_empty(self) -> None:
+        assert len(FEATURED_RERANK) > 0
+
+    def test_rerank_has_recommended_default(self) -> None:
+        assert any(m.recommended for m in FEATURED_RERANK)
+
+    def test_rerank_task_set(self) -> None:
+        for m in FEATURED_RERANK:
+            assert m.task == ModelTask.RERANK
+
     def test_all_combined(self) -> None:
-        expected = len(FEATURED_CHAT) + len(FEATURED_EMBEDDING) + len(FEATURED_VISION)
+        expected = (
+            len(FEATURED_CHAT)
+            + len(FEATURED_EMBEDDING)
+            + len(FEATURED_VISION)
+            + len(FEATURED_RERANK)
+        )
         assert len(FEATURED_ALL) == expected
 
     def test_all_featured_flag_true(self) -> None:
@@ -425,6 +442,12 @@ class TestGetCatalog:
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
+    def test_filter_by_task_rerank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        result = get_catalog(task="rerank")
+        assert all(m.task == "rerank" for m in result.models)
+        assert result.total == len(FEATURED_RERANK)
+
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task="vision")
@@ -504,8 +527,9 @@ class TestGetCatalog:
     def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="name")
-        names = [m.name.lower() for m in result.models]
-        assert names == sorted(names)
+        # ``sort=name`` keys on ``display_name``; verify that invariant.
+        display = [m.display_name.lower() for m in result.models]
+        assert display == sorted(display)
 
     def test_installed_filter_with_model_manager(self) -> None:
         class FakeManager:
@@ -979,6 +1003,9 @@ class TestTaskToPipeline:
     def test_vision(self) -> None:
         assert catalog._task_to_pipeline("vision") == ("image-text-to-text", None)
 
+    def test_rerank(self) -> None:
+        assert catalog._task_to_pipeline("rerank") == ("text-classification", None)
+
     def test_unknown(self) -> None:
         assert catalog._task_to_pipeline("unknown") == ("text-generation", None)
 
@@ -998,6 +1025,9 @@ class TestPipelineToTask:
 
     def test_image_to_text(self) -> None:
         assert catalog._pipeline_to_task("image-to-text") == "vision"
+
+    def test_text_classification_maps_to_rerank(self) -> None:
+        assert catalog._pipeline_to_task("text-classification") == "rerank"
 
     def test_unknown_defaults_to_chat(self) -> None:
         assert catalog._pipeline_to_task("unknown-tag") == "chat"
@@ -1037,8 +1067,9 @@ class TestSortModels:
     def test_name_sort(self) -> None:
         models = list(FEATURED_ALL)
         sorted_m = catalog._sort_models(models, "name")
-        names = [m.name.lower() for m in sorted_m]
-        assert names == sorted(names)
+        # ``sort=name`` keys on ``display_name``; verify that invariant.
+        display = [m.display_name.lower() for m in sorted_m]
+        assert display == sorted(display)
 
     def test_featured_default(self) -> None:
         models = list(FEATURED_ALL)
@@ -1843,6 +1874,39 @@ class TestEnrichCatalog:
         )
         enriched = enrich_catalog(result, set())
         assert enriched[0].param_count == "v1.5"
+
+
+class TestGroupRowsForGrid:
+    """Smoke coverage for the TUI grid grouping — ensures RERANK rows render."""
+
+    @staticmethod
+    def _row(task: str, name: str):
+        from lilbee.cli.tui.screens.catalog_utils import TableRow
+
+        return TableRow(
+            name=name,
+            task=task,
+            params="--",
+            size="--",
+            quant="--",
+            downloads="--",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref=name,
+        )
+
+    def test_rerank_rows_get_their_own_section(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.models import ModelTask
+
+        rows = [self._row(ModelTask.RERANK, "bge-reranker-v2-m3")]
+        sections = _group_rows_for_grid(rows)
+        headings = [s.heading for s in sections]
+        assert ModelTask.RERANK.capitalize() in headings
+        rerank_section = next(s for s in sections if s.heading == ModelTask.RERANK.capitalize())
+        assert len(rerank_section.rows) == 1
 
 
 class TestFormatSizeMb:

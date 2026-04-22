@@ -259,6 +259,38 @@ class TestSetEmbeddingModelRoute:
         assert "not available" in resp.json()["detail"]
 
 
+class TestSetRerankerModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        return_value={"model": "bge-reranker-v2-m3:latest"},
+    )
+    def test_success(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": "bge-reranker-v2-m3"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "bge-reranker-v2-m3:latest"
+
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        return_value={"model": ""},
+    )
+    def test_empty_string_disables(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": ""})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == ""
+
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Reranker 'bogus:latest' is not available."),
+    )
+    def test_unknown_returns_422(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": "bogus"})
+        assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
+
+
 class TestModelsCatalogRoute:
     @mock.patch(
         "lilbee.server.handlers.models_catalog",
@@ -269,6 +301,11 @@ class TestModelsCatalogRoute:
         resp = client.get("/api/models/catalog")
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
+
+    def test_unknown_task_returns_422(self, client):
+        resp = client.get("/api/models/catalog", params={"task": "bogus"})
+        assert resp.status_code == 422
+        assert "unknown task" in resp.json()["detail"]
 
 
 class TestModelsInstalledRoute:
@@ -281,6 +318,33 @@ class TestModelsInstalledRoute:
         resp = client.get("/api/models/installed")
         assert resp.status_code == 200
         assert resp.json()["models"] == []
+
+    @mock.patch(
+        "lilbee.server.handlers.models_installed",
+        new_callable=AsyncMock,
+        return_value={"models": []},
+    )
+    def test_forwards_task_filter(self, mock_inst, client):
+        from lilbee.models import ModelTask
+
+        resp = client.get("/api/models/installed", params={"task": "rerank"})
+        assert resp.status_code == 200
+        mock_inst.assert_called_once_with(task=ModelTask.RERANK)
+
+    @mock.patch(
+        "lilbee.server.handlers.models_installed",
+        new_callable=AsyncMock,
+        return_value={"models": []},
+    )
+    def test_no_task_forwards_none(self, mock_inst, client):
+        resp = client.get("/api/models/installed")
+        assert resp.status_code == 200
+        mock_inst.assert_called_once_with(task=None)
+
+    def test_unknown_task_returns_422(self, client):
+        resp = client.get("/api/models/installed", params={"task": "bogus"})
+        assert resp.status_code == 422
+        assert "unknown task" in resp.json()["detail"]
 
 
 class TestModelsPullRoute:

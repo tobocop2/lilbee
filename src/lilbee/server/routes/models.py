@@ -8,6 +8,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
+from lilbee.models import ModelTask
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.handlers import ModelsResponse
@@ -20,6 +21,16 @@ from lilbee.server.models import (
     SetModelRequest,
     SetModelResponse,
 )
+
+
+def _parse_task(task: str | None) -> ModelTask | None:
+    """Coerce a query-string task into ``ModelTask`` or raise HTTP 422."""
+    if not task:
+        return None
+    try:
+        return ModelTask(task)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"unknown task {task!r}") from exc
 
 
 class PullRequest(BaseModel):
@@ -61,6 +72,15 @@ async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@put("/api/models/reranker")
+async def models_set_reranker_route(data: SetModelRequest) -> SetModelResponse:
+    """Switch the active reranker model. Empty string disables reranking."""
+    try:
+        return await handlers.set_reranker_model(model=data.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @get("/api/models/catalog")
 @read_only
 async def models_catalog_route(
@@ -73,8 +93,9 @@ async def models_catalog_route(
     offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> ModelsCatalogResponse:
     """Browse the model catalog with optional filters."""
+    parsed = _parse_task(task)
     return await handlers.models_catalog(
-        task=task,
+        task=parsed.value if parsed else None,
         search=search,
         size=size,
         featured=featured,
@@ -86,9 +107,15 @@ async def models_catalog_route(
 
 @get("/api/models/installed")
 @read_only
-async def models_installed_route() -> ModelsInstalledResponse:
-    """List installed models with their source (native or litellm)."""
-    return await handlers.models_installed()
+async def models_installed_route(
+    task: str | None = Parameter(query="task", default=None),
+) -> ModelsInstalledResponse:
+    """List installed models with their source (native or litellm).
+
+    Optional ``task`` filter narrows results to a single task taxonomy
+    (``chat`` / ``embedding`` / ``vision`` / ``rerank``).
+    """
+    return await handlers.models_installed(task=_parse_task(task))
 
 
 @post("/api/models/pull")

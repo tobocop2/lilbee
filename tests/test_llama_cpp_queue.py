@@ -291,6 +291,83 @@ class TestChatLock:
         provider.shutdown()
 
 
+class TestRerankQueue:
+    def test_rerank_returns_score_per_candidate(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """rerank() returns one float per candidate in input order."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        cfg.reranker_model = "test-model"
+        instance = mock.MagicMock()
+        scores_iter = iter([0.81, 0.42, 0.13])
+
+        def fake_embed(*, input):
+            return {"data": [{"embedding": [next(scores_iter)]}]}
+
+        instance.create_embedding.side_effect = fake_embed
+        mock_llama_cpp.Llama.return_value = instance
+
+        provider = LlamaCppProvider()
+        scores = provider.rerank("q", ["a", "b", "c"])
+        assert scores == [0.81, 0.42, 0.13]
+        provider.shutdown()
+
+    def test_rerank_empty_candidates_returns_empty(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Empty candidate list short-circuits without touching the model."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        cfg.reranker_model = "test-model"
+        mock_llama_cpp.Llama.return_value = mock.MagicMock()
+
+        provider = LlamaCppProvider()
+        assert provider.rerank("q", []) == []
+        provider.shutdown()
+
+    def test_rerank_raises_when_model_unset(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Calling rerank() with no reranker_model surfaces a ProviderError."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        cfg.reranker_model = ""
+        mock_llama_cpp.Llama.return_value = mock.MagicMock()
+
+        provider = LlamaCppProvider()
+        with pytest.raises(ProviderError, match="No reranker model configured"):
+            provider.rerank("q", ["a"])
+        provider.shutdown()
+
+    def test_rerank_and_embed_use_isolated_cache_keys(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """rerank and embed on the same model produce separate Llama loads."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        # Both use the same underlying file to test cache-key mode isolation.
+        cfg.embedding_model = "test-model"
+        cfg.reranker_model = "test-model"
+        instance = mock.MagicMock()
+        instance.create_embedding.return_value = {"data": [{"embedding": [0.5]}]}
+        mock_llama_cpp.Llama.return_value = instance
+
+        provider = LlamaCppProvider()
+        provider.embed(["x"])
+        provider.rerank("q", ["a"])
+        # Two distinct Llama instantiations (one per mode) — excluding the
+        # metadata vocab_only load which the fixture's setup triggers.
+        calls = mock_llama_cpp.Llama.call_args_list
+        modes = sorted(c.kwargs.get("embedding") for c in calls if "embedding" in c.kwargs)
+        # Both loads set embedding=True (embed mode + rerank mode)
+        assert modes.count(True) == 2
+        # The rerank call must have set pooling_type
+        assert any("pooling_type" in c.kwargs for c in calls)
+        provider.shutdown()
+
+
 class TestShutdown:
     def test_shutdown_stops_worker(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Shutdown sentinel stops the background worker thread."""
@@ -461,13 +538,14 @@ class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is None, load_llama passes n_ctx=0 and n_batch from metadata."""
         from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = None
         mock_llama_cpp.Llama.return_value.metadata = {
             "general.architecture": "nomic-bert",
             "nomic-bert.context_length": "2048",
         }
-        load_llama(models_dir / "test-model.gguf", embedding=True)
+        load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
 
         # Called twice: once for metadata (vocab_only), once for model
         assert mock_llama_cpp.Llama.call_count == 2
@@ -478,9 +556,10 @@ class TestLoadLlamaNCtx:
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is set, load_llama uses it for n_ctx and n_batch."""
         from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = 8192
-        load_llama(models_dir / "test-model.gguf", embedding=True)
+        load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
 
         # No metadata read needed when n_ctx is explicit
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
@@ -490,14 +569,15 @@ class TestLoadLlamaNCtx:
     def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama passes embedding flag correctly."""
         from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
 
         mock_llama_cpp.Llama.return_value.metadata = {}
-        load_llama(models_dir / "test-model.gguf", embedding=True)
+        load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is True
 
         mock_llama_cpp.Llama.reset_mock()
-        load_llama(models_dir / "test-model.gguf", embedding=False)
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
 

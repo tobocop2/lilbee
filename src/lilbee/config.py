@@ -26,7 +26,6 @@ def ConfigField(
     writable: bool = False,
     reindex: bool = False,
     write_only: bool = False,
-    public: bool = True,
     **kwargs: Any,
 ) -> Any:
     """Wrap pydantic ``Field`` and attach metadata via ``json_schema_extra``."""
@@ -37,8 +36,6 @@ def ConfigField(
         extra["reindex"] = True
     if write_only:
         extra["write_only"] = True
-    if not public:
-        extra["public"] = False
     if extra:
         kwargs["json_schema_extra"] = extra
     return Field(*args, **kwargs)
@@ -373,11 +370,12 @@ class Config(BaseSettings):
     )
 
     # Cross-encoder model for reranking. Empty = disabled.
-    # Requires sentence-transformers installed.
-    reranker_model: str = ConfigField(default="", writable=True, public=False)
+    # Resolved via the active provider (llama-cpp for GGUF refs, litellm
+    # for hosted reranker APIs like Cohere/Voyage/Jina).
+    reranker_model: str = ConfigField(default="", writable=True)
 
     # Number of candidates to rerank with cross-encoder.
-    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=False)
+    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True)
 
     # Enable temporal filtering (date-based result filtering).
     # Only activates when temporal keywords detected in query.

@@ -25,6 +25,7 @@ class ModelTask(StrEnum):
     CHAT = "chat"
     EMBEDDING = "embedding"
     VISION = "vision"
+    RERANK = "rerank"
 
 
 log = logging.getLogger(__name__)

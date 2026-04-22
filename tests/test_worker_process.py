@@ -840,7 +840,7 @@ class TestLoadEmbedModel:
         ):
             result = _load_embed_model("test-embed")
         assert result is mock_llm
-        mock_load.assert_called_once_with(model_path, embedding=True)
+        mock_load.assert_called_once_with(model_path, mode="embed")
 
 
 class TestWorkerNotStartedGuards:
