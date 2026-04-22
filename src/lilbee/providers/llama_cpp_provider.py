@@ -430,37 +430,49 @@ _HF_BLOBS_DIR_NAME = "blobs"
 _HF_SNAPSHOTS_DIR_NAME = "snapshots"
 
 
+def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
+    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree."""
+    if model_dir.name != _HF_BLOBS_DIR_NAME:
+        return None
+    snapshots_dir = model_dir.parent / _HF_SNAPSHOTS_DIR_NAME
+    if not snapshots_dir.is_dir():
+        return None
+    for snapshot in snapshots_dir.iterdir():
+        candidates = sorted(snapshot.glob("*mmproj*.gguf"))
+        if candidates:
+            return candidates[0]
+    return None
+
+
+def _find_mmproj_in_flat_dir(model_dir: Path) -> Path | None:
+    """Glob ``*mmproj*.gguf`` siblings of a model GGUF (sideloaded layout)."""
+    candidates = sorted(model_dir.glob("*mmproj*.gguf"))
+    return candidates[0] if candidates else None
+
+
 def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
 
     Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``,
-    (2) for HuggingFace-cache blobs, the sibling ``snapshots/`` tree,
-    (3) same-directory glob for sideloaded models that keep the mmproj
-    next to the main GGUF. Raises ``ProviderError`` if none find a file.
+    (2) HuggingFace-cache ``snapshots/`` sibling of ``blobs/``,
+    (3) same-directory glob for flat sideloaded layouts.
+    Raises ``ProviderError`` if none find a file.
     """
     from lilbee.catalog import find_mmproj_file
 
-    mmproj = find_mmproj_file(model_path.stem)
-    if mmproj is not None:
-        return mmproj
-
-    model_dir = model_path.parent
-    if model_dir.name == _HF_BLOBS_DIR_NAME:
-        snapshots_dir = model_dir.parent / _HF_SNAPSHOTS_DIR_NAME
-        if snapshots_dir.is_dir():
-            for snapshot in snapshots_dir.iterdir():
-                candidates = sorted(p for p in snapshot.glob("*mmproj*.gguf"))
-                if candidates:
-                    return candidates[0]
-
-    mmproj_files = sorted(p for p in model_dir.glob("*mmproj*.gguf"))
-    if mmproj_files:
-        return mmproj_files[0]
+    for finder in (
+        lambda: find_mmproj_file(model_path.stem),
+        lambda: _find_mmproj_in_hf_snapshots(model_path.parent),
+        lambda: _find_mmproj_in_flat_dir(model_path.parent),
+    ):
+        result = finder()
+        if result is not None:
+            return result
 
     raise ProviderError(
         f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
-        f"Download the mmproj file to {model_dir} or re-download the vision model "
-        "through the catalog to get both files.",
+        f"Download the mmproj file to {model_path.parent} or re-download the vision "
+        "model through the catalog to get both files.",
         provider="llama-cpp",
     )
 
@@ -498,10 +510,8 @@ class GgufValueType(IntEnum):
     FLOAT64 = 12
 
 
-# ``struct`` format codes for every fixed-width scalar. Widths are never spelled
-# out in this file. ``struct.calcsize`` returns the authoritative byte count
-# (e.g. ``calcsize("?") == 1``), so the bool=1-byte invariant lives in the
-# stdlib rather than a hand-authored integer table.
+# Format codes per type; widths recovered via ``struct.calcsize`` so the bool=1
+# invariant lives in the stdlib, not a hand-authored integer table.
 _GGUF_SCALAR_FORMAT: dict[GgufValueType, str] = {
     GgufValueType.UINT8: "B",
     GgufValueType.INT8: "b",
@@ -516,9 +526,8 @@ _GGUF_SCALAR_FORMAT: dict[GgufValueType, str] = {
     GgufValueType.FLOAT64: "<d",
 }
 
-# Guard against a future edit swapping a format code for one of the wrong
-# width. Evaluated at import; a mismatch fails loudly instead of silently
-# corrupting the stream like the old ``sizes = {...}`` table could.
+# Import-time guard: a format code that resolves to the wrong spec width fails
+# loudly here instead of silently corrupting the stream at parse time.
 _GGUF_SPEC_WIDTHS: dict[GgufValueType, int] = {
     GgufValueType.UINT8: 1,
     GgufValueType.INT8: 1,

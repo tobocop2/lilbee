@@ -1111,10 +1111,8 @@ class TestSkipGgufValue:
         assert f.tell() == 1
 
     def test_scalar_format_widths_match_gguf_spec(self) -> None:
-        """Every scalar format code in ``_GGUF_SCALAR_FORMAT`` resolves to the
-        byte width the GGUF spec requires. This locks the bool=1-byte invariant
-        to ``struct.calcsize`` rather than a hand-authored table, so a future
-        edit cannot re-introduce the 7:8 regression silently.
+        """Each format code resolves to the spec byte width via ``struct.calcsize``.
+        Locks the bool=1 invariant to stdlib; blocks regression of the 7:8 bug.
         """
         import struct
 
