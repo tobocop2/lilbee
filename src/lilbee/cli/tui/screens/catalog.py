@@ -576,7 +576,12 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            cfg.chat_model = row.remote_model.name
+            ref = (
+                f"ollama/{row.remote_model.name}"
+                if row.remote_model.provider == "Ollama"
+                else row.remote_model.name
+            )
+            cfg.chat_model = ref
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:

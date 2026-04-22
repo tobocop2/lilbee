@@ -657,6 +657,30 @@ class TestSetChatModel:
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_chat_model("nonexistent:7b")
 
+    async def test_accepts_ollama_prefixed_ref_matching_bare_list(self, tmp_path, mock_svc):
+        """ollama/ refs match against bare /api/tags entries returned by list_models.
+
+        Without this path, every Ollama pick via the server API would be
+        rejected as unavailable even when the backend reports the tag.
+        """
+        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+        result = await handlers.set_chat_model("ollama/qwen3:0.6b")
+        assert result.model == "ollama/qwen3:0.6b"
+        assert cfg.chat_model == "ollama/qwen3:0.6b"
+
+    async def test_accepts_bare_ref_matching_remote_only_list(self, tmp_path, mock_svc):
+        """Bare refs still validate against the remote list for legacy callers.
+
+        The server API takes verbatim user input. A user who posts a bare
+        tag that happens to match only a remote entry must still be
+        accepted so clients that never learned the ollama/ prefix keep
+        working.
+        """
+        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+        result = await handlers.set_chat_model("qwen3:0.6b")
+        assert result.model == "qwen3:0.6b"
+        assert cfg.chat_model == "qwen3:0.6b"
+
 
 class TestModelsCatalog:
     @patch("lilbee.catalog.get_catalog")

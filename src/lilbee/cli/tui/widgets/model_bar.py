@@ -82,17 +82,26 @@ def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm/Ollama) models to buckets."""
-    try:
-        from lilbee.model_manager import classify_remote_models
+    """Add remote (litellm/Ollama) models to buckets.
 
+    Ollama-backed refs are stored prefixed (``ollama/<name>``) so routing
+    can dispatch on the prefix instead of probing the native registry.
+    The prefixed form is also the dedup key, so an Ollama entry whose
+    tag collides with a native manifest stays visible in the dropdown
+    as a distinct option.
+    """
+    try:
+        from lilbee.model_manager import classify_remote_models, detect_provider
+
+        is_ollama = detect_provider(cfg.litellm_base_url) == "Ollama"
         for model in classify_remote_models(cfg.litellm_base_url):
-            if model.name in seen or _is_mmproj(model.name):
+            ref = f"ollama/{model.name}" if is_ollama else model.name
+            if ref in seen or _is_mmproj(model.name):
                 continue
-            seen.add(model.name)
+            seen.add(ref)
             label = f"{model.name} ({model.provider})"
             buckets.get(model.task, buckets[ModelTask.CHAT]).append(
-                ModelOption(label=label, ref=model.name)
+                ModelOption(label=label, ref=ref)
             )
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
@@ -131,7 +140,7 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     backward compatibility, but the UI makes the real state obvious.
     """
     ref = parse_model_ref(default) if default else None
-    default = default if (ref and ref.is_api) else (ref.name if ref else default)
+    default = ref.for_litellm() if ref else default
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)

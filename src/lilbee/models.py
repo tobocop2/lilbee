@@ -279,7 +279,9 @@ def ensure_chat_model() -> None:
         raise RuntimeError(f"Cannot list models: {exc}") from exc
 
     # Filter out embedding model — only check for chat models
-    embed_base = cfg.embedding_model.split(":")[0]
+    from lilbee.providers.model_ref import parse_model_ref
+
+    embed_base = parse_model_ref(cfg.embedding_model).name.split(":")[0]
     chat_models = [m for m in installed if m.split(":")[0] != embed_base]
     if chat_models:
         return
@@ -302,8 +304,10 @@ def ensure_chat_model() -> None:
 def list_installed_models() -> list[str]:
     """Return installed model names, excluding embedding models."""
     try:
+        from lilbee.providers.model_ref import parse_model_ref
+
         provider = get_services().provider
-        embed_base = cfg.embedding_model.split(":")[0]
+        embed_base = parse_model_ref(cfg.embedding_model).name.split(":")[0]
         return [m for m in provider.list_models() if m.split(":")[0] != embed_base]
     except Exception:
         log.debug("Failed to list installed models", exc_info=True)

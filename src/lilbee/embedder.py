@@ -53,13 +53,18 @@ class Embedder:
         model = self._config.embedding_model
         if not model:
             return False
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref(model)
+        name_base = ref.name.split(":")[0].lower().replace(" ", "-")
         try:
             available = self._provider.list_models()
-            model_base = model.split(":")[0].lower().replace(" ", "-")
-            if any(model_base in m.lower().replace(" ", "-") for m in available):
+            if any(name_base in m.lower().replace(" ", "-") for m in available):
                 return True
         except Exception:
             log.debug("embedding_available provider check failed", exc_info=True)
+        if ref.needs_litellm:
+            return False
         try:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 

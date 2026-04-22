@@ -3076,6 +3076,27 @@ async def test_catalog_select_remote_row():
             assert cfg.chat_model == "remote-chat:latest"
 
 
+async def test_catalog_select_ollama_remote_row_stores_prefix():
+    """Picking an Ollama-backed catalog row stores the ollama/ prefix.
+
+    Without the prefix, routing would classify it as local and dispatch
+    to llama-cpp, silently bypassing the user's Ollama choice.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import remote_to_row
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            om = _make_remote_model(name="qwen3:0.6b", provider="Ollama")
+            row = remote_to_row(om)
+            screen._select_row(row)
+            assert cfg.chat_model == "ollama/qwen3:0.6b"
+
+
 async def test_catalog_load_more():
     from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
 

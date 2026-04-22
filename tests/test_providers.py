@@ -533,14 +533,18 @@ class TestRoutingProvider:
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
 
-    def test_routes_chat_to_llama_cpp_for_local_model(self) -> None:
+    def test_routes_chat_to_llama_cpp_for_bare_ref(self) -> None:
+        """Bare refs dispatch to llama-cpp regardless of registry contents.
+
+        The new routing is strict: no prefix means native. If the native
+        registry doesn't have the model, llama-cpp raises its own
+        'not installed' error; routing never falls through to litellm.
+        """
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
         rp._llama_cpp = mock_llama
-        # Native registry has the model → keep routing to llama-cpp.
-        rp._native_has = lambda _name: True  # type: ignore[method-assign]
 
         cfg.chat_model = "local-model:latest"
         result = rp.chat([{"role": "user", "content": "hi"}])
@@ -558,142 +562,63 @@ class TestRoutingProvider:
         assert result == [[0.1, 0.2]]
         mock_litellm.embed.assert_called_once()
 
-    def test_routes_embed_to_llama_cpp_for_local_model(self) -> None:
+    def test_routes_embed_to_llama_cpp_for_bare_ref(self) -> None:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
         rp._llama_cpp = mock_llama
-        # Native registry has the model → keep routing to llama-cpp.
-        rp._native_has = lambda _name: True  # type: ignore[method-assign]
 
         cfg.embedding_model = "nomic-embed-text:latest"
         result = rp.embed(["test"])
         assert result == [[0.3, 0.4]]
 
-    def test_routes_bare_embed_to_litellm_when_not_installed_natively(self) -> None:
-        """bb-0ud4: bare embedding ref falls through to litellm if not native.
+    def test_bare_ref_never_falls_through_to_litellm(self) -> None:
+        """Bare refs stay on llama-cpp even when litellm is installed.
 
-        When cfg.embedding_model = 'nomic-embed-text:latest' and no native
-        GGUF is installed, the routing provider used to crash in
-        llama_cpp_provider.resolve_model_path. It now defers to litellm,
-        which auto-prefixes the ref with 'ollama/' when configured against
-        an Ollama base URL.
+        This is the behaviour change from bb-0ud4's probe-based routing:
+        prefix is the single source of truth, so users who want Ollama
+        must say so explicitly with 'ollama/<name>'.
         """
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.embed.return_value = [[0.5, 0.6]]
-        rp._litellm = mock_litellm
-        rp._use_litellm = True
-        rp._native_has = lambda _name: False  # type: ignore[method-assign]
-
-        cfg.embedding_model = "nomic-embed-text:latest"
-        result = rp.embed(["test"])
-        assert result == [[0.5, 0.6]]
-        mock_litellm.embed.assert_called_once()
-
-    def test_routes_bare_chat_to_litellm_when_not_installed_natively(self) -> None:
-        """bb-0ud4 parallel: bare chat ref also falls through to litellm."""
-        rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "remote"
-        rp._litellm = mock_litellm
-        rp._use_litellm = True
-        rp._native_has = lambda _name: False  # type: ignore[method-assign]
-
-        cfg.chat_model = "mistral:latest"
-        result = rp.chat([{"role": "user", "content": "hi"}])
-        assert result == "remote"
-        mock_litellm.chat.assert_called_once()
-
-    def test_routes_bare_ref_to_llama_cpp_when_litellm_unavailable(self) -> None:
-        """Fallback: with no native install and no litellm, still try llama-cpp.
-
-        The llama-cpp call will then raise its own ProviderError if the
-        ref can't be resolved — but that preserves existing behaviour for
-        environments with neither backend configured.
-        """
-        rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.9, 1.0]]
+        rp._litellm = mock_litellm
         rp._llama_cpp = mock_llama
-        rp._use_litellm = False
-        rp._native_has = lambda _name: False  # type: ignore[method-assign]
 
-        cfg.embedding_model = "unknown-model:latest"
+        cfg.embedding_model = "mistral:latest"
         result = rp.embed(["test"])
         assert result == [[0.9, 1.0]]
         mock_llama.embed.assert_called_once()
-
-    def test_native_has_true_when_resolve_succeeds(self) -> None:
-        """_native_has returns True when resolve_model_path does not raise."""
-        rp = self._make_provider()
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
-            return_value="/fake/path.gguf",
-        ):
-            assert rp._native_has("any-model") is True
-
-    def test_native_has_false_when_resolve_raises(self) -> None:
-        """_native_has swallows the registry error and returns False."""
-        from lilbee.providers.base import ProviderError
-
-        rp = self._make_provider()
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
-            side_effect=ProviderError("not installed", provider="llama-cpp"),
-        ):
-            assert rp._native_has("missing-model") is False
-
-    def test_native_has_false_on_unexpected_exception(self) -> None:
-        """bb-0ud4: unexpected errors during the probe fall through to False
-        with a debug log, not an uncaught exception.
-        """
-        rp = self._make_provider()
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
-            side_effect=RuntimeError("services bootstrap blew up"),
-        ):
-            assert rp._native_has("any-model") is False
+        mock_litellm.embed.assert_not_called()
 
     def test_list_models_native_only_when_litellm_unavailable(self) -> None:
         rp = self._make_provider()
-        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
         rp._llama_cpp = mock_llama
 
-        result = rp.list_models()
+        with mock.patch(
+            "lilbee.providers.litellm_provider.litellm_available",
+            return_value=False,
+        ):
+            result = rp.list_models()
         assert result == ["local.gguf"]
 
-    def test_local_model_uses_llama_cpp_directly(self) -> None:
-        rp = self._make_provider()
-
-        mock_llama = mock.MagicMock()
-        mock_llama.chat.return_value = "fallback"
-        rp._llama_cpp = mock_llama
-        # Native registry has the model → skip litellm fall-through (bb-0ud4).
-        rp._native_has = lambda _name: True  # type: ignore[method-assign]
-
-        cfg.chat_model = "local-model:latest"
-        result = rp.chat([{"role": "user", "content": "hi"}])
-        assert result == "fallback"
-
-    def test_show_model_delegates_to_litellm_when_available(self) -> None:
+    def test_show_model_delegates_by_prefix(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.show_model.return_value = {"parameters": "temp 0.7"}
         rp._litellm = mock_litellm
-        rp._use_litellm = True
 
-        result = rp.show_model("qwen3:8b")
+        result = rp.show_model("ollama/qwen3:8b")
         assert result == {"parameters": "temp 0.7"}
-        mock_litellm.show_model.assert_called_once_with("qwen3:8b")
+        mock_litellm.show_model.assert_called_once_with("ollama/qwen3:8b")
 
-    def test_show_model_uses_llama_cpp_when_litellm_unavailable(self) -> None:
+    def test_show_model_bare_ref_uses_llama_cpp(self) -> None:
         rp = self._make_provider()
-        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.show_model.return_value = None
@@ -701,21 +626,20 @@ class TestRoutingProvider:
 
         result = rp.show_model("local.gguf")
         assert result is None
-
-    def test_invalidate_cache_clears_detection(self) -> None:
-        rp = self._make_provider()
-        rp._use_litellm = True
-
-        rp.invalidate_cache()
-        assert rp._use_litellm is None
+        mock_llama.show_model.assert_called_once_with("local.gguf")
 
     def test_pull_model_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
 
         rp = self._make_provider()
-        rp._use_litellm = False
 
-        with pytest.raises(ProviderError, match="no pull-capable backend"):
+        with (
+            mock.patch(
+                "lilbee.providers.litellm_provider.litellm_available",
+                return_value=False,
+            ),
+            pytest.raises(ProviderError, match="no pull-capable backend"),
+        ):
             rp.pull_model("bad-model")
 
     def test_chat_with_explicit_api_model_override(self) -> None:
@@ -732,23 +656,15 @@ class TestRoutingProvider:
         assert result == "saw it"
         mock_litellm.chat.assert_called_once()
 
-    def test_litellm_not_installed_skips_remote(self) -> None:
-        """When litellm is not installed, routing provider uses llama-cpp."""
-        rp = self._make_provider()
-
-        with mock.patch("lilbee.providers.litellm_provider.litellm_available", return_value=False):
-            assert rp._should_use_litellm() is False
-
-    def test_get_capabilities_delegates_to_active_provider(self) -> None:
+    def test_get_capabilities_delegates_by_prefix(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.get_capabilities.return_value = ["completion", "vision"]
         rp._litellm = mock_litellm
-        rp._use_litellm = True
 
-        caps = rp.get_capabilities("llava:7b")
+        caps = rp.get_capabilities("ollama/llava:7b")
         assert caps == ["completion", "vision"]
-        mock_litellm.get_capabilities.assert_called_once_with("llava:7b")
+        mock_litellm.get_capabilities.assert_called_once_with("ollama/llava:7b")
 
 
 # ---------------------------------------------------------------------------

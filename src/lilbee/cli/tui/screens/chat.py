@@ -190,16 +190,21 @@ class ChatScreen(Screen[None]):
         self.refresh_model_bar()
 
     def _needs_setup(self) -> bool:
-        """True when the setup wizard should run: fresh data dir or unresolved models."""
-        # Fresh install: an uninitialized data dir still needs the wizard even
-        # if default models are already cached globally (Ollama, HF cache).
+        """True when the setup wizard should run: fresh data dir or unresolved models.
+
+        Remote-prefixed refs (``ollama/`` and API providers) skip the native
+        registry probe since they resolve through litellm at call time.
+        """
         if not cfg.lancedb_dir.is_dir():
             log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp_provider import resolve_model_path
+        from lilbee.providers.model_ref import parse_model_ref
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
+            if parse_model_ref(model).needs_litellm:
+                continue
             try:
                 resolve_model_path(model)
             except (ProviderError, KeyError, ValueError) as exc:
@@ -216,17 +221,20 @@ class ChatScreen(Screen[None]):
         model = cfg.embedding_model
         if not model:
             return False
-        # Provider list check (covers litellm / Ollama backends)
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref(model)
+        name_base = ref.name.split(":")[0].lower().replace(" ", "-")
         try:
             from lilbee.services import get_services
 
             available = get_services().provider.list_models()
-            model_base = model.split(":")[0].lower().replace(" ", "-")
-            if any(model_base in m.lower().replace(" ", "-") for m in available):
+            if any(name_base in m.lower().replace(" ", "-") for m in available):
                 return True
         except Exception:
             pass
-        # Native registry path check (covers llama-cpp managed models)
+        if ref.needs_litellm:
+            return False
         try:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 

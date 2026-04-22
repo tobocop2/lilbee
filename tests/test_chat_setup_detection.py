@@ -62,6 +62,23 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
         assert _make_screen()._needs_setup() is True
 
 
+def test_needs_setup_skips_native_probe_for_remote_prefixed_models(isolated_data_dir):
+    """ollama/ and API-prefixed models bypass the llama-cpp registry check.
+
+    The native resolver only knows about GGUFs. A remote ref resolves at
+    call time via litellm, so asking resolve_model_path about it would
+    always raise and wrongly trigger the setup wizard.
+    """
+    cfg.lancedb_dir.mkdir(parents=True)
+    cfg.chat_model = "ollama/qwen3:0.6b"
+    cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
+    with mock.patch(
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+    ) as resolve:
+        assert _make_screen()._needs_setup() is False
+        resolve.assert_not_called()
+
+
 def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
     """A stray file at the lancedb path is not a real data directory."""
     cfg.lancedb_dir.parent.mkdir(parents=True, exist_ok=True)

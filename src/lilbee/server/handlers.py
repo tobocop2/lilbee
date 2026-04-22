@@ -484,10 +484,15 @@ async def _set_model(
 def _require_model_available(model: str) -> str:
     """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
     from lilbee.models import ensure_tag
+    from lilbee.providers.model_ref import parse_model_ref
 
     normalized = ensure_tag(model)
     available = get_services().provider.list_models()
-    if normalized not in available:
+    # ``available`` contains bare tags for remote models (from /api/tags)
+    # but we store and return prefixed refs. Compare on the parsed name so
+    # ``ollama/qwen3:8b`` matches a remote ``qwen3:8b`` entry.
+    bare = parse_model_ref(normalized).name
+    if normalized not in available and bare not in available:
         raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
     return normalized
 
