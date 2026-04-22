@@ -462,6 +462,16 @@ class Config(BaseSettings):
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
     wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
+    # Per-call output token caps for wiki generation. Without these, a
+    # reasoning model (Qwen3, DeepSeek-R1) can burn the full context
+    # window emitting <think> tokens before the actual answer, taking
+    # minutes per page. Defaults leave headroom for a typical reasoning
+    # budget plus a real response: summary ~1000 tokens of output + ~1000
+    # slack for thinking; faithfulness ~32 tokens of answer + ~200 slack.
+    # See bb-b4at for the motivating incident.
+    wiki_summary_max_tokens: int = ConfigField(default=2048, ge=256, writable=True)
+    wiki_faithfulness_max_tokens: int = ConfigField(default=256, ge=32, writable=True)
+
     # Fraction of citations that must be stale before a wiki page is flagged
     # for regeneration during pruning. 0.5 = flag when >50% are stale.
     wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)

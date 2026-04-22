@@ -352,8 +352,9 @@ def _check_faithfulness(
     template = config.wiki_faithfulness_prompt
     prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
     messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+    options = config.generation_options(max_tokens=config.wiki_faithfulness_max_tokens)
     try:
-        response = provider.chat(messages, stream=False)
+        response = provider.chat(messages, stream=False, options=options)
         return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
     except Exception as exc:
         log.warning("Faithfulness check failed for %s: %s", label, exc)
@@ -478,8 +479,9 @@ def _generate_page(
 
     messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
     _emit("generating", source=label)
+    options = config.generation_options(max_tokens=config.wiki_summary_max_tokens)
     try:
-        response = provider.chat(messages, stream=False)
+        response = provider.chat(messages, stream=False, options=options)
         wiki_text = strip_reasoning(cast(str, response)).strip()
     except Exception as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
@@ -798,8 +800,11 @@ def _generate_inner_node(
     )
 
     _emit("generating", source=label)
+    options = config.generation_options(max_tokens=config.wiki_summary_max_tokens)
     try:
-        response = provider.chat([{"role": "user", "content": prompt}], stream=False)
+        response = provider.chat(
+            [{"role": "user", "content": prompt}], stream=False, options=options
+        )
         summary_text = strip_reasoning(cast(str, response)).strip()
     except Exception as exc:
         log.warning("LLM failed to reduce %s: %s", label, exc)

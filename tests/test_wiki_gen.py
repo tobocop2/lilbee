@@ -305,6 +305,19 @@ class TestCheckFaithfulness:
         score = _check_faithfulness("chunks", "wiki", provider, "test")
         assert score == 0.0
 
+    def test_passes_faithfulness_max_tokens_cap(self):
+        """Faithfulness chat is capped by cfg.wiki_faithfulness_max_tokens.
+
+        Without this cap a reasoning model (Qwen3, DeepSeek-R1) can burn
+        the whole context window thinking before emitting the number.
+        """
+        provider = MagicMock()
+        provider.chat.return_value = "0.85"
+        cfg.wiki_faithfulness_max_tokens = 42
+        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
+        _, kwargs = provider.chat.call_args
+        assert kwargs["options"]["max_tokens"] == 42
+
 
 class TestGenerateSummaryPage:
     def test_generates_summary_page(self, tmp_path: Path):
@@ -331,6 +344,31 @@ class TestGenerateSummaryPage:
         assert "generated_by: test-model" in content
         assert "faithfulness_score: 0.85" in content
         store.add_citations.assert_called_once()
+
+    def test_summary_generate_passes_max_tokens_cap(self, tmp_path: Path):
+        """Summary generation chat is capped by cfg.wiki_summary_max_tokens.
+
+        Without the cap, a reasoning model can produce thousands of
+        <think> tokens before the actual summary, taking minutes per page.
+        """
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        cfg.wiki_summary_max_tokens = 777
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        generate_summary_page("doc.md", chunks, provider, store)
+        # Two calls: [0] = summary generate, [1] = faithfulness check.
+        gen_call = provider.chat.call_args_list[0]
+        assert gen_call.kwargs["options"]["max_tokens"] == 777
 
     def test_low_score_goes_to_drafts(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
@@ -1124,6 +1162,30 @@ class TestGenerateInnerNode:
             encoding="utf-8",
         )
         return leaf_path
+
+    def test_inner_node_passes_max_tokens_cap(self, isolated_env: Path):
+        """Inner-node reduce and its faithfulness call are both capped."""
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ["# Section\n\n> Section body.\n", "0.9"]
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        cfg.wiki_summary_max_tokens = 500
+        cfg.wiki_faithfulness_max_tokens = 50
+        _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        reduce_call, faith_call = provider.chat.call_args_list
+        assert reduce_call.kwargs["options"]["max_tokens"] == 500
+        assert faith_call.kwargs["options"]["max_tokens"] == 50
 
     def test_writes_index_md(self, isolated_env: Path):
         leaf_path = self._setup(isolated_env)
