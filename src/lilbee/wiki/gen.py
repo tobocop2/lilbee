@@ -11,6 +11,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -337,6 +338,21 @@ def _divert_to_drafts(
     return draft_path
 
 
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of whitespace to a single space and strip the edges.
+
+    PDF extractors preserve line breaks mid-sentence (``vehicle,\\nthe greater``)
+    while LLMs paraphrase the same quote as a single-spaced string
+    (``vehicle, the greater``). A strict substring check rejects a faithful
+    citation on whitespace alone, so both sides are normalized before
+    comparison.
+    """
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
 def _verify_citations(
     citation_records: list[CitationRecord],
     chunks: list[SearchChunk],
@@ -345,7 +361,7 @@ def _verify_citations(
 ) -> list[CitationRecord]:
     """Filter citation records, keeping only those whose excerpts are in the chunks."""
     wiki_prefix = config.wiki_dir + "/"
-    all_chunk_text = " ".join(c.chunk for c in chunks)
+    all_chunk_text = _normalize_whitespace(" ".join(c.chunk for c in chunks))
     verified: list[CitationRecord] = []
     for rec in citation_records:
         if rec["source_filename"].startswith(wiki_prefix):
@@ -354,7 +370,7 @@ def _verify_citations(
         if rec["claim_type"] == "inference" or not rec["excerpt"]:
             verified.append(rec)
             continue
-        if rec["excerpt"] in all_chunk_text:
+        if _normalize_whitespace(rec["excerpt"]) in all_chunk_text:
             verified.append(rec)
         else:
             log.debug("Citation %s excerpt not found in %s, dropping", rec["citation_key"], label)

@@ -229,6 +229,38 @@ class TestVerifyCitations:
         verified = _verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 1
 
+    def test_keeps_excerpts_that_differ_only_in_whitespace(self):
+        """Source with a mid-sentence newline still matches an LLM quote that collapsed it."""
+        from lilbee.store import CitationRecord
+
+        chunks = [
+            _make_chunk(
+                "Congratulations on acquiring your new Ford Motor Company product.\n"
+                "Please take the time to get well acquainted with your vehicle."
+            )
+        ]
+        recs: list[CitationRecord] = [
+            {
+                "wiki_source": "",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": (
+                    "Ford Motor Company product. Please take the time "
+                    "to get well acquainted with your vehicle."
+                ),
+                "created_at": "now",
+            }
+        ]
+        verified = _verify_citations(recs, chunks, "test", cfg)
+        assert len(verified) == 1
+
     def test_drops_unmatched_excerpts(self):
         from lilbee.store import CitationRecord
 
