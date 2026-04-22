@@ -722,7 +722,9 @@ class TestModelsCatalog:
         assert m.downloads == 1000
         assert m.param_count == "8B"
         assert m.installed is True
-        assert m.source == "litellm"
+        # Catalog entries are always native HF GGUFs. Source must not flip to
+        # 'litellm' just because the provider's list_models() overlaps.
+        assert m.source == "native"
 
     @patch("lilbee.catalog.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):

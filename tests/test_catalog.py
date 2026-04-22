@@ -1790,7 +1790,22 @@ class TestEnrichCatalog:
         assert enriched[0].installed is False
         assert enriched[0].source == "native"
         assert enriched[1].installed is True
-        assert enriched[1].source == "litellm"
+        # source describes origin (HF GGUF), not install-state. Every catalog
+        # entry is a native HF GGUF regardless of whether it happens to appear
+        # in a provider's list_models() snapshot.
+        assert enriched[1].source == "native"
+
+    def test_source_is_native_regardless_of_installed_names(self) -> None:
+        """Regression: featured catalog entries are native GGUFs. Provider
+        list_models() overlap (e.g. litellm reporting it can route a name)
+        must not flip source to 'litellm'.
+        """
+        result = self._make_result()
+        # Simulate a litellm provider that claims to route both entries.
+        enriched = enrich_catalog(result, {"model-7b-gguf:latest", "qwen3:8b"})
+        assert all(e.source == "native" for e in enriched)
+        assert enriched[0].installed is True
+        assert enriched[1].installed is True
 
     def test_preserves_original_fields(self) -> None:
         result = self._make_result()
