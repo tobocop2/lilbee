@@ -426,22 +426,33 @@ def _is_vision_model(model: str) -> bool:
     )
 
 
+_HF_BLOBS_DIR_NAME = "blobs"
+_HF_SNAPSHOTS_DIR_NAME = "snapshots"
+
+
 def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
 
-    Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``, then
-    (2) a same-directory glob for sideloaded models that keep the mmproj next
-    to the main GGUF. Raises ``ProviderError`` if neither step finds a file.
+    Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``,
+    (2) for HuggingFace-cache blobs, the sibling ``snapshots/`` tree,
+    (3) same-directory glob for sideloaded models that keep the mmproj
+    next to the main GGUF. Raises ``ProviderError`` if none find a file.
     """
     from lilbee.catalog import find_mmproj_file
 
-    # Try catalog-aware lookup first
     mmproj = find_mmproj_file(model_path.stem)
     if mmproj is not None:
         return mmproj
 
-    # Fallback: look in same directory as the model
     model_dir = model_path.parent
+    if model_dir.name == _HF_BLOBS_DIR_NAME:
+        snapshots_dir = model_dir.parent / _HF_SNAPSHOTS_DIR_NAME
+        if snapshots_dir.is_dir():
+            for snapshot in snapshots_dir.iterdir():
+                candidates = sorted(p for p in snapshot.glob("*mmproj*.gguf"))
+                if candidates:
+                    return candidates[0]
+
     mmproj_files = sorted(p for p in model_dir.glob("*mmproj*.gguf"))
     if mmproj_files:
         return mmproj_files[0]

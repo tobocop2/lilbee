@@ -2207,6 +2207,26 @@ class TestFindMmprojForModel:
         ):
             find_mmproj_for_model(model_path)
 
+    def test_hf_cache_blob_walks_to_snapshots(self, tmp_path: Path) -> None:
+        """HF cache resolves main GGUFs to blob paths; the mmproj lives next to the
+        snapshot symlink, not in blobs/. find_mmproj_for_model must walk up to the
+        sibling snapshots/ tree when the model path lives under blobs/.
+        """
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+
+        model_root = tmp_path / "models--org--Repo-GGUF"
+        blobs = model_root / "blobs"
+        snap = model_root / "snapshots" / "abc123"
+        blobs.mkdir(parents=True)
+        snap.mkdir(parents=True)
+        blob_path = blobs / "deadbeef"
+        blob_path.touch()
+        (snap / "mmproj-f16.gguf").touch()
+
+        with mock.patch("lilbee.catalog.find_mmproj_file", return_value=None):
+            result = find_mmproj_for_model(blob_path)
+        assert result == snap / "mmproj-f16.gguf"
+
 
 class TestReadMmprojProjectorTypePartial:
     def test_returns_projector_type(self, tmp_path: Path) -> None:
