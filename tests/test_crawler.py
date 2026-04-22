@@ -7,15 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import lilbee.crawler as lilbee_crawler
 from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
-    _get_crawl_semaphore,
-    _maybe_periodic_sync,
-    _save_single_result,
-    _update_single_metadata,
     content_hash,
     crawl_and_save,
     crawl_recursive,
@@ -27,6 +22,8 @@ from lilbee.crawler import (
     url_to_filename,
     validate_crawl_url,
 )
+from lilbee.crawler.api import _get_crawl_semaphore, _maybe_periodic_sync
+from lilbee.crawler.save import _save_single_result, _update_single_metadata
 from lilbee.progress import EventType
 
 
@@ -48,7 +45,7 @@ def isolated_env(tmp_path, monkeypatch, request):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cls = request.cls.__name__ if request.cls else ""
     if cls != "TestPlaywrightBrowserCheck":
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
     # Default the sitemap bound to "unknown" so tests don't hit the network.
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
     # opt out of this autopatch.
@@ -56,7 +53,8 @@ def isolated_env(tmp_path, monkeypatch, request):
         from lilbee.progress import CRAWL_TOTAL_UNKNOWN
 
         monkeypatch.setattr(
-            "lilbee.crawler._count_sitemap_urls", lambda *a, **kw: CRAWL_TOTAL_UNKNOWN
+            "lilbee.crawler.sitemap._count_sitemap_urls",
+            lambda *a, **kw: CRAWL_TOTAL_UNKNOWN,
         )
     yield tmp_path
     for name in type(cfg).model_fields:
@@ -156,7 +154,7 @@ class TestCrawlMetadata:
             )
         }
         with (
-            patch("lilbee.crawler.Path.replace", side_effect=OSError("disk full")),
+            patch("lilbee.crawler.save.Path.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
             save_crawl_metadata(meta)
@@ -186,7 +184,7 @@ def _make_crawl4ai_result(url="https://example.com", markdown="# Test", success=
 def _no_dns(monkeypatch):
     """Bypass SSRF DNS resolution in all crawler tests."""
     monkeypatch.setattr(
-        "lilbee.crawler.socket.getaddrinfo",
+        "lilbee.crawler.url_filter.socket.getaddrinfo",
         lambda host, port, *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
     )
 
@@ -238,7 +236,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_localhost(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
         )
         with pytest.raises(ValueError, match="not allowed"):
@@ -246,7 +244,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_localhost_dot(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
         )
         with pytest.raises(ValueError, match="not allowed"):
@@ -254,7 +252,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_loopback_ipv4(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
         )
         with pytest.raises(ValueError, match="private"):
@@ -262,7 +260,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_private_10(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.1", 0))],
         )
         with pytest.raises(ValueError, match="private"):
@@ -270,7 +268,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_private_172(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("172.16.0.1", 0))],
         )
         with pytest.raises(ValueError, match="private"):
@@ -278,7 +276,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_private_192(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("192.168.1.1", 0))],
         )
         with pytest.raises(ValueError, match="private"):
@@ -286,7 +284,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_link_local(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("169.254.169.254", 0))],
         )
         with pytest.raises(ValueError, match="private"):
@@ -294,7 +292,7 @@ class TestValidateCrawlUrl:
 
     def test_rejects_ipv6_loopback(self, monkeypatch):
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(10, 1, 6, "", ("::1", 0, 0, 0))],
         )
         with pytest.raises(ValueError, match="private"):
@@ -307,7 +305,7 @@ class TestValidateCrawlUrl:
         import socket
 
         monkeypatch.setattr(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             MagicMock(side_effect=socket.gaierror("Name resolution failed")),
         )
         with pytest.raises(ValueError, match="Cannot resolve"):
@@ -406,7 +404,7 @@ class TestCrawlSingle:
         # Stub crawl4ai so the test runs even when the `crawler` extra
         # isn't installed in the unit-test env.
         monkeypatch.setitem(__import__("sys").modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_single("https://example.com")
 
@@ -416,10 +414,10 @@ class TestBootstrapChromium:
 
     async def test_short_circuits_when_already_installed(self, monkeypatch):
         """No subprocess, no stream events, when Chromium is already present."""
-        from lilbee.crawler import bootstrap_chromium
+        from lilbee.crawler.bootstrap import bootstrap_chromium
         from lilbee.progress import EventType, SetupDoneEvent
 
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         events: list[tuple[EventType, object]] = []
         await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
         # Only a single setup_done (success) — no start/progress when we
@@ -432,10 +430,10 @@ class TestBootstrapChromium:
 
     async def test_parses_progress_from_fake_subprocess(self, monkeypatch):
         """Feed canned stdout through the subprocess to drive progress events."""
-        from lilbee.crawler import bootstrap_chromium
+        from lilbee.crawler.bootstrap import bootstrap_chromium
         from lilbee.progress import EventType, SetupProgressEvent, SetupStartEvent
 
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
 
         _bar = "\xe2\x96\xa0".encode("latin-1")  # three-byte UTF-8 for ■
         stdout_lines = [
@@ -479,10 +477,10 @@ class TestBootstrapChromium:
 
     async def test_raises_crawler_browser_missing_on_subprocess_failure(self, monkeypatch):
         """Non-zero exit → CrawlerBrowserMissing with stderr tail."""
-        from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium
+        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
         from lilbee.progress import EventType, SetupDoneEvent
 
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
 
         class _Stream:
             def __init__(self, lines: list[bytes]) -> None:
@@ -519,40 +517,42 @@ class TestBootstrapChromium:
 class TestPlaywrightBrowserCheck:
     def test_detects_missing_browsers(self, tmp_path, monkeypatch):
         """Empty browsers path reports as not installed."""
-        from lilbee.crawler import chromium_installed
+        from lilbee.crawler.bootstrap import chromium_installed
 
-        monkeypatch.setattr("lilbee.crawler._browsers_cache_path", lambda: tmp_path / "empty")
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap._browsers_cache_path", lambda: tmp_path / "empty"
+        )
         assert not chromium_installed()
 
     def test_nonexistent_root_reports_missing(self, tmp_path, monkeypatch):
         """A root path that doesn't exist reports as missing (not a crash)."""
-        from lilbee.crawler import chromium_installed
+        from lilbee.crawler.bootstrap import chromium_installed
 
         monkeypatch.setattr(
-            "lilbee.crawler._browsers_cache_path",
+            "lilbee.crawler.bootstrap._browsers_cache_path",
             lambda: tmp_path / "does" / "not" / "exist",
         )
         assert not chromium_installed()
 
     def test_detects_installed_chromium(self, tmp_path, monkeypatch):
         """A chromium-* subdirectory counts as installed."""
-        from lilbee.crawler import chromium_installed
+        from lilbee.crawler.bootstrap import chromium_installed
 
         browsers = tmp_path / "ms-playwright"
         browsers.mkdir()
         (browsers / "chromium-1234").mkdir()
-        monkeypatch.setattr("lilbee.crawler._browsers_cache_path", lambda: browsers)
+        monkeypatch.setattr("lilbee.crawler.bootstrap._browsers_cache_path", lambda: browsers)
         assert chromium_installed()
 
     def test_path_respects_env_override(self, tmp_path, monkeypatch):
         """PLAYWRIGHT_BROWSERS_PATH overrides the platform default."""
-        from lilbee.crawler import _browsers_cache_path
+        from lilbee.crawler.bootstrap import _browsers_cache_path
 
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "custom"))
         assert _browsers_cache_path() == tmp_path / "custom"
 
     def test_path_darwin_default(self, monkeypatch):
-        from lilbee.crawler import _browsers_cache_path
+        from lilbee.crawler.bootstrap import _browsers_cache_path
 
         monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
         monkeypatch.setattr("sys.platform", "darwin")
@@ -562,7 +562,7 @@ class TestPlaywrightBrowserCheck:
         assert "Caches" in parts
 
     def test_path_linux_default(self, monkeypatch):
-        from lilbee.crawler import _browsers_cache_path
+        from lilbee.crawler.bootstrap import _browsers_cache_path
 
         monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
         monkeypatch.setattr("sys.platform", "linux")
@@ -571,7 +571,7 @@ class TestPlaywrightBrowserCheck:
         assert ".cache" in str(path)
 
     def test_path_win32_default(self, monkeypatch):
-        from lilbee.crawler import _browsers_cache_path
+        from lilbee.crawler.bootstrap import _browsers_cache_path
 
         monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", "/tmp/localappdata")
@@ -583,12 +583,12 @@ class TestSetupEventHelpers:
     """bb-wq8g: _emit_setup_start / _emit_setup_done no-op when callback is None."""
 
     def test_emit_start_no_op_when_on_progress_none(self) -> None:
-        from lilbee.crawler import _emit_setup_start
+        from lilbee.crawler.bootstrap import _emit_setup_start
 
         _emit_setup_start(None)  # must not raise
 
     def test_emit_done_no_op_when_on_progress_none(self) -> None:
-        from lilbee.crawler import _emit_setup_done
+        from lilbee.crawler.bootstrap import _emit_setup_done
 
         _emit_setup_done(None, success=True, error=None)  # must not raise
 
@@ -818,7 +818,7 @@ class TestCrawlRecursive:
         mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserMissing("chromium gone"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
             pytest.raises(CrawlerBrowserMissing, match="chromium gone"),
@@ -843,7 +843,7 @@ class TestCrawlRecursive:
             "crawl4ai.deep_crawling.filters",
             MagicMock(FilterChain=MagicMock(), URLPatternFilter=MagicMock()),
         )
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_recursive("https://example.com", max_depth=1)
 
@@ -889,7 +889,7 @@ class TestHostScopeFilter:
     """whole-site crawl must scope to the exact host by default."""
 
     def test_exact_host_rejects_other_subdomains(self, _stub_crawl4ai_filters):
-        from lilbee.crawler import _host_scope_filter
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
 
         f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=False)
         assert f.apply("https://en.wikipedia.org/wiki/Y") is True
@@ -897,14 +897,14 @@ class TestHostScopeFilter:
         assert f.apply("https://wikipedia.org/wiki/Y") is False
 
     def test_include_subdomains_allows_siblings(self, _stub_crawl4ai_filters):
-        from lilbee.crawler import _host_scope_filter
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
 
         f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=True)
         assert f.apply("https://en.wikipedia.org/wiki/Y") is True
         assert f.apply("https://other.example.com/") is False
 
     def test_returns_none_when_host_missing(self, _stub_crawl4ai_filters):
-        from lilbee.crawler import _host_scope_filter
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
 
         assert _host_scope_filter("not-a-url", include_subdomains=False) is None
 
@@ -915,7 +915,7 @@ class TestSitemapCounting:
     def test_returns_unknown_on_http_error(self, monkeypatch):
         import httpx
 
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler.sitemap import _count_sitemap_urls
         from lilbee.progress import CRAWL_TOTAL_UNKNOWN
 
         def _raise(*a, **kw):
@@ -928,7 +928,7 @@ class TestSitemapCounting:
         )
 
     def test_returns_unknown_on_4xx(self, monkeypatch):
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler.sitemap import _count_sitemap_urls
         from lilbee.progress import CRAWL_TOTAL_UNKNOWN
 
         fake = MagicMock(status_code=404, text="")
@@ -939,7 +939,7 @@ class TestSitemapCounting:
         )
 
     def test_counts_matching_urls_only(self, monkeypatch):
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler.sitemap import _count_sitemap_urls
 
         body = (
             "<urlset>"
@@ -955,7 +955,7 @@ class TestSitemapCounting:
         assert count == 2
 
     def test_include_subdomains_counts_children(self, monkeypatch):
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler.sitemap import _count_sitemap_urls
 
         body = (
             "<urlset>"
@@ -971,7 +971,7 @@ class TestSitemapCounting:
 
     def test_returns_unknown_when_start_url_has_no_host(self):
         """A malformed start URL short-circuits before hitting the network."""
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler.sitemap import _count_sitemap_urls
         from lilbee.progress import CRAWL_TOTAL_UNKNOWN
 
         # file:///foo has no hostname, so the helper bails immediately.
@@ -982,7 +982,7 @@ class TestSitemapCounting:
 
     def test_skips_entries_with_no_host(self, monkeypatch):
         """Sitemap entries whose loc has no hostname are skipped."""
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler.sitemap import _count_sitemap_urls
 
         body = (
             "<urlset>"
@@ -997,10 +997,10 @@ class TestSitemapCounting:
 
     def test_caps_at_max_urls(self, monkeypatch):
         """A giant sitemap stops at _SITEMAP_MAX_URLS so the scan is bounded."""
-        from lilbee import crawler as crawler_mod
-        from lilbee.crawler import _count_sitemap_urls
+        from lilbee.crawler import sitemap as sitemap_mod
+        from lilbee.crawler.sitemap import _count_sitemap_urls
 
-        monkeypatch.setattr(crawler_mod, "_SITEMAP_MAX_URLS", 3)
+        monkeypatch.setattr(sitemap_mod, "_SITEMAP_MAX_URLS", 3)
         entries = "".join(f"<url><loc>https://example.com/{i}</loc></url>" for i in range(10))
         fake = MagicMock(status_code=200, text=f"<urlset>{entries}</urlset>")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
@@ -1009,30 +1009,30 @@ class TestSitemapCounting:
 
 
 class TestCrawlAndSave:
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
         self, mock_crawl_single, isolated_env, monkeypatch
     ):
         """bb-wq8g: crawl_and_save kicks off bootstrap_chromium on first use."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
-        monkeypatch.setattr("lilbee.crawler.chromium_installed", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         called: list[object] = []
 
         async def _fake_bootstrap(on_progress=None):
             called.append(on_progress)
 
-        monkeypatch.setattr("lilbee.crawler.bootstrap_chromium", _fake_bootstrap)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
         await crawl_and_save("https://example.com", depth=0)
         assert called == [None]
 
-    @patch("lilbee.crawler.crawl_recursive")
+    @patch("lilbee.crawler.api.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):
         streamed = [
             CrawlResult(url="https://example.com", markdown="# Home"),
@@ -1051,7 +1051,7 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
 
-    @patch("lilbee.crawler.crawl_recursive")
+    @patch("lilbee.crawler.api.crawl_recursive")
     async def test_default_depth_is_recursive(self, mock_crawl_recursive, isolated_env):
         """No depth kwarg means recursive (whole-site) crawl, not single page."""
         mock_crawl_recursive.return_value = [
@@ -1061,14 +1061,14 @@ class TestCrawlAndSave:
         mock_crawl_recursive.assert_awaited_once()
         assert mock_crawl_recursive.await_args.kwargs["max_depth"] is None
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_quiet_forwarded_to_crawl_single(self, mock_crawl_single, isolated_env):
         """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         await crawl_and_save("https://example.com", depth=0, quiet=True)
         mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
 
-    @patch("lilbee.crawler.crawl_recursive")
+    @patch("lilbee.crawler.api.crawl_recursive")
     async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
         """quiet=True is forwarded to crawl_recursive."""
         mock_crawl_recursive.return_value = []
@@ -1076,21 +1076,21 @@ class TestCrawlAndSave:
         call_kwargs = mock_crawl_recursive.call_args[1]
         assert call_kwargs["quiet"] is True
 
-    @patch("lilbee.crawler.crawl_recursive")
+    @patch("lilbee.crawler.api.crawl_recursive")
     async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
         """whole-site default is exact-host scoping."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is False
 
-    @patch("lilbee.crawler.crawl_recursive")
+    @patch("lilbee.crawler.api.crawl_recursive")
     async def test_include_subdomains_threaded_through(self, mock_crawl_recursive, isolated_env):
         """Opting into subdomain scope reaches the recursive crawl."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2, include_subdomains=True)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is True
 
-    @patch("lilbee.crawler.crawl_recursive")
+    @patch("lilbee.crawler.api.crawl_recursive")
     async def test_cancel_threaded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
         """The cancel event is threaded through to crawl_recursive for BFS abort."""
         import threading
@@ -1100,7 +1100,7 @@ class TestCrawlAndSave:
         await crawl_and_save("https://example.com", depth=2, cancel=cancel)
         assert mock_crawl_recursive.call_args[1]["cancel"] is cancel
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_single_page_with_progress(self, mock_crawl_single, isolated_env):
         """Progress callback receives crawl_start, crawl_page, crawl_done for single page."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
@@ -1115,7 +1115,7 @@ class TestCrawlAndSave:
         assert "crawl_page" in event_types
         assert "crawl_done" in event_types
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_updates_metadata(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
@@ -1124,7 +1124,7 @@ class TestCrawlAndSave:
         meta = load_crawl_metadata()
         assert "https://example.com/page" in meta
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
         """Same content on re-crawl skips saving (hash-based detection)."""
         mock_crawl_single.return_value = CrawlResult(
@@ -1143,7 +1143,7 @@ class TestCrawlAndSave:
         assert paths2 == []
         mock_crawl_single.assert_awaited_once()
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_changed_content_updates_file(self, mock_crawl_single, isolated_env):
         """Changed content on re-crawl saves updated file."""
         mock_crawl_single.return_value = CrawlResult(
@@ -1161,7 +1161,7 @@ class TestCrawlAndSave:
 
     async def test_semaphore_limits_concurrency(self, isolated_env):
         """The semaphore limits concurrent crawls based on config."""
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 5
@@ -1174,7 +1174,7 @@ class TestCrawlAndSave:
         """Default concurrency matches CPU count."""
         import os
 
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = os.cpu_count() or 4
@@ -1185,14 +1185,14 @@ class TestCrawlAndSave:
 
     async def test_semaphore_unlimited_when_zero(self, isolated_env):
         """Setting crawl_max_concurrent=0 disables the semaphore."""
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 0
         assert _get_crawl_semaphore() is None
         crawler_mod._state.semaphore = None
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_cancel_keeps_fetched_page(self, mock_crawl_single, isolated_env):
         """A single-URL crawl that gets cancelled still keeps the page it fetched.
 
@@ -1215,7 +1215,7 @@ class TestPeriodicSync:
         """No sync fires when crawl_sync_interval is 0."""
         import threading
 
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         cfg.crawl_sync_interval = 0
         crawler_mod._state.last_sync_time = 0.0
@@ -1229,7 +1229,7 @@ class TestPeriodicSync:
         """No new sync is started if one is already in progress."""
         import threading
 
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -1248,7 +1248,7 @@ class TestPeriodicSync:
         import threading
         import time
 
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         cfg.crawl_sync_interval = 9999
         crawler_mod._state.last_sync_time = time.monotonic()
@@ -1263,7 +1263,7 @@ class TestPeriodicSync:
         import asyncio
         import threading
 
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -1281,7 +1281,7 @@ class TestPeriodicSync:
         import asyncio
         import threading
 
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -1301,7 +1301,7 @@ class TestPeriodicSync:
 class TestCrawlerStateReset:
     def test_reset_clears_all_state(self, isolated_env):
         """CrawlerState.reset() restores all fields to initial values."""
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         state = crawler_mod._state
         state.semaphore = asyncio.Semaphore(3)
@@ -1319,10 +1319,10 @@ class TestCrawlerStateReset:
 
 
 class TestCrawlAndSaveSemaphore:
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_semaphore_acquired_and_released(self, mock_crawl_single, isolated_env):
         """When crawl_max_concurrent > 0, sem.acquire/release are called."""
-        import lilbee.crawler as crawler_mod
+        from lilbee.crawler import api as crawler_mod
 
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cfg.crawl_max_concurrent = 2
@@ -1475,13 +1475,31 @@ class TestCrawlCancel:
 
     async def test_safe_strategy_cancel_missing_method(self):
         """_safe_strategy_cancel tolerates strategies without a cancel() method."""
-        from lilbee.crawler import _safe_strategy_cancel
+        from lilbee.crawler.crawl4ai_fetcher import _safe_strategy_cancel
 
         _safe_strategy_cancel(object())  # object() has no cancel; must not raise
 
+    async def test_safe_strategy_cancel_swallows_runtime_error(self, caplog):
+        """_safe_strategy_cancel logs at debug when cancel() raises RuntimeError.
+
+        Mirrors the real shape of ``BFSDeepCrawlStrategy.cancel()`` failing after
+        the strategy's internal state was already torn down.
+        """
+        import logging as _logging
+
+        from lilbee.crawler.crawl4ai_fetcher import _safe_strategy_cancel
+
+        class _Strategy:
+            def cancel(self) -> None:
+                raise RuntimeError("strategy already closed")
+
+        with caplog.at_level(_logging.DEBUG, logger="lilbee.crawler.crawl4ai_fetcher"):
+            _safe_strategy_cancel(_Strategy())
+        assert any("strategy.cancel() raised" in r.getMessage() for r in caplog.records)
+
     async def test_safe_aclose_noop_on_none(self):
         """_safe_aclose returns cleanly when stream is None (e.g. crawler never opened)."""
-        from lilbee.crawler import _safe_aclose
+        from lilbee.crawler.crawl4ai_fetcher import _safe_aclose
 
         await _safe_aclose(None)  # must not raise
 
@@ -1617,7 +1635,7 @@ class TestCrawlDispatcher:
 
     async def test_lilbee_async_crawler_forwards_default_dispatcher(self):
         """_LilbeeAsyncCrawler threads its default dispatcher into arun_many."""
-        from lilbee.crawler import _LilbeeAsyncCrawler
+        from lilbee.crawler.crawl4ai_fetcher import _LilbeeAsyncCrawler
 
         inner = MagicMock()
         inner.arun_many = AsyncMock()
@@ -1669,7 +1687,7 @@ class TestCrawlDispatcher:
 
     async def test_lilbee_async_crawler_explicit_dispatcher_wins(self):
         """An explicit dispatcher= on arun_many beats the default."""
-        from lilbee.crawler import _LilbeeAsyncCrawler
+        from lilbee.crawler.crawl4ai_fetcher import _LilbeeAsyncCrawler
 
         inner = MagicMock()
         inner.arun_many = AsyncMock()
@@ -1684,7 +1702,7 @@ class TestSaveSingleResult:
     """Unit tests for _save_single_result (per-page flush helper)."""
 
     def test_writes_new_content(self, isolated_env):
-        from lilbee.crawler import _save_single_result
+        from lilbee.crawler.save import _save_single_result
 
         meta: dict = {}
         result = CrawlResult(url="https://example.com/new", markdown="# New")
@@ -1694,20 +1712,20 @@ class TestSaveSingleResult:
         assert path.read_text(encoding="utf-8") == "# New"
 
     def test_returns_none_on_failure(self, isolated_env):
-        from lilbee.crawler import _save_single_result
+        from lilbee.crawler.save import _save_single_result
 
         result = CrawlResult(url="https://example.com/fail", success=False, error="oops")
         assert _save_single_result(result, {}) is None
 
     def test_returns_none_on_empty_markdown(self, isolated_env):
-        from lilbee.crawler import _save_single_result
+        from lilbee.crawler.save import _save_single_result
 
         result = CrawlResult(url="https://example.com/empty", markdown="   ")
         assert _save_single_result(result, {}) is None
 
     def test_hash_match_with_file_present_skips(self, isolated_env):
         """Prev metadata hash matches AND file exists -> skip."""
-        from lilbee.crawler import _save_single_result
+        from lilbee.crawler.save import _save_single_result
 
         url = "https://example.com/dup"
         markdown = "# Dup"
@@ -1727,7 +1745,7 @@ class TestSaveSingleResult:
 
     def test_hash_match_with_missing_file_rewrites(self, isolated_env):
         """Prev metadata hash matches but file was deleted -> re-write."""
-        from lilbee.crawler import _save_single_result
+        from lilbee.crawler.save import _save_single_result
 
         url = "https://example.com/gone"
         markdown = "# Gone"
@@ -1746,10 +1764,10 @@ class TestSaveSingleResult:
 
     def test_path_traversal_blocked(self, isolated_env):
         """A crafted filename escaping _web/ is skipped with a warning."""
-        from lilbee.crawler import _save_single_result
+        from lilbee.crawler.save import _save_single_result
 
         result = CrawlResult(url="https://evil.com/ok", markdown="# Evil")
-        with patch("lilbee.crawler.url_to_filename", return_value="../../etc/passwd"):
+        with patch("lilbee.crawler.save.url_to_filename", return_value="../../etc/passwd"):
             path = _save_single_result(result, {})
         assert path is None
 
@@ -1757,7 +1775,7 @@ class TestSaveSingleResult:
 class TestUpdateSingleMetadata:
     def test_updates_in_place(self):
         """Helper mutates the dict in place with the expected shape."""
-        from lilbee.crawler import _update_single_metadata
+        from lilbee.crawler.save import _update_single_metadata
 
         meta: dict = {}
         result = CrawlResult(url="https://example.com/p", markdown="# P")
@@ -1768,45 +1786,6 @@ class TestUpdateSingleMetadata:
         assert entry.crawled_at == now
         assert entry.content_hash == content_hash("# P")
         assert entry.file == "example.com/p/index.md"
-
-
-class TestFlushMetadata:
-    def test_atomic_write_leaves_no_tmp(self, isolated_env):
-        """_flush_metadata writes the file and cleans up the temp file."""
-        from lilbee.crawler import _flush_metadata
-
-        meta = {
-            "https://example.com": CrawlMeta(
-                file="example.com/index.md",
-                content_hash="abc",
-                crawled_at="2026-04-20T00:00:00+00:00",
-            )
-        }
-        _flush_metadata(meta)
-        assert (cfg.data_dir / "crawl_meta.json").exists()
-        # No tmp files remain in data_dir
-        leftover = list(cfg.data_dir.glob("*.tmp"))
-        assert leftover == []
-
-    def test_failed_rename_cleans_up_tmp(self, isolated_env):
-        """If rename fails mid-write, the tmp file is removed and the error bubbles up."""
-        from lilbee.crawler import _flush_metadata
-
-        meta = {
-            "https://example.com": CrawlMeta(
-                file="example.com/index.md",
-                content_hash="abc",
-                crawled_at="2026-04-20T00:00:00+00:00",
-            )
-        }
-        with (
-            patch("lilbee.crawler.Path.replace", side_effect=OSError("boom")),
-            pytest.raises(OSError, match="boom"),
-        ):
-            _flush_metadata(meta)
-        # No half-written tmp files
-        leftover = list(cfg.data_dir.glob("*.tmp"))
-        assert leftover == []
 
 
 class TestStreamingFlush:
@@ -1887,7 +1866,7 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        real_save = lilbee_crawler._save_single_result
+        real_save = _save_single_result
 
         def _wrapped(result, meta):
             call_order.append(f"flush-{result.url.rsplit('/', 1)[-1]}")
@@ -1895,7 +1874,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._save_single_result", side_effect=_wrapped),
+            patch("lilbee.crawler.save._save_single_result", side_effect=_wrapped),
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
@@ -1917,13 +1896,11 @@ class TestStreamingFlush:
         from datetime import UTC as _UTC
         from datetime import datetime as _datetime
 
-        from lilbee.crawler import _flush_metadata
-
         seed = CrawlResult(url="https://example.com/p1", markdown="# Same")
         seed_meta: dict[str, CrawlMeta] = {}
         _save_single_result(seed, seed_meta)
         _update_single_metadata(seed_meta, seed, _datetime.now(_UTC).isoformat())
-        _flush_metadata(seed_meta)
+        save_crawl_metadata(seed_meta)
 
         async def _gen():
             yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# Same")
@@ -1943,15 +1920,13 @@ class TestStreamingFlush:
         assert paths[0].name == "index.md"
         assert paths[0].read_text(encoding="utf-8") == "# NewPage"
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_single_url_flushes_via_per_page_path(self, mock_crawl_single, isolated_env):
         """depth=0 uses the same flush_page callback, not the old batch helpers."""
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/only", markdown="# Only"
         )
-        with patch(
-            "lilbee.crawler._save_single_result", wraps=lilbee_crawler._save_single_result
-        ) as spy:
+        with patch("lilbee.crawler.save._save_single_result", wraps=_save_single_result) as spy:
             paths = await crawl_and_save("https://example.com/only", depth=0)
         assert len(paths) == 1
         spy.assert_called_once()
@@ -2011,7 +1986,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
         mock_sync.assert_not_awaited()
@@ -2031,7 +2006,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
         mock_sync.assert_awaited_once()
@@ -2056,7 +2031,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._flush_metadata") as mock_flush,
+            patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=total_pages)
 
@@ -2081,7 +2056,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._flush_metadata") as mock_flush,
+            patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=METADATA_FLUSH_INTERVAL)
 
@@ -2113,13 +2088,13 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._save_single_result", side_effect=failing_save),
+            patch("lilbee.crawler.save._save_single_result", side_effect=failing_save),
         ):
             # Must not raise even though the first page write fails.
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
 
-    @patch("lilbee.crawler.crawl_single")
+    @patch("lilbee.crawler.api.crawl_single")
     async def test_depth_zero_flush_failure_does_not_fail_the_crawl(
         self, mock_crawl_single, isolated_env
     ):
@@ -2127,7 +2102,7 @@ class TestStreamingFlush:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/only", markdown="# Only"
         )
-        with patch("lilbee.crawler._save_single_result", side_effect=OSError("disk full")):
+        with patch("lilbee.crawler.save._save_single_result", side_effect=OSError("disk full")):
             # Must not raise even though the depth=0 flush fails.
             paths = await crawl_and_save("https://example.com/only", depth=0)
         assert paths == []
@@ -2145,7 +2120,7 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        real_flush = lilbee_crawler._flush_metadata
+        real_flush = save_crawl_metadata
         call_count = {"n": 0}
 
         def flush_or_fail(meta):
@@ -2157,7 +2132,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._flush_metadata", side_effect=flush_or_fail),
+            patch("lilbee.crawler.save.save_crawl_metadata", side_effect=flush_or_fail),
         ):
             # Markdown was already written durably; the final flush must not
             # reraise since the caller has already consumed the stream.
@@ -2186,7 +2161,7 @@ class TestStreamingFlush:
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
             patch(
-                "lilbee.crawler._flush_metadata", wraps=lilbee_crawler._flush_metadata
+                "lilbee.crawler.save.save_crawl_metadata", wraps=save_crawl_metadata
             ) as spy_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
@@ -2212,7 +2187,7 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler._flush_metadata") as mock_flush,
+            patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []

@@ -360,7 +360,7 @@ class TestCrawl:
 
         from pytest_httpserver import HTTPServer
 
-        from lilbee import crawler as crawler_mod
+        from lilbee.crawler import url_filter as crawler_url_filter
 
         page_html = (
             "<html><head><title>Test</title></head>"
@@ -379,11 +379,11 @@ class TestCrawl:
         loopback_v6 = ipaddress.ip_network("::1/128")
         filtered = tuple(
             net
-            for net in crawler_mod.get_blocked_networks()
+            for net in crawler_url_filter.get_blocked_networks()
             if net not in (loopback_v4, loopback_v6)
         )
-        original_fn = crawler_mod.get_blocked_networks
-        crawler_mod.get_blocked_networks = lambda: filtered  # type: ignore[assignment]
+        original_fn = crawler_url_filter.get_blocked_networks
+        crawler_url_filter.get_blocked_networks = lambda: filtered  # type: ignore[assignment]
 
         try:
             url = f"http://127.0.0.1:{server.port}/quantum"
@@ -396,7 +396,7 @@ class TestCrawl:
             results = data.get("results", [])
             assert len(results) > 0, "Expected to find crawled content"
         finally:
-            crawler_mod.get_blocked_networks = original_fn  # type: ignore[assignment]
+            crawler_url_filter.get_blocked_networks = original_fn  # type: ignore[assignment]
             server.clear()
             if server.is_running():
                 server.stop()
