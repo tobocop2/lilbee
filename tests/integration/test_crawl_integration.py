@@ -15,14 +15,15 @@ import pytest
 
 crawl4ai = pytest.importorskip("crawl4ai")
 
-from lilbee import crawler as crawler_mod  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
+from lilbee.crawler import api as crawler_api  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
-    _save_single_result,  # pins the helper directly; public wrapper hides it
     crawl_and_save,
     load_crawl_metadata,
     validate_crawl_url,
 )
+from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
+from lilbee.crawler.save import _save_single_result  # noqa: E402
 from lilbee.progress import EventType  # noqa: E402
 
 HOME_HTML = """\
@@ -69,11 +70,11 @@ def isolated_env(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.crawl_timeout = 15
     # Reset semaphore cache
-    crawler_mod._state.semaphore = None
+    crawler_api._state.semaphore = None
     yield tmp_path
     for name, val in snapshot.items():
         setattr(cfg, name, val)
-    crawler_mod._state.semaphore = None
+    crawler_api._state.semaphore = None
 
 
 @pytest.fixture()
@@ -82,9 +83,11 @@ def allow_localhost(monkeypatch):
     loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
     loopback_v6 = ipaddress.ip_network("::1/128")
     filtered = tuple(
-        net for net in crawler_mod.get_blocked_networks() if net not in (loopback_v4, loopback_v6)
+        net
+        for net in crawler_url_filter.get_blocked_networks()
+        if net not in (loopback_v4, loopback_v6)
     )
-    monkeypatch.setattr(crawler_mod, "get_blocked_networks", lambda: filtered)
+    monkeypatch.setattr(crawler_url_filter, "get_blocked_networks", lambda: filtered)
     yield
 
 
@@ -300,7 +303,7 @@ class TestCrawlConcurrency:
             httpserver.expect_request(f"/conc{i}").respond_with_handler(slow_handler)
 
         cfg.crawl_max_concurrent = 2
-        crawler_mod._state.semaphore = None
+        crawler_api._state.semaphore = None
 
         urls = [str(httpserver.url_for(f"/conc{i}")) for i in range(3)]
         tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]
@@ -324,7 +327,7 @@ class TestCrawlConcurrency:
             )
 
         cfg.crawl_max_concurrent = 0
-        crawler_mod._state.semaphore = None
+        crawler_api._state.semaphore = None
 
         urls = [str(httpserver.url_for(f"/par{i}")) for i in range(3)]
         tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]

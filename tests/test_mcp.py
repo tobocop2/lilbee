@@ -66,7 +66,7 @@ def mock_svc():
 def _no_dns():
     """Bypass SSRF DNS resolution in all MCP tests."""
     with mock.patch(
-        "lilbee.crawler.socket.getaddrinfo",
+        "lilbee.crawler.url_filter.socket.getaddrinfo",
         return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
     ):
         yield
@@ -552,7 +552,7 @@ class TestAddWithUrls:
     async def test_add_url_ssrf_rejected(self, mock_sync, _mock_avail, isolated_env):
         """Private IP URLs are rejected with an error, not crawled."""
         with mock.patch(
-            "lilbee.crawler.socket.getaddrinfo",
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
             return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
         ):
             result = await add(paths=["http://evil.test/steal"])

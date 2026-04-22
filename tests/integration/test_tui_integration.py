@@ -224,7 +224,7 @@ class TestCrawlAndSync:
 
         from pytest_httpserver import HTTPServer
 
-        from lilbee import crawler as crawler_mod
+        from lilbee.crawler import url_filter as crawler_url_filter
 
         html = (
             "<html><head><title>Test</title></head><body>"
@@ -236,9 +236,9 @@ class TestCrawlAndSync:
 
         loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
         loopback_v6 = ipaddress.ip_network("::1/128")
-        original_fn = crawler_mod.get_blocked_networks
+        original_fn = crawler_url_filter.get_blocked_networks
         filtered = tuple(net for net in original_fn() if net not in (loopback_v4, loopback_v6))
-        monkeypatch.setattr(crawler_mod, "get_blocked_networks", lambda: filtered)
+        monkeypatch.setattr(crawler_url_filter, "get_blocked_networks", lambda: filtered)
 
         server = HTTPServer()
         server.expect_request("/jellyfish").respond_with_data(html, content_type="text/html")
