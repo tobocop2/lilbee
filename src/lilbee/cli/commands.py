@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
@@ -48,6 +48,14 @@ from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_i
 from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
+from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
+    SUMMARIES_SUBDIR,
+    WIKI_DISABLED_ERROR,
+    WIKI_EMPTY_SOURCE_ERROR,
+    WIKI_STATUS_FAILED,
+    WIKI_STATUS_GENERATED,
+)
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -957,7 +965,7 @@ def setup_crawler_cmd() -> None:
         typer.echo("Chromium installed.")
 
 
-wiki_app = typer.Typer(help="Wiki layer commands: lint, citations, status.")
+wiki_app = typer.Typer(help="Wiki layer commands: generate, lint, citations, status, prune.")
 app.add_typer(wiki_app, name="wiki")
 
 
@@ -1057,8 +1065,6 @@ def wiki_status(
         console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
         return
 
-    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
-
     summaries = _count_md_files(wiki_root / SUMMARIES_SUBDIR)
     drafts = _count_md_files(wiki_root / DRAFTS_SUBDIR)
 
@@ -1091,6 +1097,88 @@ def wiki_status(
         )
     else:
         console.print("  Lint: all clean")
+
+
+@wiki_app.command(name="generate")
+def wiki_generate(
+    source: str = typer.Argument(..., help="Source filename (e.g. cv-manual.pdf)."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Generate a wiki summary page for a source document."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+
+    if not cfg.wiki:
+        _fail_wiki_generate(WIKI_DISABLED_ERROR)
+    if not source or not source.strip():
+        _fail_wiki_generate(WIKI_EMPTY_SOURCE_ERROR)
+
+    from lilbee.wiki.gen import generate_summary_page
+
+    services = get_services()
+    chunks = services.store.get_chunks_by_source(source)
+    if not chunks:
+        _fail_wiki_generate(f"No indexed chunks for source: {source}")
+
+    on_progress = None if cfg.json_mode else _wiki_progress_to_stderr
+    result_path = generate_summary_page(
+        source, chunks, services.provider, services.store, on_progress=on_progress
+    )
+
+    if result_path is None:
+        _emit_wiki_generate_failure(source)
+    _emit_wiki_generate_success(source, str(result_path))
+
+
+def _fail_wiki_generate(error: str) -> NoReturn:
+    """Emit a wiki_generate validation error (pre-generation) as {"error": ...} and exit 1.
+
+    Distinct from _emit_wiki_generate_failure, which emits a soft-failure result
+    (generator ran but returned no page) in the full wiki_generate JSON shape.
+    """
+    if cfg.json_mode:
+        json_output({"error": error})
+    else:
+        typer.echo(error, err=True)
+    raise typer.Exit(1)
+
+
+def _emit_wiki_generate_success(source: str, path: str) -> None:
+    """Emit the wiki_generate success result in JSON or default mode."""
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_generate",
+                "source": source,
+                "status": WIKI_STATUS_GENERATED,
+                "paths": [path],
+            }
+        )
+        return
+    console.print(f"Generated [{theme.ACCENT}]{path}[/{theme.ACCENT}]")
+
+
+def _emit_wiki_generate_failure(source: str) -> NoReturn:
+    """Emit the wiki_generate soft-failure (generator returned None) and exit non-zero."""
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_generate",
+                "source": source,
+                "status": WIKI_STATUS_FAILED,
+                "paths": [],
+            }
+        )
+    else:
+        typer.echo(f"Generation failed for {source}", err=True)
+    raise typer.Exit(1)
+
+
+def _wiki_progress_to_stderr(stage: str, data: dict[str, object]) -> None:
+    """Print wiki generation stage updates to stderr in default (non-JSON) mode."""
+    chunk_count = data.get("chunks")
+    detail = f" ({chunk_count} chunks)" if chunk_count is not None else ""
+    typer.echo(f"[{stage}]{detail}", err=True)
 
 
 @wiki_app.command(name="prune")

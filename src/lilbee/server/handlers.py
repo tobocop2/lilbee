@@ -50,6 +50,7 @@ from lilbee.server.models import (
     SyncSummary,
 )
 from lilbee.services import get_services
+from lilbee.wiki.shared import WIKI_STATUS_FAILED, WIKI_STATUS_GENERATED
 
 if TYPE_CHECKING:
     from lilbee.ingest import SyncResult
@@ -841,7 +842,7 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         yield sse_error(error_holder[0])
     elif not sse.cancel.is_set() and not task.cancelled():
         path = str(result_holder[0]) if result_holder and result_holder[0] is not None else None
-        status = "generated" if path else "failed"
+        status = WIKI_STATUS_GENERATED if path else WIKI_STATUS_FAILED
         yield sse_done({"status": status, "source": source, "path": path or ""})
 
 

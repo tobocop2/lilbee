@@ -14,6 +14,14 @@ from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.services import get_services, reset_services
+from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
+    SUMMARIES_SUBDIR,
+    WIKI_DISABLED_ERROR,
+    WIKI_EMPTY_SOURCE_ERROR,
+    WIKI_STATUS_FAILED,
+    WIKI_STATUS_GENERATED,
+)
 
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
@@ -302,7 +310,6 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
 def wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
-    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     if not wiki_root.exists():
@@ -330,7 +337,7 @@ def wiki_list() -> dict[str, Any]:
     Returns page slugs, titles, types, source counts, and creation dates.
     """
     if not cfg.wiki:
-        return {"error": "wiki not enabled"}
+        return {"error": WIKI_DISABLED_ERROR}
     from dataclasses import asdict
 
     from lilbee.wiki.browse import list_pages
@@ -351,7 +358,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
         slug: Page slug like "summaries/my-doc" or "concepts/typing".
     """
     if not cfg.wiki:
-        return {"error": "wiki not enabled"}
+        return {"error": WIKI_DISABLED_ERROR}
     from dataclasses import asdict
 
     from lilbee.wiki.browse import read_page
@@ -378,6 +385,45 @@ def wiki_prune() -> dict[str, Any]:
         "records": [r.to_dict() for r in report.records],
         "archived": report.archived_count,
         "flagged": report.flagged_count,
+    }
+
+
+@mcp.tool()
+def wiki_generate(source: str) -> dict[str, Any]:
+    """Generate a wiki summary page for a source document.
+
+    Args:
+        source: Source filename as indexed (e.g. 'cv-manual.pdf').
+
+    Returns {"command", "source", "status", "paths"} on success,
+    or {"error": "..."} when the source has no indexed chunks,
+    wiki is disabled, or the input is empty.
+    """
+    from lilbee.wiki.gen import generate_summary_page
+
+    if not cfg.wiki:
+        return {"error": WIKI_DISABLED_ERROR}
+    if not source or not source.strip():
+        return {"error": WIKI_EMPTY_SOURCE_ERROR}
+
+    services = get_services()
+    chunks = services.store.get_chunks_by_source(source)
+    if not chunks:
+        return {"error": f"No indexed chunks for source: {source}"}
+
+    result_path = generate_summary_page(source, chunks, services.provider, services.store)
+    if result_path is None:
+        return {
+            "command": "wiki_generate",
+            "source": source,
+            "status": WIKI_STATUS_FAILED,
+            "paths": [],
+        }
+    return {
+        "command": "wiki_generate",
+        "source": source,
+        "status": WIKI_STATUS_GENERATED,
+        "paths": [str(result_path)],
     }
 
 

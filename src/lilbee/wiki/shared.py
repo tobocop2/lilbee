@@ -29,6 +29,11 @@ class WikiPageType(StrEnum):
 
 WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (SUMMARIES_SUBDIR, SYNTHESIS_SUBDIR)
 
+WIKI_STATUS_GENERATED = "generated"
+WIKI_STATUS_FAILED = "failed"
+WIKI_DISABLED_ERROR = "wiki not enabled"
+WIKI_EMPTY_SOURCE_ERROR = "source must not be empty"
+
 SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
     SUMMARIES_SUBDIR: WikiPageType.SUMMARY,
     SYNTHESIS_SUBDIR: WikiPageType.SYNTHESIS,

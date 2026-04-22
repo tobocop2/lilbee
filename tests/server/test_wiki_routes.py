@@ -263,10 +263,10 @@ class TestWikiEnabled:
         assert body["warnings"] == 0
         assert body["issues"] == []
 
-    async def test_lint_status_returns_501(self):
+    async def test_lint_status_route_removed(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/lint/task-abc", headers=_h())
-        assert resp.status_code == 501
+        assert resp.status_code == 404
 
     async def test_generate_returns_sse_stream_failed(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from litestar import get, post
-from litestar.exceptions import HTTPException, NotFoundException
+from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 from litestar.response import Stream
 
@@ -32,6 +32,7 @@ from lilbee.wiki.browse import (
     read_page,
 )
 from lilbee.wiki.index import update_wiki_index
+from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 
 
 def _wiki_root() -> Path:
@@ -42,7 +43,7 @@ def _wiki_root() -> Path:
 def _require_wiki() -> None:
     """Raise 404 if the wiki feature is disabled."""
     if not cfg.wiki:
-        raise NotFoundException(detail="wiki not enabled")
+        raise NotFoundException(detail=WIKI_DISABLED_ERROR)
 
 
 def _find_page(slug: str) -> Path | None:
@@ -87,14 +88,6 @@ async def wiki_citations_reverse_route(
         return []
     records = svc_mod.get_services().store.get_citations_for_source(source)
     return [WikiCitationRecord(**r) for r in records]
-
-
-@get("/api/wiki/lint/{task_id:str}")
-@read_only
-async def wiki_lint_status_route(task_id: str) -> None:
-    """Poll lint task status by task ID."""
-    _require_wiki()
-    raise HTTPException(status_code=501, detail="lint task polling not implemented")
 
 
 @get("/api/wiki/{slug:path}")
