@@ -65,6 +65,14 @@ class LLMProvider(Protocol):
         """List available model identifiers."""
         ...
 
+    def list_chat_models(self, provider: str) -> list[str]:
+        """List frontier chat models the provider is aware of for *provider*.
+
+        Returns ``[]`` when the backend has no static catalog (for
+        example, native llama-cpp has no notion of external API catalogs).
+        """
+        ...
+
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Download a model. Raises NotImplementedError if not supported."""
         ...

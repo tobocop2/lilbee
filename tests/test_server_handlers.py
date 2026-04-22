@@ -1115,13 +1115,13 @@ class TestUpdateConfig:
         assert stored["top_k"] == "5"
 
     async def test_api_key_update_injects_provider_keys(self, tmp_path):
-        with patch("lilbee.providers.litellm_provider.inject_provider_keys") as mock_inject:
+        with patch("lilbee.server.handlers.inject_provider_keys") as mock_inject:
             result = await handlers.update_config({"openai_api_key": "sk-new"})
         assert result.updated == ["openai_api_key"]
         mock_inject.assert_called_once()
 
     async def test_non_key_update_skips_injection(self, tmp_path):
-        with patch("lilbee.providers.litellm_provider.inject_provider_keys") as mock_inject:
+        with patch("lilbee.server.handlers.inject_provider_keys") as mock_inject:
             await handlers.update_config({"temperature": 0.5})
         mock_inject.assert_not_called()
 

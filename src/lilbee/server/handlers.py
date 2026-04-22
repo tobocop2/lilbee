@@ -27,6 +27,8 @@ from lilbee.config import Config, cfg
 from lilbee.model_manager import ModelSource, get_model_manager
 from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.sdk_backend import API_KEY_FIELDS
+from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.results import DocumentResult, group
 from lilbee.security import validate_path_within
 from lilbee.server.models import (
@@ -569,8 +571,6 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
         settings.update_values(cfg.data_root, to_persist)
     if to_delete:
         settings.delete_values(cfg.data_root, to_delete)
-    from lilbee.providers.litellm_provider import API_KEY_FIELDS, inject_provider_keys
-
     if API_KEY_FIELDS & set(updates):
         inject_provider_keys()
     reindex_required = bool(REINDEX_FIELDS & set(updates))

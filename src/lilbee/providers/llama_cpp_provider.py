@@ -195,6 +195,10 @@ class LlamaCppProvider(LLMProvider):
         registry = get_services().registry
         return sorted(f"{m.name}:{m.tag}" for m in registry.list_installed())
 
+    def list_chat_models(self, provider: str) -> list[str]:
+        """llama-cpp has no frontier-provider catalog; always ``[]``."""
+        return []
+
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Not supported directly — catalog.py handles downloads."""
         raise NotImplementedError(

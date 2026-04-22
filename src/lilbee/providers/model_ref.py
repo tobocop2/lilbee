@@ -34,12 +34,23 @@ class ProviderModelRef:
         return self.provider == "local"
 
     @property
-    def needs_litellm(self) -> bool:
-        """True if this model must route through litellm (API or Ollama)."""
+    def is_remote(self) -> bool:
+        """True if this model must route through a remote SDK (API or Ollama).
+
+        Remote means "not a locally-loaded GGUF". Both Ollama (HTTP
+        localhost server) and hosted API providers share the same
+        dispatch path; they go through whichever SDK backend is wired
+        up.
+        """
         return self.provider != "local"
 
-    def for_litellm(self) -> str:
-        """Name formatted for litellm dispatch."""
+    def for_openai_prefix(self) -> str:
+        """Name formatted with canonical ``provider/model`` prefix.
+
+        The prefix convention is the same one used by OpenAI-compatible
+        SDKs: ``openai/gpt-4o``, ``ollama/qwen3:8b``, etc. Every
+        dispatching SDK accepts this shape.
+        """
         if self.provider == "ollama":
             return f"{OLLAMA_PREFIX}{self.name}"
         if self.is_api:
@@ -52,7 +63,7 @@ class ProviderModelRef:
 
     @property
     def needs_api_base(self) -> bool:
-        """True if litellm needs an explicit api_base (Ollama/local)."""
+        """True if the SDK needs an explicit api_base (Ollama/local)."""
         return not self.is_api
 
 

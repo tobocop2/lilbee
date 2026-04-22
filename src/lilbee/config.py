@@ -75,6 +75,12 @@ DEFAULT_IGNORE_DIRS = frozenset(
     }
 )
 
+# Shared HTTP timeout (seconds) for backend catalog / management calls
+# (Ollama /api/tags, /api/show, /v1/models, OpenAI-compatible endpoints).
+# Not exposed as a user config field because changing it is a debugging
+# maneuver, not a deployment knob.
+DEFAULT_HTTP_TIMEOUT = 30.0
+
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
@@ -617,7 +623,7 @@ class Config(BaseSettings):
             return v
         from lilbee.providers.model_ref import parse_model_ref
 
-        return parse_model_ref(v).for_litellm()
+        return parse_model_ref(v).for_openai_prefix()
 
     @field_validator("cors_origins", mode="before")
     @classmethod

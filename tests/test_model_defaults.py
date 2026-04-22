@@ -252,7 +252,7 @@ class TestLiteLLMCacheIntegration:
     """Test that _cache_ollama_defaults correctly parses and stores."""
 
     def test_cache_ollama_defaults(self):
-        from lilbee.providers.litellm_provider import _cache_ollama_defaults
+        from lilbee.providers.litellm_sdk import _cache_ollama_defaults
 
         _cache_ollama_defaults("qwen3:8b", "temperature 0.7\nnum_ctx 32768\nstop <|im_end|>")
         defaults = get_defaults("qwen3:8b")
@@ -261,7 +261,7 @@ class TestLiteLLMCacheIntegration:
         assert defaults.num_ctx == 32768
 
     def test_cache_ollama_defaults_empty(self):
-        from lilbee.providers.litellm_provider import _cache_ollama_defaults
+        from lilbee.providers.litellm_sdk import _cache_ollama_defaults
 
         _cache_ollama_defaults("empty-model", "")
         defaults = get_defaults("empty-model")

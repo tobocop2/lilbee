@@ -107,7 +107,6 @@ exclude_lines = [
     "class.*Protocol",
 ]
 omit = [
-    "src/lilbee/providers/litellm_provider.py",
     "src/lilbee/__main__.py",
     "src/lilbee/launcher.py",
     "src/lilbee/platform.py",

@@ -135,7 +135,7 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     backward compatibility, but the UI makes the real state obvious.
     """
     ref = parse_model_ref(default) if default else None
-    default = ref.for_litellm() if ref else default
+    default = ref.for_openai_prefix() if ref else default
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)
