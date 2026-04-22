@@ -17,8 +17,9 @@ from lilbee import settings
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
+from lilbee.model_manager import OLLAMA_PROVIDER_NAME
 from lilbee.models import ModelTask
-from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -82,20 +83,14 @@ def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm/Ollama) models to buckets.
-
-    Ollama-backed refs are stored prefixed (``ollama/<name>``) so routing
-    can dispatch on the prefix instead of probing the native registry.
-    The prefixed form is also the dedup key, so an Ollama entry whose
-    tag collides with a native manifest stays visible in the dropdown
-    as a distinct option.
-    """
+    """Add remote (litellm/Ollama) models to buckets, prefixed for routing."""
     try:
         from lilbee.model_manager import classify_remote_models, detect_provider
 
-        is_ollama = detect_provider(cfg.litellm_base_url) == "Ollama"
-        for model in classify_remote_models(cfg.litellm_base_url):
-            ref = f"ollama/{model.name}" if is_ollama else model.name
+        base_url = cfg.litellm_base_url
+        is_ollama = detect_provider(base_url) == OLLAMA_PROVIDER_NAME
+        for model in classify_remote_models(base_url):
+            ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
                 continue
             seen.add(ref)

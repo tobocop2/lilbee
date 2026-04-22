@@ -15,6 +15,7 @@ from rich.table import Table
 
 from lilbee import settings
 from lilbee.config import cfg
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.services import get_services
 
 
@@ -37,21 +38,10 @@ MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 
 def ensure_tag(name: str) -> str:
-    """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``).
-
-    API-prefixed models (openai/, anthropic/, gemini/) are returned as-is
-    since they don't use tags.
-    """
+    """Ensure a model name has an explicit tag and canonical prefix."""
     if not name:
         return name
-    from lilbee.providers.model_ref import parse_model_ref
-
-    ref = parse_model_ref(name)
-    if ref.is_api:
-        return name
-    if ref.provider == "ollama":
-        return f"ollama/{ref.name}"
-    return ref.name
+    return parse_model_ref(name).for_litellm()
 
 
 @dataclass(frozen=True)
@@ -279,8 +269,6 @@ def ensure_chat_model() -> None:
         raise RuntimeError(f"Cannot list models: {exc}") from exc
 
     # Filter out embedding model — only check for chat models
-    from lilbee.providers.model_ref import parse_model_ref
-
     embed_base = parse_model_ref(cfg.embedding_model).name.split(":")[0]
     chat_models = [m for m in installed if m.split(":")[0] != embed_base]
     if chat_models:
@@ -304,8 +292,6 @@ def ensure_chat_model() -> None:
 def list_installed_models() -> list[str]:
     """Return installed model names, excluding embedding models."""
     try:
-        from lilbee.providers.model_ref import parse_model_ref
-
         provider = get_services().provider
         embed_base = parse_model_ref(cfg.embedding_model).name.split(":")[0]
         return [m for m in provider.list_models() if m.split(":")[0] != embed_base]

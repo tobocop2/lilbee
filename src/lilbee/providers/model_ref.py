@@ -14,6 +14,8 @@ from lilbee.providers.base import filter_options
 
 _API_PROVIDERS = {"openai", "anthropic", "gemini"}
 
+OLLAMA_PREFIX = "ollama/"
+
 
 @dataclass(frozen=True)
 class ProviderModelRef:
@@ -39,7 +41,7 @@ class ProviderModelRef:
     def for_litellm(self) -> str:
         """Name formatted for litellm dispatch."""
         if self.provider == "ollama":
-            return f"ollama/{self.name}"
+            return f"{OLLAMA_PREFIX}{self.name}"
         if self.is_api:
             return f"{self.provider}/{self.name}"
         return self.name

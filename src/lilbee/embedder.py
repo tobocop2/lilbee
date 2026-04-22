@@ -6,10 +6,51 @@ import math
 from lilbee.config import Config
 from lilbee.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 from lilbee.providers.base import LLMProvider
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 
 log = logging.getLogger(__name__)
 
 MAX_BATCH_CHARS = 6000
+
+
+def _name_base(ref: ProviderModelRef) -> str:
+    return ref.name.split(":")[0].lower().replace(" ", "-")
+
+
+def _remote_sees_model(ref: ProviderModelRef, provider: LLMProvider) -> bool:
+    try:
+        available = provider.list_models()
+    except Exception:
+        log.debug("provider list_models failed during availability check", exc_info=True)
+        return False
+    base = _name_base(ref)
+    return any(base in m.lower().replace(" ", "-") for m in available)
+
+
+def _native_has_model(model: str) -> bool:
+    from lilbee.providers.llama_cpp_provider import resolve_model_path
+
+    try:
+        resolve_model_path(model)
+    except Exception:
+        return False
+    return True
+
+
+def is_model_available(model: str, provider: LLMProvider) -> bool:
+    """Return True if *model* resolves via *provider* or the native registry.
+
+    Remote-prefixed refs (``ollama/`` and API providers) skip the native
+    probe since they resolve through litellm at call time.
+    """
+    if not model:
+        return False
+    ref = parse_model_ref(model)
+    if _remote_sees_model(ref, provider):
+        return True
+    if ref.needs_litellm:
+        return False
+    return _native_has_model(model)
 
 
 class Embedder:
@@ -47,31 +88,11 @@ class Embedder:
 
     def embedding_available(self) -> bool:
         """Return True if the embedding model can be resolved.
+
         Checks the provider model list and the native registry path
-        resolution.  Returns True if either finds the model.
+        resolution. Returns True if either finds the model.
         """
-        model = self._config.embedding_model
-        if not model:
-            return False
-        from lilbee.providers.model_ref import parse_model_ref
-
-        ref = parse_model_ref(model)
-        name_base = ref.name.split(":")[0].lower().replace(" ", "-")
-        try:
-            available = self._provider.list_models()
-            if any(name_base in m.lower().replace(" ", "-") for m in available):
-                return True
-        except Exception:
-            log.debug("embedding_available provider check failed", exc_info=True)
-        if ref.needs_litellm:
-            return False
-        try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
-
-            resolve_model_path(model)
-            return True
-        except Exception:
-            return False
+        return is_model_available(self._config.embedding_model, self._provider)
 
     def embed(self, text: str) -> list[float]:
         """Embed a single text string, return vector."""

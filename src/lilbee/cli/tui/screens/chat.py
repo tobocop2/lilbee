@@ -40,7 +40,9 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.embedder import is_model_available
 from lilbee.progress import EventType, ProgressEvent
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
 
@@ -192,15 +194,14 @@ class ChatScreen(Screen[None]):
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
 
-        Remote-prefixed refs (``ollama/`` and API providers) skip the native
-        registry probe since they resolve through litellm at call time.
+        Remote-prefixed refs skip the native probe since they resolve
+        through litellm at call time.
         """
         if not cfg.lancedb_dir.is_dir():
             log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp_provider import resolve_model_path
-        from lilbee.providers.model_ref import parse_model_ref
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
             if parse_model_ref(model).needs_litellm:
@@ -213,35 +214,8 @@ class ChatScreen(Screen[None]):
         return False
 
     def _embedding_ready(self) -> bool:
-        """Quick check if embedding model exists (no network calls).
-
-        Checks both the provider model list and the native registry path
-        resolution so litellm/Ollama-backed models are detected too.
-        """
-        model = cfg.embedding_model
-        if not model:
-            return False
-        from lilbee.providers.model_ref import parse_model_ref
-
-        ref = parse_model_ref(model)
-        name_base = ref.name.split(":")[0].lower().replace(" ", "-")
-        try:
-            from lilbee.services import get_services
-
-            available = get_services().provider.list_models()
-            if any(name_base in m.lower().replace(" ", "-") for m in available):
-                return True
-        except Exception:
-            pass
-        if ref.needs_litellm:
-            return False
-        try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
-
-            resolve_model_path(model)
-            return True
-        except Exception:
-            return False
+        """Quick check if the embedding model resolves (no network calls)."""
+        return is_model_available(cfg.embedding_model, get_services().provider)
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
