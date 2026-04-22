@@ -213,32 +213,33 @@ def content_type_to_mode(content_type: str) -> ExtractMode:
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode.
 
-    ``include_document_structure`` is always on so wiki generation has a
-    heading-aware tree to map-reduce over. For sources kreuzberg cannot
-    structure (plain text, OCR output), the returned ``result.document``
-    is simply ``None``.
+    ``include_document_structure`` is turned on only when the wiki feature
+    is enabled, since the heading tree is used solely by wiki generation.
+    With wiki disabled, every call kreuzberg would otherwise spend walking
+    and serializing the tree is pure overhead.
     """
     from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
     chunking = build_chunking_config()
     pages = PageConfig(extract_pages=True, insert_page_markers=False)
     ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    want_structure = cfg.wiki
     builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
         ExtractMode.MARKDOWN: lambda: ExtractionConfig(
             chunking=chunking,
             output_format=_MARKDOWN_OUTPUT,
-            include_document_structure=True,
+            include_document_structure=want_structure,
         ),
         ExtractMode.PAGINATED: lambda: ExtractionConfig(
             chunking=chunking,
             pages=pages,
-            include_document_structure=True,
+            include_document_structure=want_structure,
         ),
         ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
             chunking=chunking,
             pages=pages,
             ocr=ocr,
-            include_document_structure=True,
+            include_document_structure=want_structure,
         ),
     }
     return builders[mode]()
@@ -423,10 +424,13 @@ async def _handle_scanned_pdf_fallback(
 def _persist_document_structure(path: Path, source_name: str, result: Any) -> None:
     """Persist kreuzberg's ``result.document`` tree into the ``_structure`` table.
 
-    Silently no-ops when kreuzberg did not emit a structure (plain text, OCR
-    output, some formats). Runs as a side effect during ingest so wiki
-    generation has the tree available without re-extracting the source.
+    Silently no-ops when wiki is disabled (the tree has no consumer in that
+    case) or when kreuzberg did not emit a structure (plain text, OCR output,
+    some formats). Runs as a side effect during ingest so wiki generation
+    has the tree available without re-extracting the source.
     """
+    if not cfg.wiki:
+        return
     document = getattr(result, "document", None)
     if document is None:
         return

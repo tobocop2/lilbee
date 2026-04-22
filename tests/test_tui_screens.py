@@ -5467,7 +5467,9 @@ class TestWikiInsertHelpers:
             tree = app.screen.query_one("#wiki-page-list", Tree)
             tree.reset("Wiki")
             group = tree.root.add("Summaries", expand=True)
-            info = WikiPageInfo(slug="rootonly", title="Direct", page_type="summary", source_count=0, created_at="")
+            info = WikiPageInfo(
+                slug="rootonly", title="Direct", page_type="summary", source_count=0, created_at=""
+            )
             screen._insert_page(group, info)
             labels = [str(c.label) for c in group.children]
             assert any("Direct" in label for label in labels)

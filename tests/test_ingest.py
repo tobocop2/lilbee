@@ -473,6 +473,9 @@ class TestIngestHelpers:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def testingest_document_persists_document_structure(self, mock_kf, isolated_env):
         """When kreuzberg returns a document tree, it is forwarded to the store."""
+        from lilbee.config import cfg
+
+        cfg.wiki = True
         document = {
             "nodes": [
                 {
@@ -502,8 +505,59 @@ class TestIngestHelpers:
         assert '"node_type": "heading"' in record["document_json"]
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def testingest_document_skips_structure_when_wiki_disabled(self, mock_kf, isolated_env):
+        """With wiki off, even a populated DocumentStructure is ignored (no cost paid)."""
+        from lilbee.config import cfg
+
+        cfg.wiki = False
+        document = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Top"},
+                    "page": 1,
+                    "children": [],
+                }
+            ]
+        }
+        mock_kf.return_value = _make_kreuzberg_result(
+            text="Long enough extracted text for the meaningful-text gate. " * 5,
+            num_chunks=1,
+            has_pages=True,
+            document=document,
+        )
+        from lilbee.ingest import ingest_document
+        from lilbee.services import get_services
+
+        f = isolated_env / "doc.pdf"
+        f.write_bytes(b"fake")
+        await ingest_document(f, "doc.pdf", "pdf")
+        get_services().store.upsert_document_structure.assert_not_called()
+
+    async def test_extraction_config_omits_structure_when_wiki_disabled(self, isolated_env):
+        """The kreuzberg flag is False when wiki is disabled to avoid tree work upstream."""
+        from lilbee.config import cfg
+        from lilbee.ingest import ExtractMode, extraction_config
+
+        cfg.wiki = False
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config.include_document_structure is False
+
+    async def test_extraction_config_includes_structure_when_wiki_enabled(self, isolated_env):
+        """The kreuzberg flag is True when wiki is enabled so tree extraction runs."""
+        from lilbee.config import cfg
+        from lilbee.ingest import ExtractMode, extraction_config
+
+        cfg.wiki = True
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config.include_document_structure is True
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def testingest_document_skips_structure_when_none(self, mock_kf, isolated_env):
         """No-op when kreuzberg did not emit a document tree (e.g. plain text)."""
+        from lilbee.config import cfg
+
+        cfg.wiki = True
         mock_kf.return_value = _make_kreuzberg_result(
             text="Long enough extracted text for the meaningful-text gate. " * 5,
             num_chunks=1,
