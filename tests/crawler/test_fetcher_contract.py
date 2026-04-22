@@ -99,14 +99,16 @@ class TestFetcherContract:
         assert isinstance(instance, WebFetcher)
 
     async def test_context_manager_round_trip(self, fetcher_factory):
-        """``async with fetcher`` must succeed and exit cleanly with no work done."""
+        """``async with fetcher`` must yield a ``WebFetcher`` and exit cleanly."""
         mock_instance = AsyncMock()
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
-                assert f is not None
+                assert isinstance(f, WebFetcher)
+                assert hasattr(f, "fetch_single")
+                assert hasattr(f, "fetch_recursive")
 
     async def test_fetch_single_returns_markdown(self, fetcher_factory):
         mock_instance = AsyncMock()

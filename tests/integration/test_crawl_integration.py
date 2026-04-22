@@ -69,12 +69,13 @@ def isolated_env(tmp_path):
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.crawl_timeout = 15
-    # Reset semaphore cache
-    crawler_api._state.semaphore = None
+    # Fully reset crawler state (semaphore, sync timer, background tasks)
+    # so no integration test leaks mutable state into a neighbour.
+    crawler_api._state.reset()
     yield tmp_path
     for name, val in snapshot.items():
         setattr(cfg, name, val)
-    crawler_api._state.semaphore = None
+    crawler_api._state.reset()
 
 
 @pytest.fixture()
