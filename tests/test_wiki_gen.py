@@ -292,6 +292,50 @@ class TestVerifyCitations:
         assert len(verified) == 0
 
 
+class TestReasoningModelDetection:
+    def test_qwen3_variants_are_reasoning_models(self):
+        from lilbee.wiki.gen import _is_reasoning_model
+
+        for name in ("qwen3:4b", "qwen3:8b", "Qwen3-4B-GGUF", "qwen3-coder:30b"):
+            assert _is_reasoning_model(name), f"{name} should be detected as reasoning"
+
+    def test_non_reasoning_models_pass_through(self):
+        from lilbee.wiki.gen import _is_reasoning_model
+
+        for name in (
+            "llama-3.2-1b-instruct",
+            "mistral:7b-instruct",
+            "gemma4:e4b",
+            "smollm2:135m",
+            "",
+        ):
+            assert not _is_reasoning_model(name), f"{name} should not be reasoning"
+
+    def test_deepseek_r1_is_reasoning(self):
+        from lilbee.wiki.gen import _is_reasoning_model
+
+        assert _is_reasoning_model("deepseek-r1:7b")
+
+
+class TestBuildWikiMessages:
+    def test_reasoning_model_gets_no_think_directive(self):
+        from lilbee.wiki.gen import _build_wiki_messages
+
+        cfg.chat_model = "qwen3:4b"
+        messages = _build_wiki_messages("Summarize these chunks.", cfg)
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert content.startswith("/no_think")
+        assert "Summarize these chunks." in content
+
+    def test_non_reasoning_model_passes_prompt_through(self):
+        from lilbee.wiki.gen import _build_wiki_messages
+
+        cfg.chat_model = "gemma4:e4b"
+        messages = _build_wiki_messages("Summarize these chunks.", cfg)
+        assert messages == [{"role": "user", "content": "Summarize these chunks."}]
+
+
 class TestCheckFaithfulness:
     def test_returns_score(self):
         provider = MagicMock()
@@ -344,6 +388,49 @@ class TestGenerateSummaryPage:
         assert "generated_by: test-model" in content
         assert "faithfulness_score: 0.85" in content
         store.add_citations.assert_called_once()
+
+    def test_qwen3_prompt_gets_no_think_prepended(self, tmp_path: Path):
+        """End-to-end: Qwen3 chat model -> /no_think directive in the chat messages."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        cfg.chat_model = "qwen3:4b"
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        generate_summary_page("doc.md", chunks, provider, store)
+        gen_call = provider.chat.call_args_list[0]
+        messages = gen_call.args[0]
+        assert messages[0]["content"].startswith("/no_think\n\n")
+        faith_call = provider.chat.call_args_list[1]
+        assert faith_call.args[0][0]["content"].startswith("/no_think\n\n")
+
+    def test_non_reasoning_model_has_no_directive(self, tmp_path: Path):
+        """End-to-end: non-reasoning model sees the plain prompt, no /no_think."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        cfg.chat_model = "gemma4:e4b"
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        generate_summary_page("doc.md", chunks, provider, store)
+        gen_call = provider.chat.call_args_list[0]
+        assert "/no_think" not in gen_call.args[0][0]["content"]
 
     def test_summary_generate_passes_max_tokens_cap(self, tmp_path: Path):
         """Summary generation chat is capped by cfg.wiki_summary_max_tokens.
