@@ -670,6 +670,44 @@ class Store:
             f"source_filename = '{escape_sql_string(source_filename)}'",
         )
 
+    def get_ancestor_chain(self, source_filename: str, node_slug: str) -> list[str]:
+        """Return ancestor slugs for *node_slug* in top-down order (root first).
+
+        Walks the persisted DocumentStructure for *source_filename* and returns
+        every ancestor of *node_slug* up to the root, in top-down order. The
+        leaf node itself is included as the final entry. Returns an empty
+        list when the source has no structure persisted, when *node_slug* is
+        not found in the tree, or when the JSON blob is unparseable.
+
+        Callers use this for drill-down: given a wiki page's slug, show its
+        chapter > section > page breadcrumb.
+        """
+        # Local import to avoid a cycle (structure imports from store indirectly
+        # via the wiki package).
+        from lilbee.wiki.structure import (
+            deserialize_document,
+            walk_structure_to_wiki_nodes,
+        )
+
+        record = self.get_document_structure(source_filename)
+        if record is None:
+            return []
+        document = deserialize_document(record["document_json"])
+        if document is None:
+            return []
+        nodes = walk_structure_to_wiki_nodes(document)
+        by_slug = {n.slug: n for n in nodes}
+        if node_slug not in by_slug:
+            return []
+        chain: list[str] = []
+        current: str | None = node_slug
+        while current is not None:
+            chain.append(current)
+            parent = by_slug[current].parent_slug
+            current = parent
+        chain.reverse()
+        return chain
+
     def close(self) -> None:
         """Release the database connection and reset state."""
         self._db = None

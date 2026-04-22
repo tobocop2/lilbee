@@ -667,6 +667,66 @@ class TestDocumentStructureCrud:
         assert store.get_document_structure("doc.pdf") is None
 
 
+class TestAncestorChain:
+    def _stage_document(self, store, source: str) -> None:
+        import json
+
+        document = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Chapter"},
+                    "page": 1,
+                    "children": [],
+                },
+                {
+                    "id": "h2",
+                    "content": {"node_type": "heading", "level": 2, "text": "Section"},
+                    "page": 2,
+                    "children": [],
+                },
+            ]
+        }
+        store.upsert_document_structure(
+            {
+                "source_filename": source,
+                "source_hash": "abcd",
+                "document_json": json.dumps(document),
+                "kreuzberg_version": "0.0.0",
+                "created_at": "2026-04-21T00:00:00+00:00",
+            }
+        )
+
+    def test_returns_chain_for_known_slug(self, store):
+        self._stage_document(store, "doc.pdf")
+        chain = store.get_ancestor_chain("doc.pdf", "01-chapter/01-section")
+        assert chain == ["01-chapter", "01-chapter/01-section"]
+
+    def test_returns_single_element_for_root_slug(self, store):
+        self._stage_document(store, "doc.pdf")
+        chain = store.get_ancestor_chain("doc.pdf", "01-chapter")
+        assert chain == ["01-chapter"]
+
+    def test_unknown_slug_returns_empty(self, store):
+        self._stage_document(store, "doc.pdf")
+        assert store.get_ancestor_chain("doc.pdf", "99-nope") == []
+
+    def test_unknown_source_returns_empty(self, store):
+        assert store.get_ancestor_chain("never.pdf", "01-chapter") == []
+
+    def test_invalid_json_returns_empty(self, store):
+        store.upsert_document_structure(
+            {
+                "source_filename": "bad.pdf",
+                "source_hash": "abcd",
+                "document_json": "{not json",
+                "kreuzberg_version": "0.0.0",
+                "created_at": "2026-04-21T00:00:00+00:00",
+            }
+        )
+        assert store.get_ancestor_chain("bad.pdf", "01-chapter") == []
+
+
 class TestHybridSearchDirect:
     def test_returns_search_chunks(self, store, test_config):
         """_hybrid_search returns SearchChunk instances from hybrid query."""
