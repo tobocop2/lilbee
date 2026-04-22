@@ -6,6 +6,7 @@ Three levels:
 3. Combined catalog — featured first, then HF results
 """
 
+import fnmatch
 import functools
 import io
 import logging
@@ -897,8 +898,6 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
         log.warning("Cannot query mmproj files for %s: %s", hf_repo, exc)
         return None
 
-    import fnmatch
-
     mmproj_files: list[str] = [
         s.get("rfilename", "") for s in siblings if fnmatch.fnmatch(s.get("rfilename", ""), pattern)
     ]
@@ -913,6 +912,14 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     return mmproj_files[0]
 
 
+def _mmproj_in_models_dir_matching(pattern: str) -> Path | None:
+    """Return the first ``*.gguf`` under ``cfg.models_dir`` that matches."""
+    for p in cfg.models_dir.rglob("*.gguf"):
+        if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
+            return p
+    return None
+
+
 def find_mmproj_file(model_name: str) -> Path | None:
     """Find the mmproj for a ``FEATURED_VISION`` entry under ``cfg.models_dir``.
 
@@ -921,19 +928,15 @@ def find_mmproj_file(model_name: str) -> Path | None:
     chat models (e.g. ``qwen3:8b`` would inherit LightOn OCR2's mmproj and
     be misreported as vision-capable).
     """
-    models_dir = cfg.models_dir
-    if not models_dir.exists():
+    if not cfg.models_dir.exists():
         return None
-
-    import fnmatch
-
     for entry in FEATURED_VISION:
         if model_name not in entry.name and model_name not in entry.hf_repo:
             continue
         pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
-        for p in models_dir.rglob("*.gguf"):
-            if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
-                return p
+        match = _mmproj_in_models_dir_matching(pattern)
+        if match is not None:
+            return match
     return None
 
 
