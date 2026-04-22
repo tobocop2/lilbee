@@ -1084,14 +1084,7 @@ class EnrichedModel:
 
 
 def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[EnrichedModel]:
-    """Enrich catalog models with display names, quality tiers, and install status.
-
-    ``source`` describes the model's origin, not its install state. Every
-    catalog entry (featured TOML or HF-search result) is a native HuggingFace
-    GGUF, so it always reports ``source="native"``. ``installed`` is populated
-    separately from ``installed_names`` and may be true for either a native
-    entry that exists on disk or a name that a litellm backend claims to route.
-    """
+    """Enrich catalog models with display names, quality tiers, and install status."""
     enriched: list[EnrichedModel] = []
     for m in result.models:
         is_installed = m.ref in installed_names
