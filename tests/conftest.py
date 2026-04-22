@@ -18,9 +18,9 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def _patch_executor_daemon_threads() -> None:
     """Make ThreadPoolExecutor workers and LanceDB event-loop threads daemon on 3.11.
 
-    asyncio.run() inside @work(thread=True) creates nested event loops, each
-    with its own ThreadPoolExecutor. On 3.11, those executor threads are
-    non-daemon and block xdist worker process exit. On 3.12+, interpreter
+    Any asyncio loop we start (CLI asyncio.run, uvicorn, the TUI background
+    loop) spins up a ThreadPoolExecutor. On 3.11 those executor threads are
+    non-daemon and block xdist worker process exit. On 3.12+ interpreter
     shutdown handles this correctly.
 
     LanceDB spawns a non-daemon ``LanceDBBackgroundEventLoop`` tokio thread

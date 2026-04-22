@@ -17,7 +17,7 @@ import httpx
 
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
-from lilbee.providers.model_ref import parse_model_ref, translate_options
+from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref, translate_options
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ class LiteLLMProvider(LLMProvider):
         if ref.is_api:
             return ref.for_litellm()
         if _is_ollama(self._base_url):
-            return f"ollama/{ref.name}"
+            return f"{OLLAMA_PREFIX}{ref.name}"
         return ref.name
 
     def _embed_model_name(self) -> str:
@@ -97,7 +97,7 @@ class LiteLLMProvider(LLMProvider):
         if ref.is_api:
             return ref.for_litellm()
         if _is_ollama(self._base_url):
-            return f"ollama/{ref.name}"
+            return f"{OLLAMA_PREFIX}{ref.name}"
         return ref.name
 
     def embed(self, texts: list[str]) -> list[list[float]]:

@@ -25,7 +25,7 @@ from textual.widgets import Footer, Input, Label, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee import settings
+from lilbee import asyncio_loop, settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
@@ -40,7 +40,9 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.embedder import is_model_available
 from lilbee.progress import EventType, ProgressEvent
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
 
@@ -190,9 +192,11 @@ class ChatScreen(Screen[None]):
         self.refresh_model_bar()
 
     def _needs_setup(self) -> bool:
-        """True when the setup wizard should run: fresh data dir or unresolved models."""
-        # Fresh install: an uninitialized data dir still needs the wizard even
-        # if default models are already cached globally (Ollama, HF cache).
+        """True when the setup wizard should run: fresh data dir or unresolved models.
+
+        Remote-prefixed refs skip the native probe since they resolve
+        through litellm at call time.
+        """
         if not cfg.lancedb_dir.is_dir():
             log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
@@ -200,6 +204,8 @@ class ChatScreen(Screen[None]):
         from lilbee.providers.llama_cpp_provider import resolve_model_path
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
+            if parse_model_ref(model).needs_litellm:
+                continue
             try:
                 resolve_model_path(model)
             except (ProviderError, KeyError, ValueError) as exc:
@@ -208,32 +214,8 @@ class ChatScreen(Screen[None]):
         return False
 
     def _embedding_ready(self) -> bool:
-        """Quick check if embedding model exists (no network calls).
-
-        Checks both the provider model list and the native registry path
-        resolution so litellm/Ollama-backed models are detected too.
-        """
-        model = cfg.embedding_model
-        if not model:
-            return False
-        # Provider list check (covers litellm / Ollama backends)
-        try:
-            from lilbee.services import get_services
-
-            available = get_services().provider.list_models()
-            model_base = model.split(":")[0].lower().replace(" ", "-")
-            if any(model_base in m.lower().replace(" ", "-") for m in available):
-                return True
-        except Exception:
-            pass
-        # Native registry path check (covers llama-cpp managed models)
-        try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
-
-            resolve_model_path(model)
-            return True
-        except Exception:
-            return False
+        """Quick check if the embedding model resolves (no network calls)."""
+        return is_model_available(cfg.embedding_model, get_services().provider)
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
@@ -401,7 +383,7 @@ class ChatScreen(Screen[None]):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
 
         try:
-            sync_result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+            sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except BaseException:
             # On cancel or any failure, remove the files we copied into
             # documents/ so the next sync doesn't silently re-ingest the
@@ -551,7 +533,7 @@ class ChatScreen(Screen[None]):
                 pct = int(data.current * 100 / data.total) if data.total > 0 else 50
                 reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
 
-        paths = asyncio.run(
+        paths = asyncio_loop.run(
             crawl_and_save(
                 url,
                 depth=depth,
@@ -934,7 +916,7 @@ class ChatScreen(Screen[None]):
                 reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
 
         try:
-            result = asyncio.run(sync(quiet=True, on_progress=on_progress))
+            result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
             self._auto_sync = False
             raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc

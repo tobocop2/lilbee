@@ -1451,22 +1451,29 @@ class TestVisionMmprojFallback:
 
 
 class TestFindMmprojFile:
-    def test_finds_mmproj_in_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_returns_none_for_unknown_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-vision chat model names must not inherit another model's mmproj.
+        Regression: a generic fallback used to return any ``*mmproj*.gguf`` under
+        ``models_dir``, causing ``get_capabilities('qwen3:8b')`` to report 'vision'
+        whenever any vision model was installed.
+        """
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
-        mmproj = tmp_path / "model-mmproj-f16.gguf"
-        mmproj.write_bytes(b"fake")
+        # Simulate a LightOnOCR mmproj present in the cache from a prior install.
+        (tmp_path / "model-mmproj-f16.gguf").write_bytes(b"fake")
 
         from lilbee.catalog import find_mmproj_file
 
-        result = find_mmproj_file("anything")
-        assert result == mmproj
+        assert find_mmproj_file("qwen3:8b") is None
+        assert find_mmproj_file("anything") is None
 
     def test_returns_none_when_no_mmproj(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
 
         from lilbee.catalog import find_mmproj_file
 
-        result = find_mmproj_file("anything")
+        result = find_mmproj_file("LightOnOCR-2")
         assert result is None
 
     def test_returns_none_when_dir_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1474,7 +1481,7 @@ class TestFindMmprojFile:
 
         from lilbee.catalog import find_mmproj_file
 
-        result = find_mmproj_file("anything")
+        result = find_mmproj_file("LightOnOCR-2")
         assert result is None
 
     def test_finds_mmproj_with_fnmatch_pattern(
@@ -1783,7 +1790,14 @@ class TestEnrichCatalog:
         assert enriched[0].installed is False
         assert enriched[0].source == "native"
         assert enriched[1].installed is True
-        assert enriched[1].source == "litellm"
+        assert enriched[1].source == "native"
+
+    def test_source_is_native_regardless_of_installed_names(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, {"model-7b-gguf:latest", "qwen3:8b"})
+        assert all(e.source == "native" for e in enriched)
+        assert enriched[0].installed is True
+        assert enriched[1].installed is True
 
     def test_preserves_original_fields(self) -> None:
         result = self._make_result()

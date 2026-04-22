@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from gguf import GGUFReader, GGUFValueType
+
 from lilbee.config import cfg
 from lilbee.providers.base import CAPABILITY_THINKING, LLMProvider, ProviderError, filter_options
 from lilbee.services import get_services
@@ -480,28 +482,52 @@ def _is_vision_model(model: str) -> bool:
     )
 
 
+_HF_BLOBS_DIR_NAME = "blobs"
+_HF_SNAPSHOTS_DIR_NAME = "snapshots"
+
+
+def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
+    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree."""
+    if model_dir.name != _HF_BLOBS_DIR_NAME:
+        return None
+    snapshots_dir = model_dir.parent / _HF_SNAPSHOTS_DIR_NAME
+    if not snapshots_dir.is_dir():
+        return None
+    for snapshot in snapshots_dir.iterdir():
+        candidates = sorted(snapshot.glob("*mmproj*.gguf"))
+        if candidates:
+            return candidates[0]
+    return None
+
+
+def _find_mmproj_in_flat_dir(model_dir: Path) -> Path | None:
+    """Glob ``*mmproj*.gguf`` siblings of a model GGUF (sideloaded layout)."""
+    candidates = sorted(model_dir.glob("*mmproj*.gguf"))
+    return candidates[0] if candidates else None
+
+
 def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
-    Searches the same directory as the model for mmproj .gguf files.
-    Raises ProviderError if no mmproj file is found.
+
+    Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``,
+    (2) HuggingFace-cache ``snapshots/`` sibling of ``blobs/``,
+    (3) same-directory glob for flat sideloaded layouts.
+    Raises ``ProviderError`` if none find a file.
     """
     from lilbee.catalog import find_mmproj_file
 
-    # Try catalog-aware lookup first
-    mmproj = find_mmproj_file(model_path.stem)
-    if mmproj is not None:
-        return mmproj
-
-    # Fallback: look in same directory as the model
-    model_dir = model_path.parent
-    mmproj_files = sorted(p for p in model_dir.glob("*mmproj*.gguf"))
-    if mmproj_files:
-        return mmproj_files[0]
+    found = (
+        find_mmproj_file(model_path.stem)
+        or _find_mmproj_in_hf_snapshots(model_path.parent)
+        or _find_mmproj_in_flat_dir(model_path.parent)
+    )
+    if found is not None:
+        return found
 
     raise ProviderError(
         f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
-        f"Download the mmproj file to {model_dir} or re-download the vision model "
-        "through the catalog to get both files.",
+        f"Download the mmproj file to {model_path.parent} or re-download the vision "
+        "model through the catalog to get both files.",
         provider="llama-cpp",
     )
 
@@ -517,48 +543,20 @@ _PROJECTOR_HANDLER_MAP: dict[str, str] = {
 }
 
 
-def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
-    """Read clip.projector_type from a GGUF mmproj file without loading the model."""
-    import struct
+_CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
+
+def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
+    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
     try:
-        with open(mmproj_path, "rb") as f:
-            magic = f.read(4)
-            if magic != b"GGUF":
-                return None
-            _version = struct.unpack("<I", f.read(4))[0]
-            _tensor_count = struct.unpack("<Q", f.read(8))[0]
-            kv_count = struct.unpack("<Q", f.read(8))[0]
-            for _ in range(kv_count):
-                key_len = struct.unpack("<Q", f.read(8))[0]
-                key = f.read(key_len).decode("utf-8", errors="replace")
-                value_type = struct.unpack("<I", f.read(4))[0]
-                if key == "clip.projector_type" and value_type == 8:
-                    str_len = struct.unpack("<Q", f.read(8))[0]
-                    return f.read(str_len).decode("utf-8", errors="replace")
-                _skip_gguf_value(f, value_type)
+        reader = GGUFReader(str(mmproj_path))
+        field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
     except Exception:
         log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
-    return None
-
-
-def _skip_gguf_value(f: Any, value_type: int) -> None:
-    """Skip over a GGUF metadata value based on its type."""
-    import struct
-
-    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 8, 8: 0, 10: 8, 11: 8, 12: 8}
-    if value_type == 8:  # string
-        str_len = struct.unpack("<Q", f.read(8))[0]
-        f.read(str_len)
-    elif value_type == 9:  # array
-        elem_type = struct.unpack("<I", f.read(4))[0]
-        count = struct.unpack("<Q", f.read(8))[0]
-        for _ in range(count):
-            _skip_gguf_value(f, elem_type)
-    elif value_type in sizes:
-        f.read(sizes[value_type])
-    else:
-        f.read(8)  # best effort skip
+        return None
+    if field is None or field.types[-1] != GGUFValueType.STRING:
+        return None
+    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
 
 
 def _resolve_vision_handler(mmproj_path: Path) -> Any:

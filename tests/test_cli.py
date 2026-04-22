@@ -626,6 +626,16 @@ class TestListInstalledModels:
         assert result == ["llama3:latest"]
         assert "nomic-embed-text:latest" not in result
 
+    def test_excludes_embedding_model_with_ollama_prefix(self, mock_svc):
+        """ollama/<name> embedding refs still filter out the bare /api/tags entry."""
+        cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
+        mock_svc.provider.list_models.return_value = [
+            "llama3:latest",
+            "nomic-embed-text:v1.5",
+        ]
+        result = list_installed_models()
+        assert result == ["llama3:latest"]
+
 
 def _search_chunk(**overrides: object) -> SearchChunk:
     defaults: dict[str, object] = {

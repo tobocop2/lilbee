@@ -17,8 +17,9 @@ from lilbee import settings
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
+from lilbee.model_manager import OLLAMA_PROVIDER_NAME
 from lilbee.models import ModelTask
-from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -82,17 +83,20 @@ def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm/Ollama) models to buckets."""
+    """Add remote (litellm/Ollama) models to buckets, prefixed for routing."""
     try:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.model_manager import classify_remote_models, detect_provider
 
-        for model in classify_remote_models(cfg.litellm_base_url):
-            if model.name in seen or _is_mmproj(model.name):
+        base_url = cfg.litellm_base_url
+        is_ollama = detect_provider(base_url) == OLLAMA_PROVIDER_NAME
+        for model in classify_remote_models(base_url):
+            ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
+            if ref in seen or _is_mmproj(model.name):
                 continue
-            seen.add(model.name)
+            seen.add(ref)
             label = f"{model.name} ({model.provider})"
             buckets.get(model.task, buckets[ModelTask.CHAT]).append(
-                ModelOption(label=label, ref=model.name)
+                ModelOption(label=label, ref=ref)
             )
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
@@ -131,7 +135,7 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     backward compatibility, but the UI makes the real state obvious.
     """
     ref = parse_model_ref(default) if default else None
-    default = default if (ref and ref.is_api) else (ref.name if ref else default)
+    default = ref.for_litellm() if ref else default
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)

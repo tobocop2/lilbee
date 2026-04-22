@@ -38,8 +38,9 @@ from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.config import cfg
-from lilbee.model_manager import RemoteModel, get_model_manager
+from lilbee.model_manager import OLLAMA_PROVIDER_NAME, RemoteModel, get_model_manager
 from lilbee.models import ModelTask
+from lilbee.providers.model_ref import OLLAMA_PREFIX
 
 log = logging.getLogger(__name__)
 
@@ -576,7 +577,12 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            cfg.chat_model = row.remote_model.name
+            ref = (
+                f"{OLLAMA_PREFIX}{row.remote_model.name}"
+                if row.remote_model.provider == OLLAMA_PROVIDER_NAME
+                else row.remote_model.name
+            )
+            cfg.chat_model = ref
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:

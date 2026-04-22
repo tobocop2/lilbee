@@ -287,6 +287,12 @@ def reset_vision_cache() -> None:
     _vision_cache.clear()
 
 
+OLLAMA_PROVIDER_NAME = "Ollama"
+OPENAI_PROVIDER_NAME = "OpenAI"
+ANTHROPIC_PROVIDER_NAME = "Anthropic"
+REMOTE_PROVIDER_NAME = "Remote"
+
+
 @dataclass
 class RemoteModel:
     """A model from the litellm backend with inferred task classification."""
@@ -295,14 +301,14 @@ class RemoteModel:
     task: str  # "chat", "embedding", "vision"
     family: str
     parameter_size: str
-    provider: str = "Remote"  # "Ollama", "OpenAI", "Anthropic", or "Remote"
+    provider: str = REMOTE_PROVIDER_NAME
 
 
 _PROVIDER_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("localhost:11434", "Ollama"),
-    ("ollama", "Ollama"),
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic"),
+    ("localhost:11434", OLLAMA_PROVIDER_NAME),
+    ("ollama", OLLAMA_PROVIDER_NAME),
+    ("openai", OPENAI_PROVIDER_NAME),
+    ("anthropic", ANTHROPIC_PROVIDER_NAME),
 )
 
 
@@ -312,7 +318,7 @@ def detect_provider(base_url: str) -> str:
     for pattern, provider in _PROVIDER_PATTERNS:
         if pattern in url_lower:
             return provider
-    return "Remote"
+    return REMOTE_PROVIDER_NAME
 
 
 def _classify_remote_task(name: str, family: str) -> str:

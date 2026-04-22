@@ -101,8 +101,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Descriptive variable names — `pending_segments` not `current`, `chunk_size` not `n`
 - Logging with `logging.getLogger(__name__)` — no bare `except: pass`
 - No hardcoded values — all configurable through `config.py` with env var overrides
-- Imports: stdlib first, then third-party, then local — no star imports
-- Lazy imports in CLI callbacks only for heavy third-party deps or circular imports
+- Imports: stdlib first, then third-party, then local — no star imports. See **Import Discipline** below for the rules on function-local imports.
 - Linting: `ruff check` + `ruff format` (line length 100)
 - Type checking: `mypy` with strict settings
 - **No em dashes (—)** — use periods or commas instead
@@ -118,9 +117,35 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Access config via `cfg.attribute` (late-bound), never `from lilbee.config import SOME_CONSTANT` (early-bound copy)
 
 ### Import Discipline
-- **Lazy imports only when genuinely needed**: circular dependency, heavy third-party lib (llama-cpp-python, litellm, lancedb, kreuzberg, rich, prompt_toolkit), or CLI startup path. Not a blanket rule.
-- Everything else goes at the top of the module — `from lilbee.config import cfg` is always safe top-level
-- Never use `importlib.reload` — it's a sign of bad design. If you need different config in tests, mutate the singleton
+
+Default: **every import lives at module top**, ordered stdlib, third-party, local. Function-local imports are the exception and must be justified by one of the three cases below. "Feels like it might be heavy" is not a justification.
+
+**Permitted reasons for a function-local import:**
+
+1. **Circular import.** Module A's top-level already imports module B, and module B needs a symbol from A. Put A's import of B inside the one function in B that needs it, with a comment `# circular: B -> A via <symbol>`.
+2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: `llama_cpp` (native dylibs, Metal/CUDA), `litellm` (provider SDK fanout), `lancedb` (arrow + datafusion), `kreuzberg` (OCR stack), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. Use importtime before declaring a lib heavy.
+3. **CLI startup path.** The import lives inside a Typer command body so `lilbee --help` stays fast. Treat this as a sub-case of (2): the CLI loader stays lean so unused subcommands don't pay for their dependencies.
+
+**Never lazy-import the following:**
+
+- Stdlib modules (`os`, `struct`, `enum`, `io`, `fnmatch`, …) — zero cost.
+- Local lilbee modules that don't pull in heavy third-party deps at their own module top (`lilbee.config`, `lilbee.services`, `lilbee.catalog`, `lilbee.models`, `lilbee.registry`, …).
+- Third-party libs already dragged in transitively by the module's top-level imports — re-importing them later is pure noise.
+- Project dependencies added explicitly to `pyproject.toml` that measure under 50 ms (`httpx`, `pydantic`, `tiktoken`, `numpy`, `pillow`, `gguf`, …).
+
+**How to measure before arguing "it's heavy":**
+
+```bash
+uv run python -X importtime -c "import <lib>" 2>&1 | tail -5
+# the last "self" column in microseconds is the module-top cost
+```
+
+If the result is under 50 000 µs, it belongs at the module top.
+
+Other rules:
+
+- **Never use `importlib.reload`** — it's a sign of bad design. If you need different config in tests, mutate the `cfg` singleton.
+- **`TYPE_CHECKING` guards** are the right way to avoid circular imports *only* for type annotations. For runtime use, apply the circular-import rule above.
 
 ### Test Fixtures
 - **Snapshot/restore pattern** for config isolation:

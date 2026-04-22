@@ -513,7 +513,13 @@ class TestClassifyInstalledModels:
         all_refs = [ref for _, ref in chat + embed]
         assert not any("mmproj" in r.lower() for r in all_refs)
 
-    def test_remote_models_classified(self, tmp_path) -> None:
+    def test_remote_ollama_models_stored_with_prefix(self, tmp_path) -> None:
+        """Ollama-backed options carry the ollama/ prefix in their ref.
+
+        Routing uses the prefix as the single source of truth, so the
+        origin must survive in config. The human label still shows the
+        tag without the prefix so the dropdown stays readable.
+        """
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.model_manager import RemoteModel
 
@@ -522,15 +528,18 @@ class TestClassifyInstalledModels:
             task="chat",
             family="llama",
             parameter_size="8B",
+            provider="Ollama",
         )
         remote_embed = RemoteModel(
             name="nomic-embed-text:latest",
             task="embedding",
             family="nomic-bert",
             parameter_size="137M",
+            provider="Ollama",
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
+        cfg.litellm_base_url = "http://localhost:11434"
 
         with (
             mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
@@ -544,8 +553,55 @@ class TestClassifyInstalledModels:
 
         chat_refs = [ref for _, ref in chat]
         embed_refs = [ref for _, ref in embed]
-        assert "llama3:8b" in chat_refs
-        assert "nomic-embed-text:latest" in embed_refs
+        chat_labels = [label for label, _ in chat]
+        assert "ollama/llama3:8b" in chat_refs
+        assert "ollama/nomic-embed-text:latest" in embed_refs
+        assert any("llama3:8b" in lbl and "Ollama" in lbl for lbl in chat_labels)
+
+    def test_remote_ollama_coexists_with_native_tag_collision(self, tmp_path) -> None:
+        """When a tag collides with a native manifest, both stay visible.
+
+        Regression coverage for the dedup bug: _collect_native_models added
+        the bare tag to seen first, which silently dropped the Ollama
+        duplicate. Prefixing the ref makes the two entries distinct.
+        """
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.model_manager import RemoteModel
+        from lilbee.registry import ModelManifest
+
+        native = ModelManifest(
+            name="mistral",
+            tag="latest",
+            size_bytes=100,
+            task="chat",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
+        remote = RemoteModel(
+            name="mistral:latest",
+            task="chat",
+            family="mistral",
+            parameter_size="7B",
+            provider="Ollama",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        cfg.litellm_base_url = "http://localhost:11434"
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[remote],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [native]
+            chat, _ = _classify_installed_models()
+
+        chat_refs = {ref for _, ref in chat}
+        assert "mistral:latest" in chat_refs
+        assert "ollama/mistral:latest" in chat_refs
 
     def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -2465,7 +2521,7 @@ class TestCollectNativeModelsError:
             _collect_remote_models(buckets, seen)
         assert len(buckets["chat"]) == 1
         assert buckets["chat"][0].label == "llama3:8b (Ollama)"
-        assert buckets["chat"][0].ref == "llama3:8b"
+        assert buckets["chat"][0].ref == "ollama/llama3:8b"
 
     def test_collect_api_models_adds_frontier_models(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
@@ -2747,9 +2803,7 @@ class TestEnsureChromium:
         """bb-wq8g happy path: SETUP task calls start_task with the right args.
 
         Asserts against ``start_task`` directly instead of spawning a real
-        worker thread — running an actual ``asyncio.run`` inside the
-        daemon worker leaves thread-local state that later pilot tests
-        trip over.
+        worker thread, to keep this unit test off the bootstrap path.
         """
         from lilbee.cli.tui.task_queue import TaskType
 

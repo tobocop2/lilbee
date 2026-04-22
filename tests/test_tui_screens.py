@@ -3076,6 +3076,27 @@ async def test_catalog_select_remote_row():
             assert cfg.chat_model == "remote-chat:latest"
 
 
+async def test_catalog_select_ollama_remote_row_stores_prefix():
+    """Picking an Ollama-backed catalog row stores the ollama/ prefix.
+
+    Without the prefix, routing would classify it as local and dispatch
+    to llama-cpp, silently bypassing the user's Ollama choice.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import remote_to_row
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            om = _make_remote_model(name="qwen3:0.6b", provider="Ollama")
+            row = remote_to_row(om)
+            screen._select_row(row)
+            assert cfg.chat_model == "ollama/qwen3:0.6b"
+
+
 async def test_catalog_load_more():
     from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
 
@@ -4488,8 +4509,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
     silently swallowed and the Task Center marks the task DONE. The worker's
     except-Exception needs to see a raise so the row routes to FAILED.
 
-    Runs _do_add on a worker thread because it uses asyncio.run() internally
-    and can't be invoked from within the pilot's event loop.
+    Runs on a worker thread so it doesn't block the pilot's event loop.
     """
     import threading
 
