@@ -26,6 +26,7 @@ from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_vers
 from lilbee.config import Config, cfg
 from lilbee.model_manager import ModelSource, get_model_manager
 from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.results import DocumentResult, group
 from lilbee.security import validate_path_within
 from lilbee.server.models import (
@@ -487,7 +488,10 @@ def _require_model_available(model: str) -> str:
 
     normalized = ensure_tag(model)
     available = get_services().provider.list_models()
-    if normalized not in available:
+    # ``available`` lists bare tags from /api/tags; stored refs may carry an
+    # ``ollama/`` prefix. Match on either form so both client styles work.
+    bare = parse_model_ref(normalized).name
+    if normalized not in available and bare not in available:
         raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
     return normalized
 

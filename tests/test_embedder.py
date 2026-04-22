@@ -1,5 +1,6 @@
 """Tests for the embedding wrapper (mocked -- no live server needed)."""
 
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -141,5 +142,38 @@ class TestValidateModel:
         try:
             embedder = Embedder(cfg, mock_provider)
             assert embedder.embedding_available() is False
+        finally:
+            cfg.embedding_model = old
+
+    def test_embedding_available_true_for_prefixed_model_matching_bare_list(self, mock_provider):
+        """ollama/ ref matches against bare tags returned by list_models.
+
+        provider.list_models returns raw /api/tags entries without the
+        ollama/ prefix, so the availability check must compare on the
+        stripped name.
+        """
+        from lilbee.config import cfg
+
+        old = cfg.embedding_model
+        cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
+        try:
+            mock_provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+            embedder = Embedder(cfg, mock_provider)
+            assert embedder.embedding_available() is True
+        finally:
+            cfg.embedding_model = old
+
+    def test_embedding_available_false_for_prefixed_model_skips_native_probe(self, mock_provider):
+        """ollama/ ref not in list_models returns False without resolve_model_path."""
+        from lilbee.config import cfg
+
+        old = cfg.embedding_model
+        cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
+        try:
+            mock_provider.list_models.return_value = []
+            embedder = Embedder(cfg, mock_provider)
+            with mock.patch("lilbee.providers.llama_cpp_provider.resolve_model_path") as resolve:
+                assert embedder.embedding_available() is False
+                resolve.assert_not_called()
         finally:
             cfg.embedding_model = old
