@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import logging
 import queue
-import struct
 import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
-from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -487,110 +485,22 @@ _PROJECTOR_HANDLER_MAP: dict[str, str] = {
 }
 
 
-class GgufValueType(IntEnum):
-    """GGUF v3 metadata value-type tags.
-
-    Values are the wire identifiers read from the file; see
-    https://github.com/ggerganov/ggml/blob/master/docs/gguf.md.
-    """
-
-    UINT8 = 0
-    INT8 = 1
-    UINT16 = 2
-    INT16 = 3
-    UINT32 = 4
-    INT32 = 5
-    FLOAT32 = 6
-    BOOL = 7
-    STRING = 8
-    ARRAY = 9
-    UINT64 = 10
-    INT64 = 11
-    FLOAT64 = 12
-
-
-# Format codes per type; widths recovered via ``struct.calcsize`` so the bool=1
-# invariant lives in the stdlib, not a hand-authored integer table.
-_GGUF_SCALAR_FORMAT: dict[GgufValueType, str] = {
-    GgufValueType.UINT8: "B",
-    GgufValueType.INT8: "b",
-    GgufValueType.UINT16: "<H",
-    GgufValueType.INT16: "<h",
-    GgufValueType.UINT32: "<I",
-    GgufValueType.INT32: "<i",
-    GgufValueType.FLOAT32: "<f",
-    GgufValueType.BOOL: "?",
-    GgufValueType.UINT64: "<Q",
-    GgufValueType.INT64: "<q",
-    GgufValueType.FLOAT64: "<d",
-}
-
-# Import-time guard: a format code that resolves to the wrong spec width fails
-# loudly here instead of silently corrupting the stream at parse time.
-_GGUF_SPEC_WIDTHS: dict[GgufValueType, int] = {
-    GgufValueType.UINT8: 1,
-    GgufValueType.INT8: 1,
-    GgufValueType.UINT16: 2,
-    GgufValueType.INT16: 2,
-    GgufValueType.UINT32: 4,
-    GgufValueType.INT32: 4,
-    GgufValueType.FLOAT32: 4,
-    GgufValueType.BOOL: 1,
-    GgufValueType.UINT64: 8,
-    GgufValueType.INT64: 8,
-    GgufValueType.FLOAT64: 8,
-}
-assert all(struct.calcsize(_GGUF_SCALAR_FORMAT[t]) == w for t, w in _GGUF_SPEC_WIDTHS.items()), (
-    "GGUF scalar format codes disagree with the spec widths"
-)
+_CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
-    """Read clip.projector_type from a GGUF mmproj file without loading the model."""
+    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
+    from gguf import GGUFReader, GGUFValueType
+
     try:
-        with open(mmproj_path, "rb") as f:
-            magic = f.read(4)
-            if magic != b"GGUF":
-                return None
-            _version = struct.unpack("<I", f.read(4))[0]
-            _tensor_count = struct.unpack("<Q", f.read(8))[0]
-            kv_count = struct.unpack("<Q", f.read(8))[0]
-            for _ in range(kv_count):
-                key_len = struct.unpack("<Q", f.read(8))[0]
-                key = f.read(key_len).decode("utf-8", errors="replace")
-                value_type = struct.unpack("<I", f.read(4))[0]
-                if key == "clip.projector_type" and value_type == GgufValueType.STRING:
-                    str_len = struct.unpack("<Q", f.read(8))[0]
-                    return f.read(str_len).decode("utf-8", errors="replace")
-                _skip_gguf_value(f, value_type)
+        reader = GGUFReader(str(mmproj_path))
+        field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
     except Exception:
         log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
-    return None
-
-
-_UNKNOWN_TYPE_SKIP = 8  # bytes consumed as a best-effort when a type tag is unrecognised
-
-
-def _skip_gguf_value(f: Any, value_type: int) -> None:
-    """Skip over a GGUF metadata value based on its type."""
-    if value_type == GgufValueType.STRING:
-        str_len = struct.unpack("<Q", f.read(8))[0]
-        f.read(str_len)
-        return
-    if value_type == GgufValueType.ARRAY:
-        elem_type = struct.unpack("<I", f.read(4))[0]
-        count = struct.unpack("<Q", f.read(8))[0]
-        for _ in range(count):
-            _skip_gguf_value(f, elem_type)
-        return
-    try:
-        fmt = _GGUF_SCALAR_FORMAT[GgufValueType(value_type)]
-    except ValueError:
-        # Unrecognised tag: advance a best-effort fixed window so the caller
-        # can keep parsing rather than hanging on the bad entry.
-        f.read(_UNKNOWN_TYPE_SKIP)
-        return
-    f.read(struct.calcsize(fmt))
+        return None
+    if field is None or field.types[-1] != GGUFValueType.STRING:
+        return None
+    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
 
 
 def _resolve_vision_handler(mmproj_path: Path) -> Any:
