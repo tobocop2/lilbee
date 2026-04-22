@@ -84,6 +84,25 @@ class EmbeddingRequest:
     api_key: str | None = None
 
 
+@dataclass(frozen=True)
+class RerankRequest:
+    """Backend-agnostic rerank request."""
+
+    ref: ProviderModelRef
+    query: str
+    candidates: list[str]
+    api_base: str | None = None
+    api_key: str | None = None
+
+
+@dataclass(frozen=True)
+class RerankResult:
+    """Rerank scores returned by a backend, one per candidate in input order."""
+
+    scores: list[float]
+    model: str | None = None
+
+
 class LlmSdkBackend(Protocol):
     """Protocol every LLM SDK adapter must satisfy.
 
@@ -128,6 +147,15 @@ class LlmSdkBackend(Protocol):
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         """Embed a batch of inputs, returning one vector per input."""
+        ...
+
+    def rerank(self, request: RerankRequest) -> RerankResult:
+        """Score *candidates* against *query*, returning one float per candidate.
+
+        Raise ``NotImplementedError`` if the backend has no rerank API.
+        An empty ``request.candidates`` returns ``RerankResult([])``
+        without an SDK call.
+        """
         ...
 
     def list_models(self, *, base_url: str, api_key: str) -> list[str]:

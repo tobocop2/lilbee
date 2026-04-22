@@ -10,4 +10,5 @@ TASK_COLORS: dict[str, str] = {
     ModelTask.CHAT: "$primary",
     ModelTask.EMBEDDING: "$secondary",
     ModelTask.VISION: "$warning",
+    ModelTask.RERANK: "$success",
 }

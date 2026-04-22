@@ -662,30 +662,80 @@ class TestChatLaunchesTui:
 class TestListInstalledModels:
     """Test list_installed_models helper."""
 
-    def test_returns_model_names_with_tags(self, mock_svc):
-        mock_svc.provider.list_models.return_value = ["llama3:latest"]
-        assert list_installed_models() == ["llama3:latest"]
+    def _manifest(self, name: str, tag: str, task: str):
+        from lilbee.registry import ModelManifest
 
-    def test_returns_empty_on_error(self, mock_svc):
-        mock_svc.provider.list_models.side_effect = ConnectionError("not running")
-        assert list_installed_models() == []
+        return ModelManifest(
+            name=name,
+            tag=tag,
+            size_bytes=0,
+            task=task,
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
 
-    def test_excludes_embedding_model(self, mock_svc):
-        cfg.embedding_model = "nomic-embed-text"
-        mock_svc.provider.list_models.return_value = ["llama3:latest", "nomic-embed-text:latest"]
-        result = list_installed_models()
-        assert result == ["llama3:latest"]
-        assert "nomic-embed-text:latest" not in result
+    def _remote(self, name: str, task: str):
+        from lilbee.model_manager import RemoteModel
 
-    def test_excludes_embedding_model_with_ollama_prefix(self, mock_svc):
-        """ollama/<name> embedding refs still filter out the bare /api/tags entry."""
-        cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
-        mock_svc.provider.list_models.return_value = [
-            "llama3:latest",
-            "nomic-embed-text:v1.5",
-        ]
-        result = list_installed_models()
-        assert result == ["llama3:latest"]
+        return RemoteModel(name=name, task=task, family="", parameter_size="")
+
+    def test_returns_only_chat_task_models(self):
+        with (
+            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+        ):
+            mock_reg.return_value = [self._manifest("llama3", "latest", "chat")]
+            mock_remote.return_value = []
+            assert list_installed_models() == ["llama3:latest"]
+
+    def test_returns_empty_on_error(self):
+        with mock.patch(
+            "lilbee.registry.ModelRegistry.list_installed",
+            side_effect=ConnectionError("not running"),
+        ):
+            assert list_installed_models() == []
+
+    def test_excludes_non_chat_registry_tasks(self):
+        with (
+            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+        ):
+            mock_reg.return_value = [
+                self._manifest("llama3", "latest", "chat"),
+                self._manifest("nomic-embed-text", "latest", "embedding"),
+                self._manifest("lightonocr", "2-1b", "vision"),
+                self._manifest("bge-reranker", "v2-m3", "rerank"),
+            ]
+            mock_remote.return_value = []
+            result = list_installed_models()
+            assert result == ["llama3:latest"]
+
+    def test_excludes_non_chat_remote_tasks(self):
+        from lilbee.models import ModelTask
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+        ):
+            mock_reg.return_value = []
+            mock_remote.return_value = [
+                self._remote("llama3:latest", ModelTask.CHAT),
+                self._remote("nomic-embed-text:v1.5", ModelTask.EMBEDDING),
+                self._remote("lightonocr:2-1b", ModelTask.VISION),
+                self._remote("bge-reranker:v2-m3", ModelTask.RERANK),
+            ]
+            result = list_installed_models()
+            assert result == ["llama3:latest"]
+
+    def test_dedupes_native_and_remote_overlap(self):
+        with (
+            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+        ):
+            mock_reg.return_value = [self._manifest("llama3", "latest", "chat")]
+            mock_remote.return_value = [self._remote("llama3:latest", "chat")]
+            assert list_installed_models() == ["llama3:latest"]
 
 
 def _search_chunk(**overrides: object) -> SearchChunk:

@@ -13,9 +13,14 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 log = logging.getLogger(__name__)
+
+LoaderMode = Literal["chat", "embed", "rerank"]
+MODE_CHAT: LoaderMode = "chat"
+MODE_EMBED: LoaderMode = "embed"
+MODE_RERANK: LoaderMode = "rerank"
 
 # KV cache memory estimate: 2048 bytes per context token (conservative)
 _KV_BYTES_PER_CTX_TOKEN = 2048
@@ -33,7 +38,7 @@ class _CacheEntry:
 
     model: Any
     path: Path
-    embedding: bool
+    mode: LoaderMode
     estimated_bytes: int
     loaded_at: float = field(default_factory=time.monotonic)
     last_used: float = field(default_factory=time.monotonic)
@@ -41,6 +46,11 @@ class _CacheEntry:
     def touch(self) -> None:
         """Update last-used timestamp."""
         self.last_used = time.monotonic()
+
+    @property
+    def embedding(self) -> bool:
+        """True if the underlying Llama was opened with embedding=True."""
+        return self.mode in (MODE_EMBED, MODE_RERANK)
 
 
 def estimate_model_memory(model_path: Path, n_ctx: int = _DEFAULT_CTX_LEN) -> int:
@@ -126,11 +136,15 @@ class MemoryAwareModelCache:
         self._lock = threading.Lock()
         self._loader = loader
 
-    def load_model(self, model_path: Path, embedding: bool) -> Any:
+    def load_model(self, model_path: Path, mode: LoaderMode) -> Any:
         """Load or return a cached Llama model instance.
+
         Evicts stale entries first, then evicts LRU if memory is tight.
+        The cache key includes the mode so chat, embed, and rerank loaders
+        stay isolated (they construct Llama with different flags and must
+        not be aliased).
         """
-        key = str(model_path)
+        key = f"{model_path}:{mode}"
 
         with self._lock:
             self._evict_stale_locked()
@@ -139,7 +153,7 @@ class MemoryAwareModelCache:
                 entry = self._cache[key]
                 entry.touch()
                 self._cache.move_to_end(key)
-                log.debug("Cache hit: %s", model_path.name)
+                log.debug("Cache hit: %s (%s)", model_path.name, mode)
                 return entry.model
 
             estimated = estimate_model_memory(model_path)
@@ -147,17 +161,18 @@ class MemoryAwareModelCache:
             self._evict_for_space_locked(estimated, available)
 
             log.info(
-                "Loading model %s (est. %d MB, available %d MB)",
+                "Loading model %s in %s mode (est. %d MB, available %d MB)",
                 model_path.name,
+                mode,
                 estimated // (1024 * 1024),
                 available // (1024 * 1024),
             )
-            model = self._loader(model_path, embedding=embedding)
+            model = self._loader(model_path, mode=mode)
 
             self._cache[key] = _CacheEntry(
                 model=model,
                 path=model_path,
-                embedding=embedding,
+                mode=mode,
                 estimated_bytes=estimated,
             )
             return model
@@ -215,6 +230,7 @@ class MemoryAwareModelCache:
                 entries.append(
                     {
                         "path": str(entry.path),
+                        "mode": entry.mode,
                         "embedding": entry.embedding,
                         "estimated_mb": entry.estimated_bytes // (1024 * 1024),
                         "age_seconds": int(time.monotonic() - entry.loaded_at),

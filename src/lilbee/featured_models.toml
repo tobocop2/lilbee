@@ -102,3 +102,14 @@ gguf_filename = "*Q4_K_M.gguf"
 size_gb = 1.5
 min_ram_gb = 4.0
 description = "Fast OCR — clean markdown output, small footprint"
+
+[[rerank]]
+name = "bge-reranker-v2-m3"
+tag = "latest"
+display_name = "BGE Reranker v2 M3"
+recommended = true
+hf_repo = "gpustack/bge-reranker-v2-m3-GGUF"
+gguf_filename = "*Q4_K_M.gguf"
+size_gb = 0.4
+min_ram_gb = 2.0
+description = "Multilingual cross-encoder, best default for RAG"

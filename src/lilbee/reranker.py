@@ -1,7 +1,8 @@
 """Cross-encoder reranking for search results.
 
-Optional precision pass that scores each (query, chunk) pair using a
-cross-encoder model. Only active when ``cfg.reranker_model`` is set.
+Optional precision pass that scores each (query, chunk) pair through the
+active provider's ``rerank`` method. Only active when
+``cfg.reranker_model`` is set.
 
 Core technique: Nogueira & Cho 2019, "Passage Re-ranking with BERT"
 (https://arxiv.org/abs/1901.04085).
@@ -14,7 +15,7 @@ positions trust the reranker more.
 from __future__ import annotations
 
 import logging
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from lilbee.config import Config
 from lilbee.store import SearchChunk
@@ -37,16 +38,6 @@ _BLEND_SCHEDULE = {
     "mid": (0.50, 0.50),
     "bottom": (0.30, 0.70),
 }
-
-
-def reranker_available() -> bool:
-    """Check if sentence-transformers is installed."""
-    try:
-        import sentence_transformers  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
 
 
 def _normalize_scores(scores: list[float]) -> list[float]:
@@ -97,37 +88,14 @@ def _pin_original_top(
 
 class Reranker:
     """Cross-encoder reranker with position-aware blending.
-    Core technique: Nogueira & Cho 2019, "Passage Re-ranking with BERT"
-    (https://arxiv.org/abs/1901.04085).
+
+    Delegates scoring to the active provider's ``rerank``; handles result
+    blending and the BM25-protection pin (Nogueira & Cho 2019,
+    https://arxiv.org/abs/1901.04085).
     """
 
     def __init__(self, config: Config) -> None:
         self._config = config
-        self._encoder: Any = None
-
-    def _get_encoder(self) -> Any:
-        """Lazy-load the cross-encoder model. Returns None if not configured."""
-        if self._encoder is not None:
-            return self._encoder
-        model_name = self._config.reranker_model
-        if not model_name:
-            return None
-        try:
-            from sentence_transformers import CrossEncoder
-
-            self._encoder = CrossEncoder(model_name)
-            log.info("Loaded reranker model: %s", model_name)
-            return self._encoder
-        except ImportError:
-            log.warning("sentence-transformers not installed -- reranking disabled")
-            return None
-        except Exception as exc:
-            log.warning("Failed to load reranker model %s: %s", model_name, exc)
-            return None
-
-    def reset_encoder(self) -> None:
-        """Clear the cached encoder. For testing only."""
-        self._encoder = None
 
     def rerank(
         self,
@@ -135,11 +103,9 @@ class Reranker:
         results: list[SearchChunk],
         candidates: int | None = None,
     ) -> list[SearchChunk]:
-        """Rerank search results using a cross-encoder model."""
-        encoder = self._get_encoder()
-        if encoder is None:
+        """Rerank search results through the provider's ``rerank`` method."""
+        if not self._config.reranker_model:
             return results
-
         if candidates is None:
             candidates = self._config.rerank_candidates
         to_rerank = results[:candidates]
@@ -148,8 +114,9 @@ class Reranker:
         if not to_rerank:
             return results
 
-        pairs = [(query, chunk.chunk) for chunk in to_rerank]
-        scores = encoder.predict(pairs)
+        scores = _score_candidates(query, to_rerank)
+        if scores is None:
+            return results
 
         norm_scores = _normalize_scores(scores)
         blended = _blend_scores(to_rerank, norm_scores)
@@ -159,3 +126,17 @@ class Reranker:
 
         reranked = [chunk for _, chunk in blended_sorted]
         return reranked + remainder
+
+
+def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] | None:
+    """Call the active provider's rerank; return None on error after logging."""
+    # circular: services -> reranker via Searcher; deferred so test-time
+    # monkeypatching of ``lilbee.services.get_services`` stays effective.
+    from lilbee.services import get_services
+
+    try:
+        provider = get_services().provider
+        return provider.rerank(query, [c.chunk for c in to_rerank])
+    except Exception as exc:
+        log.warning("Reranker failed; skipping rerank pass: %s", exc, exc_info=True)
+        return None

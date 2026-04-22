@@ -279,16 +279,17 @@ async def _try_tesseract_ocr(
 def _should_run_ocr() -> bool:
     """Decide whether to attempt vision-based OCR on scanned PDFs.
 
-    Uses ``cfg.enable_ocr``: True = force on, False = force off,
-    None = auto-detect from chat model capabilities.
+    Uses ``cfg.enable_ocr`` and ``cfg.vision_model``:
+    True = force on (requires ``cfg.vision_model`` to be set for a real
+    vision run; otherwise the caller falls back to Tesseract).
+    False = force off.
+    None = auto-detect: run vision OCR when ``cfg.vision_model`` is set.
     """
     if cfg.enable_ocr is True:
         return True
     if cfg.enable_ocr is False:
         return False
-    from lilbee.model_manager import is_vision_capable
-
-    return is_vision_capable(cfg.chat_model)
+    return bool(cfg.vision_model)
 
 
 async def _vision_fallback(
@@ -299,26 +300,29 @@ async def _vision_fallback(
     *,
     quiet: bool = False,
 ) -> list[ChunkRecord]:
-    """OCR a scanned PDF via vision model, chunk, and embed.
+    """OCR a scanned PDF via the configured vision model, chunk, and embed.
 
-    Uses ``cfg.chat_model`` as the vision model. Wraps the OCR call in
-    a try/except so that forced OCR on an incompatible model degrades
-    gracefully (logs a warning and returns empty).
+    Uses ``cfg.vision_model`` unconditionally. The chat model is never
+    loaded as a vision backend. If ``cfg.vision_model`` is empty this
+    returns an empty list; callers should fall back to Tesseract via
+    ``_handle_scanned_pdf_fallback``.
     """
+    if not cfg.vision_model:
+        return []
     try:
         page_texts = await asyncio.to_thread(
             extract_pdf_vision,
             path,
-            cfg.chat_model,
+            cfg.vision_model,
             quiet=quiet,
             timeout=cfg.ocr_timeout,
             on_progress=on_progress,
         )
     except Exception:
         log.warning(
-            "Vision OCR failed for %s. The chat model (%s) may not support vision input.",
+            "Vision OCR failed for %s using vision model %s.",
             source_name,
-            cfg.chat_model,
+            cfg.vision_model,
             exc_info=True,
         )
         return []
@@ -379,8 +383,12 @@ async def _handle_scanned_pdf_fallback(
     """
     use_ocr = _should_run_ocr()
 
-    if use_ocr:
-        log.info("Scanned PDF: using vision OCR for %s", source_name)
+    if use_ocr and cfg.vision_model:
+        log.info(
+            "Scanned PDF: using vision OCR for %s (model=%s)",
+            source_name,
+            cfg.vision_model,
+        )
         return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
 
     result = await _try_tesseract_ocr(path, source_name, result)
@@ -388,15 +396,16 @@ async def _handle_scanned_pdf_fallback(
     if not _has_meaningful_text(result):
         log.warning(
             "Skipped %s: text extraction produced no usable text. "
-            "For better results on scanned PDFs, switch to a vision-capable "
-            "chat model or set LILBEE_ENABLE_OCR=true.",
+            "For better results on scanned PDFs, configure a vision model "
+            "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
             source_name,
         )
         return []
 
     log.info(
         "Scanned PDF detected — extracted with Tesseract OCR: %s. "
-        "For structured markdown output (tables, headings), use a vision-capable chat model.",
+        "For structured markdown output (tables, headings), "
+        "configure a vision model via PUT /api/models/vision.",
         source_name,
     )
     return result

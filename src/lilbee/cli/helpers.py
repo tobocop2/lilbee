@@ -40,12 +40,19 @@ class ResetResult(BaseModel):
 
 
 class StatusConfig(BaseModel):
-    """Configuration section of a status response."""
+    """Configuration section of a status response.
+
+    Exposes all four role-bound model fields (chat, embedding, vision,
+    reranker) so the TUI status screen and plugin callers can show
+    what's active per role.
+    """
 
     documents_dir: str
     data_dir: str
     chat_model: str
     embedding_model: str
+    vision_model: str = ""
+    reranker_model: str = ""
     enable_ocr: bool | None = None
 
 
@@ -73,6 +80,10 @@ class StatusResult(BaseModel):
         yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {self.config.data_dir}"
         yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {self.config.chat_model}"
         yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {self.config.embedding_model}"
+        vision = self.config.vision_model or "(disabled)"
+        reranker = self.config.reranker_model or "(disabled)"
+        yield f"[{theme.LABEL}]Vision:[/{theme.LABEL}]     {vision}"
+        yield f"[{theme.LABEL}]Reranker:[/{theme.LABEL}]   {reranker}"
         if self.config.enable_ocr is not None:
             ocr_label = "enabled" if self.config.enable_ocr else "disabled"
             yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
@@ -132,6 +143,8 @@ def gather_status() -> StatusResult:
             data_dir=str(cfg.data_dir),
             chat_model=cfg.chat_model,
             embedding_model=cfg.embedding_model,
+            vision_model=cfg.vision_model,
+            reranker_model=cfg.reranker_model,
             enable_ocr=cfg.enable_ocr,
         ),
         sources=[

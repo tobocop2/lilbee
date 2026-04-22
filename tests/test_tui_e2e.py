@@ -837,13 +837,19 @@ class TestChatInteractions:
             assert app.screen.is_current
 
     async def test_slash_command_set_valid(self, _mock_resolve):
-        """/set chat_model <value> updates cfg."""
+        """/set <writable_key> <value> updates cfg.
+
+        Model-role fields (chat_model, embedding_model, vision_model,
+        reranker_model) are ``writable=False`` in SETTINGS_MAP and must
+        be changed via the dedicated PUT endpoints / model pickers, so
+        this test exercises the /set plumbing with a plain writable key.
+        """
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._handle_slash("/set chat_model new-test-model")
+            app.screen._handle_slash("/set top_k 7")
             await pilot.pause()
-            assert cfg.chat_model == "new-test-model:latest"
+            assert cfg.top_k == 7
 
     async def test_slash_command_set_unknown_key(self, _mock_resolve):
         """/set nonexistent_key warns."""

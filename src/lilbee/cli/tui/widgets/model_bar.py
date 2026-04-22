@@ -46,10 +46,11 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     Uses registry manifests for native models and the litellm backend's
     backend metadata for remote models. Filters out mmproj files.
     """
-    buckets: dict[str, list[ModelOption]] = {
+    buckets: dict[ModelTask, list[ModelOption]] = {
         ModelTask.CHAT: [],
         ModelTask.EMBEDDING: [],
         ModelTask.VISION: [],
+        ModelTask.RERANK: [],
     }
     seen: set[str] = set()
 
@@ -57,13 +58,32 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     _collect_remote_models(buckets, seen)
     _collect_api_models(buckets, seen)
 
+    # ModelBar exposes only chat + embedding Selects. Vision and rerank
+    # models are collected to claim their refs in ``seen`` so later
+    # buckets don't duplicate them, but aren't returned to the UI.
     return (
         sorted(buckets[ModelTask.CHAT], key=lambda o: o.ref),
         sorted(buckets[ModelTask.EMBEDDING], key=lambda o: o.ref),
     )
 
 
-def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+def _lookup_bucket(
+    buckets: dict[ModelTask, list[ModelOption]], task: str, ref: str
+) -> list[ModelOption] | None:
+    """Return the bucket for *task*, or None if *task* is not a known ModelTask.
+
+    Unknown tasks from forward-compat manifests are dropped rather than
+    silently misclassified into chat.
+    """
+    try:
+        key = ModelTask(task)
+    except ValueError:
+        log.debug("dropping %r with unknown task %r", ref, task)
+        return None
+    return buckets.get(key)
+
+
+def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
         from lilbee.registry import ModelRegistry
@@ -73,16 +93,17 @@ def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]
             ref = f"{manifest.name}:{manifest.tag}"
             if _is_mmproj(ref) or ref in seen:
                 continue
+            bucket = _lookup_bucket(buckets, manifest.task, ref)
+            if bucket is None:
+                continue
             seen.add(ref)
             label = manifest.display_name or ref
-            buckets.get(manifest.task, buckets[ModelTask.CHAT]).append(
-                ModelOption(label=label, ref=ref)
-            )
+            bucket.append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 
 
-def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add remote (litellm/Ollama) models to buckets, prefixed for routing."""
     try:
         from lilbee.model_manager import classify_remote_models, detect_provider
@@ -93,20 +114,23 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
                 continue
+            bucket = _lookup_bucket(buckets, model.task, ref)
+            if bucket is None:
+                continue
             seen.add(ref)
             label = f"{model.name} ({model.provider})"
-            buckets.get(model.task, buckets[ModelTask.CHAT]).append(
-                ModelOption(label=label, ref=ref)
-            )
+            bucket.append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
 
 
-def _collect_api_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket."""
     try:
         from lilbee.model_manager import discover_api_models
 
+        # API discovery returns only chat-capable refs; revisit if providers
+        # expose embedding/vision/rerank.
         for display_name, models in discover_api_models().items():
             for model in models:
                 # model.provider is the display name ("Anthropic"), but the ref

@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from lilbee.catalog import is_rerank_ref
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend, litellm_available
@@ -30,14 +31,14 @@ class RoutingProvider(LLMProvider):
         self._llama_cpp: LLMProvider | None = None
         self._sdk_provider: LLMProvider | None = None
 
-    def _get_llama_cpp(self) -> LLMProvider:  # pragma: no cover
+    def _get_llama_cpp(self) -> LLMProvider:
         if self._llama_cpp is None:
             from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
             self._llama_cpp = LlamaCppProvider()
         return self._llama_cpp
 
-    def _get_sdk_provider(self) -> LLMProvider:  # pragma: no cover
+    def _get_sdk_provider(self) -> LLMProvider:
         if self._sdk_provider is None:
             self._sdk_provider = SdkLLMProvider(
                 LitellmSdkBackend(),
@@ -78,11 +79,11 @@ class RoutingProvider(LLMProvider):
             native = set(self._get_llama_cpp().list_models())
         if not litellm_available():
             return sorted(native)
-        try:  # pragma: no cover
-            remote = set(self._get_sdk_provider().list_models())  # pragma: no cover
-        except Exception:  # pragma: no cover
-            return sorted(native)  # pragma: no cover
-        return sorted(native | remote)  # pragma: no cover
+        try:
+            remote = set(self._get_sdk_provider().list_models())
+        except Exception:
+            return sorted(native)
+        return sorted(native | remote)
 
     def list_chat_models(self, provider: str) -> list[str]:
         """Delegate to the SDK backend; native llama-cpp has no catalog."""
@@ -94,7 +95,7 @@ class RoutingProvider(LLMProvider):
         """Pull via the SDK backend if installed, otherwise raise."""
         if not litellm_available():
             raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
-        self._get_sdk_provider().pull_model(model, on_progress=on_progress)  # pragma: no cover
+        self._get_sdk_provider().pull_model(model, on_progress=on_progress)
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Show model info from the backend selected by the ref prefix."""
@@ -106,9 +107,51 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(model)
         return self._pick_backend(ref).get_capabilities(model)
 
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
+
+        Native GGUF refs go to llama-cpp; hosted refs (Cohere, Voyage,
+        Jina, Together AI, HF TEI) go through the SDK provider, which
+        requires the ``litellm`` extra.
+
+        Raises ``ProviderError`` when ``cfg.reranker_model`` is empty or
+        hosted dispatch is requested without the ``litellm`` extra.
+        """
+        if not cfg.reranker_model:
+            raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
+        if _is_native_rerank_ref(cfg.reranker_model):
+            return self._get_llama_cpp().rerank(query, candidates)
+        if not litellm_available():
+            raise ProviderError(
+                f"Cannot rerank with {cfg.reranker_model!r}: litellm extra not installed"
+            )
+        return self._get_sdk_provider().rerank(query, candidates)
+
+    def supports_rerank(self) -> bool:
+        """Capability probe: can the routed backend rerank if configured?
+
+        Pure capability check, NOT "a reranker is currently active". An
+        empty ``cfg.reranker_model`` returns ``True`` so the settings UI
+        keeps the picker visible; callers that need to know whether
+        reranking is actually configured must check ``bool(cfg.reranker_model)``
+        separately. Delegates to the backend that would handle the
+        configured model when one is set.
+        """
+        model = cfg.reranker_model
+        if not model:
+            return True
+        if _is_native_rerank_ref(model):
+            return self._get_llama_cpp().supports_rerank()
+        return litellm_available()
+
     def shutdown(self) -> None:
         """Shut down sub-providers to release resources."""
         if self._llama_cpp is not None:
             self._llama_cpp.shutdown()
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
+
+
+def _is_native_rerank_ref(model: str) -> bool:
+    """Return True if *model* resolves to a featured rerank catalog entry."""
+    return is_rerank_ref(model)

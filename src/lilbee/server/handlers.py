@@ -25,6 +25,7 @@ from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import Config, cfg
 from lilbee.model_manager import ModelSource, get_model_manager
+from lilbee.models import ModelTask
 from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.sdk_backend import API_KEY_FIELDS
@@ -56,6 +57,7 @@ from lilbee.services import get_services
 from lilbee.wiki.shared import WIKI_STATUS_FAILED, WIKI_STATUS_GENERATED
 
 if TYPE_CHECKING:
+    from lilbee.catalog import CatalogModel
     from lilbee.ingest import SyncResult
     from lilbee.query import ChatMessage
 
@@ -80,10 +82,17 @@ def _is_nullable(info: FieldInfo) -> bool:
     return False
 
 
+_MODEL_ROLE_FIELDS = frozenset({"chat_model", "embedding_model", "vision_model", "reranker_model"})
+
+
 def _derive_field_sets() -> tuple[
     types.MappingProxyType[str, bool], frozenset[str], frozenset[str]
 ]:
-    """Derive writable, reindex, and public field sets from Config metadata."""
+    """Derive writable, reindex, and public field sets from Config metadata.
+
+    Model-role fields are public even when not writable: they are set via
+    ``PUT /api/models/<role>`` but must still surface in ``GET /api/config``.
+    """
     writable: dict[str, bool] = {}
     reindex: set[str] = set()
     public: set[str] = set()
@@ -94,7 +103,7 @@ def _derive_field_sets() -> tuple[
                 public.add(name)
             if _get_extra(info, "reindex"):
                 reindex.add(name)
-        elif name in {"chat_model", "embedding_model"}:
+        elif name in _MODEL_ROLE_FIELDS:
             public.add(name)
     return types.MappingProxyType(writable), frozenset(reindex), frozenset(public)
 
@@ -113,7 +122,7 @@ class ModelCatalogEntry(BaseModel):
 
 
 class ModelCatalogSection(BaseModel):
-    """Chat or vision model catalog with active model and installed list."""
+    """A single-role catalog section with active model and installed list."""
 
     active: str
     catalog: list[ModelCatalogEntry]
@@ -121,9 +130,31 @@ class ModelCatalogSection(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    """Response for the list-models endpoint."""
+    """Response for GET /api/models: one catalog section per role."""
 
     chat: ModelCatalogSection
+    embedding: ModelCatalogSection
+    vision: ModelCatalogSection
+    reranker: ModelCatalogSection
+
+
+# ``ModelTask.RERANK.value`` is ``"rerank"`` but the route is ``/api/models/reranker``,
+# so this mapping is needed to build correct redirect URLs in 422 responses.
+TASK_ENDPOINT_PATH: dict[ModelTask, str] = {
+    ModelTask.CHAT: "chat",
+    ModelTask.EMBEDDING: "embedding",
+    ModelTask.VISION: "vision",
+    ModelTask.RERANK: "reranker",
+}
+
+
+def format_task_mismatch(ref: str, entry_task: ModelTask, expected_task: ModelTask) -> str:
+    """Build the 422 body when a role slot is assigned a model of the wrong task."""
+    endpoint = TASK_ENDPOINT_PATH[entry_task]
+    return (
+        f"Model '{ref}' is a {entry_task} model, not {expected_task}. "
+        f"Set it via PUT /api/models/{endpoint} instead."
+    )
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -450,32 +481,53 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
         yield sse_done(summary.model_dump())
 
 
-async def list_models() -> ModelsResponse:
-    """Return chat model catalog with installed status."""
-    from lilbee.models import MODEL_CATALOG, list_installed_models
+def _catalog_section(
+    featured: tuple[CatalogModel, ...],
+    active: str,
+    installed: set[str],
+) -> ModelCatalogSection:
+    """Build a ModelCatalogSection from a featured-catalog tuple."""
+    return ModelCatalogSection(
+        active=active,
+        catalog=[
+            ModelCatalogEntry(
+                name=m.display_name,
+                size_gb=m.size_gb,
+                min_ram_gb=m.min_ram_gb,
+                description=m.description,
+                installed=m.ref in installed,
+            )
+            for m in featured
+        ],
+        installed=sorted(installed),
+    )
 
-    installed = set(list_installed_models())
+
+async def list_models() -> ModelsResponse:
+    """Return per-role catalogs (chat, embedding, vision, reranker) with active selections.
+
+    Uses the unfiltered installed set so a single ref lights up in every
+    catalog section it legitimately matches.
+    """
+    from lilbee.catalog import (
+        FEATURED_CHAT,
+        FEATURED_EMBEDDING,
+        FEATURED_RERANK,
+        FEATURED_VISION,
+    )
+
+    installed = set(get_model_manager().list_installed())
 
     return ModelsResponse(
-        chat=ModelCatalogSection(
-            active=cfg.chat_model,
-            catalog=[
-                ModelCatalogEntry(
-                    name=m.display_name,
-                    size_gb=m.size_gb,
-                    min_ram_gb=m.min_ram_gb,
-                    description=m.description,
-                    installed=m.ref in installed,
-                )
-                for m in MODEL_CATALOG
-            ],
-            installed=sorted(installed),
-        ),
+        chat=_catalog_section(FEATURED_CHAT, cfg.chat_model, installed),
+        embedding=_catalog_section(FEATURED_EMBEDDING, cfg.embedding_model, installed),
+        vision=_catalog_section(FEATURED_VISION, cfg.vision_model, installed),
+        reranker=_catalog_section(FEATURED_RERANK, cfg.reranker_model, installed),
     )
 
 
 async def _set_model(
-    field: Literal["chat_model", "embedding_model"],
+    field: Literal["chat_model", "embedding_model", "vision_model", "reranker_model"],
     model: str,
 ) -> SetModelResponse:
     """Shared helper for switching a model field."""
@@ -498,16 +550,56 @@ def _require_model_available(model: str) -> str:
     return normalized
 
 
-async def set_chat_model(model: str) -> SetModelResponse:
-    """Switch active chat model. Validates the model exists before accepting."""
+def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: bool = False) -> str:
+    """Validate *model* is installed and its catalog task matches *expected*.
+
+    Out-of-catalog models are rejected: without a catalog entry there is
+    no task metadata to validate against. When *allow_empty* is True, an
+    empty string unsets the role.
+
+    Returns the catalog's canonical ``name:tag`` ref so persisted values
+    match the registry key rather than the user-supplied ``hf_repo:tag``
+    or provider-prefixed form.
+    """
+    from lilbee.catalog import find_catalog_entry
+
+    if allow_empty and not model.strip():
+        return ""
     normalized = _require_model_available(model)
+    entry = find_catalog_entry(normalized)
+    if entry is None:
+        raise ValueError(
+            f"Model '{normalized}' is not in the featured catalog. "
+            "Pick a featured model for this role, or install one via "
+            "POST /api/models/pull with a known catalog ref."
+        )
+    if entry.task != expected:
+        raise ValueError(format_task_mismatch(normalized, ModelTask(entry.task), expected))
+    return entry.ref
+
+
+async def set_chat_model(model: str) -> SetModelResponse:
+    """Switch active chat model. Validates installation and catalog task."""
+    normalized = _require_model_for_task(model, ModelTask.CHAT)
     return await _set_model("chat_model", normalized)
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
-    """Switch embedding model. Validates the model exists before accepting."""
-    normalized = _require_model_available(model)
+    """Switch embedding model. Validates installation and catalog task."""
+    normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
     return await _set_model("embedding_model", normalized)
+
+
+async def set_vision_model(model: str) -> SetModelResponse:
+    """Switch vision OCR model. Empty string unsets it (vision OCR disabled)."""
+    normalized = _require_model_for_task(model, ModelTask.VISION, allow_empty=True)
+    return await _set_model("vision_model", normalized)
+
+
+async def set_reranker_model(model: str) -> SetModelResponse:
+    """Switch reranker model. Empty string unsets it (reranking disabled)."""
+    normalized = _require_model_for_task(model, ModelTask.RERANK, allow_empty=True)
+    return await _set_model("reranker_model", normalized)
 
 
 _MIN_CHUNK_SIZE = 64
@@ -614,25 +706,21 @@ async def list_documents(
 
 async def get_config() -> ConfigResponse:
     """Return all user-facing configuration values."""
-    from lilbee.reranker import reranker_available
-
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
-    if reranker_available():
-        result["reranker_model"] = dumped["reranker_model"]
-        result["rerank_candidates"] = dumped["rerank_candidates"]
     return ConfigResponse(**result)
 
 
 async def get_config_defaults() -> ConfigResponse:
-    """Return canonical defaults for every writable, public config field.
+    """Return canonical defaults for every public config field.
 
-    Used by plugin/TUI reset-to-default affordances so clients never need to
-    hardcode defaults locally.
+    Covers writable fields (resettable via PATCH /api/config) and the
+    model-role fields (resettable via PUT /api/models/<role>).
     """
     defaults: dict[str, Any] = {}
     for name, info in Config.model_fields.items():
-        if name not in WRITABLE_CONFIG_FIELDS or name not in _PUBLIC_CONFIG_FIELDS:
+        is_writable_public = name in WRITABLE_CONFIG_FIELDS and name in _PUBLIC_CONFIG_FIELDS
+        if not is_writable_public and name not in _MODEL_ROLE_FIELDS:
             continue
         value = info.get_default(call_default_factory=True)
         if value is PydanticUndefined:  # pragma: no cover

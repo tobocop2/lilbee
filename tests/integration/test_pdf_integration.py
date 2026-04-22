@@ -157,14 +157,13 @@ class TestTesseractOcrFallback:
 
 
 def _vision_model_available() -> bool:
-    """Check if the chat model is vision-capable and exists locally."""
+    """Check if a vision model is configured and its file exists locally."""
     try:
-        from lilbee.model_manager import is_vision_capable
         from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-        if not is_vision_capable(cfg.chat_model):
+        if not cfg.vision_model:
             return False
-        resolve_model_path(cfg.chat_model)
+        resolve_model_path(cfg.vision_model)
         return True
     except Exception:
         return False

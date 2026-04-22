@@ -626,6 +626,48 @@ class TestClassifyInstalledModels:
         assert chat == []
         assert embed == []
 
+    def test_unknown_task_manifest_dropped(self, tmp_path) -> None:
+        """Manifests with a task outside the known taxonomy are silently dropped.
+
+        Protects against forward-compat manifests: a future task slug the
+        current build doesn't know about must not accidentally land in the
+        chat bucket (that would let an unrelated model get picked as a
+        chat model via the TUI).
+        """
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.registry import ModelManifest
+
+        bogus = ModelManifest(
+            name="mystery",
+            tag="latest",
+            size_bytes=100,
+            task="unknown",  # untyped on purpose: task is a plain str on manifests
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[],
+            ),
+            mock.patch(
+                "lilbee.model_manager.discover_api_models",
+                return_value={},
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [bogus]
+            chat, embed = _classify_installed_models()
+
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        assert "mystery:latest" not in chat_refs
+        assert "mystery:latest" not in embed_refs
+
 
 class TestSlashSuggester:
     async def test_empty_returns_none(self) -> None:
@@ -2522,6 +2564,34 @@ class TestCollectNativeModelsError:
         assert len(buckets["chat"]) == 1
         assert buckets["chat"][0].label == "llama3:8b (Ollama)"
         assert buckets["chat"][0].ref == "ollama/llama3:8b"
+
+    def test_collect_remote_models_unknown_task_dropped(self) -> None:
+        """Remote models with an unknown task are dropped, not misclassified into chat."""
+        from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
+        from lilbee.model_manager import RemoteModel
+
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+            "rerank": [],
+        }
+        seen: set[str] = set()
+        with mock.patch(
+            "lilbee.model_manager.classify_remote_models",
+            return_value=[
+                RemoteModel(
+                    name="mystery:latest",
+                    task="unknown_task",
+                    family="",
+                    parameter_size="",
+                    provider="Ollama",
+                )
+            ],
+        ):
+            _collect_remote_models(buckets, seen)
+        assert all(not bucket for bucket in buckets.values())
+        assert "ollama/mystery:latest" not in seen
 
     def test_collect_api_models_adds_frontier_models(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models

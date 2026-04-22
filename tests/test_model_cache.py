@@ -29,11 +29,11 @@ def model_dir(tmp_path: Path) -> Path:
     return d
 
 
-def _fake_loader(path: Path, *, embedding: bool = False) -> mock.MagicMock:
+def _fake_loader(path: Path, *, mode: str = "chat") -> mock.MagicMock:
     """Simulate loading a Llama model — returns a unique mock per call."""
     m = mock.MagicMock()
     m._model_path = str(path)
-    m._embedding = embedding
+    m._mode = mode
     return m
 
 
@@ -42,8 +42,8 @@ def test_cache_hit_returns_same_instance(_mem: object, model_dir: Path) -> None:
     cache = MemoryAwareModelCache(loader=_fake_loader)
     path = model_dir / "chat.gguf"
 
-    first = cache.load_model(path, embedding=False)
-    second = cache.load_model(path, embedding=False)
+    first = cache.load_model(path, mode="chat")
+    second = cache.load_model(path, mode="chat")
 
     assert first is second
 
@@ -52,8 +52,8 @@ def test_cache_hit_returns_same_instance(_mem: object, model_dir: Path) -> None:
 def test_different_paths_return_different_instances(_mem: object, model_dir: Path) -> None:
     cache = MemoryAwareModelCache(loader=_fake_loader)
 
-    chat = cache.load_model(model_dir / "chat.gguf", embedding=False)
-    embed = cache.load_model(model_dir / "embed.gguf", embedding=True)
+    chat = cache.load_model(model_dir / "chat.gguf", mode="chat")
+    embed = cache.load_model(model_dir / "embed.gguf", mode="embed")
 
     assert chat is not embed
     stats = cache.get_stats()
@@ -71,11 +71,11 @@ def test_lru_eviction_when_memory_tight(mock_mem: mock.MagicMock, model_dir: Pat
     chat_path = model_dir / "chat.gguf"
     embed_path = model_dir / "embed.gguf"
 
-    first = cache.load_model(chat_path, embedding=False)
+    first = cache.load_model(chat_path, mode="chat")
     assert cache.get_stats()["loaded_models"] == 1
 
     # Loading second model should evict first
-    _second = cache.load_model(embed_path, embedding=True)
+    _second = cache.load_model(embed_path, mode="embed")
     stats = cache.get_stats()
     assert stats["loaded_models"] == 1
     # First model should have been evicted (close called)
@@ -88,12 +88,12 @@ def test_keep_alive_expiry(model_dir: Path) -> None:
         cache = MemoryAwareModelCache(keep_alive_seconds=1, loader=_fake_loader)
         path = model_dir / "chat.gguf"
 
-        model = cache.load_model(path, embedding=False)
+        model = cache.load_model(path, mode="chat")
         assert cache.get_stats()["loaded_models"] == 1
 
     # Simulate time passing by manipulating the entry's last_used
     with cache._lock:
-        entry = cache._cache[str(path)]
+        entry = cache._cache[f"{path}:chat"]
         entry.last_used = time.monotonic() - 10  # 10 seconds ago
 
     evicted = cache.evict_stale()
@@ -134,7 +134,7 @@ def test_thread_safety(_mem: object, model_dir: Path) -> None:
 
     def load() -> None:
         try:
-            m = cache.load_model(path, embedding=False)
+            m = cache.load_model(path, mode="chat")
             results.append(m)
         except Exception as exc:
             errors.append(exc)
@@ -154,8 +154,8 @@ def test_thread_safety(_mem: object, model_dir: Path) -> None:
 @mock.patch("lilbee.providers.model_cache.get_available_memory", return_value=10 * 1024**3)
 def test_unload_all(_mem: object, model_dir: Path) -> None:
     cache = MemoryAwareModelCache(loader=_fake_loader)
-    m1 = cache.load_model(model_dir / "chat.gguf", embedding=False)
-    m2 = cache.load_model(model_dir / "embed.gguf", embedding=True)
+    m1 = cache.load_model(model_dir / "chat.gguf", mode="chat")
+    m2 = cache.load_model(model_dir / "embed.gguf", mode="embed")
 
     cache.unload_all()
 
@@ -169,7 +169,7 @@ def test_get_stats(_mem: object, model_dir: Path) -> None:
     cache = MemoryAwareModelCache(
         max_memory_fraction=0.8, keep_alive_seconds=120, loader=_fake_loader
     )
-    cache.load_model(model_dir / "chat.gguf", embedding=False)
+    cache.load_model(model_dir / "chat.gguf", mode="chat")
 
     stats = cache.get_stats()
 
@@ -220,7 +220,7 @@ def test_cache_entry_touch() -> None:
     entry = _CacheEntry(
         model=mock.MagicMock(),
         path=Path("/fake"),
-        embedding=False,
+        mode="chat",
         estimated_bytes=100,
     )
     old = entry.last_used
@@ -233,7 +233,7 @@ def test_cache_entry_touch() -> None:
 def test_evict_stale_with_zero_keep_alive(_mem: object, model_dir: Path) -> None:
     """keep_alive=0 means evict_stale is a no-op (immediate unload is handled elsewhere)."""
     cache = MemoryAwareModelCache(keep_alive_seconds=0, loader=_fake_loader)
-    cache.load_model(model_dir / "chat.gguf", embedding=False)
+    cache.load_model(model_dir / "chat.gguf", mode="chat")
     evicted = cache.evict_stale()
     assert evicted == 0
 
@@ -242,11 +242,11 @@ def test_evict_stale_with_zero_keep_alive(_mem: object, model_dir: Path) -> None
 def test_unload_entry_no_close(_mem: object, model_dir: Path) -> None:
     """Models without a close method don't error on eviction."""
 
-    def loader_no_close(path: Path, *, embedding: bool = False) -> str:
+    def loader_no_close(path: Path, *, mode: str = "chat") -> str:
         return "plain-string-model"
 
     cache = MemoryAwareModelCache(loader=loader_no_close)
-    cache.load_model(model_dir / "chat.gguf", embedding=False)
+    cache.load_model(model_dir / "chat.gguf", mode="chat")
     cache.unload_all()  # Should not raise
     assert cache.get_stats()["loaded_models"] == 0
 
@@ -255,13 +255,13 @@ def test_unload_entry_no_close(_mem: object, model_dir: Path) -> None:
 def test_unload_entry_close_error(_mem: object, model_dir: Path) -> None:
     """Models whose close() raises are handled gracefully."""
 
-    def loader_bad_close(path: Path, *, embedding: bool = False) -> mock.MagicMock:
+    def loader_bad_close(path: Path, *, mode: str = "chat") -> mock.MagicMock:
         m = mock.MagicMock()
         m.close.side_effect = RuntimeError("GPU error")
         return m
 
     cache = MemoryAwareModelCache(loader=loader_bad_close)
-    cache.load_model(model_dir / "chat.gguf", embedding=False)
+    cache.load_model(model_dir / "chat.gguf", mode="chat")
     cache.unload_all()  # Should not raise despite close() error
     assert cache.get_stats()["loaded_models"] == 0
 

@@ -406,7 +406,7 @@ _task_option = typer.Option(
     None,
     "--task",
     "-t",
-    help="Filter by task: 'chat', 'embedding', or 'vision'.",
+    help="Filter by task: 'chat', 'embedding', 'vision', or 'rerank'.",
 )
 _yes_option = typer.Option(
     False,

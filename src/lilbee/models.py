@@ -14,9 +14,9 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from rich.table import Table
 
 from lilbee import settings
-from lilbee.config import cfg
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.services import get_services
+
+# circular: config -> models via ModelTask. cfg is imported lazily.
 
 
 class ModelTask(StrEnum):
@@ -25,6 +25,7 @@ class ModelTask(StrEnum):
     CHAT = "chat"
     EMBEDDING = "embedding"
     VISION = "vision"
+    RERANK = "rerank"
 
 
 log = logging.getLogger(__name__)
@@ -185,6 +186,8 @@ def display_model_picker(
 
 def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
+    from lilbee.config import cfg
+
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
     default_idx = list(_get_model_catalog()).index(recommended) + 1
@@ -214,6 +217,8 @@ def validate_disk_and_pull(
     model_info: ModelInfo, free_gb: float, *, console: Console | None = None
 ) -> None:
     """Check disk space, pull the model, and persist the choice."""
+    from lilbee.config import cfg
+
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
@@ -260,6 +265,7 @@ def ensure_chat_model() -> None:
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
+    from lilbee.config import cfg
     from lilbee.model_manager import get_model_manager
 
     manager = get_model_manager()
@@ -290,11 +296,27 @@ def ensure_chat_model() -> None:
 
 
 def list_installed_models() -> list[str]:
-    """Return installed model names, excluding embedding models."""
+    """Return installed chat-task model names.
+
+    Sources both the native registry (manifest ``task`` field) and the
+    litellm backend catalog (classified by name/family). Non-chat roles
+    (embedding, vision, rerank) are excluded so TUI pickers don't offer
+    refs that fail pydantic task validation at assignment time.
+    """
+    from lilbee.config import cfg
+    from lilbee.model_manager import classify_remote_models
+    from lilbee.registry import ModelRegistry
+
     try:
-        provider = get_services().provider
-        embed_base = parse_model_ref(cfg.embedding_model).name.split(":")[0]
-        return [m for m in provider.list_models() if m.split(":")[0] != embed_base]
+        names: list[str] = []
+        registry = ModelRegistry(cfg.models_dir)
+        for manifest in registry.list_installed():
+            if manifest.task == ModelTask.CHAT:
+                names.append(f"{manifest.name}:{manifest.tag}")
+        for remote in classify_remote_models(cfg.litellm_base_url):
+            if remote.task == ModelTask.CHAT:
+                names.append(remote.name)
+        return sorted(set(names))
     except Exception:
         log.debug("Failed to list installed models", exc_info=True)
         return []

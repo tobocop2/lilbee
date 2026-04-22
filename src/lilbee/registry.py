@@ -90,7 +90,7 @@ class ModelManifest:
     name: str  # canonical family slug: "qwen3", "nomic-embed-text"
     tag: str  # canonical variant: "0.6b", "v1.5", "latest"
     size_bytes: int
-    task: str  # "chat", "embedding", or "vision" — use TaskType constants
+    task: str  # "chat", "embedding", "vision", or "rerank"; use TaskType constants
     source_repo: str  # HuggingFace repo
     source_filename: str  # original .gguf filename
     downloaded_at: str  # ISO 8601 timestamp

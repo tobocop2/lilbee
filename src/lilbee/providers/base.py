@@ -89,6 +89,32 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Score *candidates* for their relevance to *query*, one float per candidate.
+
+        The backend resolves the reranker model from ``cfg.reranker_model``.
+        Callers MUST check ``cfg.reranker_model`` is non-empty before
+        calling; use :meth:`supports_rerank` for UI-render decisions.
+
+        Returns: list of floats in input order, higher = more relevant.
+        Empty ``candidates`` returns ``[]``.
+        Raises :class:`ProviderError` when the backend does not support
+        reranking or ``cfg.reranker_model`` is empty.
+        """
+        ...
+
+    def supports_rerank(self) -> bool:
+        """Capability probe: can this backend rerank *if* a model is configured?
+
+        Pure capability check, NOT "a reranker is currently active". An
+        empty ``cfg.reranker_model`` returns ``True`` so the settings UI
+        keeps the picker visible; callers that need to know whether
+        reranking is actually configured must check ``bool(cfg.reranker_model)``
+        separately. ``rerank()`` is the gated path that requires a
+        non-empty value.
+        """
+        return False
+
     def shutdown(self) -> None:
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...

@@ -104,6 +104,16 @@ class TestStatus:
         assert result.sources == []
         assert result.total_chunks == 0
 
+    async def test_exposes_all_four_model_roles(self):
+        """/api/status config payload surfaces vision and reranker slots."""
+        cfg.vision_model = ""
+        cfg.reranker_model = ""
+        result = await handlers.status()
+        assert hasattr(result.config, "vision_model")
+        assert hasattr(result.config, "reranker_model")
+        assert result.config.vision_model == ""
+        assert result.config.reranker_model == ""
+
 
 class TestSearch:
     async def test_returns_grouped_results(self, mock_svc):
@@ -616,9 +626,9 @@ class TestDrainFallback:
 
 
 class TestListModels:
-    @patch("lilbee.models.list_installed_models")
-    async def test_returns_catalogs(self, mock_list):
-        mock_list.return_value = ["qwen3:8b", "mistral:7b"]
+    @patch("lilbee.server.handlers.get_model_manager")
+    async def test_returns_catalogs(self, mock_get_mm):
+        mock_get_mm.return_value.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
         result = await handlers.list_models()
 
         assert result.chat.active == cfg.chat_model
@@ -626,9 +636,9 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert "qwen3:8b" in result.chat.installed
 
-    @patch("lilbee.models.list_installed_models")
-    async def test_installed_flag_in_catalog(self, mock_list):
-        mock_list.return_value = ["qwen3:0.6b"]
+    @patch("lilbee.server.handlers.get_model_manager")
+    async def test_installed_flag_in_catalog(self, mock_get_mm):
+        mock_get_mm.return_value.list_installed.return_value = ["qwen3:0.6b"]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
@@ -638,22 +648,59 @@ class TestListModels:
         mistral_entry = next(m for m in catalog if "Mistral" in m.name)
         assert mistral_entry.installed is False
 
+    @patch("lilbee.server.handlers.get_model_manager")
+    async def test_reranker_installed_detected_via_registry(self, mock_get_mm):
+        """Rerankers install as GGUFs like chat/embedding; the ref match marks them installed."""
+        from lilbee.catalog import FEATURED_RERANK
+
+        bge = FEATURED_RERANK[0]
+        mock_get_mm.return_value.list_installed.return_value = [bge.ref]
+        result = await handlers.list_models()
+        bge_entry = next(m for m in result.reranker.catalog if bge.display_name in m.name)
+        assert bge_entry.installed is True
+
+    @patch("lilbee.server.handlers.get_model_manager")
+    async def test_embedding_installed_detected_via_registry(self, mock_get_mm):
+        """Embedding installs surface via the same registry path as chat/reranker."""
+        from lilbee.catalog import FEATURED_EMBEDDING
+
+        entry = FEATURED_EMBEDDING[0]
+        mock_get_mm.return_value.list_installed.return_value = [entry.ref]
+        result = await handlers.list_models()
+        embed_entry = next(m for m in result.embedding.catalog if entry.display_name in m.name)
+        assert embed_entry.installed is True
+
+    @patch("lilbee.server.handlers.get_model_manager")
+    async def test_returns_vision_and_reranker_sections(self, mock_get_mm):
+        """list_models exposes chat, embedding, vision, and reranker catalogs."""
+        mock_get_mm.return_value.list_installed.return_value = []
+        cfg.vision_model = ""
+        cfg.reranker_model = ""
+        result = await handlers.list_models()
+
+        assert result.vision.active == ""
+        assert result.reranker.active == ""
+        assert len(result.vision.catalog) > 0
+        assert len(result.reranker.catalog) > 0
+        assert result.embedding.active == cfg.embedding_model
+        assert len(result.embedding.catalog) > 0
+
 
 class TestSetChatModel:
     async def test_updates_config_and_persists(self, tmp_path, mock_svc):
-        mock_svc.provider.list_models.return_value = ["llama3:latest"]
-        result = await handlers.set_chat_model("llama3")
-        assert result.model == "llama3:latest"
-        assert cfg.chat_model == "llama3:latest"
+        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+        result = await handlers.set_chat_model("qwen3:0.6b")
+        assert result.model == "qwen3:0.6b"
+        assert cfg.chat_model == "qwen3:0.6b"
 
     async def test_preserves_existing_tag(self, tmp_path, mock_svc):
-        mock_svc.provider.list_models.return_value = ["llama3:7b"]
-        result = await handlers.set_chat_model("llama3:7b")
-        assert result.model == "llama3:7b"
-        assert cfg.chat_model == "llama3:7b"
+        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+        result = await handlers.set_chat_model("qwen3:0.6b")
+        assert result.model == "qwen3:0.6b"
+        assert cfg.chat_model == "qwen3:0.6b"
 
     async def test_rejects_unavailable_model(self, tmp_path, mock_svc):
-        mock_svc.provider.list_models.return_value = ["llama3:latest"]
+        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_chat_model("nonexistent:7b")
 
@@ -662,11 +709,14 @@ class TestSetChatModel:
 
         Without this path, every Ollama pick via the server API would be
         rejected as unavailable even when the backend reports the tag.
+        The stored form is the catalog's canonical ``name:tag`` ref so
+        ``resolve_model_path`` can locate the on-disk blob without relying
+        on the registry's alias-fallback.
         """
         mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
         result = await handlers.set_chat_model("ollama/qwen3:0.6b")
-        assert result.model == "ollama/qwen3:0.6b"
-        assert cfg.chat_model == "ollama/qwen3:0.6b"
+        assert result.model == "qwen3:0.6b"
+        assert cfg.chat_model == "qwen3:0.6b"
 
     async def test_accepts_bare_ref_matching_remote_only_list(self, tmp_path, mock_svc):
         """Bare refs still validate against the remote list for legacy callers.
@@ -680,6 +730,18 @@ class TestSetChatModel:
         result = await handlers.set_chat_model("qwen3:0.6b")
         assert result.model == "qwen3:0.6b"
         assert cfg.chat_model == "qwen3:0.6b"
+
+    async def test_rejects_out_of_catalog_model(self, tmp_path, mock_svc):
+        """Out-of-catalog installed models cannot be assigned to any role."""
+        mock_svc.provider.list_models.return_value = ["llama3:7b"]
+        with pytest.raises(ValueError, match="featured catalog"):
+            await handlers.set_chat_model("llama3:7b")
+
+    async def test_rejects_vision_model_on_chat_endpoint(self, tmp_path, mock_svc):
+        """Setting a vision-task model on the chat endpoint returns 422 semantics."""
+        mock_svc.provider.list_models.return_value = ["lightonocr:2-1b"]
+        with pytest.raises(ValueError, match="not chat"):
+            await handlers.set_chat_model("lightonocr:2-1b")
 
 
 class TestModelsCatalog:
@@ -1125,18 +1187,35 @@ class TestUpdateConfig:
             await handlers.update_config({"temperature": 0.5})
         mock_inject.assert_not_called()
 
+    async def test_update_config_rejects_chat_model(self):
+        """Role fields only move via PUT /api/models/<role>; PATCH must 422."""
+        with pytest.raises(ValueError, match="read-only"):
+            await handlers.update_config({"chat_model": "qwen3:0.6b"})
+
+    async def test_update_config_rejects_embedding_model(self):
+        with pytest.raises(ValueError, match="read-only"):
+            await handlers.update_config({"embedding_model": "nomic-embed-text:v1.5"})
+
+    async def test_update_config_rejects_vision_model(self):
+        with pytest.raises(ValueError, match="read-only"):
+            await handlers.update_config({"vision_model": "lightonocr:2-1b"})
+
+    async def test_update_config_rejects_reranker_model(self):
+        with pytest.raises(ValueError, match="read-only"):
+            await handlers.update_config({"reranker_model": "bge-reranker-v2-m3:latest"})
+
 
 class TestSetEmbeddingModel:
     @patch("lilbee.server.handlers.get_services")
     async def test_updates_config_and_persists(self, mock_svc, tmp_path):
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
-        result = await handlers.set_embedding_model("nomic-embed-text:latest")
-        assert result.model == "nomic-embed-text:latest"
-        assert cfg.embedding_model == "nomic-embed-text:latest"
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.model == "nomic-embed-text:v1.5"
+        assert cfg.embedding_model == "nomic-embed-text:v1.5"
         from lilbee import settings as s
 
         stored = s.load(cfg.data_root)
-        assert stored["embedding_model"] == "nomic-embed-text:latest"
+        assert stored["embedding_model"] == "nomic-embed-text:v1.5"
 
     @patch("lilbee.server.handlers.get_services")
     async def test_empty_string_rejected(self, mock_svc):
@@ -1145,18 +1224,32 @@ class TestSetEmbeddingModel:
             await handlers.set_embedding_model("")
 
     @patch("lilbee.server.handlers.get_services")
-    async def test_embedding_model_without_tag_normalizes(self, mock_svc, tmp_path):
-        """Setting embedding model without a tag normalizes to :latest."""
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
-        result = await handlers.set_embedding_model("nomic-embed-text")
-        assert result.model == "nomic-embed-text:latest"
-        assert cfg.embedding_model == "nomic-embed-text:latest"
+    async def test_embedding_model_bare_name_resolves_to_recommended(self, mock_svc, tmp_path):
+        """Setting embedding model by bare family name resolves via catalog."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.model == "nomic-embed-text:v1.5"
+        assert cfg.embedding_model == "nomic-embed-text:v1.5"
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_unavailable_embedding_model(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_embedding_model("bogus-embed")
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_out_of_catalog_model(self, mock_svc):
+        """Non-catalog installed model cannot be assigned to the embedding role."""
+        mock_svc.return_value.provider.list_models.return_value = ["custom-embed:latest"]
+        with pytest.raises(ValueError, match="featured catalog"):
+            await handlers.set_embedding_model("custom-embed:latest")
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_chat_model_on_embedding_endpoint(self, mock_svc):
+        """Setting a chat-task model as embedding returns a task-mismatch error."""
+        mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
+        with pytest.raises(ValueError, match="not embedding"):
+            await handlers.set_embedding_model("qwen3:0.6b")
 
 
 class TestGetConfig:
@@ -1222,17 +1315,186 @@ class TestListDocuments:
 
 
 class TestGetConfigReranker:
-    @patch("lilbee.reranker.reranker_available", return_value=False)
-    async def test_hides_reranker_when_not_installed(self, mock_avail):
-        result = await handlers.get_config()
-        assert "reranker_model" not in result.model_dump()
-
-    @patch("lilbee.reranker.reranker_available", return_value=True)
-    async def test_shows_reranker_when_installed(self, mock_avail):
+    async def test_exposes_reranker_fields(self):
+        """Reranker is a first-class public role; its fields always surface."""
         result = await handlers.get_config()
         dumped = result.model_dump()
         assert "reranker_model" in dumped
         assert "rerank_candidates" in dumped
+
+
+class TestGetConfigDefaults:
+    async def test_model_role_defaults_surface(self):
+        """Model-role fields are non-writable but appear in defaults.
+
+        UI reset-to-default affordances hit ``PUT /api/models/<role>`` to
+        reset each slot. The defaults endpoint must surface the canonical
+        blank/default values so clients don't hardcode them locally.
+        """
+        result = await handlers.get_config_defaults()
+        dumped = result.model_dump()
+        assert dumped["chat_model"] == "qwen3:0.6b"
+        assert dumped["embedding_model"] == "nomic-embed-text:v1.5"
+        assert dumped["vision_model"] == ""
+        assert dumped["reranker_model"] == ""
+
+    async def test_writable_defaults_surface(self):
+        """Defaults include writable public fields (chunk_size, temperature, ...)."""
+        result = await handlers.get_config_defaults()
+        dumped = result.model_dump()
+        assert "chunk_size" in dumped
+        assert "temperature" in dumped
+
+
+class TestSetVisionModel:
+    @patch("lilbee.server.handlers.get_services")
+    async def test_sets_vision_model(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = ["lightonocr:2-1b"]
+        result = await handlers.set_vision_model("lightonocr:2-1b")
+        assert result.model == "lightonocr:2-1b"
+        assert cfg.vision_model == "lightonocr:2-1b"
+
+    @patch("lilbee.server.handlers.settings.set_value")
+    @patch("lilbee.server.handlers.get_services")
+    async def test_empty_string_unsets(self, mock_svc, mock_set_value):
+        cfg.vision_model = "lightonocr:2-1b"
+        result = await handlers.set_vision_model("")
+        assert result.model == ""
+        assert cfg.vision_model == ""
+        # Persistence boundary: the empty value must be written to disk so
+        # the setting survives a restart. Asserting on the in-memory cfg
+        # alone can't tell "unset" from "silently dropped".
+        mock_set_value.assert_called_once_with(cfg.data_root, "vision_model", "")
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_whitespace_string_unsets(self, mock_svc):
+        """Whitespace-only strings must not bypass the empty-check guard."""
+        cfg.vision_model = "lightonocr:2-1b"
+        result = await handlers.set_vision_model("   ")
+        assert result.model == ""
+        assert cfg.vision_model == ""
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_chat_model(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
+        with pytest.raises(ValueError, match="not vision") as exc:
+            await handlers.set_vision_model("qwen3:0.6b")
+        # A chat model redirected to PUT /api/models/chat (the actual route).
+        assert "PUT /api/models/chat" in str(exc.value)
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_out_of_catalog(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["custom-vision:1b"]
+        with pytest.raises(ValueError, match="featured catalog"):
+            await handlers.set_vision_model("custom-vision:1b")
+
+
+class TestSetRerankerModel:
+    @patch("lilbee.server.handlers.get_services")
+    async def test_sets_reranker_model(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = ["bge-reranker-v2-m3:latest"]
+        result = await handlers.set_reranker_model("bge-reranker-v2-m3:latest")
+        assert result.model == "bge-reranker-v2-m3:latest"
+        assert cfg.reranker_model == "bge-reranker-v2-m3:latest"
+
+    @patch("lilbee.server.handlers.settings.set_value")
+    @patch("lilbee.server.handlers.get_services")
+    async def test_empty_string_unsets(self, mock_svc, mock_set_value):
+        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        result = await handlers.set_reranker_model("")
+        assert result.model == ""
+        assert cfg.reranker_model == ""
+        # Persistence boundary: disable must survive process restart.
+        mock_set_value.assert_called_once_with(cfg.data_root, "reranker_model", "")
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_whitespace_string_unsets(self, mock_svc):
+        """Whitespace-only strings must not bypass the empty-check guard."""
+        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        result = await handlers.set_reranker_model("   ")
+        assert result.model == ""
+        assert cfg.reranker_model == ""
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_canonicalises_hf_repo_to_name_tag(self, mock_svc, tmp_path):
+        """PUT with ``hf_repo`` (or ``hf_repo:tag``) stores canonical ``name:tag``.
+
+        Regression guard: registry keys on the short ``name:tag`` slug, so
+        storing ``gpustack/bge-reranker-v2-m3-GGUF:latest`` would force
+        ``resolve_model_path`` through the alias fallback. The handler
+        canonicalises via the catalog entry's ``ref`` so the on-disk lookup
+        hits the primary index.
+        """
+        mock_svc.return_value.provider.list_models.return_value = [
+            "gpustack/bge-reranker-v2-m3-GGUF:latest"
+        ]
+        result = await handlers.set_reranker_model("gpustack/bge-reranker-v2-m3-GGUF")
+        assert result.model == "bge-reranker-v2-m3:latest"
+        assert cfg.reranker_model == "bge-reranker-v2-m3:latest"
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_chat_model(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
+        with pytest.raises(ValueError, match="not rerank") as exc:
+            await handlers.set_reranker_model("qwen3:0.6b")
+        # Chat model redirected to the PUT /api/models/chat route (exact path).
+        assert "PUT /api/models/chat" in str(exc.value)
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_vision_model(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["lightonocr:2-1b"]
+        with pytest.raises(ValueError, match="not rerank") as exc:
+            await handlers.set_reranker_model("lightonocr:2-1b")
+        # Vision model redirected to /api/models/vision (not "rerank").
+        # This asserts the RERANK task doesn't leak into the redirect URL.
+        assert "PUT /api/models/vision" in str(exc.value)
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_embedding_model_in_vision_slot(self, mock_svc):
+        """Embedding model in the reranker slot redirects to the embedding endpoint.
+
+        Regression test: before the TASK_ENDPOINT_PATH mapping, wrong-role
+        redirects for a RERANK task referred to PUT /api/models/rerank,
+        which is a 404 -- the actual route is /api/models/reranker. This
+        also exercises the reverse direction (rerank slot, chat model).
+        """
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        with pytest.raises(ValueError, match="not rerank") as exc:
+            await handlers.set_reranker_model("nomic-embed-text:v1.5")
+        assert "PUT /api/models/embedding" in str(exc.value)
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_reranker_in_vision_slot(self, mock_svc):
+        """Reranker in the vision slot: redirect must use /reranker (not /rerank)."""
+        mock_svc.return_value.provider.list_models.return_value = ["bge-reranker-v2-m3:latest"]
+        with pytest.raises(ValueError, match="not vision") as exc:
+            await handlers.set_vision_model("bge-reranker-v2-m3:latest")
+        assert "PUT /api/models/reranker" in str(exc.value)
+
+
+class TestTaskEndpointPath:
+    """TASK_ENDPOINT_PATH is keyed by ``ModelTask`` members.
+
+    Consumers that hold a plain ``entry.task`` string coerce via
+    ``ModelTask(entry.task)`` at the indexing boundary.
+    """
+
+    def test_index_with_enum(self) -> None:
+        from lilbee.models import ModelTask
+        from lilbee.server.handlers import TASK_ENDPOINT_PATH
+
+        assert TASK_ENDPOINT_PATH[ModelTask.CHAT] == "chat"
+        assert TASK_ENDPOINT_PATH[ModelTask.EMBEDDING] == "embedding"
+        assert TASK_ENDPOINT_PATH[ModelTask.VISION] == "vision"
+        assert TASK_ENDPOINT_PATH[ModelTask.RERANK] == "reranker"
+
+    def test_coerces_catalog_task_string(self) -> None:
+        """Coercion via ``ModelTask(entry.task)`` resolves to the enum key."""
+        from lilbee.models import ModelTask
+        from lilbee.server.handlers import TASK_ENDPOINT_PATH
+
+        assert TASK_ENDPOINT_PATH[ModelTask("chat")] == "chat"
+        assert TASK_ENDPOINT_PATH[ModelTask("rerank")] == "reranker"
 
 
 class TestCrawlStream:

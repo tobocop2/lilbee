@@ -89,7 +89,7 @@ class ConfigSnapshot:
     embedding_dim: int
     num_ctx: int | None
     gpu_memory_fraction: float
-    ocr_model: str
+    vision_model: str
 
 
 _WorkerRequest = EmbedRequest | VisionRequest | LoadModelRequest | ShutdownRequest
@@ -104,7 +104,7 @@ def config_snapshot_from_cfg() -> ConfigSnapshot:
         embedding_dim=cfg.embedding_dim,
         num_ctx=cfg.num_ctx,
         gpu_memory_fraction=cfg.gpu_memory_fraction,
-        ocr_model=cfg.chat_model,
+        vision_model=cfg.vision_model,
     )
 
 
@@ -324,7 +324,16 @@ def _worker_main(
                 continue
 
             if isinstance(request, VisionRequest):
-                model_name = request.model or config.ocr_model
+                model_name = request.model or config.vision_model
+                if not model_name:
+                    resp_q.put(
+                        VisionResponse(
+                            request_id=request.request_id,
+                            text="",
+                            error="No vision model configured; vision OCR is disabled.",
+                        )
+                    )
+                    continue
                 if vision_llm is None or model_name != current_vision_model:
                     _close_model(vision_llm)
                     vision_llm = _load_vision_model(model_name)
@@ -367,8 +376,9 @@ def _apply_config_snapshot(config: ConfigSnapshot) -> None:
 def _load_embed_model(model_name: str) -> Any:
     """Load an embedding model in the child process."""
     from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
+    from lilbee.providers.model_cache import MODE_EMBED
 
-    return load_llama(resolve_model_path(model_name), embedding=True)
+    return load_llama(resolve_model_path(model_name), mode=MODE_EMBED)
 
 
 def _load_vision_model(model_name: str) -> Any:

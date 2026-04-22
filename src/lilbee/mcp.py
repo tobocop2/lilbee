@@ -56,6 +56,8 @@ def status() -> dict[str, Any]:
             "data_dir": str(cfg.data_dir),
             "chat_model": cfg.chat_model,
             "embedding_model": cfg.embedding_model,
+            "vision_model": cfg.vision_model,
+            "reranker_model": cfg.reranker_model,
             "enable_ocr": cfg.enable_ocr,
         },
         "sources": [
@@ -433,7 +435,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
 
     Args:
         source: Filter by source: "native", "litellm", or "" for all.
-        task: Filter by task: "chat", "embedding", "vision", or "" for all.
+        task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.cli.model import list_models_data
     from lilbee.model_manager import ModelSource

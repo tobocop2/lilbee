@@ -47,7 +47,7 @@ def config_snap(tmp_path: Path) -> ConfigSnapshot:
         embedding_dim=768,
         num_ctx=None,
         gpu_memory_fraction=0.75,
-        ocr_model="test-vision",
+        vision_model="test-vision",
     )
 
 
@@ -238,6 +238,35 @@ class TestWorkerMain:
         put_arg = resp_q.put.call_args[0][0]
         assert isinstance(put_arg, VisionResponse)
         assert put_arg.text == "extracted"
+
+    def test_vision_request_errors_when_no_model_configured(self, tmp_path: Path) -> None:
+        """Vision requests refuse gracefully when no vision model is configured."""
+        empty_snap = ConfigSnapshot(
+            models_dir=str(tmp_path / "models"),
+            embedding_model="test-embed",
+            embedding_dim=768,
+            num_ctx=None,
+            gpu_memory_fraction=0.75,
+            vision_model="",
+        )
+        requests = [
+            VisionRequest(png_bytes=b"img", model="", request_id=7),
+            ShutdownRequest(),
+        ]
+        req_q = mock.MagicMock()
+        req_q.get.side_effect = requests
+        resp_q = mock.MagicMock()
+
+        with mock.patch(
+            "lilbee.providers.worker_process._load_vision_model",
+        ) as mock_load:
+            _worker_main(req_q, resp_q, empty_snap)
+
+        mock_load.assert_not_called()
+        put_arg = resp_q.put.call_args[0][0]
+        assert isinstance(put_arg, VisionResponse)
+        assert put_arg.error.startswith("No vision model configured")
+        assert put_arg.request_id == 7
 
     def test_load_model_request_clears_embed(self, config_snap: ConfigSnapshot) -> None:
         ctx = get_context("spawn")
@@ -840,7 +869,7 @@ class TestLoadEmbedModel:
         ):
             result = _load_embed_model("test-embed")
         assert result is mock_llm
-        mock_load.assert_called_once_with(model_path, embedding=True)
+        mock_load.assert_called_once_with(model_path, mode="embed")
 
 
 class TestWorkerNotStartedGuards:
