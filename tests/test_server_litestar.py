@@ -391,6 +391,21 @@ class TestConfigUpdateRoute:
 
         _inner()
 
+    def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
+        # Invalid character class — `p-a` is a backwards range; should be rejected
+        # at PATCH time rather than crashing the next crawl with an opaque error.
+        resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
+        assert resp.status_code == 400
+        body = resp.text
+        assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
+
+    def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
+        resp = client.patch(
+            "/api/config", json={"crawl_exclude_patterns": [r"/page/\d+/?$", r"/tag/"]}
+        )
+        assert resp.status_code == 200
+        assert "crawl_exclude_patterns" in resp.json()["updated"]
+
 
 class TestModelsSetEmbeddingRoute:
     @mock.patch(
