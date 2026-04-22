@@ -460,14 +460,13 @@ def find_mmproj_for_model(model_path: Path) -> Path:
     """
     from lilbee.catalog import find_mmproj_file
 
-    for finder in (
-        lambda: find_mmproj_file(model_path.stem),
-        lambda: _find_mmproj_in_hf_snapshots(model_path.parent),
-        lambda: _find_mmproj_in_flat_dir(model_path.parent),
-    ):
-        result = finder()
-        if result is not None:
-            return result
+    found = (
+        find_mmproj_file(model_path.stem)
+        or _find_mmproj_in_hf_snapshots(model_path.parent)
+        or _find_mmproj_in_flat_dir(model_path.parent)
+    )
+    if found is not None:
+        return found
 
     raise ProviderError(
         f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
