@@ -1093,6 +1093,144 @@ def wiki_status(
         console.print("  Lint: all clean")
 
 
+@wiki_app.command(name="generate")
+def wiki_generate(
+    source: str = typer.Argument(..., help="Source filename, e.g. cv-manual.pdf."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Generate wiki tree summaries for *source* (per-page leaves + chapter reduces)."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.gen import generate_summary_page
+
+    svc = get_services()
+    chunks = svc.store.get_chunks_by_source(source)
+    if not chunks:
+        if cfg.json_mode:
+            json_output(
+                {
+                    "command": "wiki_generate",
+                    "source": source,
+                    "paths": [],
+                    "error": "no indexed chunks",
+                }
+            )
+            return
+        console.print(f"[{theme.ERROR}]No indexed chunks for source: {source}[/{theme.ERROR}]")
+        raise typer.Exit(1)
+
+    paths = generate_summary_page(source, chunks, svc.provider, svc.store)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_generate",
+                "source": source,
+                "paths": [str(p) for p in paths],
+                "count": len(paths),
+            }
+        )
+        return
+
+    if not paths:
+        console.print(f"[{theme.ERROR}]No pages generated for {source}[/{theme.ERROR}]")
+        raise typer.Exit(1)
+
+    console.print(f"Generated [{theme.LABEL}]{len(paths)}[/{theme.LABEL}] wiki pages for {source}:")
+    for path in paths:
+        console.print(f"  {path}")
+
+
+@wiki_app.command(name="tree")
+def wiki_tree(
+    source: str = typer.Argument(..., help="Source filename to render the tree for."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Render the heading tree extracted at ingest time for *source*."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.structure import deserialize_document, walk_structure_to_wiki_nodes
+
+    record = get_services().store.get_document_structure(source)
+    if record is None:
+        if cfg.json_mode:
+            json_output({"command": "wiki_tree", "source": source, "nodes": []})
+            return
+        console.print(f"No document structure stored for {source}.")
+        return
+
+    document = deserialize_document(record["document_json"])
+    nodes = walk_structure_to_wiki_nodes(document) if document is not None else []
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_tree",
+                "source": source,
+                "nodes": [
+                    {
+                        "slug": n.slug,
+                        "parent_slug": n.parent_slug,
+                        "depth": n.depth,
+                        "title": n.title,
+                        "kind": n.kind,
+                        "page_start": n.page_start,
+                        "page_end": n.page_end,
+                    }
+                    for n in nodes
+                ],
+            }
+        )
+        return
+
+    if not nodes:
+        console.print("Document has no detected heading structure.")
+        return
+
+    for node in nodes:
+        indent = "  " * max(node.depth - 1, 0)
+        page_span = (
+            f"p{node.page_start}"
+            if node.page_start == node.page_end
+            else f"p{node.page_start}-{node.page_end}"
+        )
+        console.print(
+            f"{indent}[{theme.ACCENT}]{node.title}[/{theme.ACCENT}] "
+            f"[{theme.LABEL}]({node.kind}, {page_span})[/{theme.LABEL}]"
+        )
+
+
+@wiki_app.command(name="synthesize")
+def wiki_synthesize(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Generate synthesis pages for concept clusters spanning 3+ sources."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.gen import generate_synthesis_pages
+
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_synthesize",
+                "paths": [str(p) for p in paths],
+                "count": len(paths),
+            }
+        )
+        return
+
+    if not paths:
+        console.print("No synthesis pages generated (need 3+ sources per cluster).")
+        return
+
+    console.print(f"Generated [{theme.LABEL}]{len(paths)}[/{theme.LABEL}] synthesis pages:")
+    for path in paths:
+        console.print(f"  {path}")
+
+
 @wiki_app.command(name="prune")
 def wiki_prune(
     data_dir: Path | None = data_dir_option,

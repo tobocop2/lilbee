@@ -364,6 +364,94 @@ def wiki_read(slug: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def wiki_generate(source: str) -> dict[str, Any]:
+    """Generate wiki tree summaries for a single source document.
+
+    Runs the same pipeline the HTTP and TUI entry points use: per-page
+    leaves at wiki/summaries/<source>/page-NNNN.md plus chapter/section
+    reduces at wiki/summaries/<source>/<slug>/index.md when a
+    DocumentStructure was persisted at ingest time.
+
+    Args:
+        source: Source filename indexed in the store, e.g. "cv-manual.pdf".
+    """
+    if not cfg.wiki:
+        return {"error": "wiki not enabled"}
+
+    from lilbee.wiki.gen import generate_summary_page
+
+    svc = get_services()
+    chunks = svc.store.get_chunks_by_source(source)
+    if not chunks:
+        return {"error": f"no indexed chunks for source: {source}"}
+    paths = generate_summary_page(source, chunks, svc.provider, svc.store)
+    return {
+        "command": "wiki_generate",
+        "source": source,
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
+    }
+
+
+@mcp.tool()
+def wiki_synthesize() -> dict[str, Any]:
+    """Generate synthesis pages for concept clusters spanning three or more sources.
+
+    Returns the list of synthesis page paths written to disk. When no
+    cluster meets the 3+ source threshold, returns an empty list and
+    ``count: 0``.
+    """
+    if not cfg.wiki:
+        return {"error": "wiki not enabled"}
+
+    from lilbee.wiki.gen import generate_synthesis_pages
+
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
+    return {
+        "command": "wiki_synthesize",
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
+    }
+
+
+@mcp.tool()
+def wiki_tree(source: str) -> dict[str, Any]:
+    """Return the heading tree extracted at ingest for a source document.
+
+    The tree is the kreuzberg DocumentStructure persisted during sync,
+    filtered to the heading backbone (title / heading / group nodes).
+    Useful for rendering breadcrumbs or a navigable outline in a client.
+
+    Args:
+        source: Source filename indexed in the store, e.g. "cv-manual.pdf".
+    """
+    from lilbee.wiki.structure import deserialize_document, walk_structure_to_wiki_nodes
+
+    record = get_services().store.get_document_structure(source)
+    if record is None:
+        return {"command": "wiki_tree", "source": source, "nodes": []}
+    document = deserialize_document(record["document_json"])
+    nodes = walk_structure_to_wiki_nodes(document) if document is not None else []
+    return {
+        "command": "wiki_tree",
+        "source": source,
+        "nodes": [
+            {
+                "slug": n.slug,
+                "parent_slug": n.parent_slug,
+                "depth": n.depth,
+                "title": n.title,
+                "kind": n.kind,
+                "page_start": n.page_start,
+                "page_end": n.page_end,
+            }
+            for n in nodes
+        ],
+    }
+
+
+@mcp.tool()
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
     Archives pages whose sources are all deleted or whose concept cluster

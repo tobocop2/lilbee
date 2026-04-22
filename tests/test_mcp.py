@@ -23,11 +23,14 @@ from lilbee.mcp import (
     status,
     sync,
     wiki_citations,
+    wiki_generate,
     wiki_lint,
     wiki_list,
     wiki_prune,
     wiki_read,
     wiki_status,
+    wiki_synthesize,
+    wiki_tree,
 )
 from lilbee.store import SearchChunk
 
@@ -704,6 +707,90 @@ class TestWikiStatus:
         assert result["summaries"] == 1
         assert result["drafts"] == 1
         assert result["pages"] == 2
+
+
+class TestWikiGenerateTool:
+    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = False
+        assert wiki_generate("doc.pdf") == {"error": "wiki not enabled"}
+
+    def test_no_chunks_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = wiki_generate("doc.pdf")
+        assert "error" in result
+        assert "no indexed chunks" in result["error"]
+
+    def test_returns_generated_paths(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        paths = [tmp_path / "wiki" / "summaries" / "doc" / "page-0001.md"]
+        monkeypatch.setattr("lilbee.wiki.gen.generate_summary_page", lambda *a, **kw: paths)
+        result = wiki_generate("doc.pdf")
+        assert result["command"] == "wiki_generate"
+        assert result["source"] == "doc.pdf"
+        assert result["count"] == 1
+        assert result["paths"] == [str(paths[0])]
+
+
+class TestWikiSynthesizeTool:
+    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = False
+        assert wiki_synthesize() == {"error": "wiki not enabled"}
+
+    def test_returns_synthesis_paths(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        paths = [tmp_path / "wiki" / "synthesis" / "typing.md"]
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: paths)
+        result = wiki_synthesize()
+        assert result["command"] == "wiki_synthesize"
+        assert result["count"] == 1
+        assert result["paths"] == [str(paths[0])]
+
+    def test_no_clusters_returns_empty(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
+        result = wiki_synthesize()
+        assert result["count"] == 0
+        assert result["paths"] == []
+
+
+class TestWikiTreeTool:
+    def test_no_structure_returns_empty_nodes(self, mock_svc, tmp_path):
+        mock_svc.store.get_document_structure.return_value = None
+        result = wiki_tree("never.pdf")
+        assert result["command"] == "wiki_tree"
+        assert result["source"] == "never.pdf"
+        assert result["nodes"] == []
+
+    def test_invalid_json_returns_empty_nodes(self, mock_svc, tmp_path):
+        mock_svc.store.get_document_structure.return_value = {"document_json": "{bad"}
+        result = wiki_tree("bad.pdf")
+        assert result["nodes"] == []
+
+    def test_returns_serialized_nodes(self, mock_svc, tmp_path):
+        import json as _json
+
+        document = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Chapter"},
+                    "page": 1,
+                    "children": [],
+                }
+            ]
+        }
+        mock_svc.store.get_document_structure.return_value = {
+            "document_json": _json.dumps(document)
+        }
+        result = wiki_tree("doc.pdf")
+        assert len(result["nodes"]) == 1
+        node = result["nodes"][0]
+        assert node["title"] == "Chapter"
+        assert node["slug"] == "01-chapter"
+        assert node["kind"] == "chapter"
+        assert node["page_start"] == 1
 
 
 class TestWikiPrune:

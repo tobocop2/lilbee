@@ -2092,6 +2092,173 @@ class TestWikiLint:
         assert "total" in data
 
 
+class TestWikiGenerate:
+    def test_no_chunks_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = runner.invoke(app, ["wiki", "generate", "cv-manual.pdf"])
+        assert result.exit_code == 1
+        assert "No indexed chunks" in result.output
+
+    def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        out_path = isolated_env / "wiki" / "summaries" / "cv-manual" / "page-0001.md"
+        monkeypatch.setattr("lilbee.wiki.gen.generate_summary_page", lambda *a, **kw: [out_path])
+        result = runner.invoke(app, ["wiki", "generate", "cv-manual.pdf"])
+        assert result.exit_code == 0
+        assert "1" in result.output
+        assert "page-0001.md" in result.output
+
+    def test_no_pages_generated_exits_nonzero(self, mock_svc, isolated_env, monkeypatch):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        monkeypatch.setattr("lilbee.wiki.gen.generate_summary_page", lambda *a, **kw: [])
+        result = runner.invoke(app, ["wiki", "generate", "cv-manual.pdf"])
+        assert result.exit_code == 1
+        assert "No pages generated" in result.output
+
+    def test_json_output(self, mock_svc, isolated_env, monkeypatch):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        out_path = isolated_env / "wiki" / "summaries" / "cv-manual" / "page-0001.md"
+        monkeypatch.setattr("lilbee.wiki.gen.generate_summary_page", lambda *a, **kw: [out_path])
+        result = runner.invoke(app, ["--json", "wiki", "generate", "cv-manual.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_generate"
+        assert data["source"] == "cv-manual.pdf"
+        assert data["count"] == 1
+
+    def test_json_output_no_chunks(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "generate", "cv-manual.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["paths"] == []
+        assert "error" in data
+
+
+class TestWikiTreeCmd:
+    def test_no_structure_prints_message(self, mock_svc, isolated_env):
+        mock_svc.store.get_document_structure.return_value = None
+        result = runner.invoke(app, ["wiki", "tree", "doc.pdf"])
+        assert result.exit_code == 0
+        assert "No document structure" in result.output
+
+    def test_renders_tree_from_structure(self, mock_svc, isolated_env):
+        import json as _json
+
+        document = {
+            "nodes": [
+                {
+                    "id": "h",
+                    "content": {"node_type": "heading", "level": 1, "text": "Brakes"},
+                    "page": 12,
+                    "page_end": 20,
+                    "children": [],
+                }
+            ]
+        }
+        mock_svc.store.get_document_structure.return_value = {
+            "document_json": _json.dumps(document)
+        }
+        result = runner.invoke(app, ["wiki", "tree", "cv-manual.pdf"])
+        assert result.exit_code == 0
+        assert "Brakes" in result.output
+        assert "p12-20" in result.output
+
+    def test_renders_multi_page_span_as_single(self, mock_svc, isolated_env):
+        """page_start==page_end should print as a single page."""
+        import json as _json
+
+        document = {
+            "nodes": [
+                {
+                    "id": "h",
+                    "content": {"node_type": "heading", "level": 1, "text": "Intro"},
+                    "page": 3,
+                    "children": [],
+                }
+            ]
+        }
+        mock_svc.store.get_document_structure.return_value = {
+            "document_json": _json.dumps(document)
+        }
+        result = runner.invoke(app, ["wiki", "tree", "doc.pdf"])
+        assert "p3" in result.output
+
+    def test_invalid_structure_json_prints_empty_message(self, mock_svc, isolated_env):
+        mock_svc.store.get_document_structure.return_value = {"document_json": "{bad"}
+        result = runner.invoke(app, ["wiki", "tree", "doc.pdf"])
+        assert result.exit_code == 0
+        assert "no detected heading structure" in result.output
+
+    def test_json_output_no_structure(self, mock_svc, isolated_env):
+        cfg.json_mode = True
+        mock_svc.store.get_document_structure.return_value = None
+        result = runner.invoke(app, ["--json", "wiki", "tree", "doc.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["nodes"] == []
+
+    def test_json_output_with_structure(self, mock_svc, isolated_env):
+        import json as _json
+
+        cfg.json_mode = True
+        document = {
+            "nodes": [
+                {
+                    "id": "h",
+                    "content": {"node_type": "heading", "level": 1, "text": "Brakes"},
+                    "page": 12,
+                    "children": [],
+                }
+            ]
+        }
+        mock_svc.store.get_document_structure.return_value = {
+            "document_json": _json.dumps(document)
+        }
+        result = runner.invoke(app, ["--json", "wiki", "tree", "doc.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data["nodes"]) == 1
+        assert data["nodes"][0]["title"] == "Brakes"
+
+
+class TestWikiSynthesize:
+    def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "No synthesis pages" in result.output
+
+    def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
+        out = isolated_env / "wiki" / "synthesis" / "typing.md"
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [out])
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "typing.md" in result.output
+
+    def test_json_output(self, mock_svc, isolated_env, monkeypatch):
+        cfg.json_mode = True
+        out = isolated_env / "wiki" / "synthesis" / "typing.md"
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [out])
+        result = runner.invoke(app, ["--json", "wiki", "synthesize"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_synthesize"
+        assert data["count"] == 1
+
+
 class TestWikiCitations:
     def test_citations_empty(self, mock_svc):
         mock_svc.store.get_citations_for_wiki.return_value = []
