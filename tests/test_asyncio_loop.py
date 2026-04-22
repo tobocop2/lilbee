@@ -86,6 +86,31 @@ def test_shutdown_without_start_is_noop() -> None:
     asyncio_loop.shutdown()
 
 
+def test_atexit_register_called_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated get_loop/shutdown cycles must not pollute the atexit queue.
+
+    Each get_loop that starts a fresh loop would otherwise register another
+    shutdown callback. Because shutdown is idempotent the extra calls are
+    harmless at exit time, but the accumulation is still a leak.
+    """
+    import lilbee.asyncio_loop as mod
+
+    # Reset the register-once flag so this test sees a clean register path.
+    mod._atexit_registered = False
+
+    registrations: list[object] = []
+    monkeypatch.setattr(mod.atexit, "register", lambda fn, *a, **kw: registrations.append(fn))
+
+    mod.get_loop()
+    mod.shutdown()
+    mod.get_loop()
+    mod.shutdown()
+    mod.get_loop()
+    mod.shutdown()
+
+    assert registrations == [mod.shutdown]
+
+
 def test_get_loop_restarts_after_shutdown() -> None:
     first = asyncio_loop.get_loop()
     asyncio_loop.shutdown()

@@ -25,11 +25,12 @@ T = TypeVar("T")
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 _lock = threading.Lock()
+_atexit_registered = False
 
 
 def get_loop() -> asyncio.AbstractEventLoop:
     """Return the background loop, starting it on a daemon thread if needed."""
-    global _loop, _thread
+    global _loop, _thread, _atexit_registered
     with _lock:
         if _loop is not None and not _loop.is_closed():
             return _loop
@@ -42,7 +43,11 @@ def get_loop() -> asyncio.AbstractEventLoop:
         thread.start()
         _loop = loop
         _thread = thread
-        atexit.register(shutdown)
+        if not _atexit_registered:
+            # Register once per process; shutdown is idempotent, so restarting
+            # the loop later doesn't need a second registration.
+            atexit.register(shutdown)
+            _atexit_registered = True
         return loop
 
 
