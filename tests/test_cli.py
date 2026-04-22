@@ -2093,7 +2093,24 @@ class TestWikiLint:
 
 
 class TestWikiTreeCmd:
+    def test_wiki_disabled_exits_with_error(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "tree", "doc.pdf"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "wiki not enabled"
+
+    def test_empty_source_exits_with_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "tree", "   "])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "source must not be empty"
+
     def test_no_structure_prints_message(self, mock_svc, isolated_env):
+        cfg.wiki = True
         mock_svc.store.get_document_structure.return_value = None
         result = runner.invoke(app, ["wiki", "tree", "doc.pdf"])
         assert result.exit_code == 0
@@ -2102,6 +2119,7 @@ class TestWikiTreeCmd:
     def test_renders_tree_from_structure(self, mock_svc, isolated_env):
         import json as _json
 
+        cfg.wiki = True
         document = {
             "nodes": [
                 {
@@ -2125,6 +2143,7 @@ class TestWikiTreeCmd:
         """page_start==page_end should print as a single page."""
         import json as _json
 
+        cfg.wiki = True
         document = {
             "nodes": [
                 {
@@ -2142,12 +2161,14 @@ class TestWikiTreeCmd:
         assert "p3" in result.output
 
     def test_invalid_structure_json_prints_empty_message(self, mock_svc, isolated_env):
+        cfg.wiki = True
         mock_svc.store.get_document_structure.return_value = {"document_json": "{bad"}
         result = runner.invoke(app, ["wiki", "tree", "doc.pdf"])
         assert result.exit_code == 0
         assert "no detected heading structure" in result.output
 
     def test_json_output_no_structure(self, mock_svc, isolated_env):
+        cfg.wiki = True
         cfg.json_mode = True
         mock_svc.store.get_document_structure.return_value = None
         result = runner.invoke(app, ["--json", "wiki", "tree", "doc.pdf"])
@@ -2158,6 +2179,7 @@ class TestWikiTreeCmd:
     def test_json_output_with_structure(self, mock_svc, isolated_env):
         import json as _json
 
+        cfg.wiki = True
         cfg.json_mode = True
         document = {
             "nodes": [

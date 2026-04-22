@@ -1191,7 +1191,17 @@ def wiki_tree(
 ) -> None:
     """Render the heading tree extracted at ingest time for *source*."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.wiki.structure import deserialize_document, walk_structure_to_wiki_nodes
+
+    if not cfg.wiki:
+        _fail_wiki_generate(WIKI_DISABLED_ERROR)
+    if not source or not source.strip():
+        _fail_wiki_generate(WIKI_EMPTY_SOURCE_ERROR)
+
+    from lilbee.wiki.structure import (
+        deserialize_document,
+        walk_structure_to_wiki_nodes,
+        wiki_node_to_dict,
+    )
 
     record = get_services().store.get_document_structure(source)
     if record is None:
@@ -1209,18 +1219,7 @@ def wiki_tree(
             {
                 "command": "wiki_tree",
                 "source": source,
-                "nodes": [
-                    {
-                        "slug": n.slug,
-                        "parent_slug": n.parent_slug,
-                        "depth": n.depth,
-                        "title": n.title,
-                        "kind": n.kind,
-                        "page_start": n.page_start,
-                        "page_end": n.page_end,
-                    }
-                    for n in nodes
-                ],
+                "nodes": [wiki_node_to_dict(n) for n in nodes],
             }
         )
         return

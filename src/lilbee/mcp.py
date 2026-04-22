@@ -441,7 +441,15 @@ def wiki_tree(source: str) -> dict[str, Any]:
     Args:
         source: Source filename indexed in the store, e.g. "cv-manual.pdf".
     """
-    from lilbee.wiki.structure import deserialize_document, walk_structure_to_wiki_nodes
+    if not cfg.wiki:
+        return {"error": WIKI_DISABLED_ERROR}
+    if not source or not source.strip():
+        return {"error": WIKI_EMPTY_SOURCE_ERROR}
+    from lilbee.wiki.structure import (
+        deserialize_document,
+        walk_structure_to_wiki_nodes,
+        wiki_node_to_dict,
+    )
 
     record = get_services().store.get_document_structure(source)
     if record is None:
@@ -451,18 +459,7 @@ def wiki_tree(source: str) -> dict[str, Any]:
     return {
         "command": "wiki_tree",
         "source": source,
-        "nodes": [
-            {
-                "slug": n.slug,
-                "parent_slug": n.parent_slug,
-                "depth": n.depth,
-                "title": n.title,
-                "kind": n.kind,
-                "page_start": n.page_start,
-                "page_end": n.page_end,
-            }
-            for n in nodes
-        ],
+        "nodes": [wiki_node_to_dict(n) for n in nodes],
     }
 
 

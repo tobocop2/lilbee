@@ -9,6 +9,7 @@ from lilbee.wiki.structure import (
     _heading_title,
     deserialize_document,
     walk_structure_to_wiki_nodes,
+    wiki_node_to_dict,
 )
 
 
@@ -335,6 +336,47 @@ class TestWalkStructure:
         result = walk_structure_to_wiki_nodes(doc)
         assert len(result) == 1
         assert result[0].page_end == 5
+
+
+class TestWikiNodeToDict:
+    def test_emits_expected_keys(self):
+        node = WikiNode(
+            slug="01-brakes/03-abs",
+            parent_slug="01-brakes",
+            depth=2,
+            ordinal=2,
+            title="ABS",
+            page_start=12,
+            page_end=14,
+            kind="section",
+            kreuzberg_node_id="node-abs",
+        )
+        assert wiki_node_to_dict(node) == {
+            "slug": "01-brakes/03-abs",
+            "parent_slug": "01-brakes",
+            "depth": 2,
+            "title": "ABS",
+            "kind": "section",
+            "page_start": 12,
+            "page_end": 14,
+        }
+
+    def test_omits_internal_fields(self):
+        """Internal-only fields (ordinal, kreuzberg_node_id) do not leak to clients."""
+        node = WikiNode(
+            slug="01-x",
+            parent_slug=None,
+            depth=1,
+            ordinal=0,
+            title="X",
+            page_start=1,
+            page_end=1,
+            kind="chapter",
+            kreuzberg_node_id="node-x",
+        )
+        out = wiki_node_to_dict(node)
+        assert "ordinal" not in out
+        assert "kreuzberg_node_id" not in out
 
 
 class TestHeadingTitleDirect:

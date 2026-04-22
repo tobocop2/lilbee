@@ -48,6 +48,19 @@ class WikiNode:
     kreuzberg_node_id: str
 
 
+def wiki_node_to_dict(node: WikiNode) -> dict[str, Any]:
+    """Serialize a WikiNode to the dict shape CLI and MCP emit to clients."""
+    return {
+        "slug": node.slug,
+        "parent_slug": node.parent_slug,
+        "depth": node.depth,
+        "title": node.title,
+        "kind": node.kind,
+        "page_start": node.page_start,
+        "page_end": node.page_end,
+    }
+
+
 def deserialize_document(document_json: str) -> dict[str, Any] | None:
     """Parse a persisted DocumentStructure JSON blob, returning ``None`` on failure."""
     try:

@@ -34,6 +34,8 @@ from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
+    WIKI_LOG_ACTION_GENERATED,
+    WIKI_LOG_ACTION_REDUCED,
     PageTarget,
     make_slug,
     parse_frontmatter,
@@ -444,7 +446,7 @@ def _persist_and_finalize(
 
     update_wiki_index(config)
     append_wiki_log(
-        "generated",
+        WIKI_LOG_ACTION_GENERATED,
         f"{target.page_type} page for {target.label} -> {target.subdir}/{target.slug}.md",
         config,
     )
@@ -834,7 +836,11 @@ def _generate_inner_node(
     summary_text = strip_citation_block(summary_text)
     target.write_text(frontmatter + summary_text + "\n", encoding="utf-8")
 
-    append_wiki_log("reduced", f"{node.kind} {source_name}/{node.slug} -> {subdir}/...", config)
+    append_wiki_log(
+        WIKI_LOG_ACTION_REDUCED,
+        f"{node.kind} {source_name}/{node.slug} -> {subdir}/...",
+        config,
+    )
     _emit("done", source=label, score=score, partial=partial)
     return target
 

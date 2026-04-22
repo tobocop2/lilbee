@@ -34,6 +34,12 @@ WIKI_STATUS_FAILED = "failed"
 WIKI_DISABLED_ERROR = "wiki not enabled"
 WIKI_EMPTY_SOURCE_ERROR = "source must not be empty"
 
+# wiki/log.md action labels. Distinct from WIKI_STATUS_* (which are result
+# statuses returned to CLI/MCP/HTTP callers); these are internal audit trail
+# verbs written into the log file.
+WIKI_LOG_ACTION_GENERATED = "generated"
+WIKI_LOG_ACTION_REDUCED = "reduced"
+
 SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
     SUMMARIES_SUBDIR: WikiPageType.SUMMARY,
     SYNTHESIS_SUBDIR: WikiPageType.SYNTHESIS,

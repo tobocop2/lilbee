@@ -732,7 +732,17 @@ class TestWikiSynthesizeTool:
 
 
 class TestWikiTreeTool:
+    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = False
+        assert wiki_tree("doc.pdf") == {"error": "wiki not enabled"}
+
+    def test_empty_source_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        result = wiki_tree("   ")
+        assert result == {"error": "source must not be empty"}
+
     def test_no_structure_returns_empty_nodes(self, mock_svc, tmp_path):
+        cfg.wiki = True
         mock_svc.store.get_document_structure.return_value = None
         result = wiki_tree("never.pdf")
         assert result["command"] == "wiki_tree"
@@ -740,6 +750,7 @@ class TestWikiTreeTool:
         assert result["nodes"] == []
 
     def test_invalid_json_returns_empty_nodes(self, mock_svc, tmp_path):
+        cfg.wiki = True
         mock_svc.store.get_document_structure.return_value = {"document_json": "{bad"}
         result = wiki_tree("bad.pdf")
         assert result["nodes"] == []
@@ -747,6 +758,7 @@ class TestWikiTreeTool:
     def test_returns_serialized_nodes(self, mock_svc, tmp_path):
         import json as _json
 
+        cfg.wiki = True
         document = {
             "nodes": [
                 {
