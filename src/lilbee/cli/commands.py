@@ -48,7 +48,14 @@ from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_i
 from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
-from lilbee.wiki.shared import WIKI_DISABLED_ERROR, WIKI_STATUS_FAILED, WIKI_STATUS_GENERATED
+from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
+    SUMMARIES_SUBDIR,
+    WIKI_DISABLED_ERROR,
+    WIKI_EMPTY_SOURCE_ERROR,
+    WIKI_STATUS_FAILED,
+    WIKI_STATUS_GENERATED,
+)
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -1058,8 +1065,6 @@ def wiki_status(
         console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
         return
 
-    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
-
     summaries = _count_md_files(wiki_root / SUMMARIES_SUBDIR)
     drafts = _count_md_files(wiki_root / DRAFTS_SUBDIR)
 
@@ -1106,7 +1111,7 @@ def wiki_generate(
     if not cfg.wiki:
         _fail_wiki_generate(WIKI_DISABLED_ERROR)
     if not source or not source.strip():
-        _fail_wiki_generate("source must not be empty")
+        _fail_wiki_generate(WIKI_EMPTY_SOURCE_ERROR)
 
     from lilbee.wiki.gen import generate_summary_page
 
@@ -1126,7 +1131,11 @@ def wiki_generate(
 
 
 def _fail_wiki_generate(error: str) -> NoReturn:
-    """Emit a wiki_generate hard-failure (validation error) and exit non-zero."""
+    """Emit a wiki_generate validation error (pre-generation) as {"error": ...} and exit 1.
+
+    Distinct from _emit_wiki_generate_failure, which emits a soft-failure result
+    (generator ran but returned no page) in the full wiki_generate JSON shape.
+    """
     if cfg.json_mode:
         json_output({"error": error})
     else:
