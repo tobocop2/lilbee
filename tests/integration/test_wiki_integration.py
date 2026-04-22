@@ -47,9 +47,10 @@ class TestGenerateSummaryPage:
             "chat",
             side_effect=[wiki_content, faithfulness_response],
         ):
-            result = generate_summary_page("specs.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("specs.md", chunks, svc.provider, svc.store)
 
-        assert result is not None, "generate_summary_page returned None"
+        assert pages, "generate_summary_page returned no pages"
+        result = pages[0]
         assert result.exists(), f"Generated page does not exist: {result}"
         content = result.read_text(encoding="utf-8")
         assert "---" in content  # frontmatter present
@@ -78,10 +79,10 @@ class TestGenerateSummaryPage:
             "chat",
             side_effect=[wiki_content, faithfulness_response],
         ):
-            result = generate_summary_page("deploy.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("deploy.md", chunks, svc.provider, svc.store)
 
-        assert result is not None
-        assert "drafts" in str(result), f"Expected page in drafts/, got {result}"
+        assert pages, "generate_summary_page returned no pages"
+        assert "drafts" in str(pages[0]), f"Expected page in drafts/, got {pages[0]}"
 
 
 class TestLintWiki:
@@ -105,10 +106,10 @@ class TestLintWiki:
             "chat",
             side_effect=[wiki_content, "0.90"],
         ):
-            page = generate_summary_page("auth-part1.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("auth-part1.md", chunks, svc.provider, svc.store)
 
-        assert page is not None
-        wiki_source = f"{cfg.wiki_dir}/summaries/auth-part1.md"
+        assert pages, "generate_summary_page returned no pages"
+        wiki_source = f"{cfg.wiki_dir}/summaries/auth-part1/page-0000.md"
         issues = lint_wiki_page(wiki_source, svc.store)
         # No source_missing or path_traversal errors for a fresh page
         critical = [
@@ -138,15 +139,15 @@ class TestLintWiki:
             "chat",
             side_effect=[wiki_content, "0.85"],
         ):
-            page = generate_summary_page("notes.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("notes.md", chunks, svc.provider, svc.store)
 
-        assert page is not None
+        assert pages, "generate_summary_page returned no pages"
 
         # Modify the source document
         source_path = cfg.documents_dir / "notes.md"
         source_path.write_text("# Updated meeting notes\n\nAll plans changed.\n")
 
-        wiki_source = f"{cfg.wiki_dir}/summaries/notes.md"
+        wiki_source = f"{cfg.wiki_dir}/summaries/notes/page-0000.md"
         issues = lint_wiki_page(wiki_source, svc.store)
         stale = [i for i in issues if i.issue_type == IssueType.STALE_HASH]
         assert len(stale) > 0, f"Expected stale hash warning, got {[i.to_dict() for i in issues]}"
@@ -173,9 +174,9 @@ class TestPruneWiki:
             "chat",
             side_effect=[wiki_content, "0.85"],
         ):
-            page = generate_summary_page("db-perf.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("db-perf.md", chunks, svc.provider, svc.store)
 
-        assert page is not None
+        assert pages, "generate_summary_page returned no pages"
 
         # Delete the source document
         source_path = cfg.documents_dir / "db-perf.md"
@@ -211,12 +212,12 @@ class TestBrowseWiki:
             "chat",
             side_effect=[wiki_content, "0.88"],
         ):
-            page = generate_summary_page("api-perf.md", chunks, svc.provider, svc.store)
+            generated = generate_summary_page("api-perf.md", chunks, svc.provider, svc.store)
 
-        assert page is not None
+        assert generated, "generate_summary_page returned no pages"
         wiki_root = cfg.data_root / cfg.wiki_dir
-        pages = list_pages(wiki_root)
-        slugs = [p.slug for p in pages]
+        listed = list_pages(wiki_root)
+        slugs = [p.slug for p in listed]
         assert any("api-perf" in s for s in slugs), f"api-perf page not in {slugs}"
 
     def test_wiki_read_page(self, wiki_pipeline):
@@ -239,11 +240,11 @@ class TestBrowseWiki:
             "chat",
             side_effect=[wiki_content, "0.92"],
         ):
-            page = generate_summary_page("auth-part2.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("auth-part2.md", chunks, svc.provider, svc.store)
 
-        assert page is not None
+        assert pages, "generate_summary_page returned no pages"
         wiki_root = cfg.data_root / cfg.wiki_dir
-        result = read_page(wiki_root, "summaries/auth-part2")
+        result = read_page(wiki_root, "summaries/auth-part2/page-0000")
         assert result is not None, "read_page returned None"
         assert "RS256" in result.content
 
@@ -270,10 +271,10 @@ class TestCitations:
             "chat",
             side_effect=[wiki_content, "0.90"],
         ):
-            page = generate_summary_page("auth-part3.md", chunks, svc.provider, svc.store)
+            pages = generate_summary_page("auth-part3.md", chunks, svc.provider, svc.store)
 
-        assert page is not None
-        wiki_source = f"{cfg.wiki_dir}/summaries/auth-part3.md"
+        assert pages, "generate_summary_page returned no pages"
+        wiki_source = f"{cfg.wiki_dir}/summaries/auth-part3/page-0000.md"
         citations = svc.store.get_citations_for_wiki(wiki_source)
         assert len(citations) > 0, "No citation records found in store"
         keys = [c["citation_key"] for c in citations]
