@@ -237,6 +237,56 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Beyond this count, run `lilbee wiki update` manually."
         ),
     ),
+    "wiki_summary_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt for per-source summary pages. "
+            "Must keep the {source_name} and {chunks_text} placeholders."
+        ),
+    ),
+    "wiki_faithfulness_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt that asks the model to score a page's faithfulness. "
+            "Must keep {chunks_text} and {wiki_text}."
+        ),
+    ),
+    "wiki_synthesis_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt for cross-source synthesis pages. "
+            "Must keep {topic}, {source_list}, and {chunks_text}."
+        ),
+    ),
+    "wiki_reduce_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt that merges child summaries into a section summary. "
+            "Must keep {source_name}, {section_title}, and {children_text}."
+        ),
+    ),
+    "wiki_concept_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt for concept and entity pages. "
+            "Must keep {topic}, {kind}, {source_list}, {chunks_text}, and {related_max}."
+        ),
+    ),
     "wiki_clusterer_k": SettingDef(
         int,
         nullable=False,
