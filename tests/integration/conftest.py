@@ -38,7 +38,31 @@ def _preserve_models_dir():
 
 
 @pytest.fixture(scope="session")
-def rag_pipeline(tmp_path_factory):
+def _integration_loop():
+    """Session-scoped event loop used by pipeline fixtures.
+
+    Keeping one loop alive across the session avoids the Windows
+    ProactorEventLoop subprocess-transport leak that fires when asyncio.run()
+    spins a fresh loop per fixture call: the loop closes before the
+    transport's close callback runs, and the later GC pass raises
+    'I/O operation on closed pipe' during interpreter shutdown.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        yield loop
+    finally:
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        # Let subprocess transport close callbacks flush before the loop closes.
+        loop.run_until_complete(asyncio.sleep(0.1))
+        loop.close()
+
+
+@pytest.fixture(scope="session")
+def rag_pipeline(tmp_path_factory, _integration_loop):
     """Set up a real RAG pipeline with downloaded models and test documents.
     Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
@@ -83,7 +107,7 @@ def rag_pipeline(tmp_path_factory):
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 
-    result = asyncio.run(sync(quiet=True))
+    result = _integration_loop.run_until_complete(sync(quiet=True))
 
     yield {
         "tmp": tmp,
@@ -101,7 +125,7 @@ def rag_pipeline(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def wiki_pipeline(tmp_path_factory):
+def wiki_pipeline(tmp_path_factory, _integration_loop):
     """Set up a real pipeline with wiki enabled.
     Session-scoped: downloads models once, creates documents + wiki dir,
     runs sync, yields pipeline data, then restores config.
@@ -149,7 +173,7 @@ def wiki_pipeline(tmp_path_factory):
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 
-    result = asyncio.run(sync(quiet=True))
+    result = _integration_loop.run_until_complete(sync(quiet=True))
 
     yield {
         "tmp": tmp,

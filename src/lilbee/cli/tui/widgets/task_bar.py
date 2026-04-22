@@ -18,7 +18,6 @@ State ownership is split so the bar can render on every screen:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import threading
@@ -30,6 +29,7 @@ from textual.app import ComposeResult
 from textual.timer import Timer
 from textual.widgets import Label, Static
 
+from lilbee import asyncio_loop
 from lilbee.cancellation import TaskCancelled
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
@@ -131,7 +131,7 @@ def _chromium_bootstrap_target(reporter: ProgressReporter) -> None:
             detail = msg.SETUP_CHROMIUM_DETAIL_UNKNOWN.format(done=mb)
         reporter.update(pct, detail)
 
-    asyncio.run(bootstrap_chromium(on_progress=_forward))
+    asyncio_loop.run(bootstrap_chromium(on_progress=_forward))
 
 
 class TaskBarController:

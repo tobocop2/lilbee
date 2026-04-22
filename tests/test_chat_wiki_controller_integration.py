@@ -137,7 +137,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
                 with (
                     patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
                     patch("lilbee.ingest.sync", new=MagicMock(return_value=None)),
-                    patch("asyncio.run", new=MagicMock(return_value=SyncResult())),
+                    patch("lilbee.asyncio_loop.run", new=MagicMock(return_value=SyncResult())),
                 ):
                     screen._do_add(src, reporter)
             except BaseException as e:  # pragma: no cover
