@@ -39,14 +39,7 @@ def _preserve_models_dir():
 
 @pytest.fixture(scope="session")
 def _integration_loop():
-    """Session-scoped event loop used by pipeline fixtures.
-
-    Keeping one loop alive across the session avoids the Windows
-    ProactorEventLoop subprocess-transport leak that fires when asyncio.run()
-    spins a fresh loop per fixture call: the loop closes before the
-    transport's close callback runs, and the later GC pass raises
-    'I/O operation on closed pipe' during interpreter shutdown.
-    """
+    """Session-scoped event loop shared by pipeline fixtures."""
     loop = asyncio.new_event_loop()
     try:
         yield loop
@@ -56,7 +49,6 @@ def _integration_loop():
             task.cancel()
         if pending:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        # Let subprocess transport close callbacks flush before the loop closes.
         loop.run_until_complete(asyncio.sleep(0.1))
         loop.close()
 

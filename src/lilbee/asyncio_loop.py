@@ -1,13 +1,7 @@
 """Process-lifetime background asyncio loop for TUI workers.
 
-Windows ProactorEventLoop leaks subprocess transports when loops are opened
-and closed per call. A loop kept alive for the life of the TUI app lets
-transport close callbacks run on a live loop, avoiding "I/O operation on
-closed pipe" during interpreter shutdown.
-
-Scope: TUI @work(thread=True) workers. Not for CLI one-shots (use
-asyncio.run()) or the server (owns its own loop). Integration test fixtures
-use run_until_complete on a session-scoped loop instead.
+One loop on a daemon thread, used by every @work(thread=True) worker.
+CLI one-shots and the server own their own loops — don't route them here.
 """
 
 from __future__ import annotations
@@ -54,16 +48,15 @@ def get_loop() -> asyncio.AbstractEventLoop:
 def run(coro: Coroutine[Any, Any, T]) -> T:
     """Submit *coro* to the background loop from any thread; block for result.
 
-    Drop-in replacement for asyncio.run() in TUI worker contexts. Exceptions
-    raised inside *coro* propagate unchanged, including asyncio.CancelledError
-    (run_coroutine_threadsafe would otherwise wrap it as
-    concurrent.futures.CancelledError, breaking any `except asyncio.CancelledError`
-    handler at the call site).
+    Exceptions raised inside *coro* propagate unchanged, including
+    asyncio.CancelledError.
     """
     loop = get_loop()
     try:
         return asyncio.run_coroutine_threadsafe(coro, loop).result()
     except concurrent.futures.CancelledError as exc:
+        # run_coroutine_threadsafe re-raises cancellation as the concurrent
+        # flavour; rewrap so `except asyncio.CancelledError` still matches.
         raise asyncio.CancelledError(*exc.args) from None
 
 
@@ -90,5 +83,5 @@ async def _drain(loop: asyncio.AbstractEventLoop) -> None:
         task.cancel()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
-    # Let subprocess transport close callbacks flush before the loop stops.
+    # Give scheduled close callbacks a chance to run before we stop the loop.
     await asyncio.sleep(0.05)

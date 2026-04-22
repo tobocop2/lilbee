@@ -303,12 +303,7 @@ def test_do_crawl_reports_setup_progress() -> None:
 
 
 def test_do_crawl_reports_page_progress() -> None:
-    """_do_crawl wires CrawlPageEvent through reporter.update.
-
-    Runs on a worker thread off the pytest event loop: _do_crawl uses
-    asyncio_loop.run internally, which blocks the calling thread on a
-    future, so the caller must not be a running asyncio task.
-    """
+    """_do_crawl wires CrawlPageEvent through reporter.update."""
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen

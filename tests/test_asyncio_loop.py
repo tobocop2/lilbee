@@ -34,12 +34,7 @@ def test_run_propagates_exceptions() -> None:
 
 
 def test_run_propagates_asyncio_cancelled_error() -> None:
-    """run_coroutine_threadsafe wraps asyncio.CancelledError as
-    concurrent.futures.CancelledError; asyncio_loop.run must unwrap it so
-    callers can still write `except asyncio.CancelledError:`. The original
-    message isn't preserved through the asyncio scheduler, but the exception
-    class is what callers match on.
-    """
+    """`except asyncio.CancelledError:` at call sites must still match."""
 
     async def cancel_self() -> None:
         raise asyncio.CancelledError("stop")
@@ -87,12 +82,7 @@ def test_shutdown_without_start_is_noop() -> None:
 
 
 def test_atexit_register_called_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Repeated get_loop/shutdown cycles must not pollute the atexit queue.
-
-    Each get_loop that starts a fresh loop would otherwise register another
-    shutdown callback. Because shutdown is idempotent the extra calls are
-    harmless at exit time, but the accumulation is still a leak.
-    """
+    """Repeated get_loop/shutdown cycles must not stack atexit callbacks."""
     import lilbee.asyncio_loop as mod
 
     # Reset the register-once flag so this test sees a clean register path.
