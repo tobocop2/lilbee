@@ -12,28 +12,39 @@ from lilbee.store import SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation
 from lilbee.wiki.gen import (
     _check_faithfulness,
+    _chunks_in_page_range,
     _chunks_to_text,
+    _collect_inner_children,
     _content_change_ratio,
     _diff_summary,
     _divert_to_drafts,
     _extract_excerpt,
     _find_cached_leaf,
     _find_excerpt_source,
+    _format_children_for_reduce,
+    _generate_inner_node,
     _generate_synthesis_page,
     _group_chunks_by_page,
+    _inner_node_target,
+    _is_draft_path,
     _leaf_hash,
+    _leaves_in_range,
+    _load_document_structure,
     _match_citation_source,
     _page_slug,
     _parse_faithfulness_score,
+    _read_page_body,
     _resolve_citations,
     _resolve_multi_source_citations,
     _source_slug,
     _truncate_chunks_to_budget,
     _verify_citations,
+    _wiki_nodes_bottom_up,
     generate_summary_page,
     generate_synthesis_pages,
 )
 from lilbee.wiki.shared import make_slug
+from lilbee.wiki.structure import WikiNode
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +78,9 @@ def _mock_provider(wiki_text: str, faith_score: str = "0.85") -> MagicMock:
 def _mock_store() -> MagicMock:
     store = MagicMock(spec=Store)
     store.add_citations.return_value = 0
+    # Tree reductions look up the persisted DocumentStructure; most tests
+    # don't stage one, so default to "no structure persisted".
+    store.get_document_structure.return_value = None
     return store
 
 
@@ -891,6 +905,444 @@ class TestSourceSlug:
 
     def test_no_extension_kept(self):
         assert _source_slug("README") == "README"
+
+
+def _wiki_node(
+    slug: str = "01-chapter",
+    parent_slug: str | None = None,
+    depth: int = 1,
+    ordinal: int = 0,
+    title: str = "Chapter",
+    page_start: int = 1,
+    page_end: int = 1,
+    kind: str = "chapter",
+) -> WikiNode:
+    return WikiNode(
+        slug=slug,
+        parent_slug=parent_slug,
+        depth=depth,
+        ordinal=ordinal,
+        title=title,
+        page_start=page_start,
+        page_end=page_end,
+        kind=kind,
+        kreuzberg_node_id=f"node-{slug}",
+    )
+
+
+class TestChunksInPageRange:
+    def test_inclusive_endpoints(self):
+        chunks = [
+            _make_chunk("a", page_start=1),
+            _make_chunk("b", page_start=3, chunk_index=1),
+            _make_chunk("c", page_start=5, chunk_index=2),
+        ]
+        result = _chunks_in_page_range(chunks, 1, 3)
+        assert [c.chunk for c in result] == ["a", "b"]
+
+    def test_empty_range_returns_empty(self):
+        chunks = [_make_chunk("a", page_start=1)]
+        assert _chunks_in_page_range(chunks, 5, 3) == []
+
+    def test_no_matches_returns_empty(self):
+        chunks = [_make_chunk("a", page_start=10)]
+        assert _chunks_in_page_range(chunks, 1, 5) == []
+
+
+class TestLeavesInRange:
+    def test_returns_matching_paths_sorted(self, tmp_path: Path):
+        paths = {3: tmp_path / "p3.md", 1: tmp_path / "p1.md", 5: tmp_path / "p5.md"}
+        result = _leaves_in_range(paths, 1, 4)
+        # Sorted by page number so the reduce prompt sees pages in order.
+        assert result == [tmp_path / "p1.md", tmp_path / "p3.md"]
+
+    def test_empty_range(self, tmp_path: Path):
+        paths = {1: tmp_path / "p.md"}
+        assert _leaves_in_range(paths, 5, 3) == []
+
+
+class TestReadPageBody:
+    def test_strips_frontmatter(self, tmp_path: Path):
+        p = tmp_path / "p.md"
+        p.write_text("---\ntitle: T\n---\nBody text.\n", encoding="utf-8")
+        assert _read_page_body(p).rstrip() == "Body text."
+
+    def test_no_frontmatter_returns_all(self, tmp_path: Path):
+        p = tmp_path / "p.md"
+        p.write_text("# Heading\nBody.\n", encoding="utf-8")
+        assert _read_page_body(p) == "# Heading\nBody.\n"
+
+    def test_unclosed_frontmatter_returns_all(self, tmp_path: Path):
+        p = tmp_path / "p.md"
+        p.write_text("---\ntitle: unclosed\nmore text\n", encoding="utf-8")
+        assert _read_page_body(p).startswith("---")
+
+
+class TestFormatChildrenForReduce:
+    def test_joins_bodies_with_separator(self, tmp_path: Path):
+        a = tmp_path / "a.md"
+        b = tmp_path / "b.md"
+        a.write_text("---\ntitle: A\n---\nBody A.\n")
+        b.write_text("---\ntitle: B\n---\nBody B.\n")
+        result = _format_children_for_reduce([a, b])
+        assert "Body A." in result
+        assert "Body B." in result
+        assert "[From a]" in result
+        assert "[From b]" in result
+        assert "\n\n---\n\n" in result
+
+    def test_skips_empty_bodies(self, tmp_path: Path):
+        a = tmp_path / "a.md"
+        a.write_text("---\ntitle: A\n---\n\n", encoding="utf-8")
+        result = _format_children_for_reduce([a])
+        assert result == ""
+
+
+class TestIsDraftPath:
+    def test_draft_directory(self, tmp_path: Path):
+        assert _is_draft_path(tmp_path / "drafts" / "x.md", tmp_path) is True
+
+    def test_summaries_directory(self, tmp_path: Path):
+        assert _is_draft_path(tmp_path / "summaries" / "x.md", tmp_path) is False
+
+    def test_unrelated_path_is_not_draft(self, tmp_path: Path):
+        assert _is_draft_path(Path("/elsewhere/x.md"), tmp_path) is False
+
+
+class TestWikiNodesBottomUp:
+    def test_deepest_first(self):
+        nodes = [
+            _wiki_node(slug="01-a", depth=1),
+            _wiki_node(slug="01-a/01-b", parent_slug="01-a", depth=2),
+            _wiki_node(slug="01-a/01-b/01-c", parent_slug="01-a/01-b", depth=3),
+        ]
+        ordered = _wiki_nodes_bottom_up(nodes)
+        assert [n.depth for n in ordered] == [3, 2, 1]
+
+
+class TestInnerNodeTarget:
+    def test_builds_nested_index_path(self, tmp_path: Path):
+        got = _inner_node_target(tmp_path, "summaries", "cv-manual", "01-chapter/02-section")
+        assert got == (
+            tmp_path / "summaries" / "cv-manual" / "01-chapter" / "02-section" / "index.md"
+        )
+
+
+class TestLoadDocumentStructure:
+    def test_no_record_returns_empty(self):
+        store = MagicMock(spec=Store)
+        store.get_document_structure.return_value = None
+        assert _load_document_structure(store, "doc.pdf") == []
+
+    def test_non_dict_record_returns_empty(self):
+        store = MagicMock(spec=Store)
+        store.get_document_structure.return_value = "not a dict"
+        assert _load_document_structure(store, "doc.pdf") == []
+
+    def test_invalid_json_returns_empty(self):
+        store = MagicMock(spec=Store)
+        store.get_document_structure.return_value = {"document_json": "{bad"}
+        assert _load_document_structure(store, "doc.pdf") == []
+
+    def test_missing_json_field_returns_empty(self):
+        store = MagicMock(spec=Store)
+        store.get_document_structure.return_value = {"other": "fields"}
+        assert _load_document_structure(store, "doc.pdf") == []
+
+    def test_walks_valid_structure(self):
+        import json as _json
+
+        store = MagicMock(spec=Store)
+        store.get_document_structure.return_value = {
+            "document_json": _json.dumps(
+                {
+                    "nodes": [
+                        {
+                            "id": "h",
+                            "content": {"node_type": "heading", "level": 1, "text": "Chapter"},
+                            "page": 1,
+                            "children": [],
+                        }
+                    ]
+                }
+            )
+        }
+        result = _load_document_structure(store, "doc.pdf")
+        assert len(result) == 1
+        assert result[0].title == "Chapter"
+
+
+class TestCollectInnerChildren:
+    def test_uses_wiki_children_when_present(self, tmp_path: Path):
+        parent = _wiki_node(slug="01-a", depth=1)
+        child = _wiki_node(slug="01-a/01-b", parent_slug="01-a", depth=2)
+        child_path = tmp_path / "child.md"
+        child_path.write_text("body")
+        paths, partial = _collect_inner_children(
+            parent, [parent, child], {child.slug: child_path}, {}
+        )
+        assert paths == [child_path]
+        assert partial == []
+
+    def test_missing_wiki_child_marks_partial(self, tmp_path: Path):
+        parent = _wiki_node(slug="01-a", depth=1)
+        c1 = _wiki_node(slug="01-a/01-b", parent_slug="01-a", depth=2, ordinal=0)
+        c2 = _wiki_node(slug="01-a/02-c", parent_slug="01-a", depth=2, ordinal=1)
+        good = tmp_path / "good.md"
+        good.write_text("body")
+        paths, partial = _collect_inner_children(parent, [parent, c1, c2], {c1.slug: good}, {})
+        assert paths == [good]
+        assert partial == ["01-a/02-c"]
+
+    def test_falls_back_to_page_leaves(self, tmp_path: Path):
+        leaf_node = _wiki_node(
+            slug="01-page-section",
+            depth=2,
+            parent_slug="01-a",
+            page_start=1,
+            page_end=3,
+        )
+        leaves = {
+            1: tmp_path / "p1.md",
+            2: tmp_path / "p2.md",
+            5: tmp_path / "p5.md",
+        }
+        paths, partial = _collect_inner_children(leaf_node, [leaf_node], {}, leaves)
+        assert paths == [tmp_path / "p1.md", tmp_path / "p2.md"]
+        assert partial == []
+
+
+class TestGenerateInnerNode:
+    def _setup(self, isolated_env: Path):
+        source = isolated_env / "documents" / "doc.pdf"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("content")
+        leaf_path = isolated_env / "wiki" / "summaries" / "doc" / "page-0001.md"
+        leaf_path.parent.mkdir(parents=True)
+        leaf_path.write_text(
+            "---\ntitle: P1\nfaithfulness_score: 0.90\n---\n> Leaf fact.[^src1]\n\nDetails.\n",
+            encoding="utf-8",
+        )
+        return leaf_path
+
+    def test_writes_index_md(self, isolated_env: Path):
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ["# Section\n\n> Section body.\n", "0.9"]
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is not None
+        assert out.name == "index.md"
+        assert "summaries/doc/01-chapter/index.md" in str(out).replace("\\", "/")
+        content = out.read_text(encoding="utf-8")
+        assert "faithfulness_score: 0.90" in content
+        assert "kind: chapter" in content
+
+    def test_low_score_goes_to_drafts(self, isolated_env: Path):
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ["# S\nbody\n", "0.3"]
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is not None
+        assert "drafts/doc/01-chapter" in str(out).replace("\\", "/")
+
+    def test_partial_marks_frontmatter(self, isolated_env: Path):
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ["# S\nbody\n", "0.9"]
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=["01-chapter/02-missing"],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is not None
+        content = out.read_text(encoding="utf-8")
+        assert "partial: true" in content
+        assert "01-chapter/02-missing" in content
+
+    def test_no_children_returns_none(self, isolated_env: Path):
+        provider = MagicMock()
+        node = _wiki_node(slug="01-chapter")
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[],
+            raw_chunks=[],
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is None
+        provider.chat.assert_not_called()
+
+    def test_empty_child_bodies_returns_none(self, isolated_env: Path, tmp_path: Path):
+        empty = tmp_path / "empty.md"
+        empty.write_text("---\ntitle: E\n---\n\n", encoding="utf-8")
+        node = _wiki_node(slug="01-chapter")
+        provider = MagicMock()
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[empty],
+            raw_chunks=[],
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is None
+        provider.chat.assert_not_called()
+
+    def test_llm_failure_returns_none(self, isolated_env: Path):
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("LLM down")
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        stages: list[str] = []
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=lambda stage, data: stages.append(stage),
+        )
+        assert out is None
+        assert "failed" in stages
+
+    def test_empty_llm_response_returns_none(self, isolated_env: Path):
+        leaf_path = self._setup(isolated_env)
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        provider = MagicMock()
+        provider.chat.side_effect = ["   ", "0.9"]
+        node = _wiki_node(slug="01-chapter", page_start=1, page_end=1)
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=chunks,
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is None
+
+    def test_faithfulness_falls_back_to_children_when_no_chunks_in_range(self, isolated_env: Path):
+        """When a node's raw-chunk range is empty, fall back to grounding in children."""
+        leaf_path = self._setup(isolated_env)
+        provider = MagicMock()
+        provider.chat.side_effect = ["# S\nbody\n", "0.9"]
+        node = _wiki_node(slug="01-chapter", page_start=10, page_end=20)
+        out = _generate_inner_node(
+            node=node,
+            source_name="doc.pdf",
+            source_slug="doc",
+            children_paths=[leaf_path],
+            raw_chunks=[_make_chunk("different page", page_start=1)],
+            partial_paths=[],
+            provider=provider,
+            config=cfg,
+            on_progress=None,
+        )
+        assert out is not None
+        # Two chat calls even when the range is empty -- generate + faithfulness.
+        assert provider.chat.call_count == 2
+
+
+class TestGenerateSummaryPageTreeIntegration:
+    """End-to-end: structure persisted -> leaves + inner nodes land on disk."""
+
+    def test_leaves_only_when_no_structure(self, isolated_env: Path):
+        source = isolated_env / "documents" / "doc.pdf"
+        source.write_text("content")
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        wiki_text = (
+            "# P1\n\n> Leaf fact.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.pdf, excerpt: "Leaf fact."'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()  # get_document_structure returns None
+        pages = generate_summary_page("doc.pdf", chunks, provider, store)
+        assert len(pages) == 1
+        assert "page-0001.md" in str(pages[0])
+
+    def test_structure_triggers_inner_node(self, isolated_env: Path):
+        import json as _json
+
+        source = isolated_env / "documents" / "doc.pdf"
+        source.write_text("content")
+        chunks = [_make_chunk("Leaf fact.", page_start=1, page_end=1)]
+        leaf_wiki = (
+            "# P1\n\n> Leaf fact.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.pdf, excerpt: "Leaf fact."'
+        )
+        # Provider: leaf gen + leaf faithfulness + inner gen + inner faithfulness.
+        provider = MagicMock()
+        provider.chat.side_effect = [leaf_wiki, "0.9", "# Section\n\nBody.\n", "0.9"]
+        store = _mock_store()
+        store.get_document_structure.return_value = {
+            "document_json": _json.dumps(
+                {
+                    "nodes": [
+                        {
+                            "id": "h",
+                            "content": {"node_type": "heading", "level": 1, "text": "Chapter"},
+                            "page": 1,
+                            "children": [],
+                        }
+                    ]
+                }
+            )
+        }
+        pages = generate_summary_page("doc.pdf", chunks, provider, store)
+        assert len(pages) == 2
+        paths = [str(p).replace("\\", "/") for p in pages]
+        assert any("page-0001.md" in p for p in paths)
+        assert any("01-chapter/index.md" in p for p in paths)
 
 
 class TestMakeSlug:

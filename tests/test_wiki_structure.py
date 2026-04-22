@@ -6,6 +6,7 @@ import json
 
 from lilbee.wiki.structure import (
     WikiNode,
+    _heading_title,
     deserialize_document,
     walk_structure_to_wiki_nodes,
 )
@@ -246,3 +247,103 @@ class TestWalkStructure:
         result = walk_structure_to_wiki_nodes(doc)
         assert len(result) == 1
         assert result[0].page_end >= 1
+
+    def test_shared_descendant_visited_only_once(self):
+        """A DAG where two paths reach the same descendant shouldn't re-visit it."""
+        doc = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Root"},
+                    "page": 1,
+                    "children": [1, 2],
+                },
+                {
+                    "id": "p1",
+                    "content": {"node_type": "paragraph", "text": "A"},
+                    "page": 2,
+                    "children": [3],
+                },
+                {
+                    "id": "p2",
+                    "content": {"node_type": "paragraph", "text": "B"},
+                    "page": 3,
+                    "children": [3],
+                },
+                {
+                    "id": "p3",
+                    "content": {"node_type": "paragraph", "text": "Shared"},
+                    "page": 9,
+                    "children": [],
+                },
+            ]
+        }
+        result = walk_structure_to_wiki_nodes(doc)
+        assert result[0].page_end == 9
+
+    def test_child_index_out_of_bounds_is_ignored(self):
+        """A child index pointing past the nodes array must not raise."""
+        doc = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Root"},
+                    "page": 1,
+                    "children": [999],
+                }
+            ]
+        }
+        result = walk_structure_to_wiki_nodes(doc)
+        assert len(result) == 1
+        assert result[0].page_end == 1
+
+    def test_unknown_content_type_produces_empty_title(self):
+        """Unknown node_type values should not produce wiki nodes (empty title)."""
+        doc = {
+            "nodes": [
+                {
+                    "id": "odd",
+                    "content": {"node_type": "page_break"},
+                    "page": 1,
+                    "children": [],
+                },
+                _heading(1, "Real", page=2),
+            ]
+        }
+        result = walk_structure_to_wiki_nodes(doc)
+        assert len(result) == 1
+        assert result[0].title == "Real"
+
+    def test_duplicate_child_index_skipped_on_revisit(self):
+        """A children list containing the same index twice must not revisit it."""
+        doc = {
+            "nodes": [
+                {
+                    "id": "h1",
+                    "content": {"node_type": "heading", "level": 1, "text": "Chapter"},
+                    "page": 1,
+                    "children": [1, 1],
+                },
+                {
+                    "id": "p",
+                    "content": {"node_type": "paragraph", "text": "Body"},
+                    "page": 5,
+                    "children": [],
+                },
+            ]
+        }
+        result = walk_structure_to_wiki_nodes(doc)
+        assert len(result) == 1
+        assert result[0].page_end == 5
+
+
+class TestHeadingTitleDirect:
+    """Cover the defensive fallback in _heading_title for unknown content types."""
+
+    def test_unknown_node_type_returns_empty_string(self):
+        node = {"content": {"node_type": "not-a-real-type"}}
+        assert _heading_title(node) == ""
+
+    def test_title_without_text_returns_empty_string(self):
+        node = {"content": {"node_type": "title"}}
+        assert _heading_title(node) == ""

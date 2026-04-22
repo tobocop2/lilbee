@@ -38,6 +38,11 @@ from lilbee.wiki.shared import (
     make_slug,
     parse_frontmatter,
 )
+from lilbee.wiki.structure import (
+    WikiNode,
+    deserialize_document,
+    walk_structure_to_wiki_nodes,
+)
 
 log = logging.getLogger(__name__)
 
@@ -607,6 +612,7 @@ def generate_summary_page(
     source_hash = file_hash(source_path) if source_path.exists() else ""
 
     pages: list[Path] = []
+    leaf_paths_by_page: dict[int, Path] = {}
     for page_num, page_chunks in _group_chunks_by_page(chunks):
         page_path = _generate_page_for_leaf(
             source_name=source_name,
@@ -621,8 +627,299 @@ def generate_summary_page(
         )
         if page_path is not None:
             pages.append(page_path)
+            leaf_paths_by_page[page_num] = page_path
+
+    inner_paths = _generate_inner_nodes(
+        source_name=source_name,
+        source_slug=source_slug,
+        chunks=chunks,
+        leaf_paths_by_page=leaf_paths_by_page,
+        provider=provider,
+        store=store,
+        config=config,
+        on_progress=on_progress,
+    )
+    pages.extend(inner_paths)
 
     return pages
+
+
+def _chunks_in_page_range(
+    chunks: list[SearchChunk], page_start: int, page_end: int
+) -> list[SearchChunk]:
+    """Return chunks whose page_start falls within [page_start, page_end] inclusive.
+
+    Page ranges on WikiNodes are inclusive at both ends; a chunk with page_start
+    matching either endpoint is considered inside the range.
+    """
+    if page_end < page_start:
+        return []
+    return [c for c in chunks if page_start <= c.page_start <= page_end]
+
+
+def _leaves_in_range(
+    leaf_paths_by_page: dict[int, Path], page_start: int, page_end: int
+) -> list[Path]:
+    """Return leaf page paths whose page number falls within [page_start, page_end]."""
+    if page_end < page_start:
+        return []
+    return [
+        leaf_paths_by_page[p] for p in sorted(leaf_paths_by_page) if page_start <= p <= page_end
+    ]
+
+
+def _read_page_body(path: Path) -> str:
+    """Return the page body with any leading YAML frontmatter stripped."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "\n".join(lines[i + 1 :]).lstrip("\n")
+    return text
+
+
+def _format_children_for_reduce(children_paths: list[Path]) -> str:
+    """Concatenate child page bodies for inclusion in the reduce prompt."""
+    blocks: list[str] = []
+    for path in children_paths:
+        body = _read_page_body(path).strip()
+        if not body:
+            continue
+        blocks.append(f"[From {path.stem}]\n{body}")
+    return "\n\n---\n\n".join(blocks)
+
+
+def _load_document_structure(store: Store, source_name: str) -> list[WikiNode]:
+    """Load and walk the persisted DocumentStructure tree for *source_name*.
+
+    Returns an empty list when no structure is stored or the JSON blob is
+    unparseable, so callers can treat "no structure" and "empty structure"
+    identically.
+    """
+    record = store.get_document_structure(source_name)
+    # isinstance guard handles mocked stores in tests that don't stage a
+    # structure fixture; they return MagicMock sentinels instead of None.
+    if not isinstance(record, dict):
+        return []
+    payload = record.get("document_json")
+    if not isinstance(payload, str):
+        return []
+    document = deserialize_document(payload)
+    if document is None:
+        return []
+    return walk_structure_to_wiki_nodes(document)
+
+
+def _wiki_nodes_bottom_up(nodes: list[WikiNode]) -> list[WikiNode]:
+    """Order wiki nodes so children come before parents (deepest first)."""
+    return sorted(nodes, key=lambda n: -n.depth)
+
+
+def _is_draft_path(path: Path, wiki_root: Path) -> bool:
+    """True if *path* lives under wiki_root/drafts/."""
+    try:
+        relative = path.relative_to(wiki_root)
+    except ValueError:
+        return False
+    return bool(relative.parts) and relative.parts[0] == DRAFTS_SUBDIR
+
+
+def _inner_node_target(wiki_root: Path, subdir: str, source_slug: str, node_slug: str) -> Path:
+    """Return the ``index.md`` path for an inner wiki node."""
+    return wiki_root / subdir / source_slug / node_slug / "index.md"
+
+
+def _build_inner_frontmatter(
+    config: Config,
+    source_name: str,
+    kind: str,
+    score: float,
+    partial: bool,
+    partial_paths: list[str],
+) -> str:
+    """YAML frontmatter for a section/chapter/root index page."""
+    partial_yaml = ", ".join(f'"{p}"' for p in partial_paths)
+    lines = [
+        "---",
+        f"generated_by: {config.chat_model}",
+        f"generated_at: {datetime.now(UTC).isoformat()}",
+        f'sources: ["{source_name}"]',
+        f"faithfulness_score: {score:.2f}",
+        f"kind: {kind}",
+    ]
+    if partial:
+        lines.append("partial: true")
+        lines.append(f"partial_paths: [{partial_yaml}]")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _generate_inner_node(
+    node: WikiNode,
+    source_name: str,
+    source_slug: str,
+    children_paths: list[Path],
+    raw_chunks: list[SearchChunk],
+    partial_paths: list[str],
+    provider: LLMProvider,
+    config: Config,
+    on_progress: WikiProgressCallback | None,
+) -> Path | None:
+    """Reduce child summaries into a single node summary, grounded against raw chunks.
+
+    Writes ``wiki/summaries/<source>/<node.slug>/index.md`` on success or routes
+    to ``wiki/drafts/<source>/<node.slug>/index.md`` when the faithfulness score
+    falls below ``cfg.wiki_faithfulness_threshold``. Returns ``None`` when there
+    is nothing to summarize (no children, no chunks) or the LLM call fails.
+    """
+    if not children_paths:
+        return None
+
+    def _emit(stage: str, **data: object) -> None:
+        if on_progress is not None:
+            on_progress(stage, data)
+
+    label = f"{source_name} :: {node.slug}"
+    _emit("preparing", source=label, kind=node.kind, children=len(children_paths))
+
+    children_text = _format_children_for_reduce(children_paths)
+    if not children_text:
+        return None
+
+    prompt = config.wiki_reduce_prompt.format(
+        source_name=source_name,
+        section_title=node.title,
+        children_text=children_text,
+    )
+
+    _emit("generating", source=label)
+    try:
+        response = provider.chat([{"role": "user", "content": prompt}], stream=False)
+        summary_text = strip_reasoning(cast(str, response)).strip()
+    except Exception as exc:
+        log.warning("LLM failed to reduce %s: %s", label, exc)
+        _emit("failed", error=str(exc))
+        return None
+    if not summary_text:
+        _emit("failed", error="Model returned empty response")
+        return None
+
+    _emit("faithfulness_check")
+    range_chunks = _chunks_in_page_range(raw_chunks, node.page_start, node.page_end)
+    if range_chunks:
+        trimmed = _truncate_chunks_to_budget(range_chunks, config)
+        chunks_text = _chunks_to_text(trimmed)
+        score = _check_faithfulness(chunks_text, summary_text, provider, label, config)
+    else:
+        # No raw chunks in this range (e.g. all descendants were drafted).
+        # Fall back to grounding against children's summaries rather than
+        # scoring 0 and routing every partial parent to drafts.
+        score = _check_faithfulness(children_text, summary_text, provider, label, config)
+
+    threshold = config.wiki_faithfulness_threshold
+    subdir = SUMMARIES_SUBDIR if score >= threshold else DRAFTS_SUBDIR
+    if subdir == DRAFTS_SUBDIR:
+        log.info("Inner node %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
+
+    wiki_root = config.data_root / config.wiki_dir
+    partial = bool(partial_paths)
+    frontmatter = _build_inner_frontmatter(
+        config, source_name, node.kind, score, partial, partial_paths
+    )
+    target = _inner_node_target(wiki_root, subdir, source_slug, node.slug)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    summary_text = strip_citation_block(summary_text)
+    target.write_text(frontmatter + summary_text + "\n", encoding="utf-8")
+
+    append_wiki_log("reduced", f"{node.kind} {source_name}/{node.slug} -> {subdir}/...", config)
+    _emit("done", source=label, score=score, partial=partial)
+    return target
+
+
+def _collect_inner_children(
+    node: WikiNode,
+    all_nodes: list[WikiNode],
+    node_paths: dict[str, Path],
+    leaf_paths_by_page: dict[int, Path],
+) -> tuple[list[Path], list[str]]:
+    """Find the immediate child summaries for *node* and any drafted descendants.
+
+    For a node with nested wiki children, returns those children's generated
+    paths. For a node with no wiki children of its own (typical for the deepest
+    heading that directly contains pages), returns the leaf paths whose page
+    number falls in the node's page range.
+
+    The second return value is the list of drafted descendant slugs, used to
+    mark the parent as partial in its frontmatter.
+    """
+    wiki_children = [n for n in all_nodes if n.parent_slug == node.slug]
+    partial_paths: list[str] = []
+
+    if wiki_children:
+        ordered = sorted(wiki_children, key=lambda n: n.ordinal)
+        paths: list[Path] = []
+        for child in ordered:
+            p = node_paths.get(child.slug)
+            if p is None:
+                partial_paths.append(child.slug)
+                continue
+            paths.append(p)
+        return paths, partial_paths
+
+    leaf_paths = _leaves_in_range(leaf_paths_by_page, node.page_start, node.page_end)
+    return leaf_paths, partial_paths
+
+
+def _generate_inner_nodes(
+    source_name: str,
+    source_slug: str,
+    chunks: list[SearchChunk],
+    leaf_paths_by_page: dict[int, Path],
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+    on_progress: WikiProgressCallback | None,
+) -> list[Path]:
+    """Reduce per-page leaves into section/chapter index.md files for *source_name*.
+
+    Walks the persisted kreuzberg DocumentStructure (populated at ingest time).
+    Nodes are processed bottom-up so every parent's children already exist on
+    disk when it's reduced. Returns the list of inner-node paths written.
+    Returns an empty list when no structure was persisted, no leaves exist,
+    or every inner node failed to generate.
+    """
+    wiki_root = config.data_root / config.wiki_dir
+    nodes = _load_document_structure(store, source_name)
+    if not nodes or not leaf_paths_by_page:
+        return []
+
+    node_paths: dict[str, Path] = {}
+    written: list[Path] = []
+    for node in _wiki_nodes_bottom_up(nodes):
+        children_paths, missing_children = _collect_inner_children(
+            node, nodes, node_paths, leaf_paths_by_page
+        )
+        drafted_children = [p for p in children_paths if _is_draft_path(p, wiki_root)]
+        partial_paths = missing_children + [str(p.relative_to(wiki_root)) for p in drafted_children]
+        path = _generate_inner_node(
+            node=node,
+            source_name=source_name,
+            source_slug=source_slug,
+            children_paths=children_paths,
+            raw_chunks=chunks,
+            partial_paths=partial_paths,
+            provider=provider,
+            config=config,
+            on_progress=on_progress,
+        )
+        if path is not None:
+            node_paths[node.slug] = path
+            written.append(path)
+
+    return written
 
 
 def _resolve_multi_source_citations(

@@ -525,6 +525,30 @@ class Config(BaseSettings):
         "Chunks:\n{chunks_text}\n\n"
         "Write the synthesis page now. Start with a heading."
     )
+    # Used when reducing a set of child-node summaries (leaves or inner nodes)
+    # into a single section or chapter summary. Overridable via
+    # LILBEE_WIKI_REDUCE_PROMPT. Must contain the expected {placeholders}.
+    wiki_reduce_prompt: str = (
+        "You are a knowledge compiler. Given a section of a source document and the "
+        "summaries of its subsections (and/or pages), write a concise section-level "
+        "wiki summary in markdown.\n\n"
+        "Rules:\n"
+        "1. Preserve factual claims from the child summaries verbatim where they "
+        "carry citations; do not introduce new facts that aren't in the inputs.\n"
+        "2. Every factual claim MUST retain its inline citation [^src1], [^src2], etc. "
+        "from the child summary it came from.\n"
+        "3. For observations about how the subsections relate, use [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. End with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
+        '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
+        "Source document: {source_name}\n"
+        "Section title: {section_title}\n\n"
+        "Child summaries:\n{children_text}\n\n"
+        "Write the section-level summary now. Start with a heading."
+    )
 
     # Wiki synthesis clusterer backend. EMBEDDING (default, no extra deps)
     # runs chunk-level mutual kNN + label propagation over chunk embeddings.
