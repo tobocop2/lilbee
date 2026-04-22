@@ -1239,6 +1239,17 @@ class TestSetRerankerModel:
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_reranker_model("totally-bogus-ranker")
 
+    @patch("lilbee.server.handlers.get_services")
+    async def test_accepts_installed_non_catalog_reranker(self, mock_svc, tmp_path):
+        """An installed model that isn't in the featured catalog (e.g. a user-
+        pulled reranker repo) is accepted as-is without requiring catalog
+        membership. Stored form is the ``ensure_tag``-normalised input.
+        """
+        mock_svc.return_value.provider.list_models.return_value = ["custom-rerank:v1"]
+        result = await handlers.set_reranker_model("custom-rerank:v1")
+        assert result.model == "custom-rerank:v1"
+        assert cfg.reranker_model == "custom-rerank:v1"
+
 
 class TestModelsInstalledTaskFilter:
     async def test_task_filter_narrows_to_rerank(self):

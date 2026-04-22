@@ -534,6 +534,9 @@ def _is_rerank_model(model: str) -> bool:
     return is_rerank_ref(model)
 
 
+_RERANK_PAIR_SEPARATOR = "</s></s>"
+
+
 def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[float]:
     """Score *candidates* against *query* via llama.cpp reranker embeddings.
 
@@ -542,13 +545,16 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
     applied at the query layer). Both were called the same thing in the
     initial pass and the clash was review-flagged.
 
-    The ``pooling_type=LLAMA_POOLING_TYPE_RANK`` Llama returns a single
-    scalar per (query, candidate) pair in the ``embedding`` field. We
-    pass the pair as two sequences and pull the rank score.
+    With ``pooling_type=LLAMA_POOLING_TYPE_RANK``, llama.cpp expects the
+    pair pre-joined into one sequence separated by ``</s></s>`` and
+    returns a scalar relevance score in ``embedding[0]``. Passing the
+    pair as two independent inputs makes ``llama_decode`` fail with
+    ``-1``, so we format each call as ``query</s></s>candidate``.
     """
     scores: list[float] = []
     for candidate in candidates:
-        response = _suppress_stderr(llm.create_embedding, input=[query, candidate])
+        pair = f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}"
+        response = _suppress_stderr(llm.create_embedding, input=pair)
         score = _extract_rerank_score(response)
         scores.append(score)
     return scores

@@ -720,19 +720,26 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
 def is_rerank_ref(model_ref: str) -> bool:
     """Return True iff *model_ref* exactly matches a rerank catalog entry.
 
-    Uses exact ref / hf_repo comparison (case-insensitive). Substring
-    matching would wrongly flag short queries like ``"base"`` as
-    ``bge-reranker-base`` — callers rely on this returning False for
-    any input that isn't a canonical rerank identifier.
+    Accepts both the plain hf_repo form (``org/name-GGUF``) and the
+    tag-suffixed form (``org/name-GGUF:latest``) that the PUT
+    ``/api/models/reranker`` handler normalises to. Also accepts the
+    ``name:tag`` form used for native refs. Case-insensitive.
+
+    Substring matching would wrongly flag short queries like ``"base"``
+    as ``bge-reranker-base``, so callers rely on this returning False
+    for any input that isn't a canonical rerank identifier.
     """
     if not model_ref:
         return False
     ref_lower = model_ref.lower()
+    bare_lower = ref_lower.split(":", 1)[0]
     entry = find_catalog_entry(model_ref)
     if entry is not None and entry.task == ModelTask.RERANK:
         return True
     return any(
-        entry.ref.lower() == ref_lower or entry.hf_repo.lower() == ref_lower
+        entry.ref.lower() == ref_lower
+        or entry.hf_repo.lower() == ref_lower
+        or entry.hf_repo.lower() == bare_lower
         for entry in FEATURED_RERANK
     )
 

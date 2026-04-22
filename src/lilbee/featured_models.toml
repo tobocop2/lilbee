@@ -112,44 +112,4 @@ hf_repo = "gpustack/bge-reranker-v2-m3-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 0.4
 min_ram_gb = 2.0
-description = "Multilingual cross-encoder — best default for RAG"
-
-[[rerank]]
-name = "bge-reranker-base"
-tag = "latest"
-display_name = "BGE Reranker Base"
-hf_repo = "gpustack/bge-reranker-base-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
-size_gb = 0.3
-min_ram_gb = 2.0
-description = "Compact English cross-encoder — fastest option"
-
-[[rerank]]
-name = "bge-reranker-large"
-tag = "latest"
-display_name = "BGE Reranker Large"
-hf_repo = "gpustack/bge-reranker-large-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
-size_gb = 0.8
-min_ram_gb = 4.0
-description = "Higher quality English cross-encoder"
-
-[[rerank]]
-name = "mxbai-rerank-base-v1"
-tag = "latest"
-display_name = "MixedBread mxbai-rerank Base v1"
-hf_repo = "mradermacher/mxbai-rerank-base-v1-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
-size_gb = 0.5
-min_ram_gb = 2.0
-description = "MixedBread English reranker — strong quality-size tradeoff"
-
-[[rerank]]
-name = "ms-marco-minilm-l-6-v2"
-tag = "latest"
-display_name = "MS MARCO MiniLM L-6 v2"
-hf_repo = "mradermacher/ms-marco-MiniLM-L-6-v2-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
-size_gb = 0.1
-min_ram_gb = 1.0
-description = "Classic tiny passage reranker trained on MS MARCO"
+description = "Multilingual cross-encoder, best default for RAG"

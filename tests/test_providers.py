@@ -1074,6 +1074,20 @@ class TestIsRerankModel:
         assert _is_rerank_model("base") is False
         assert _is_rerank_model("reranker") is False
 
+    def test_hf_repo_with_tag_suffix_matches(self) -> None:
+        """The PUT /api/models/reranker handler normalises the stored ref to
+        include a ``:tag`` suffix. Dispatch must still recognise it as a
+        native rerank ref so the call routes to llama-cpp instead of
+        falling through to litellm.
+        """
+        from lilbee.catalog import FEATURED_RERANK
+        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+
+        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
+        entry = FEATURED_RERANK[0]
+        assert _is_rerank_model(f"{entry.hf_repo}:latest") is True
+        assert _is_rerank_model(entry.hf_repo) is True
+
 
 class TestExtractRerankScore:
     def test_raises_when_data_empty(self) -> None:

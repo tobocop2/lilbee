@@ -562,10 +562,14 @@ def _require_reranker_available(model: str) -> str:
     normalized = ensure_tag(model)
     available = get_services().provider.list_models()
     bare = parse_model_ref(normalized).name
-    if normalized in available or bare in available:
-        return normalized
+    # Try the catalog first so we can normalise to the canonical
+    # ``name:tag`` ref. Users may PUT either ``hf_repo:tag`` or
+    # ``name:tag``; ``resolve_model_path`` looks up the registry by
+    # short name, so storing anything else breaks dispatch.
     entry = find_catalog_entry(model) or find_catalog_entry(normalized)
     if entry is not None and entry.task == ModelTask.RERANK:
+        return entry.ref
+    if normalized in available or bare in available:
         return normalized
     raise ValueError(f"Reranker '{normalized}' is not available. Pull it first or check the name.")
 

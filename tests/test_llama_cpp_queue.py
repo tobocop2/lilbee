@@ -313,6 +313,37 @@ class TestRerankQueue:
         assert scores == [0.81, 0.42, 0.13]
         provider.shutdown()
 
+    def test_rerank_pair_format(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """Each (query, candidate) pair is passed to llama.cpp as a single
+        ``"query</s></s>candidate"`` string.
+
+        llama.cpp's ``pooling_type=LLAMA_POOLING_TYPE_RANK`` fails with
+        ``llama_decode returned -1`` when the pair is split into two
+        independent sequences, so this regression guard asserts the
+        single-string join format that BGE / MS-MARCO cross-encoders
+        require.
+        """
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        cfg.reranker_model = "test-model"
+        instance = mock.MagicMock()
+        captured_inputs: list[str] = []
+
+        def fake_embed(*, input):
+            captured_inputs.append(input)
+            return {"data": [{"embedding": [0.5]}]}
+
+        instance.create_embedding.side_effect = fake_embed
+        mock_llama_cpp.Llama.return_value = instance
+
+        provider = LlamaCppProvider()
+        provider.rerank("what is paris", ["Paris is a city", "The moon is cheese"])
+        assert captured_inputs == [
+            "what is paris</s></s>Paris is a city",
+            "what is paris</s></s>The moon is cheese",
+        ]
+        provider.shutdown()
+
     def test_rerank_empty_candidates_returns_empty(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
