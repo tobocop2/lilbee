@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
@@ -1105,6 +1105,8 @@ def wiki_generate(
 
     if not cfg.wiki:
         _fail_wiki_generate(WIKI_DISABLED_ERROR)
+    if not source or not source.strip():
+        _fail_wiki_generate("source must not be empty")
 
     from lilbee.wiki.gen import generate_summary_page
 
@@ -1119,14 +1121,12 @@ def wiki_generate(
     )
 
     if result_path is None:
-        _emit_wiki_generate_result(source, WIKI_STATUS_FAILED, [])
-        raise typer.Exit(1)
-
-    _emit_wiki_generate_result(source, WIKI_STATUS_GENERATED, [str(result_path)])
+        _emit_wiki_generate_failure(source)
+    _emit_wiki_generate_success(source, str(result_path))
 
 
-def _fail_wiki_generate(error: str) -> None:
-    """Emit a wiki_generate failure and exit non-zero."""
+def _fail_wiki_generate(error: str) -> NoReturn:
+    """Emit a wiki_generate hard-failure (validation error) and exit non-zero."""
     if cfg.json_mode:
         json_output({"error": error})
     else:
@@ -1134,22 +1134,35 @@ def _fail_wiki_generate(error: str) -> None:
     raise typer.Exit(1)
 
 
-def _emit_wiki_generate_result(source: str, status: str, paths: list[str]) -> None:
-    """Emit the wiki_generate success / soft-failure result in JSON or default mode."""
+def _emit_wiki_generate_success(source: str, path: str) -> None:
+    """Emit the wiki_generate success result in JSON or default mode."""
     if cfg.json_mode:
         json_output(
             {
                 "command": "wiki_generate",
                 "source": source,
-                "status": status,
-                "paths": paths,
+                "status": WIKI_STATUS_GENERATED,
+                "paths": [path],
             }
         )
         return
-    if status == WIKI_STATUS_GENERATED and paths:
-        console.print(f"Generated [{theme.ACCENT}]{paths[0]}[/{theme.ACCENT}]")
+    console.print(f"Generated [{theme.ACCENT}]{path}[/{theme.ACCENT}]")
+
+
+def _emit_wiki_generate_failure(source: str) -> NoReturn:
+    """Emit the wiki_generate soft-failure (generator returned None) and exit non-zero."""
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_generate",
+                "source": source,
+                "status": WIKI_STATUS_FAILED,
+                "paths": [],
+            }
+        )
     else:
         typer.echo(f"Generation failed for {source}", err=True)
+    raise typer.Exit(1)
 
 
 def _wiki_progress_to_stderr(stage: str, data: dict[str, object]) -> None:

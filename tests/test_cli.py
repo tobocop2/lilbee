@@ -2308,6 +2308,16 @@ class TestWikiGenerate:
         mock_svc.store.get_chunks_by_source.return_value = []
         result = runner.invoke(app, ["wiki", "generate", "missing.pdf"])
         assert result.exit_code == 1
+        assert "missing.pdf" in result.output
+
+    def test_generate_empty_source_fails(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "generate", "   "])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "source must not be empty"
 
     def test_generate_returns_none_status_failed(self, mock_svc, isolated_env):
         cfg.wiki = True

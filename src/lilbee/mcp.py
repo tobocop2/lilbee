@@ -14,6 +14,7 @@ from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.services import get_services, reset_services
+from lilbee.wiki.shared import WIKI_DISABLED_ERROR, WIKI_STATUS_FAILED, WIKI_STATUS_GENERATED
 
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
@@ -330,7 +331,7 @@ def wiki_list() -> dict[str, Any]:
     Returns page slugs, titles, types, source counts, and creation dates.
     """
     if not cfg.wiki:
-        return {"error": "wiki not enabled"}
+        return {"error": WIKI_DISABLED_ERROR}
     from dataclasses import asdict
 
     from lilbee.wiki.browse import list_pages
@@ -351,7 +352,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
         slug: Page slug like "summaries/my-doc" or "concepts/typing".
     """
     if not cfg.wiki:
-        return {"error": "wiki not enabled"}
+        return {"error": WIKI_DISABLED_ERROR}
     from dataclasses import asdict
 
     from lilbee.wiki.browse import read_page
@@ -393,11 +394,6 @@ def wiki_generate(source: str) -> dict[str, Any]:
     wiki is disabled, or the input is empty.
     """
     from lilbee.wiki.gen import generate_summary_page
-    from lilbee.wiki.shared import (
-        WIKI_DISABLED_ERROR,
-        WIKI_STATUS_FAILED,
-        WIKI_STATUS_GENERATED,
-    )
 
     if not cfg.wiki:
         return {"error": WIKI_DISABLED_ERROR}

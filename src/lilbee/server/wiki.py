@@ -32,6 +32,7 @@ from lilbee.wiki.browse import (
     read_page,
 )
 from lilbee.wiki.index import update_wiki_index
+from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 
 
 def _wiki_root() -> Path:
@@ -42,7 +43,7 @@ def _wiki_root() -> Path:
 def _require_wiki() -> None:
     """Raise 404 if the wiki feature is disabled."""
     if not cfg.wiki:
-        raise NotFoundException(detail="wiki not enabled")
+        raise NotFoundException(detail=WIKI_DISABLED_ERROR)
 
 
 def _find_page(slug: str) -> Path | None:

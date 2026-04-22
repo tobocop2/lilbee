@@ -763,6 +763,13 @@ class TestWikiGenerate:
         result = wiki_generate("")
         assert "error" in result
 
+    def test_generate_whitespace_source_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        result = wiki_generate("   ")
+        assert result == {"error": "source must not be empty"}
+
 
 class TestWikiList:
     def test_wiki_disabled(self):
