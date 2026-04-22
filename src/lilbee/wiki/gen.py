@@ -20,7 +20,7 @@ from typing import cast
 from lilbee.clustering import SourceClusterer
 from lilbee.config import Config, cfg
 from lilbee.ingest import file_hash
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import CAPABILITY_THINKING, LLMProvider
 from lilbee.reasoning import strip_reasoning
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import (
@@ -74,7 +74,11 @@ _PAGE_SLUG_WIDTH = 4
 # where chain-of-thought adds wall-clock cost without improving output,
 # so we suppress it whenever the provider reports the capability.
 _NO_THINK_DIRECTIVE = "/no_think"
-_THINKING_CAPABILITY = "thinking"
+
+# JSON-style escape sequences that may appear inside quoted excerpts the
+# model emits. Any backslash-prefixed character not in this map stays
+# verbatim (e.g. ``\\x`` passes through unchanged).
+_EXCERPT_ESCAPES: dict[str, str] = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
 
 
 def _build_wiki_messages(
@@ -87,7 +91,7 @@ def _build_wiki_messages(
     reasoning mode. Otherwise the prompt passes through unchanged.
     """
     capabilities = provider.get_capabilities(config.chat_model)
-    if _THINKING_CAPABILITY in capabilities:
+    if CAPABILITY_THINKING in capabilities:
         prompt = f"{_NO_THINK_DIRECTIVE}\n\n{prompt}"
     return [{"role": "user", "content": prompt}]
 
@@ -231,15 +235,13 @@ def _decode_excerpt_escapes(raw: str) -> str:
     i = 0
     while i < len(raw):
         ch = raw[i]
-        if ch == "\\" and i + 1 < len(raw):
-            nxt = raw[i + 1]
-            mapped = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(nxt)
-            if mapped is not None:
-                result.append(mapped)
-                i += 2
-                continue
-        result.append(ch)
-        i += 1
+        mapped = _EXCERPT_ESCAPES.get(raw[i + 1]) if ch == "\\" and i + 1 < len(raw) else None
+        if mapped is not None:
+            result.append(mapped)
+            i += 2
+        else:
+            result.append(ch)
+            i += 1
     return "".join(result)
 
 

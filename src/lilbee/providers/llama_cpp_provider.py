@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.config import cfg
-from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.base import CAPABILITY_THINKING, LLMProvider, ProviderError, filter_options
 from lilbee.services import get_services
 
 if TYPE_CHECKING:
@@ -46,6 +46,40 @@ def _chat_template_supports_thinking(template: str) -> bool:
         return False
     lowered = template.lower()
     return any(marker in lowered for marker in _THINKING_TEMPLATE_MARKERS)
+
+
+def _has_vision_projector(path: Path) -> bool:
+    """True when an mmproj projection file is alongside *path*."""
+    try:
+        find_mmproj_for_model(path)
+        return True
+    except Exception:
+        return False
+
+
+def _gguf_supports_thinking(path: Path) -> bool:
+    """True when the GGUF chat template branches on a reasoning mode."""
+    try:
+        meta = read_gguf_metadata(path)
+    except Exception:
+        return False
+    if not meta:
+        return False
+    return _chat_template_supports_thinking(meta.get("chat_template", ""))
+
+
+def _detect_llama_cpp_capabilities(model: str) -> list[str]:
+    """Build the capability list for *model* from its on-disk GGUF files."""
+    caps: list[str] = ["completion"]
+    try:
+        path = resolve_model_path(model)
+    except ProviderError:
+        return caps
+    if _has_vision_projector(path):
+        caps.append("vision")
+    if _gguf_supports_thinking(path):
+        caps.append(CAPABILITY_THINKING)
+    return caps
 
 
 @dataclass
@@ -240,27 +274,7 @@ class LlamaCppProvider(LLMProvider):
         cached = self._capabilities_cache.get(model)
         if cached is not None:
             return list(cached)
-
-        caps: list[str] = ["completion"]
-        try:
-            path = resolve_model_path(model)
-        except ProviderError:
-            self._capabilities_cache[model] = list(caps)
-            return list(caps)
-
-        try:
-            find_mmproj_for_model(path)
-            caps.append("vision")
-        except Exception:
-            pass
-
-        try:
-            meta = read_gguf_metadata(path)
-        except Exception:
-            meta = None
-        if meta and _chat_template_supports_thinking(meta.get("chat_template", "")):
-            caps.append("thinking")
-
+        caps = _detect_llama_cpp_capabilities(model)
         self._capabilities_cache[model] = list(caps)
         return list(caps)
 

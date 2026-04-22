@@ -474,7 +474,7 @@ class Config(BaseSettings):
 
     # Wiki generation is a structured-output task: the model must emit the
     # block separators, the citation footnotes, and verbatim quotes. The
-    # usual chat default (~0.8) is too creative for that — lowering the
+    # usual chat default (~0.8) is too creative for that. Lowering the
     # sampling temperature makes the model stick to the template and quote
     # more faithfully. 0.1 leaves just enough slack to avoid hard loops.
     wiki_temperature: float = ConfigField(default=0.1, ge=0.0, le=2.0, writable=True)

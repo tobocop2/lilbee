@@ -1816,6 +1816,54 @@ class TestLlamaCppProviderMethods:
 
         assert caps == ["completion"]
 
+    def test_get_capabilities_handles_empty_chat_template(self) -> None:
+        """An empty chat_template (or missing field) does not gain the thinking cap."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/notmpl.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value={"chat_template": ""},
+            ),
+        ):
+            caps = provider.get_capabilities("notmpl:latest")
+
+        assert caps == ["completion"]
+
+    def test_get_capabilities_handles_metadata_returning_none(self) -> None:
+        """GGUF metadata reader returning None (header has no relevant keys) is safe."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/bare.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value=None,
+            ),
+        ):
+            caps = provider.get_capabilities("bare:latest")
+
+        assert caps == ["completion"]
+
     def test_list_models(self) -> None:
         """list_models returns sorted registry models."""
         provider = _make_provider_no_thread()

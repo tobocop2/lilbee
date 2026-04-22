@@ -573,6 +573,46 @@ class TestIngestHelpers:
         store = get_services().store
         store.upsert_document_structure.assert_not_called()
 
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def testingest_document_swallows_structure_persist_failure(
+        self, mock_kf, isolated_env, caplog
+    ):
+        """A store error while persisting DocumentStructure logs a warning but
+        does not fail ingest — the tree is an optimization, not a blocker."""
+        from lilbee.config import cfg
+
+        cfg.wiki = True
+        mock_kf.return_value = _make_kreuzberg_result(
+            text="Long enough extracted text for the meaningful-text gate. " * 5,
+            num_chunks=1,
+            has_pages=True,
+            document={
+                "nodes": [
+                    {
+                        "id": "h1",
+                        "content": {"node_type": "heading", "level": 1, "text": "Top"},
+                        "page": 1,
+                        "children": [],
+                    }
+                ]
+            },
+        )
+        from lilbee.ingest import ingest_document
+        from lilbee.services import get_services
+
+        store = get_services().store
+        store.upsert_document_structure.side_effect = RuntimeError("lancedb write failed")
+
+        f = isolated_env / "doc.pdf"
+        f.write_bytes(b"fake")
+        caplog.set_level("WARNING", logger="lilbee.ingest")
+        records = await ingest_document(f, "doc.pdf", "pdf")
+        # Ingest still returned chunk records even though structure persistence failed.
+        assert records
+        assert any(
+            "Failed to persist DocumentStructure" in rec.getMessage() for rec in caplog.records
+        )
+
 
 class TestCancellation:
     @mock.patch(

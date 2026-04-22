@@ -42,6 +42,12 @@ class ProviderError(Exception):
 
 ChatMessage = dict[str, str]
 
+# Capability tag returned by ``LLMProvider.get_capabilities`` when the model's
+# chat template supports a reasoning mode that can be toggled off (Qwen3,
+# DeepSeek-R1, etc.). Matches Ollama's own spelling so litellm-backed Ollama
+# capability arrays pass through unchanged.
+CAPABILITY_THINKING = "thinking"
+
 
 class LLMProvider(Protocol):
     """Protocol for pluggable LLM backends."""

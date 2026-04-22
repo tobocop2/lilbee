@@ -196,6 +196,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text="Mutual-kNN neighborhood size for the clusterer (0 = auto)",
     ),
+    "wiki_summary_max_tokens": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Max output tokens per generated wiki page (caps reasoning runaway)",
+    ),
+    "wiki_faithfulness_max_tokens": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Max output tokens for the faithfulness score call",
+    ),
+    "wiki_temperature": SettingDef(
+        float,
+        nullable=False,
+        group="Wiki",
+        help_text="Sampling temperature for wiki generation (low = follow template exactly)",
+    ),
     "crawl_max_depth": SettingDef(
         int,
         nullable=True,

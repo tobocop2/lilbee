@@ -47,9 +47,9 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
 
     When the auto-generated block comment is present, scans from that
     line onward. When a looser model leaves the comment out, falls back
-    to scanning the whole document for ``[^srcN]: ...`` definition lines
-    — the pattern unambiguously identifies a citation footnote and can
-    only appear at the block level.
+    to scanning the whole document for ``[^srcN]: ...`` definition lines.
+    That pattern unambiguously identifies a citation footnote and only
+    appears at the block level.
     """
     block_start = _find_citation_block_start(markdown)
     start = block_start if block_start is not None else 0
