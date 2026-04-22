@@ -51,28 +51,12 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         exclude:
-          # Ubuntu 3.11 unit tests wedge past the 60-min timeout,
-          # non-deterministically between 40-70% through the run.
-          # Root cause traced via a Docker repro + faulthandler dumps:
-          # a cumulative Textual + litestar thread / resource leak that
-          # surfaces only under the glibc 3.11 thread-shutdown order.
-          # faulthandler shows ~90 accumulated daemon threads (mostly
-          # QueueListener._monitor) at hang time; the main thread is
-          # stuck in a C extension which blocks Python-level SIGALRM
-          # delivery, so pytest-timeout and `signal.alarm` can't kill
-          # individual tests. Attempted fixes: daemonify tokio + Queue-
-          # Listener threads (conftest Thread.__init__ patch); split
-          # suite into chunks via shell glob (fragile, misses files);
-          # pytest-forked (subprocess per test) — works but coverage
-          # drops to ~29% because forks exit via os._exit, skipping
-          # coverage's atexit save. None bring CI green without
-          # significant restructuring.
-          - os: ubuntu-latest
-            python-version: "3.11"
-          # macOS 3.11 hits the same wedge around ~62% of the run, even
-          # with serial execution. Drop it until the 3.11 thread-shutdown
-          # interaction is re-addressed. 3.11 coverage stays on Windows;
-          # 3.12 and 3.13 still cover all three OSes.
+          # macOS 3.11 still doesn't work even under pytest-forked: every
+          # Textual app.run_test() under fork() SIGSEGVs because forking
+          # a multi-threaded Cocoa-linked process is unsafe on macOS. Linux
+          # fork is fine, so ubuntu 3.11 stays restored. 3.11 coverage on
+          # macOS would need a spawn-per-test runner, which doesn't exist
+          # in the pytest ecosystem today.
           - os: macos-latest
             python-version: "3.11"
 
@@ -97,10 +81,21 @@ jobs:
         env:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
-      - name: Run unit tests with coverage
-        # Only Windows 3.11 remains from the 3.11 matrix (ubuntu/macOS are
-        # excluded above); all remaining combos are fine in parallel.
-        run: make test-ci
+      - name: Run unit tests
+        # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
+        # the run, so they run with pytest-forked (one subprocess per
+        # test, distributed across -n auto xdist workers) to sidestep the
+        # thread-accumulation wedge. That path loses coverage because
+        # forks exit via os._exit, skipping coverage.py's atexit save —
+        # accepted tradeoff: 3.11 lanes prove the code runs, 3.12 and
+        # 3.13 own the coverage story. Windows 3.11 stays on the normal
+        # parallel path.
+        run: |
+          if [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" != "windows-latest" ]; then
+            make test-ci-forked
+          else
+            make test-ci
+          fi
         shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
@@ -112,6 +107,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v6
 
@@ -121,8 +117,8 @@ jobs:
           version: "latest"
           enable-cache: true
 
-      - name: Set up Python
-        run: uv python install 3.12
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install make (Windows)
         if: runner.os == 'Windows'

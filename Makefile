@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-integration imports-check check clean install demo build publish docs docs-api docs-site
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo build publish docs docs-api docs-site
 
 lint:
 	uv run ruff check src/ tests/
@@ -20,6 +20,9 @@ test-ci:
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist
+
+test-ci-forked:
+	uv run pytest --forked -v -n auto
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"

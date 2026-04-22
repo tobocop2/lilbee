@@ -79,6 +79,7 @@ dev = [
     "pytest-httpserver",
     "types-pyyaml>=6.0.12.20250915",
     "pytest-xdist>=3.8.0",
+    "pytest-forked>=1.6.0",
 ]
 
 [tool.pytest.ini_options]
