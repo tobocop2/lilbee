@@ -458,8 +458,8 @@ class Config(BaseSettings):
     # and disable wiki generation/sync.
     wiki: bool = True
     wiki_dir: str = "wiki"
-    wiki_prune_raw: bool = False
-    wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    wiki_prune_raw: bool = ConfigField(default=False, writable=True)
+    wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
     # Fraction of citations that must be stale before a wiki page is flagged
     # for regeneration during pruning. 0.5 = flag when >50% are stale.
