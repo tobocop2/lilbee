@@ -8031,6 +8031,43 @@ async def test_wiki_source_for_slug_returns_none_for_empty_sources():
         assert result is None
 
 
+async def test_wiki_action_regenerate_submits_when_targets_exist(tmp_path):
+    """With wiki enabled and targets present, regenerate notifies and submits the task."""
+    cfg.wiki = True
+    cfg.data_root = tmp_path
+    (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+    app = _make_wiki_app()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
+                return_value=["doc.pdf", "other.pdf"],
+            ),
+            patch.object(app.screen, "_submit_wiki_task") as mock_submit,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen.action_regenerate()
+            await pilot.pause()
+        mock_submit.assert_called_once_with(["doc.pdf", "other.pdf"])
+        mock_notify.assert_called_once()
+        assert "2" in mock_notify.call_args[0][0]
+
+
+async def test_wiki_submit_task_noop_without_lilbee_app(tmp_path):
+    """_submit_wiki_task short-circuits when the parent app isn't a LilbeeApp."""
+    cfg.wiki = True
+    cfg.data_root = tmp_path
+    (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+    app = _make_wiki_app()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # WikiTestApp is not a LilbeeApp, so the guard returns immediately
+        # without touching a task bar.
+        app.screen._submit_wiki_task(["doc.pdf"])
+        await pilot.pause()
+
+
 async def test_wiki_selected_source_returns_none_for_branch_without_slug():
     """_selected_source returns None when the highlighted tree node is a branch (no slug)."""
     from textual.widgets import Tree
