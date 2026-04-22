@@ -1790,7 +1790,14 @@ class TestEnrichCatalog:
         assert enriched[0].installed is False
         assert enriched[0].source == "native"
         assert enriched[1].installed is True
-        assert enriched[1].source == "litellm"
+        assert enriched[1].source == "native"
+
+    def test_source_is_native_regardless_of_installed_names(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, {"model-7b-gguf:latest", "qwen3:8b"})
+        assert all(e.source == "native" for e in enriched)
+        assert enriched[0].installed is True
+        assert enriched[1].installed is True
 
     def test_preserves_original_fields(self) -> None:
         result = self._make_result()

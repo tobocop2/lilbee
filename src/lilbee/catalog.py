@@ -29,6 +29,7 @@ from tqdm.auto import tqdm as _base_tqdm
 
 from lilbee.cancellation import TaskCancelled
 from lilbee.config import cfg
+from lilbee.model_manager import ModelSource
 from lilbee.models import ModelTask
 from lilbee.registry import DEFAULT_TAG, ModelManifest, ModelRef, ModelRegistry
 
@@ -1103,7 +1104,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
                 param_count=_derive_param_count(m),
                 quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
                 installed=is_installed,
-                source="litellm" if is_installed else "native",
+                source=ModelSource.NATIVE.value,
             )
         )
     return enriched

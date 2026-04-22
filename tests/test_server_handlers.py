@@ -722,7 +722,7 @@ class TestModelsCatalog:
         assert m.downloads == 1000
         assert m.param_count == "8B"
         assert m.installed is True
-        assert m.source == "litellm"
+        assert m.source == "native"
 
     @patch("lilbee.catalog.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
