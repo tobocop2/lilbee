@@ -69,9 +69,16 @@ def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
     return SearchChunk(**defaults)
 
 
-def _mock_provider(wiki_text: str, faith_score: str = "0.85") -> MagicMock:
+def _mock_provider(
+    wiki_text: str,
+    faith_score: str = "0.85",
+    capabilities: list[str] | None = None,
+) -> MagicMock:
     provider = MagicMock()
     provider.chat.side_effect = [wiki_text, faith_score]
+    provider.get_capabilities.return_value = (
+        list(capabilities) if capabilities is not None else ["completion"]
+    )
     return provider
 
 
@@ -292,47 +299,41 @@ class TestVerifyCitations:
         assert len(verified) == 0
 
 
-class TestReasoningModelDetection:
-    def test_qwen3_variants_are_reasoning_models(self):
-        from lilbee.wiki.gen import _is_reasoning_model
-
-        for name in ("qwen3:4b", "qwen3:8b", "Qwen3-4B-GGUF", "qwen3-coder:30b"):
-            assert _is_reasoning_model(name), f"{name} should be detected as reasoning"
-
-    def test_non_reasoning_models_pass_through(self):
-        from lilbee.wiki.gen import _is_reasoning_model
-
-        for name in (
-            "llama-3.2-1b-instruct",
-            "mistral:7b-instruct",
-            "gemma4:e4b",
-            "smollm2:135m",
-            "",
-        ):
-            assert not _is_reasoning_model(name), f"{name} should not be reasoning"
-
-    def test_deepseek_r1_is_reasoning(self):
-        from lilbee.wiki.gen import _is_reasoning_model
-
-        assert _is_reasoning_model("deepseek-r1:7b")
-
-
 class TestBuildWikiMessages:
-    def test_reasoning_model_gets_no_think_directive(self):
+    def test_thinking_capability_prepends_no_think_directive(self):
         from lilbee.wiki.gen import _build_wiki_messages
 
-        cfg.chat_model = "qwen3:4b"
-        messages = _build_wiki_messages("Summarize these chunks.", cfg)
+        provider = MagicMock()
+        provider.get_capabilities.return_value = ["completion", "thinking"]
+        cfg.chat_model = "any-model"
+
+        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+
         assert len(messages) == 1
         content = messages[0]["content"]
-        assert content.startswith("/no_think")
+        assert content.startswith("/no_think\n\n")
         assert "Summarize these chunks." in content
+        provider.get_capabilities.assert_called_once()
 
-    def test_non_reasoning_model_passes_prompt_through(self):
+    def test_no_thinking_capability_passes_prompt_through(self):
         from lilbee.wiki.gen import _build_wiki_messages
 
-        cfg.chat_model = "gemma4:e4b"
-        messages = _build_wiki_messages("Summarize these chunks.", cfg)
+        provider = MagicMock()
+        provider.get_capabilities.return_value = ["completion"]
+        cfg.chat_model = "any-model"
+
+        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+        assert messages == [{"role": "user", "content": "Summarize these chunks."}]
+
+    def test_empty_capabilities_passes_prompt_through(self):
+        """Backends that don't report capabilities leave the prompt untouched."""
+        from lilbee.wiki.gen import _build_wiki_messages
+
+        provider = MagicMock()
+        provider.get_capabilities.return_value = []
+        cfg.chat_model = "any-model"
+
+        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
 
 
@@ -389,8 +390,8 @@ class TestGenerateSummaryPage:
         assert "faithfulness_score: 0.85" in content
         store.add_citations.assert_called_once()
 
-    def test_qwen3_prompt_gets_no_think_prepended(self, tmp_path: Path):
-        """End-to-end: Qwen3 chat model -> /no_think directive in the chat messages."""
+    def test_thinking_capable_provider_gets_no_think_prepended(self, tmp_path: Path):
+        """End-to-end: provider reporting `thinking` -> /no_think in all chat messages."""
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Python supports gradual typing.")
         chunks = [_make_chunk("Python supports gradual typing.")]
@@ -401,8 +402,7 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
-        cfg.chat_model = "qwen3:4b"
-        provider = _mock_provider(wiki_text)
+        provider = _mock_provider(wiki_text, capabilities=["completion", "thinking"])
         store = _mock_store()
 
         generate_summary_page("doc.md", chunks, provider, store)
@@ -412,8 +412,8 @@ class TestGenerateSummaryPage:
         faith_call = provider.chat.call_args_list[1]
         assert faith_call.args[0][0]["content"].startswith("/no_think\n\n")
 
-    def test_non_reasoning_model_has_no_directive(self, tmp_path: Path):
-        """End-to-end: non-reasoning model sees the plain prompt, no /no_think."""
+    def test_non_thinking_provider_has_no_directive(self, tmp_path: Path):
+        """End-to-end: provider without `thinking` sees the plain prompt, no /no_think."""
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Python supports gradual typing.")
         chunks = [_make_chunk("Python supports gradual typing.")]
@@ -424,8 +424,7 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
-        cfg.chat_model = "gemma4:e4b"
-        provider = _mock_provider(wiki_text)
+        provider = _mock_provider(wiki_text, capabilities=["completion"])
         store = _mock_store()
 
         generate_summary_page("doc.md", chunks, provider, store)

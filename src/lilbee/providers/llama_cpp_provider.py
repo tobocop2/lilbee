@@ -30,6 +30,23 @@ log = logging.getLogger(__name__)
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 
+# Markers that signal a GGUF chat template knows how to branch on a
+# reasoning mode. Any of these appearing in the Jinja template is enough
+# to classify the model as supporting the ``thinking`` capability.
+_THINKING_TEMPLATE_MARKERS: tuple[str, ...] = (
+    "enable_thinking",
+    "/no_think",
+    "/think",
+    "<think>",
+)
+
+
+def _chat_template_supports_thinking(template: str) -> bool:
+    if not template:
+        return False
+    lowered = template.lower()
+    return any(marker in lowered for marker in _THINKING_TEMPLATE_MARKERS)
+
 
 @dataclass
 class _EmbedRequest:
@@ -63,6 +80,7 @@ class LlamaCppProvider(LLMProvider):
         self._embed_thread.start()
         self._subprocess_worker: WorkerProcess | None = None
         self._subprocess_enabled = cfg.subprocess_embed
+        self._capabilities_cache: dict[str, list[str]] = {}
 
     def _embed_worker(self) -> None:
         """Background thread: drain queue, batch, inference, dispatch results."""
@@ -211,17 +229,40 @@ class LlamaCppProvider(LLMProvider):
     def get_capabilities(self, model: str) -> list[str]:
         """Detect capabilities from local GGUF files.
 
-        Vision is detected by the presence of an mmproj file alongside
-        the model.
+        - ``vision``: mmproj file is present alongside the model.
+        - ``thinking``: chat template (from GGUF headers) branches on a
+          reasoning mode. Matches Ollama's capability spelling so
+          downstream callers treat both backends uniformly.
+
+        Result is memoized per model because header reads happen on every
+        wiki-gen call otherwise.
         """
+        cached = self._capabilities_cache.get(model)
+        if cached is not None:
+            return list(cached)
+
         caps: list[str] = ["completion"]
         try:
             path = resolve_model_path(model)
+        except ProviderError:
+            self._capabilities_cache[model] = list(caps)
+            return list(caps)
+
+        try:
             find_mmproj_for_model(path)
             caps.append("vision")
-        except (ProviderError, Exception):
+        except Exception:
             pass
-        return caps
+
+        try:
+            meta = read_gguf_metadata(path)
+        except Exception:
+            meta = None
+        if meta and _chat_template_supports_thinking(meta.get("chat_template", "")):
+            caps.append("thinking")
+
+        self._capabilities_cache[model] = list(caps)
+        return list(caps)
 
     def shutdown(self) -> None:
         """Stop workers and unload all cached models."""
@@ -231,6 +272,7 @@ class LlamaCppProvider(LLMProvider):
             self._subprocess_worker.stop()
             self._subprocess_worker = None
         self._cache.unload_all()
+        self._capabilities_cache.clear()
 
 
 class _LockedStreamIterator:

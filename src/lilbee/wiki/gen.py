@@ -68,35 +68,25 @@ _CHARS_PER_TOKEN = 4
 # Width (in characters) of the zero-padded page number inside a per-page slug.
 _PAGE_SLUG_WIDTH = 4
 
-# Chat-model name fragments that identify families which can emit <think>
-# blocks during chat completion. Wiki generation is a summarization task
-# where chain-of-thought adds wall-clock cost without improving output, so
-# we prepend a /no_think directive (recognized by the Qwen3 chat template
-# and a superset of reasoning-aware models) when we detect one of these.
-_REASONING_MODEL_FRAGMENTS: tuple[str, ...] = (
-    "qwen3",
-    "deepseek-r1",
-    "deepseek_r1",
-)
-
+# Directive recognized by chat templates that support a reasoning mode
+# (Qwen3, DeepSeek-R1, etc.). Wiki generation is a summarization task
+# where chain-of-thought adds wall-clock cost without improving output,
+# so we suppress it whenever the provider reports the capability.
 _NO_THINK_DIRECTIVE = "/no_think"
+_THINKING_CAPABILITY = "thinking"
 
 
-def _is_reasoning_model(model_name: str) -> bool:
-    """True if *model_name* is from a family that emits <think> blocks by default."""
-    lower = model_name.lower()
-    return any(fragment in lower for fragment in _REASONING_MODEL_FRAGMENTS)
-
-
-def _build_wiki_messages(prompt: str, config: Config) -> list[dict[str, str]]:
+def _build_wiki_messages(
+    prompt: str, provider: LLMProvider, config: Config
+) -> list[dict[str, str]]:
     """Build the chat messages list for a wiki-gen call.
 
-    For reasoning-capable models (Qwen3, DeepSeek-R1), prepends the
-    ``/no_think`` directive so the chat template disables thinking.
-    Summarization and faithfulness scoring don't benefit from chain-of-
-    thought; skipping it reclaims seconds per call without quality loss.
+    When the provider reports the ``thinking`` capability for the active
+    chat model, prepends ``/no_think`` so the chat template disables the
+    reasoning mode. Otherwise the prompt passes through unchanged.
     """
-    if _is_reasoning_model(config.chat_model):
+    capabilities = provider.get_capabilities(config.chat_model)
+    if _THINKING_CAPABILITY in capabilities:
         prompt = f"{_NO_THINK_DIRECTIVE}\n\n{prompt}"
     return [{"role": "user", "content": prompt}]
 
@@ -383,7 +373,7 @@ def _check_faithfulness(
         config = cfg
     template = config.wiki_faithfulness_prompt
     prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
-    messages = _build_wiki_messages(prompt, config)
+    messages = _build_wiki_messages(prompt, provider, config)
     options = config.generation_options(max_tokens=config.wiki_faithfulness_max_tokens)
     try:
         response = provider.chat(messages, stream=False, options=options)
@@ -509,7 +499,7 @@ def _generate_page(
 
     _emit("preparing", chunks=len(chunks), source=label)
 
-    messages = _build_wiki_messages(prompt, config)
+    messages = _build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
     options = config.generation_options(max_tokens=config.wiki_summary_max_tokens)
     try:
@@ -835,7 +825,7 @@ def _generate_inner_node(
     options = config.generation_options(max_tokens=config.wiki_summary_max_tokens)
     try:
         response = provider.chat(
-            _build_wiki_messages(prompt, config), stream=False, options=options
+            _build_wiki_messages(prompt, provider, config), stream=False, options=options
         )
         summary_text = strip_reasoning(cast(str, response)).strip()
     except Exception as exc:

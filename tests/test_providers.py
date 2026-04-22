@@ -1712,6 +1712,110 @@ class TestLlamaCppProviderMethods:
 
         assert caps == ["completion"]
 
+    def test_get_capabilities_reports_thinking_for_reasoning_template(self) -> None:
+        """Chat templates that branch on enable_thinking gain the ``thinking`` capability."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/qwen3.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value={
+                    "chat_template": "{% if enable_thinking %}<think>{% endif %}",
+                },
+            ),
+        ):
+            caps = provider.get_capabilities("qwen3:4b")
+
+        assert "thinking" in caps
+        assert "completion" in caps
+
+    def test_get_capabilities_omits_thinking_for_plain_template(self) -> None:
+        """Vanilla chat templates (no reasoning markers) do not gain ``thinking``."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/gemma.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value={
+                    "chat_template": "{% for m in messages %}{{ m.content }}{% endfor %}",
+                },
+            ),
+        ):
+            caps = provider.get_capabilities("gemma:4b")
+
+        assert caps == ["completion"]
+
+    def test_get_capabilities_memoizes_result(self) -> None:
+        """Second lookup reuses the cached capability list without re-reading GGUF."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/qwen3.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value={"chat_template": "... /no_think ..."},
+            ) as meta_mock,
+        ):
+            first = provider.get_capabilities("qwen3:4b")
+            second = provider.get_capabilities("qwen3:4b")
+
+        assert first == second
+        assert "thinking" in first
+        assert meta_mock.call_count == 1
+
+    def test_get_capabilities_handles_metadata_error(self) -> None:
+        """A failing GGUF metadata read must not break capability reporting."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/broken.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                side_effect=RuntimeError("corrupt header"),
+            ),
+        ):
+            caps = provider.get_capabilities("broken:latest")
+
+        assert caps == ["completion"]
+
     def test_list_models(self) -> None:
         """list_models returns sorted registry models."""
         provider = _make_provider_no_thread()
