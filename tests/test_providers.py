@@ -1009,6 +1009,28 @@ class TestReadMmprojProjectorType:
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
 
+    def test_non_string_projector_type_returns_none(self, tmp_path: Path) -> None:
+        """If clip.projector_type is present but not a string (someone wrote it
+        as an int or bool), the reader returns None instead of decoding bytes."""
+        import struct
+
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+
+        # Build a GGUF where clip.projector_type is value_type=4 (uint32), not string.
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)  # version
+        buf += struct.pack("<Q", 0)  # tensor_count
+        buf += struct.pack("<Q", 1)  # kv_count = 1
+        key = b"clip.projector_type"
+        buf += struct.pack("<Q", len(key)) + key
+        buf += struct.pack("<I", 4)  # value_type = uint32
+        buf += struct.pack("<I", 42)  # bogus integer payload
+
+        gguf_file = tmp_path / "wrong_type_mmproj.gguf"
+        gguf_file.write_bytes(bytes(buf))
+        assert read_mmproj_projector_type(gguf_file) is None
+
     def test_reads_projector_type_past_bool_kv(self, tmp_path: Path) -> None:
         """Parser must skip bool KV pairs (1 byte each) to reach projector_type.
         LightOn OCR2's mmproj has ``clip.has_vision_encoder`` (bool) preceding
@@ -2057,6 +2079,48 @@ class TestFindMmprojForModel:
         with mock.patch("lilbee.catalog.find_mmproj_file", return_value=None):
             result = find_mmproj_for_model(blob_path)
         assert result == snap / "mmproj-f16.gguf"
+
+    def test_hf_cache_blob_without_snapshots_falls_through(self, tmp_path: Path) -> None:
+        """blobs/ dir with no sibling snapshots/ tree returns None from the HF
+        helper, allowing the flat-dir fallback to take over."""
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+
+        model_root = tmp_path / "models--org--Repo-GGUF"
+        blobs = model_root / "blobs"
+        blobs.mkdir(parents=True)
+        blob_path = blobs / "deadbeef"
+        blob_path.touch()
+        # No snapshots/ sibling and no mmproj in blobs/.
+
+        from lilbee.providers.base import ProviderError
+
+        with (
+            mock.patch("lilbee.catalog.find_mmproj_file", return_value=None),
+            pytest.raises(ProviderError, match="No mmproj"),
+        ):
+            find_mmproj_for_model(blob_path)
+
+    def test_hf_cache_snapshots_without_mmproj_falls_through(self, tmp_path: Path) -> None:
+        """snapshots/ tree exists but no mmproj GGUF lives in any snapshot —
+        the HF helper returns None and the flat-dir fallback takes over."""
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+
+        model_root = tmp_path / "models--org--Repo-GGUF"
+        blobs = model_root / "blobs"
+        snap = model_root / "snapshots" / "abc123"
+        blobs.mkdir(parents=True)
+        snap.mkdir(parents=True)
+        blob_path = blobs / "deadbeef"
+        blob_path.touch()
+        # snapshot dir is present but contains no *mmproj*.gguf files.
+
+        from lilbee.providers.base import ProviderError
+
+        with (
+            mock.patch("lilbee.catalog.find_mmproj_file", return_value=None),
+            pytest.raises(ProviderError, match="No mmproj"),
+        ):
+            find_mmproj_for_model(blob_path)
 
 
 class TestReadMmprojProjectorTypePartial:

@@ -50,6 +50,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        exclude:
+          # macOS 3.11 still doesn't work even under pytest-forked: every
+          # Textual app.run_test() under fork() SIGSEGVs because forking
+          # a multi-threaded Cocoa-linked process is unsafe on macOS. Linux
+          # fork is fine, so ubuntu 3.11 stays restored. 3.11 coverage on
+          # macOS would need a spawn-per-test runner, which doesn't exist
+          # in the pytest ecosystem today.
+          - os: macos-latest
+            python-version: "3.11"
 
     steps:
       - uses: actions/checkout@v6
