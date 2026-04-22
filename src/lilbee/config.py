@@ -459,8 +459,8 @@ class Config(BaseSettings):
     # and disable wiki generation/sync.
     wiki: bool = True
     wiki_dir: str = "wiki"
-    wiki_prune_raw: bool = False
-    wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    wiki_prune_raw: bool = ConfigField(default=False, writable=True)
+    wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
     # Fraction of citations that must be stale before a wiki page is flagged
     # for regeneration during pruning. 0.5 = flag when >50% are stale.
@@ -672,6 +672,27 @@ class Config(BaseSettings):
         """
         if isinstance(v, str):
             return [p.strip() for p in v.splitlines() if p.strip()]
+        return v
+
+    @field_validator("crawl_exclude_patterns", mode="after")
+    @classmethod
+    def _validate_crawl_exclude_patterns(cls, v: list[str]) -> list[str]:
+        """Reject any entry that isn't a valid Python regex.
+
+        These patterns are compiled at crawl time. An invalid pattern there
+        surfaces as an opaque mid-crawl error; catching it at PATCH time gives
+        the user a 400 with a pointer to the bad entry.
+        """
+        import re
+
+        bad: list[str] = []
+        for i, pattern in enumerate(v):
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                bad.append(f"[{i}] {pattern!r}: {exc}")
+        if bad:
+            raise ValueError("invalid regex in crawl_exclude_patterns:\n  " + "\n  ".join(bad))
         return v
 
     @field_validator("ignore_dirs", mode="before")

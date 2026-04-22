@@ -709,30 +709,6 @@ class TestWikiStatus:
         assert result["pages"] == 2
 
 
-class TestWikiGenerateTool:
-    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
-        cfg.wiki = False
-        assert wiki_generate("doc.pdf") == {"error": "wiki not enabled"}
-
-    def test_no_chunks_returns_error(self, mock_svc, tmp_path):
-        cfg.wiki = True
-        mock_svc.store.get_chunks_by_source.return_value = []
-        result = wiki_generate("doc.pdf")
-        assert "error" in result
-        assert "no indexed chunks" in result["error"]
-
-    def test_returns_generated_paths(self, mock_svc, tmp_path, monkeypatch):
-        cfg.wiki = True
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        paths = [tmp_path / "wiki" / "summaries" / "doc" / "page-0001.md"]
-        monkeypatch.setattr("lilbee.wiki.gen.generate_summary_page", lambda *a, **kw: paths)
-        result = wiki_generate("doc.pdf")
-        assert result["command"] == "wiki_generate"
-        assert result["source"] == "doc.pdf"
-        assert result["count"] == 1
-        assert result["paths"] == [str(paths[0])]
-
-
 class TestWikiSynthesizeTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
@@ -802,6 +778,59 @@ class TestWikiPrune:
         assert result["archived"] == 0
         assert result["flagged"] == 0
         assert result["records"] == []
+
+
+class TestWikiGenerate:
+    def test_generate_success(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        out_path = tmp_path / "wiki" / "summaries" / "doc" / "page-0001.md"
+        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=[out_path]):
+            result = wiki_generate("doc.pdf")
+        assert result["command"] == "wiki_generate"
+        assert result["source"] == "doc.pdf"
+        assert result["status"] == "generated"
+        assert result["paths"] == [str(out_path)]
+
+    def test_generate_no_chunks_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = wiki_generate("missing.pdf")
+        assert "error" in result
+        assert "missing.pdf" in result["error"]
+
+    def test_generate_empty_result_status_failed(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
+        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=[]):
+            result = wiki_generate("doc.pdf")
+        assert result["status"] == "failed"
+        assert result["paths"] == []
+
+    def test_generate_wiki_disabled(self):
+        cfg.wiki = False
+        result = wiki_generate("doc.pdf")
+        assert result == {"error": "wiki not enabled"}
+
+    def test_generate_empty_source_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        result = wiki_generate("")
+        assert "error" in result
+
+    def test_generate_whitespace_source_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        cfg.wiki_dir = "wiki"
+        result = wiki_generate("   ")
+        assert result == {"error": "source must not be empty"}
 
 
 class TestWikiList:

@@ -3600,6 +3600,10 @@ async def test_chat_sync_file_done_bad_type():
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
+            for _ in range(10):
+                await _pilot.pause()
+                if app.screen._sync_active is False:
+                    break
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
 
@@ -3623,6 +3627,10 @@ async def test_chat_sync_file_start_bad_type():
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
+            for _ in range(10):
+                await _pilot.pause()
+                if app.screen._sync_active is False:
+                    break
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
 

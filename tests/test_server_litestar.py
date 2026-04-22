@@ -345,6 +345,9 @@ class TestConfigDefaultsRoute:
         assert data["crawl_exclude_patterns"] == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
         # Non-writable/non-public fields are not exposed.
         assert "chat_model" not in data
+        # Wiki cfg fields are writable and appear with their declared defaults.
+        assert data["wiki_prune_raw"] is False
+        assert data["wiki_faithfulness_threshold"] == 0.7
 
 
 class TestConfigUpdateRoute:
@@ -390,6 +393,21 @@ class TestConfigUpdateRoute:
             assert resp.status_code == 400
 
         _inner()
+
+    def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
+        # Invalid character class — `p-a` is a backwards range; should be rejected
+        # at PATCH time rather than crashing the next crawl with an opaque error.
+        resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
+        assert resp.status_code == 400
+        body = resp.text
+        assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
+
+    def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
+        resp = client.patch(
+            "/api/config", json={"crawl_exclude_patterns": [r"/page/\d+/?$", r"/tag/"]}
+        )
+        assert resp.status_code == 200
+        assert "crawl_exclude_patterns" in resp.json()["updated"]
 
 
 class TestModelsSetEmbeddingRoute:
