@@ -317,16 +317,20 @@ class TestWikiScreen:
 
     async def test_wiki_screen_shows_generated_pages(self):
         """WikiScreen sidebar lists generated pages."""
-        from textual.widgets import OptionList
+        from textual.widgets import Tree
 
         app = _WikiApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            # Should have at least the two pages plus heading(s)
-            assert option_list.option_count >= 2
-            # Check that page titles appear (options include headings and pages)
-            labels = [str(o.prompt) for o in option_list._options]
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+
+            def _all_labels(node) -> list[str]:
+                result: list[str] = [str(node.label)]
+                for child in node.children:
+                    result.extend(_all_labels(child))
+                return result
+
+            labels = _all_labels(tree.root)
             assert any("Test Doc" in label for label in labels), (
                 f"Test doc not in sidebar: {labels}"
             )
@@ -335,21 +339,27 @@ class TestWikiScreen:
             )
 
     async def test_wiki_screen_displays_content(self):
-        """Selecting a page renders its markdown content."""
-        from textual.widgets import Markdown, OptionList
+        """Selecting a leaf renders its markdown content."""
+        from textual.widgets import Markdown, Tree
 
         app = _WikiApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            # Find the first non-disabled option (skip heading)
-            for i, opt in enumerate(option_list._options):
-                if not opt.disabled:
-                    option_list.highlighted = i
-                    await pilot.press("enter")
-                    break
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+
+            def _first_leaf_with_slug(node):
+                for child in node.children:
+                    if child.data is not None and not child.children:
+                        return child
+                    found = _first_leaf_with_slug(child)
+                    if found is not None:
+                        return found
+                return None
+
+            leaf = _first_leaf_with_slug(tree.root)
+            assert leaf is not None, "No leaf page found in sidebar"
+            tree.select_node(leaf)
             await pilot.pause()
             content = app.screen.query_one("#wiki-content", Markdown)
-            # The markdown widget should have rendered the page content
             rendered = str(content._markdown)
             assert len(rendered) > 0, "Wiki content area is empty after selecting a page"

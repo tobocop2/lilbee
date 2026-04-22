@@ -5157,10 +5157,9 @@ class WikiTestApp(App[None]):
 
 
 def _create_wiki_page(wiki_root, subdir, slug, title, content_body="Some content"):
-    """Create a wiki markdown file with frontmatter."""
-    d = wiki_root / subdir
-    d.mkdir(parents=True, exist_ok=True)
-    page = d / f"{slug}.md"
+    """Create a wiki markdown file with frontmatter (creates nested dirs for slashy slugs)."""
+    page = wiki_root / subdir / f"{slug}.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(
         f"---\ntitle: {title}\ngenerated_at: 2025-01-01\nsource_count: 3\n"
         f"faithfulness_score: 0.85\n---\n{content_body}\n"
@@ -5182,12 +5181,20 @@ class TestWikiScreenCompose:
         """WikiScreen has sidebar and main content areas."""
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import Input, OptionList
+            from textual.widgets import Input, Tree
 
             assert app.screen.query_one("#wiki-sidebar") is not None
             assert app.screen.query_one("#wiki-main") is not None
             assert app.screen.query_one("#wiki-search", Input) is not None
-            assert app.screen.query_one("#wiki-page-list", OptionList) is not None
+            assert app.screen.query_one("#wiki-page-list", Tree) is not None
+
+
+def _count_descendants(node):
+    """Count every descendant branch + leaf beneath *node*."""
+    total = 0
+    for child in node.children:
+        total += 1 + _count_descendants(child)
+    return total
 
 
 class TestWikiScreenEmptyState:
@@ -5196,13 +5203,13 @@ class TestWikiScreenEmptyState:
         cfg.wiki = False
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import OptionList
+            from textual.widgets import Tree
 
             from lilbee.cli.tui import messages as msg
 
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            assert option_list.option_count == 1
-            assert msg.WIKI_EMPTY_STATE in str(option_list.get_option_at_index(0).prompt)
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            labels = [str(c.label) for c in tree.root.children]
+            assert any(msg.WIKI_EMPTY_STATE in label for label in labels)
 
     async def test_shows_empty_when_no_pages(self, tmp_path):
         """Shows empty state when wiki is enabled but no pages exist."""
@@ -5212,10 +5219,10 @@ class TestWikiScreenEmptyState:
         wiki_dir.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import OptionList
+            from textual.widgets import Tree
 
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            assert option_list.option_count >= 1
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            assert len(tree.root.children) >= 1
 
 
 class TestWikiScreenWithPages:
@@ -5229,10 +5236,11 @@ class TestWikiScreenWithPages:
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import OptionList
+            from textual.widgets import Tree
 
-            option_list = app.screen.query_one("#wiki-page-list", OptionList)
-            assert option_list.option_count >= 2
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            # Two group nodes (Summaries + Synthesis) each with at least one child.
+            assert _count_descendants(tree.root) >= 2
 
     async def test_displays_selected_page_content(self, tmp_path):
         """Selecting a page renders its content."""
@@ -5412,6 +5420,101 @@ class TestWikiFormatPageHeader:
         assert "sources" not in result
 
 
+class TestWikiBreadcrumb:
+    def test_single_part_slug_returns_empty(self):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        assert _breadcrumb_for_slug("doc", "Title") == ""
+
+    def test_multi_part_slug_builds_chain(self):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        result = _breadcrumb_for_slug("summaries/cv-manual/01-brakes/page-0042", "Page 42")
+        assert "summaries" in result
+        assert "cv manual" in result
+        assert "01 brakes" in result
+        assert "Page 42" in result
+
+
+class TestWikiShortLabel:
+    def test_dashes_to_spaces(self):
+        from lilbee.cli.tui.screens.wiki import _short_label
+
+        assert _short_label("cv-manual") == "cv manual"
+
+    def test_underscores_to_spaces(self):
+        from lilbee.cli.tui.screens.wiki import _short_label
+
+        assert _short_label("test_doc") == "test doc"
+
+
+class TestWikiInsertHelpers:
+    async def test_single_part_slug_adds_leaf_directly(self, tmp_path):
+        """A page whose slug has no '/' becomes a direct child of the group node."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "top", "Top-Level Page")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+            from lilbee.wiki.browse import WikiPageInfo
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            group = tree.root.add("Summaries", expand=True)
+            info = WikiPageInfo(slug="rootonly", title="Direct", page_type="summary", source_count=0, created_at="")
+            screen._insert_page(group, info)
+            labels = [str(c.label) for c in group.children]
+            assert any("Direct" in label for label in labels)
+
+    async def test_index_stem_sets_branch_label_and_data(self, tmp_path):
+        """An index.md leaf promotes its enclosing branch to clickable."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "doc/01-chapter/index", "Chapter Title")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+
+            def _collect_data(node):
+                out: list[object] = [node.data]
+                for child in node.children:
+                    out.extend(_collect_data(child))
+                return out
+
+            data_values = _collect_data(tree.root)
+            # The inner-node branch should carry its slug so clicking opens its index.md.
+            assert "summaries/doc/01-chapter/index" in data_values
+
+
+class TestWikiFindOrAddBranch:
+    async def test_reuses_existing_branch(self, tmp_path):
+        """_find_or_add_branch matches on display label and reuses the existing branch."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            from lilbee.cli.tui.screens.wiki import _find_or_add_branch
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            first = _find_or_add_branch(tree.root, "cv-manual")
+            second = _find_or_add_branch(tree.root, "cv-manual")
+            assert first is second
+            assert len(tree.root.children) == 1
+
+
 class TestWikiGroupPages:
     def test_groups_by_type(self):
         from lilbee.cli.tui.screens.wiki import _group_pages
@@ -5470,7 +5573,7 @@ class TestWikiCoverageEdgeCases:
             await pilot.pause()
 
     async def test_on_page_selected_none_id(self, tmp_path):
-        """Selecting an option with no id (heading) is a no-op."""
+        """Selecting a branch node (no slug data) is a no-op."""
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -5481,10 +5584,9 @@ class TestWikiCoverageEdgeCases:
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
-            # Simulate selecting a disabled heading (id=None)
             fake_event = MagicMock()
-            fake_event.option = MagicMock(id=None)
-            screen._on_page_selected(fake_event)
+            fake_event.node = MagicMock(data=None)
+            screen._on_node_selected(fake_event)
             await pilot.pause()
 
     async def test_action_focus_search(self, tmp_path):
@@ -5572,7 +5674,7 @@ class TestWikiCoverageEdgeCases:
             assert inp.has_focus
 
     async def test_on_page_selected_valid_slug(self, tmp_path):
-        """Selecting a page with a valid slug displays it."""
+        """Selecting a leaf node with a slug displays it."""
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -5584,12 +5686,12 @@ class TestWikiCoverageEdgeCases:
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             fake_event = MagicMock()
-            fake_event.option = MagicMock(id="summaries/hello")
-            screen._on_page_selected(fake_event)
+            fake_event.node = MagicMock(data="summaries/hello")
+            screen._on_node_selected(fake_event)
             await pilot.pause()
 
     async def test_vim_nav_when_not_input_focused(self, tmp_path):
-        """Vim nav dispatches to OptionList when Input is not focused."""
+        """Vim nav dispatches to Tree when Input is not focused."""
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -5597,17 +5699,19 @@ class TestWikiCoverageEdgeCases:
         _create_wiki_page(wiki_root, "summaries", "b", "Page B")
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            from textual.widgets import OptionList as TextualOptionList
+            from textual.widgets import Tree as TextualTree
 
-            ol = app.screen.query_one("#wiki-page-list", TextualOptionList)
-            ol.focus()
+            tree = app.screen.query_one("#wiki-page-list", TextualTree)
+            tree.focus()
             await pilot.pause()
             app.screen.action_cursor_down()
             app.screen.action_cursor_up()
+            app.screen.action_cursor_left()
+            app.screen.action_cursor_right()
             app.screen.action_jump_top()
             app.screen.action_jump_bottom()
             await pilot.pause()
-            assert ol.has_focus
+            assert tree.has_focus
 
     def test_group_pages_unknown_type(self):
         """Pages with unknown type get their own group."""
@@ -7925,18 +8029,17 @@ async def test_wiki_source_for_slug_returns_none_for_empty_sources():
         assert result is None
 
 
-async def test_wiki_selected_source_returns_none_for_option_without_id():
-    """_selected_source returns None when highlighted option has no id."""
-    from textual.widgets import OptionList
-    from textual.widgets.option_list import Option
+async def test_wiki_selected_source_returns_none_for_branch_without_slug():
+    """_selected_source returns None when the highlighted tree node is a branch (no slug)."""
+    from textual.widgets import Tree
 
     app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        option_list = app.screen.query_one("#wiki-page-list", OptionList)
-        option_list.clear_options()
-        option_list.add_option(Option("no-id page"))  # id defaults to None
-        option_list.focus()
+        tree = app.screen.query_one("#wiki-page-list", Tree)
+        tree.reset("Wiki")
+        tree.root.add("Branch")  # branch with no data=slug
+        tree.focus()
         await pilot.pause()
         await pilot.press("down")
         await pilot.pause()
@@ -7945,17 +8048,16 @@ async def test_wiki_selected_source_returns_none_for_option_without_id():
 
 
 async def test_wiki_regenerate_selected_page_not_found():
-    """action_regenerate with a selected page whose source isn't indexed shows error."""
-    from textual.widgets import OptionList
-    from textual.widgets.option_list import Option
+    """action_regenerate with a selected leaf whose source isn't indexed shows error."""
+    from textual.widgets import Tree
 
     app = _make_wiki_app(with_task_bar=True)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        option_list = app.screen.query_one("#wiki-page-list", OptionList)
-        option_list.clear_options()
-        option_list.add_option(Option("test page", id="summaries/test"))
-        option_list.focus()
+        tree = app.screen.query_one("#wiki-page-list", Tree)
+        tree.reset("Wiki")
+        tree.root.add_leaf("test page", data="summaries/test")
+        tree.focus()
         await pilot.pause()
         await pilot.press("down")
         await pilot.pause()
