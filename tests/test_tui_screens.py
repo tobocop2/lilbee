@@ -4488,8 +4488,8 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
     silently swallowed and the Task Center marks the task DONE. The worker's
     except-Exception needs to see a raise so the row routes to FAILED.
 
-    Runs _do_add on a worker thread because it uses asyncio.run() internally
-    and can't be invoked from within the pilot's event loop.
+    Runs _do_add on a worker thread because it blocks on asyncio_loop.run()
+    internally and can't be invoked from within the pilot's event loop.
     """
     import threading
 

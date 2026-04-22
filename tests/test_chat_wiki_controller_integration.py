@@ -182,7 +182,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
-                        "asyncio.run",
+                        "lilbee.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
                                 "lilbee.ingest", fromlist=["SyncResult"]
@@ -235,7 +235,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
-                        "asyncio.run",
+                        "lilbee.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
                                 "lilbee.ingest", fromlist=["SyncResult"]
@@ -305,8 +305,9 @@ def test_do_crawl_reports_setup_progress() -> None:
 def test_do_crawl_reports_page_progress() -> None:
     """_do_crawl wires CrawlPageEvent through reporter.update.
 
-    Runs on a worker thread (off the pytest event loop) so asyncio.run is
-    allowed.
+    Runs on a worker thread off the pytest event loop: _do_crawl uses
+    asyncio_loop.run internally, which blocks the calling thread on a
+    future, so the caller must not be a running asyncio task.
     """
     import threading
 

@@ -12,7 +12,6 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from pathlib import Path
 
@@ -30,7 +29,7 @@ SCANNED_PDF = FIXTURES_DIR / "scanned_maintenance.pdf"
 
 
 @pytest.fixture(scope="module")
-def pdf_pipeline(tmp_path_factory):
+def pdf_pipeline(tmp_path_factory, _integration_loop):
     """Set up a pipeline with the scanned PDF fixture.
     Module-scoped: creates temp dirs, copies fixture, runs sync, yields data.
     Uses llama-cpp with real models so the full RAG pipeline works.
@@ -68,7 +67,7 @@ def pdf_pipeline(tmp_path_factory):
     cfg.embedding_model = embed_entry.ref
 
     # Run sync (will use Tesseract OCR if available, otherwise skip PDF)
-    asyncio.run(sync(quiet=True))
+    _integration_loop.run_until_complete(sync(quiet=True))
 
     yield {
         "tmp": tmp,

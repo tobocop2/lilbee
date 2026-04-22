@@ -105,7 +105,7 @@ class TestDoAddCancelCleanup:
             raise _Cancelled("cancelled by user")
 
         def _run(coro):
-            # asyncio.run receives a real coroutine; run the stub's logic instead.
+            # asyncio_loop.run receives a real coroutine; run the stub's logic instead.
             coro.close()
             raise _Cancelled("cancelled by user")
 
