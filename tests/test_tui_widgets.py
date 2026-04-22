@@ -2747,9 +2747,7 @@ class TestEnsureChromium:
         """bb-wq8g happy path: SETUP task calls start_task with the right args.
 
         Asserts against ``start_task`` directly instead of spawning a real
-        worker thread — running an actual ``asyncio.run`` inside the
-        daemon worker leaves thread-local state that later pilot tests
-        trip over.
+        worker thread, to keep this unit test off the bootstrap path.
         """
         from lilbee.cli.tui.task_queue import TaskType
 

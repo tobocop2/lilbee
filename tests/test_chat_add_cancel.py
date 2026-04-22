@@ -105,13 +105,12 @@ class TestDoAddCancelCleanup:
             raise _Cancelled("cancelled by user")
 
         def _run(coro):
-            # asyncio.run receives a real coroutine; run the stub's logic instead.
             coro.close()
             raise _Cancelled("cancelled by user")
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-            patch("asyncio.run", side_effect=_run),
+            patch("lilbee.asyncio_loop.run", side_effect=_run),
             pytest.raises(_Cancelled),
         ):
             screen._do_add(target, reporter)
@@ -150,7 +149,7 @@ class TestDoAddCancelCleanup:
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-            patch("asyncio.run", side_effect=_run),
+            patch("lilbee.asyncio_loop.run", side_effect=_run),
             pytest.raises(RuntimeError, match="Sync failed"),
         ):
             screen._do_add(target, reporter)

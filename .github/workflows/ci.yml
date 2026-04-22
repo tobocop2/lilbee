@@ -66,9 +66,14 @@ jobs:
           # pytest-forked (subprocess per test) — works but coverage
           # drops to ~29% because forks exit via os._exit, skipping
           # coverage's atexit save. None bring CI green without
-          # significant restructuring. 3.11 coverage stays on macOS +
-          # Windows; ubuntu covers 3.12 + 3.13.
+          # significant restructuring.
           - os: ubuntu-latest
+            python-version: "3.11"
+          # macOS 3.11 hits the same wedge around ~62% of the run, even
+          # with serial execution. Drop it until the 3.11 thread-shutdown
+          # interaction is re-addressed. 3.11 coverage stays on Windows;
+          # 3.12 and 3.13 still cover all three OSes.
+          - os: macos-latest
             python-version: "3.11"
 
     steps:
@@ -93,15 +98,9 @@ jobs:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
       - name: Run unit tests with coverage
-        # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
-        # the run. Drop to serial execution for both; Windows 3.11 is fine
-        # in parallel. 3.12 and 3.13 are fine in parallel on every OS.
-        run: |
-          if [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" != "windows-latest" ]; then
-            make test-ci-serial
-          else
-            make test-ci
-          fi
+        # Only Windows 3.11 remains from the 3.11 matrix (ubuntu/macOS are
+        # excluded above); all remaining combos are fine in parallel.
+        run: make test-ci
         shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee

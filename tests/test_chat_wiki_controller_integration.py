@@ -137,7 +137,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
                 with (
                     patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
                     patch("lilbee.ingest.sync", new=MagicMock(return_value=None)),
-                    patch("asyncio.run", new=MagicMock(return_value=SyncResult())),
+                    patch("lilbee.asyncio_loop.run", new=MagicMock(return_value=SyncResult())),
                 ):
                     screen._do_add(src, reporter)
             except BaseException as e:  # pragma: no cover
@@ -182,7 +182,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
-                        "asyncio.run",
+                        "lilbee.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
                                 "lilbee.ingest", fromlist=["SyncResult"]
@@ -235,7 +235,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
-                        "asyncio.run",
+                        "lilbee.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
                                 "lilbee.ingest", fromlist=["SyncResult"]
@@ -303,11 +303,7 @@ def test_do_crawl_reports_setup_progress() -> None:
 
 
 def test_do_crawl_reports_page_progress() -> None:
-    """_do_crawl wires CrawlPageEvent through reporter.update.
-
-    Runs on a worker thread (off the pytest event loop) so asyncio.run is
-    allowed.
-    """
+    """_do_crawl wires CrawlPageEvent through reporter.update."""
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
