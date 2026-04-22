@@ -190,6 +190,12 @@ class SdkLLMProvider(LLMProvider):
                 f"Cannot pull model {model!r}: backend does not support pulling",
                 provider=self._backend.provider_name,
             ) from exc
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                f"Cannot pull model {model!r}: {exc}", provider=self._backend.provider_name
+            ) from exc
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Return model metadata, or None when unsupported or not found."""
@@ -197,6 +203,12 @@ class SdkLLMProvider(LLMProvider):
             return self._backend.show_model(model, base_url=self._base_url)
         except NotImplementedError:
             return None
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                f"Showing model {model!r} failed: {exc}", provider=self._backend.provider_name
+            ) from exc
 
     def get_capabilities(self, model: str) -> list[str]:
         """Return capability tags from ``show_model`` output, or ``[]``."""

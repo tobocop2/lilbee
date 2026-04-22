@@ -97,6 +97,12 @@ class LlmSdkBackend(Protocol):
     operations. ``list_models`` / ``list_chat_models`` / ``pull_model``
     / ``show_model`` are catalog helpers and may raise
     ``NotImplementedError`` or return empty values when unsupported.
+
+    Error contract: implementations must raise only ``ProviderError`` or
+    ``NotImplementedError`` from any method. ``SdkLLMProvider`` wraps any
+    other exception at the seam, but adapters should contain SDK-specific
+    error types (httpx errors, litellm exceptions, etc.) in their own
+    ``ProviderError`` translations so the provider can pass them through.
     """
 
     @property

@@ -434,6 +434,36 @@ class TestPullModel:
         with pytest.raises(ProviderError, match="does not support pulling"):
             provider.pull_model("m")
 
+    def test_wraps_unexpected_errors(self) -> None:
+        class _FailingBackend(FakeBackend):
+            def pull_model(
+                self,
+                model: str,
+                *,
+                base_url: str,
+                on_progress: Any = None,
+            ) -> None:
+                raise RuntimeError("network boom")
+
+        provider = SdkLLMProvider(_FailingBackend())
+        with pytest.raises(ProviderError, match="Cannot pull model 'm': network boom"):
+            provider.pull_model("m")
+
+    def test_propagates_provider_error_unchanged(self) -> None:
+        class _WrappedError(FakeBackend):
+            def pull_model(
+                self,
+                model: str,
+                *,
+                base_url: str,
+                on_progress: Any = None,
+            ) -> None:
+                raise ProviderError("already-typed", provider="fake")
+
+        provider = SdkLLMProvider(_WrappedError())
+        with pytest.raises(ProviderError, match="already-typed"):
+            provider.pull_model("m")
+
 
 class TestShowModel:
     def test_forwards_result(self) -> None:
@@ -445,6 +475,24 @@ class TestShowModel:
         backend = FakeBackend(show_not_supported=True)
         provider = SdkLLMProvider(backend)
         assert provider.show_model("m") is None
+
+    def test_wraps_unexpected_errors(self) -> None:
+        class _FailingBackend(FakeBackend):
+            def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
+                raise RuntimeError("metadata boom")
+
+        provider = SdkLLMProvider(_FailingBackend())
+        with pytest.raises(ProviderError, match="Showing model 'm' failed: metadata boom"):
+            provider.show_model("m")
+
+    def test_propagates_provider_error_unchanged(self) -> None:
+        class _WrappedError(FakeBackend):
+            def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
+                raise ProviderError("already-typed", provider="fake")
+
+        provider = SdkLLMProvider(_WrappedError())
+        with pytest.raises(ProviderError, match="already-typed"):
+            provider.show_model("m")
 
 
 class TestGetCapabilities:
