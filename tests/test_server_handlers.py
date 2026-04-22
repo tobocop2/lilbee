@@ -683,6 +683,20 @@ class TestSetChatModel:
 
 
 class TestModelsCatalog:
+    @staticmethod
+    def _manifest(name: str, tag: str, task: str = "chat"):
+        from lilbee.registry import ModelManifest
+
+        return ModelManifest(
+            name=name,
+            tag=tag,
+            size_bytes=1,
+            task=task,
+            source_repo=f"org/{name}-GGUF",
+            source_filename=f"{name}.gguf",
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+
     @patch("lilbee.catalog.get_catalog")
     async def test_returns_catalog_response(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogModel, CatalogResult
@@ -707,7 +721,7 @@ class TestModelsCatalog:
                 )
             ],
         )
-        mock_svc.provider.list_models.return_value = ["qwen3:8b"]
+        mock_svc.registry.list_installed.return_value = [self._manifest("qwen3", "8b")]
         result = await handlers.models_catalog()
 
         assert result.total == 1
@@ -729,7 +743,7 @@ class TestModelsCatalog:
         from lilbee.catalog import CatalogResult
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=10, offset=5, models=[])
-        mock_svc.provider.list_models.return_value = []
+        mock_svc.registry.list_installed.return_value = []
         await handlers.models_catalog(
             task="chat",
             search="qwen",
@@ -775,7 +789,7 @@ class TestModelsCatalog:
                 )
             ],
         )
-        mock_svc.provider.list_models.return_value = ["qwen3:8b"]
+        mock_svc.registry.list_installed.return_value = [self._manifest("qwen3", "8b")]
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
 
@@ -786,9 +800,78 @@ class TestModelsCatalog:
         mock_get_catalog.return_value = CatalogResult(
             total=0, limit=20, offset=0, models=[], has_more=True
         )
-        mock_svc.provider.list_models.return_value = []
+        mock_svc.registry.list_installed.return_value = []
         result = await handlers.models_catalog()
         assert result.has_more is True
+
+    @patch("lilbee.catalog.get_catalog")
+    async def test_installed_reflects_registry_not_routing_provider(
+        self, mock_get_catalog, mock_svc
+    ):
+        """installed flag must reflect on-disk GGUFs only, not litellm routability.
+
+        The routing provider's ``list_models()`` can include models that are
+        routable via litellm proxies but have no GGUF on disk. The catalog's
+        ``installed`` field should only be True when a ModelManifest exists
+        in the registry for that ref.
+        """
+        from lilbee.catalog import CatalogModel, CatalogResult
+        from lilbee.registry import ModelManifest
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=2,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    name="qwen3",
+                    tag="8b",
+                    display_name="Qwen3 8B",
+                    hf_repo="Qwen/Qwen3-8B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=5.0,
+                    min_ram_gb=8.0,
+                    description="on disk",
+                    featured=True,
+                    downloads=0,
+                    task="chat",
+                ),
+                CatalogModel(
+                    name="mistral",
+                    tag="7b",
+                    display_name="Mistral 7B",
+                    hf_repo="TheBloke/Mistral-7B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=4.0,
+                    min_ram_gb=8.0,
+                    description="routable only",
+                    featured=False,
+                    downloads=0,
+                    task="chat",
+                ),
+            ],
+        )
+        # Registry has only qwen3 on disk.
+        mock_svc.registry.list_installed.return_value = [
+            ModelManifest(
+                name="qwen3",
+                tag="8b",
+                size_bytes=1,
+                task="chat",
+                source_repo="Qwen/Qwen3-8B-GGUF",
+                source_filename="qwen3.gguf",
+                downloaded_at="2026-01-01T00:00:00+00:00",
+            )
+        ]
+        # Routing provider also claims mistral is routable (litellm proxy),
+        # but its GGUF is not on disk.
+        mock_svc.provider.list_models.return_value = ["qwen3:8b", "mistral:7b"]
+
+        result = await handlers.models_catalog()
+
+        by_ref = {f"{m.name}:{m.tag}": m for m in result.models}
+        assert by_ref["qwen3:8b"].installed is True
+        assert by_ref["mistral:7b"].installed is False
 
 
 class TestModelsInstalled:
