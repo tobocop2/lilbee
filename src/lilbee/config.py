@@ -84,9 +84,17 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
     raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
 
 
-def validate_model_task_assignment(field_name: str, ref: str) -> str:
-    """Return the catalog's canonical ref for *ref*, or raise ValueError."""
-    if not ref or not ref.strip() or _model_task_validation_bypassed():
+def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
+    """Return the catalog's canonical ref for *ref*, or raise ValueError.
+
+    ``allow_bypass=True`` (default) honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION``
+    so unrelated tests can set model refs without populating the catalog.
+    Explicit user actions (``PUT /api/models/<role>``) pass
+    ``allow_bypass=False`` to force the check.
+    """
+    if not ref or not ref.strip():
+        return ref
+    if allow_bypass and _model_task_validation_bypassed():
         return ref
     entry = _find_model_catalog_entry(ref)
     if entry is None:

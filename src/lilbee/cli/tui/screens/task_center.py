@@ -6,7 +6,7 @@ state's color. On the active row the rail pulses at ~1 Hz, which is
 the only motion in the screen beyond the bar filling.
 
 The render path is poll-based: ``_poll`` runs on the main thread at
-10 Hz, reads the shared ``TaskQueue``, and reconciles rows in place by
+4 Hz, reads the shared ``TaskQueue``, and reconciles rows in place by
 task_id. There's no subscriber chain; tasks owned by the controller
 write into the lock-protected queue from worker threads and the poll
 picks them up next tick.
@@ -147,7 +147,7 @@ class TaskCenter(Screen[None]):
         return queue.active_tasks + queue.queued_tasks + list(reversed(queue.history))
 
     def _poll(self) -> None:
-        """10 Hz reconciliation: add new rows, update existing, remove stale."""
+        """4 Hz reconciliation: add new rows, update existing, remove stale."""
         self._tick += 1
         container = self.query_one("#task-rows", VerticalScroll)
         tasks = self._all_tasks()

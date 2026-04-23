@@ -364,7 +364,7 @@ Connect to remote LLM providers instead of (or alongside) local llama-cpp infere
 
 ```bash
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
-export LILBEE_LITELLM_BASE_URL=http://localhost:11434  # Ollama default
+export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # Ollama default
 export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any litellm-supported model name
 ```

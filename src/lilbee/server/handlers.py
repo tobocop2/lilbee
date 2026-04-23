@@ -551,32 +551,27 @@ def _require_model_available(model: str) -> str:
     return normalized
 
 
+_TASK_TO_FIELD: dict[ModelTask, str] = {
+    ModelTask.CHAT: "chat_model",
+    ModelTask.EMBEDDING: "embedding_model",
+    ModelTask.VISION: "vision_model",
+    ModelTask.RERANK: "reranker_model",
+}
+
+
 def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: bool = False) -> str:
-    """Validate *model* is installed and its catalog task matches *expected*.
+    """Validate *model* is installed locally AND passes the catalog task check.
 
-    Out-of-catalog models are rejected: without a catalog entry there is
-    no task metadata to validate against. When *allow_empty* is True, an
-    empty string unsets the role.
-
-    Returns the catalog's canonical ``name:tag`` ref so persisted values
-    match the registry key rather than the user-supplied ``hf_repo:tag``
-    or provider-prefixed form.
+    Empty string unsets the role when *allow_empty* is True. Catalog +
+    task validation delegates to ``validate_model_task_assignment`` so
+    the handler and config paths share a single implementation.
     """
-    from lilbee.catalog import find_catalog_entry
+    from lilbee.config import validate_model_task_assignment
 
     if allow_empty and not model.strip():
         return ""
     normalized = _require_model_available(model)
-    entry = find_catalog_entry(normalized)
-    if entry is None:
-        raise ValueError(
-            f"Model '{normalized}' is not in the featured catalog. "
-            "Pick a featured model for this role, or install one via "
-            "POST /api/models/pull with a known catalog ref."
-        )
-    if entry.task != expected:
-        raise ValueError(format_task_mismatch(normalized, ModelTask(entry.task), expected))
-    return entry.ref
+    return validate_model_task_assignment(_TASK_TO_FIELD[expected], normalized, allow_bypass=False)
 
 
 async def set_chat_model(model: str) -> SetModelResponse:
@@ -738,7 +733,12 @@ async def get_config_defaults() -> ConfigResponse:
     Covers writable fields (resettable via PATCH /api/config) and the
     model-role fields (resettable via PUT /api/models/<role>).
     """
-    return ConfigResponse(**_compute_config_defaults())
+    import copy
+
+    # deepcopy so callers that mutate the response (pydantic_core or
+    # application code handling lists like crawl_exclude_patterns) can't
+    # poison the cached defaults dict.
+    return ConfigResponse(**copy.deepcopy(_compute_config_defaults()))
 
 
 async def models_show(model: str) -> ModelsShowResponse:

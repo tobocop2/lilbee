@@ -97,6 +97,9 @@ class TestActiveBackendName:
     def test_anthropic_url_returns_anthropic(self, backend: LlmSdkBackend) -> None:
         assert backend.active_backend_name("https://api.anthropic.com") == "Anthropic"
 
+    def test_gemini_url_returns_gemini(self, backend: LlmSdkBackend) -> None:
+        assert backend.active_backend_name("https://generativelanguage.googleapis.com") == "Gemini"
+
     def test_unknown_url_falls_back_to_remote(self, backend: LlmSdkBackend) -> None:
         assert backend.active_backend_name("http://192.168.1.50:9000") == "Remote"
 

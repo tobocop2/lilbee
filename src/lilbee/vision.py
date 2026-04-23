@@ -171,6 +171,26 @@ def _make_progress(name: str, total: int, quiet: bool) -> tuple[AbstractContextM
     return progress, task
 
 
+def _record_page(
+    fut: concurrent.futures.Future[tuple[int, str | None]],
+    extracted: dict[int, str | None],
+    on_progress: DetailedProgressCallback,
+    progress_ctx: AbstractContextManager[Any],
+    progress_task: Any,
+    path: Path,
+    total: int,
+) -> None:
+    """Drain one completed page future into ``extracted`` and fire progress."""
+    i, text = fut.result()
+    extracted[i] = text
+    on_progress(
+        EventType.EXTRACT,
+        ExtractEvent(file=path.name, page=i + 1, total_pages=total),
+    )
+    if progress_task is not None:
+        progress_ctx.advance(progress_task)  # type: ignore[attr-defined]
+
+
 def extract_pdf_vision(
     path: Path,
     model: str,
@@ -195,17 +215,26 @@ def extract_pdf_vision(
         log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)
         return i, extract_page_text(png, model, timeout=timeout)
 
+    # Inflight futures are bounded to roughly ``concurrency * 2`` so raster
+    # bytes never accumulate beyond what the pool can drain. Fully eager
+    # submission would buffer every page's PNG in memory before any OCR
+    # returned.
+    max_inflight = concurrency * 2
+    pages_iter = iter(rasterize_pdf(path))
     with progress_ctx, concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = [pool.submit(_extract, i, png) for i, png in rasterize_pdf(path)]
-        for fut in concurrent.futures.as_completed(futures):
-            i, text = fut.result()
-            extracted[i] = text
-            on_progress(
-                EventType.EXTRACT,
-                ExtractEvent(file=path.name, page=i + 1, total_pages=total),
-            )
-            if progress_task is not None:
-                progress_ctx.advance(progress_task)  # type: ignore[attr-defined]
+        inflight: set[concurrent.futures.Future[tuple[int, str | None]]] = set()
+        for i, png in pages_iter:
+            if len(inflight) >= max_inflight:
+                done, inflight = concurrent.futures.wait(
+                    inflight, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for fut in done:
+                    _record_page(
+                        fut, extracted, on_progress, progress_ctx, progress_task, path, total
+                    )
+            inflight.add(pool.submit(_extract, i, png))
+        for fut in concurrent.futures.as_completed(inflight):
+            _record_page(fut, extracted, on_progress, progress_ctx, progress_task, path, total)
 
     result: list[PageText] = []
     failed = 0

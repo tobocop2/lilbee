@@ -34,6 +34,7 @@ API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 OLLAMA_BACKEND_NAME = "Ollama"
 OPENAI_BACKEND_NAME = "OpenAI"
 ANTHROPIC_BACKEND_NAME = "Anthropic"
+GEMINI_BACKEND_NAME = "Gemini"
 REMOTE_BACKEND_NAME = "Remote"
 
 _BACKEND_URL_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -41,6 +42,8 @@ _BACKEND_URL_PATTERNS: tuple[tuple[str, str], ...] = (
     ("ollama", OLLAMA_BACKEND_NAME),
     ("openai", OPENAI_BACKEND_NAME),
     ("anthropic", ANTHROPIC_BACKEND_NAME),
+    ("googleapis", GEMINI_BACKEND_NAME),
+    ("gemini", GEMINI_BACKEND_NAME),
 )
 
 
