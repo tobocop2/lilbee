@@ -33,7 +33,7 @@ from lilbee.wiki.citation import (
 )
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
-from lilbee.wiki.links import rewrite_wiki_links
+from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
@@ -1010,17 +1010,19 @@ def _augment_surface_map_with_existing_pages(
 def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) -> None:
     """Rewrite ``[[slug]]`` links on every page under ``wiki/`` content subdirs.
 
-    A page never receives a link to itself: ``rewrite_wiki_links``
-    takes the owning slug and drops it inside its match callback, so
-    the surface map is shared unmodified across every page in the
-    walk (no O(M) dict rebuild per file). The map is augmented with
+    A page never receives a link to itself: the rewriter takes the
+    owning slug and drops it inside its match callback, so the
+    surface map is shared unmodified across every page in the walk
+    (no O(M) dict rebuild per file). The map is augmented with
     slugs from the existing on-disk corpus so a touched page still
-    links to untouched neighbors.
+    links to untouched neighbors. The alternation regex + lookup are
+    compiled once per build and reused across pages.
     """
     surface_to_slug = _entity_surface_map(entities)
     wiki_root = config.data_root / config.wiki_dir
     _augment_surface_map_with_existing_pages(surface_to_slug, wiki_root)
-    if not surface_to_slug:
+    rewriter = compile_rewriter(surface_to_slug)
+    if rewriter is None:
         return
 
     for subdir in WIKI_CONTENT_SUBDIRS:
@@ -1031,6 +1033,6 @@ def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) 
         for md_path in subdir_path.rglob("*.md"):
             owning_slug = md_path.stem if is_entity_subdir else None
             original = md_path.read_text(encoding="utf-8")
-            rewritten = rewrite_wiki_links(original, surface_to_slug, skip_slug=owning_slug)
+            rewritten = apply_rewriter(original, rewriter, skip_slug=owning_slug)
             if rewritten != original:
                 md_path.write_text(rewritten, encoding="utf-8")

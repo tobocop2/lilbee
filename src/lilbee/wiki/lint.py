@@ -268,38 +268,40 @@ def lint_all(
     return report
 
 
-def _collect_inbound_links(wiki_root: Path) -> set[str]:
-    """Return every slug that appears as an ``[[slug]]`` link anywhere in the wiki."""
+def _lint_orphans(wiki_root: Path, config: Config) -> list[LintIssue]:
+    """Flag concept/entity pages that no other page links back to.
+
+    Single-pass over the wiki tree: we collect every inbound
+    ``[[slug]]`` reference and the set of orphan candidates in one
+    ``rglob`` walk, then subtract. The earlier two-pass version
+    re-walked the tree to compute ``referenced`` and again to check
+    candidates, which doubles the file-IO at build time.
+    """
     referenced: set[str] = set()
+    candidates: list[Path] = []
+    candidate_roots = {wiki_root / sub for sub in _ORPHAN_CANDIDATE_SUBDIRS}
     for md_path in wiki_root.rglob("*.md"):
         text = md_path.read_text(encoding="utf-8", errors="replace")
         for match in _WIKI_LINK_RE.finditer(text):
             slug = match.group(1).split("|", 1)[0].strip().lower()
             if slug:
                 referenced.add(slug)
-    return referenced
+        if any(root in md_path.parents for root in candidate_roots):
+            candidates.append(md_path)
 
-
-def _lint_orphans(wiki_root: Path, config: Config) -> list[LintIssue]:
-    """Flag concept/entity pages that no other page links back to."""
-    referenced = _collect_inbound_links(wiki_root)
     issues: list[LintIssue] = []
-    for subdir in _ORPHAN_CANDIDATE_SUBDIRS:
-        subdir_path = wiki_root / subdir
-        if not subdir_path.is_dir():
+    for md_path in sorted(candidates):
+        slug = md_path.stem.lower()
+        if slug in referenced:
             continue
-        for md_path in sorted(subdir_path.rglob("*.md")):
-            slug = md_path.stem.lower()
-            if slug in referenced:
-                continue
-            relative = md_path.relative_to(wiki_root)
-            wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
-            issues.append(
-                LintIssue(
-                    wiki_source=wiki_source,
-                    severity=IssueSeverity.WARNING,
-                    issue_type=IssueType.ORPHAN,
-                    message=f"Orphan: no inbound [[{slug}]] links from any other page",
-                )
+        relative = md_path.relative_to(wiki_root)
+        wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
+        issues.append(
+            LintIssue(
+                wiki_source=wiki_source,
+                severity=IssueSeverity.WARNING,
+                issue_type=IssueType.ORPHAN,
+                message=f"Orphan: no inbound [[{slug}]] links from any other page",
             )
+        )
     return issues

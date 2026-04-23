@@ -10,10 +10,38 @@ either the provenance trail or illustrative code blocks.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from lilbee.wiki.shared import CITATION_BLOCK_COMMENT
 
 _CODE_FENCE_PREFIX = "```"
+
+
+@dataclass(frozen=True)
+class CompiledRewriter:
+    """Precompiled artifacts shared across a batch of page rewrites.
+
+    The regex compile + longest-first sort are O(M log M) in the
+    surface-map size. When a build rewrites P pages, computing these
+    once and reusing them across iterations cuts the per-page cost
+    to a single ``pattern.sub`` pass.
+    """
+
+    pattern: re.Pattern[str]
+    lookup: dict[str, str]
+
+
+def compile_rewriter(surface_to_slug: dict[str, str]) -> CompiledRewriter | None:
+    """Compile the regex + lowercase lookup for a surface-to-slug map.
+
+    Returns ``None`` when the map is empty so the caller can short-circuit.
+    """
+    if not surface_to_slug:
+        return None
+    return CompiledRewriter(
+        pattern=_compile_surface_pattern(surface_to_slug),
+        lookup={surface.lower(): slug for surface, slug in surface_to_slug.items()},
+    )
 
 
 def rewrite_wiki_links(
@@ -35,17 +63,30 @@ def rewrite_wiki_links(
     ``braking.md`` does not gain a ``[[braking]]`` reference to itself.
     Filtering in the replace callback is O(1) per match; pre-filtering
     the dict would be O(M) per page.
-    """
-    if not surface_to_slug or not content:
-        return content
 
-    pattern = _compile_surface_pattern(surface_to_slug)
-    lookup = {surface.lower(): slug for surface, slug in surface_to_slug.items()}
+    For batch work over many pages, call :func:`compile_rewriter` once
+    and pass the result to :func:`apply_rewriter` to skip the per-call
+    compile + sort.
+    """
+    rewriter = compile_rewriter(surface_to_slug)
+    if rewriter is None or not content:
+        return content
+    return apply_rewriter(content, rewriter, skip_slug)
+
+
+def apply_rewriter(
+    content: str,
+    rewriter: CompiledRewriter,
+    skip_slug: str | None = None,
+) -> str:
+    """Apply a precompiled rewriter to *content*, returning the rewritten text."""
+    if not content:
+        return content
 
     ending_newline = content.endswith("\n")
     lines = content.splitlines()
     rewritten = [
-        _rewrite_line(line, pattern, lookup, skip_slug) if writable else line
+        _rewrite_line(line, rewriter.pattern, rewriter.lookup, skip_slug) if writable else line
         for line, writable in _classify_lines(lines)
     ]
     result = "\n".join(rewritten)
