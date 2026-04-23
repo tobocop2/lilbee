@@ -220,9 +220,7 @@ class TestBuildWikiRewritesLinks:
             ),
         ]
         # Prevent the per-source batch from actually calling the LLM.
-        with patch(
-            "lilbee.wiki.gen._generate_source_batch", return_value=[]
-        ):
+        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]):
             build_wiki(entities, MagicMock(), MagicMock(), cfg)
 
         concept_body = (wiki_root / "concepts" / "braking.md").read_text()
@@ -280,8 +278,6 @@ class TestBuildWikiDefaults:
         )
         store = MagicMock()
         store.get_chunks_by_source.return_value = [_chunk("a.txt", 0, "body")]
-        with patch(
-            "lilbee.wiki.gen._generate_source_batch", return_value=[]
-        ) as batch:
+        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]) as batch:
             build_wiki([rec], MagicMock(), store, None)
         batch.assert_called_once()
