@@ -317,6 +317,27 @@ class Store:
         self._config = config
         self._fts_ready: bool = False
         self._db: lancedb.DBConnection | None = None
+        # Cache of {filename: ingested_at} rebuilt only when sources
+        # mutate; callers (temporal filter) hit it per-query.
+        self._source_ingested_cache: dict[str, str] | None = None
+
+    def _invalidate_source_cache(self) -> None:
+        """Drop the cached {filename: ingested_at} map."""
+        self._source_ingested_cache = None
+
+    def source_ingested_at_map(self) -> dict[str, str]:
+        """Return {filename: ingested_at} for every source, cached.
+
+        Rebuilt only when ``upsert_source`` / ``delete_source`` /
+        ``delete_by_source`` / ``remove_documents`` / ``drop_all`` fire.
+        Previously the temporal-filter call path in query.py rebuilt
+        this dict on every query.
+        """
+        if self._source_ingested_cache is not None:
+            return self._source_ingested_cache
+        mapping = {s["filename"]: s.get("ingested_at", "") for s in self.get_sources()}
+        self._source_ingested_cache = mapping
+        return mapping
 
     def _chunks_schema(self) -> pa.Schema:
         return pa.schema(
@@ -543,6 +564,7 @@ class Store:
             table = self.open_table(CHUNKS_TABLE)
             if table is not None:
                 _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
+        self._invalidate_source_cache()
 
     def get_sources(
         self,
@@ -602,6 +624,7 @@ class Store:
                     }
                 ]
             )
+        self._invalidate_source_cache()
 
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
@@ -609,6 +632,7 @@ class Store:
             table = self.open_table(SOURCES_TABLE)
             if table is not None:
                 _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+        self._invalidate_source_cache()
 
     def remove_documents(
         self,
@@ -705,3 +729,4 @@ class Store:
             db = self.get_db()
             for name in _table_names(db):
                 db.drop_table(name)
+        self._invalidate_source_cache()

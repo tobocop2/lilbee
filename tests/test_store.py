@@ -648,6 +648,45 @@ class TestCountSources:
         assert store.count_sources() == 0
 
 
+class TestSourceIngestedAtMap:
+    """Query-side temporal filter calls this per query; caching avoids
+    a fresh get_sources() materialization for every question."""
+
+    def test_returns_filename_to_ingested_at(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.upsert_source("b.md", "h2", 1)
+        result = store.source_ingested_at_map()
+        assert set(result) == {"a.md", "b.md"}
+        assert all(v for v in result.values())
+
+    def test_cache_is_reused_until_mutation(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        first = store.source_ingested_at_map()
+        # Same object identity means the cache served the call without
+        # a re-materialization pass over SOURCES.
+        assert store.source_ingested_at_map() is first
+
+    def test_upsert_invalidates_cache(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        first = store.source_ingested_at_map()
+        store.upsert_source("b.md", "h2", 1)
+        second = store.source_ingested_at_map()
+        assert first is not second
+        assert "b.md" in second
+
+    def test_delete_invalidates_cache(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.source_ingested_at_map()
+        store.delete_source("a.md")
+        assert store.source_ingested_at_map() == {}
+
+    def test_drop_all_invalidates_cache(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.source_ingested_at_map()
+        store.drop_all()
+        assert store.source_ingested_at_map() == {}
+
+
 def _make_citation(**overrides) -> CitationRecord:
     defaults: CitationRecord = {
         "wiki_source": "wiki/summaries/doc.md",

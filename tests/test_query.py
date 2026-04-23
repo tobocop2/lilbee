@@ -824,10 +824,10 @@ class TestTemporalFilter:
         from datetime import UTC, datetime, timedelta
 
         recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
-            {"filename": "new.md", "ingested_at": recent},
-        ]
+        mock_svc.store.source_ingested_at_map.return_value = {
+            "old.md": "2020-01-01T00:00:00+00:00",
+            "new.md": recent,
+        }
         results = [
             _make_result(source="old.md"),
             _make_result(source="new.md"),

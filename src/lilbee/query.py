@@ -382,7 +382,7 @@ class Searcher:
         if keyword is None:
             return results
         date_range = resolve_date_range(keyword)
-        source_dates = {s["filename"]: s.get("ingested_at", "") for s in self._store.get_sources()}
+        source_dates = self._store.source_ingested_at_map()
         filtered: list[SearchChunk] = []
         for r in results:
             ingested_at = source_dates.get(r.source, "")
