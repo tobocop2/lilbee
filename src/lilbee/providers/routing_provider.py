@@ -113,12 +113,9 @@ class RoutingProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
 
-        Native GGUF refs go to llama-cpp; hosted refs (Cohere, Voyage,
-        Jina, Together AI, HF TEI) go through the SDK provider.
-
-        Raises ``ProviderError`` when ``cfg.reranker_model`` is empty or
-        the configured backend for the chosen model does not support
-        reranking.
+        Native GGUF refs go to llama-cpp; hosted refs go through the SDK
+        provider. Raises ``ProviderError`` when ``cfg.reranker_model`` is
+        empty or the selected backend does not support reranking.
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")

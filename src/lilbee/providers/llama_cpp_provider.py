@@ -540,11 +540,8 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
 def _extract_rerank_score(response: dict[str, Any]) -> float:
     """Extract a single relevance score from a pooling_type=RANK response.
 
-    llama-cpp-python's ``create_embedding`` with ``LLAMA_POOLING_TYPE_RANK``
-    returns ``data[i]["embedding"]`` as a ``list[float]`` of length
-    ``n_embd`` (1 for rerank models). Any other shape indicates an
-    upstream format change and raises ``ProviderError`` with the observed
-    shape in the message so the drift is visible.
+    Raises ``ProviderError`` with the observed shape for anything other
+    than a non-empty ``list[float]`` so upstream format changes surface.
     """
     data = response.get("data") or []
     if not data:
