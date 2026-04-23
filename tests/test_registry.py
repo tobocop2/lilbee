@@ -673,6 +673,24 @@ class TestWriteLatestAlias:
         registry.write_latest_alias(ref)
         assert not (tmp_path / "models" / "manifests").exists()
 
+    def test_invalidates_alias_cache(self, tmp_path: Path) -> None:
+        """Writing the :latest manifest must drop the cached alias index."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        content = b"data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
+        ref = ModelRef(name="the-model", tag="v1")
+        manifest = _make_manifest(name="the-model", tag="v1")
+        registry.install(ref, blob_path, manifest)
+
+        # Populate the alias cache by querying a miss.
+        assert registry._find_by_alias("nothing") is None
+        assert registry._alias_cache is not None
+
+        registry.write_latest_alias(ref)
+        assert registry._alias_cache is None
+
 
 class TestWriteManifestErrorPath:
     def test_temp_file_cleaned_up_on_replace_error(

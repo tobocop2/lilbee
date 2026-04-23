@@ -35,7 +35,7 @@ flowchart LR
     end
 
     subgraph External
-        LITELLM[litellm backends]
+        SDK[SDK backends]
         LLAMA[llama-cpp]
         HF[HuggingFace]
     end
@@ -51,7 +51,7 @@ flowchart LR
     SEARCH --> CONCEPT
     SEARCH --> GEN
     GEN --> PROV
-    PROV --> LITELLM & LLAMA
+    PROV --> SDK & LLAMA
     INGEST --> HF
 ```
 
@@ -67,7 +67,7 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **PDF**: kreuzberg 4.6 extraction with OCR fallback chain (text extraction → Tesseract OCR → vision model). PDF page rasterization delegated to kreuzberg's `PdfPageIterator`.
 - **Structured files**: kreuzberg handles XML, JSON, JSONL, YAML, CSV extraction natively. Language detection delegated to tree-sitter-language-pack's `detect_language()`.
 - **Web pages**: crawl4ai fetches HTML (with JavaScript rendering via Playwright), converts to markdown, saves to `documents/_web/` for indexing
-- **Embedding**: provider-agnostic — works with llama-cpp-python (default) or any litellm-compatible backend (Ollama, OpenAI, etc.)
+- **Embedding**: provider-agnostic — works with llama-cpp-python (default) or any SDK-compatible backend (Ollama, OpenAI, etc.)
 - **Concept extraction**: spaCy noun phrases extracted per chunk, co-occurrence graph built with PPMI weights, Leiden clustering assigns concepts to communities
 - **Storage**: LanceDB with full-text search (FTS) index for hybrid retrieval + concept graph tables (nodes, edges, chunk mappings)
 
@@ -78,11 +78,11 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 ```mermaid
 flowchart TD
     APP[Application Code] --> ROUTE[RoutingProvider]
-    ROUTE --> CHECK{litellm installed & model available?}
-    CHECK -->|Yes| LIT[LiteLLM → External Backend]
+    ROUTE --> CHECK{SDK backend installed & model available?}
+    CHECK -->|Yes| SDK_BACK[SDK → External Backend]
     CHECK -->|No| LCPP[llama-cpp-python → GGUF]
 
-    APP -->|explicit config| LIT_P[LiteLLM Provider]
+    APP -->|explicit config| SDK_P[SDK Provider]
     APP -->|explicit config| LCPP_P[LlamaCpp Provider]
 ```
 
@@ -287,7 +287,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_CHAT_MODEL` | `qwen3:8b` | LLM used for chat and ask | Must be installed locally or available via litellm backend |
+| `LILBEE_CHAT_MODEL` | `qwen3:8b` | LLM used for chat and ask | Must be installed locally or available via the SDK backend |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |
 | `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff for vector results | Lower values are stricter — may return fewer results but higher precision. Set to 1.0 to disable filtering. |

@@ -326,8 +326,7 @@ class ModelRegistry:
                 self.write_latest_alias(ref)
             log.info("Migrated legacy model %s -> %s", path.name, ref)
             count += 1
-        if count:
-            self._invalidate_alias_cache()
+        self._invalidate_alias_cache()
         return count
 
     def _manifest_path(self, ref: ModelRef) -> Path:

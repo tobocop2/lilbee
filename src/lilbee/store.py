@@ -371,10 +371,13 @@ class Store:
         return db.open_table(name)
 
     def ensure_fts_index(self) -> None:
-        """Create the chunks FTS index, or run ``optimize()`` to fold new rows in.
+        """Create the chunks FTS index, or run ``optimize()`` once it exists.
 
-        ``optimize()`` is incremental (work scales with added rows);
-        ``create_fts_index(replace=True)`` would be O(total_chunks) per call.
+        ``optimize()`` folds newly added rows into the FTS index and also
+        runs LanceDB's default compaction + version pruning (default prune
+        window: 7 days). Work scales with recent deltas rather than total
+        chunk count, so large corpora no longer pay the full
+        ``create_fts_index(replace=True)`` rebuild cost on every sync.
         """
         with write_lock():
             table = self.open_table(CHUNKS_TABLE)
