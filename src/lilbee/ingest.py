@@ -165,24 +165,6 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _file_unchanged_by_mtime(path: Path, stored_mtime: float | None) -> bool:
-    """True when the file's current mtime matches *stored_mtime* within precision.
-
-    Comparing mtime to mtime keeps both values in the same reference frame,
-    avoiding the Windows-only failure mode where NTFS mtime precision is
-    coarser than a wall-clock ``ingested_at``. Returns False when no mtime
-    is stored (legacy rows) or on stat error, so callers fall through to a
-    hash compare.
-    """
-    if stored_mtime is None:
-        return False
-    try:
-        current_mtime = path.stat().st_mtime
-    except OSError:
-        return False
-    return current_mtime <= stored_mtime
-
-
 def _relative_name(path: Path) -> str:
     """Get path relative to documents dir as a forward-slash string (portable across OS)."""
     return path.relative_to(cfg.documents_dir).as_posix()
@@ -634,9 +616,7 @@ async def sync(
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
-    existing_sources = {
-        s["filename"]: (s["file_hash"], s.get("source_mtime")) for s in _store.get_sources()
-    }
+    existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
 
     added: list[str] = []
     updated: list[str] = []
@@ -661,12 +641,7 @@ async def sync(
         if content_type is None:
             raise ValueError(f"Unsupported file slipped through discovery: {name}")
 
-        old = existing_sources.get(name)
-        old_hash = old[0] if old is not None else None
-
-        if old is not None and _file_unchanged_by_mtime(path, old[1]):
-            unchanged += 1
-            continue
+        old_hash = existing_sources.get(name)
 
         current_hash = file_hash(path)
 
@@ -900,8 +875,4 @@ def _apply_result(
         return
 
     fhash = result.file_hash or file_hash(result.path)
-    try:
-        mtime: float | None = result.path.stat().st_mtime
-    except OSError:
-        mtime = None
-    get_services().store.upsert_source(result.name, fhash, result.chunk_count, source_mtime=mtime)
+    get_services().store.upsert_source(result.name, fhash, result.chunk_count)

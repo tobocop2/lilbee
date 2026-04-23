@@ -596,33 +596,6 @@ class TestSourceTypeField:
         assert sources[0]["source_type"] == "wiki"
 
 
-class TestSourceMtimeMigration:
-    """Existing stores predate source_mtime; column must be added in place."""
-
-    def test_legacy_schema_evolves_on_upsert(self, store):
-        import lancedb
-        import pyarrow as pa
-
-        from lilbee.store import SOURCES_TABLE, _ensure_source_mtime_column
-
-        legacy_schema = pa.schema(
-            [
-                pa.field("filename", pa.utf8()),
-                pa.field("file_hash", pa.utf8()),
-                pa.field("ingested_at", pa.utf8()),
-                pa.field("chunk_count", pa.int32()),
-                pa.field("source_type", pa.utf8()),
-            ]
-        )
-        db = lancedb.connect(store._config.lancedb_dir)
-        table = db.create_table(SOURCES_TABLE, schema=legacy_schema)
-        assert "source_mtime" not in table.schema.names
-
-        _ensure_source_mtime_column(table)
-
-        assert "source_mtime" in table.schema.names
-
-
 class TestGetSourcesPagination:
     """LanceDB-side limit/offset/search for /api/documents scalability."""
 
