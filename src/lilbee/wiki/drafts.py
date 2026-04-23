@@ -36,6 +36,23 @@ _DRIFT_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Phase D: batched-generation pending markers. The per-source batched
+# call writes one of these when the parser could not recover a
+# requested section, or when two sources proposed the same concept
+# slug and the second write lost the race.
+_PENDING_PARSE_MARKER_RE = re.compile(
+    r"<!--\s*PENDING:\s*batch parse failed[^>]*-->",
+    re.IGNORECASE,
+)
+_PENDING_COLLISION_MARKER_RE = re.compile(
+    r"<!--\s*PENDING:\s*concept slug collision[^>]*-->",
+    re.IGNORECASE,
+)
+
+# Kind labels exposed to callers (CLI, JSON) via ``DraftInfo.pending_kind``.
+PENDING_KIND_PARSE = "parse"
+PENDING_KIND_COLLISION = "collision"
+
 # Published wiki subdirs searched in priority order when pairing a
 # draft slug with its counterpart. Summaries and synthesis come first
 # because they are the subdirs most drafts originate from (drift
@@ -50,7 +67,14 @@ _PUBLISHED_SUBDIRS: tuple[str, ...] = (
 
 @dataclass
 class DraftInfo:
-    """Metadata about a single draft, surfaced in ``wiki drafts list``."""
+    """Metadata about a single draft, surfaced in ``wiki drafts list``.
+
+    Phase D: ``pending_kind`` distinguishes drift drafts (None) from
+    batched-generation markers (``"parse"``, ``"collision"``). Callers
+    can render the kind in the list view and branch on it when
+    deciding how to surface the draft (e.g. a collision needs the
+    winning-source context, a parse marker just needs a rerun).
+    """
 
     slug: str
     path: Path
@@ -59,6 +83,7 @@ class DraftInfo:
     bad_title: bool
     published_path: Path | None
     mtime: float
+    pending_kind: str | None = None
 
     @property
     def published_exists(self) -> bool:
@@ -76,6 +101,7 @@ class DraftInfo:
             "published_path": str(self.published_path) if self.published_path else None,
             "published_exists": self.published_exists,
             "mtime": self.mtime,
+            "pending_kind": self.pending_kind,
         }
 
 
@@ -115,9 +141,31 @@ def _parse_drift_ratio(text: str) -> float | None:
     return int(match.group("pct")) / 100.0
 
 
+def _parse_pending_kind(text: str) -> str | None:
+    """Classify *text* as a PENDING-PARSE, PENDING-COLLISION, or neither.
+
+    Returns ``None`` when the leading marker is absent or is the
+    drift marker. Only inspects the first marker encountered so a
+    draft body that quotes the HTML comment (unlikely but possible)
+    does not get mis-classified.
+    """
+    if _PENDING_PARSE_MARKER_RE.search(text):
+        return PENDING_KIND_PARSE
+    if _PENDING_COLLISION_MARKER_RE.search(text):
+        return PENDING_KIND_COLLISION
+    return None
+
+
 def _strip_drift_marker(text: str) -> str:
     """Remove the drift-review marker so accepted content lands clean."""
     return _DRIFT_MARKER_RE.sub("", text, count=1).lstrip()
+
+
+def _strip_pending_markers(text: str) -> str:
+    """Remove PENDING-PARSE/COLLISION markers on the way into a published page."""
+    text = _PENDING_PARSE_MARKER_RE.sub("", text, count=1)
+    text = _PENDING_COLLISION_MARKER_RE.sub("", text, count=1)
+    return text.lstrip()
 
 
 def list_drafts(wiki_root: Path) -> list[DraftInfo]:
@@ -134,10 +182,12 @@ def list_drafts(wiki_root: Path) -> list[DraftInfo]:
     for path in sorted(drafts_dir.rglob("*.md")):
         text = path.read_text(encoding="utf-8")
         drift = _parse_drift_ratio(text)
-        # ``parse_frontmatter`` anchors on line 0. The drift marker
-        # that ``_divert_to_drafts`` prepends shifts the frontmatter
-        # one block down, so we read it from the drift-stripped body.
-        fm = parse_frontmatter(_strip_drift_marker(text))
+        pending_kind = _parse_pending_kind(text)
+        # ``parse_frontmatter`` anchors on line 0. The drift/pending
+        # marker that ``_divert_to_drafts`` / ``_write_pending_marker``
+        # prepends shifts the frontmatter one block down, so we read
+        # it from the marker-stripped body.
+        fm = parse_frontmatter(_strip_pending_markers(_strip_drift_marker(text)))
         slug = str(path.relative_to(drafts_dir).with_suffix("")).replace("\\", "/")
         infos.append(
             DraftInfo(
@@ -148,6 +198,7 @@ def list_drafts(wiki_root: Path) -> list[DraftInfo]:
                 bad_title=bool(fm.get("bad_title", False)),
                 published_path=_find_published(wiki_root, slug),
                 mtime=path.stat().st_mtime,
+                pending_kind=pending_kind,
             )
         )
     return infos
@@ -177,23 +228,39 @@ def diff_draft(slug: str, wiki_root: Path) -> str:
     return "\n".join(diff)
 
 
+_COLLISION_SUFFIX_RE = re.compile(r"-collision-[0-9a-f]{8}$")
+
+
+def _base_slug_for_collision(slug: str) -> str:
+    """Strip the ``-collision-<hash>`` suffix so accept lands on the winning slug."""
+    return _COLLISION_SUFFIX_RE.sub("", slug)
+
+
 def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     """Move the draft into its published subdir and re-index its chunks.
 
-    When a matching published page exists the draft takes its place
-    (same subdir, same filename). Otherwise the draft lands in
-    ``summaries/`` as the safe default; the caller can move it later
-    if the page type was different. The drift marker is stripped on
-    the way in so accepted content looks exactly like a native
-    regeneration. Existing ``chunk_type="wiki"`` rows for the target
-    ``wiki_source`` are cleared, then the accepted body is chunked,
-    embedded, and re-written.
+    Behavior branches on the draft's pending kind:
 
-    Sequence is deliberate: write the published file first, re-index
-    next, delete the draft last. If the re-index raises (chunker,
-    embedder, LanceDB contention), the draft file stays on disk so
-    the user can retry ``accept`` — ``index_wiki_page`` is idempotent
-    on the same ``wiki_source`` (``clear_table`` + re-write).
+    - **Drift draft** (default): write the accepted body to its
+      published counterpart (or ``summaries/`` when unpaired),
+      re-index, delete the draft.
+    - **PENDING-PARSE** (batched-generation parser could not recover
+      a section): accepting is a no-op on the published side — the
+      marker has no body to accept. The marker is deleted and the
+      user is told to run ``wiki build`` to regenerate. Returns an
+      ``AcceptResult`` with ``reindexed_chunks=0`` and
+      ``moved_to`` pointing at the deleted marker.
+    - **PENDING-COLLISION** (two sources proposed the same concept
+      slug): strips the ``-collision-<hash>`` suffix to find the
+      winning slug, overwrites the winning page with this draft's
+      body, re-indexes, deletes the collision marker.
+
+    Sequence for drift/collision: write the published file first,
+    re-index next, delete the draft last. If the re-index raises
+    (chunker, embedder, LanceDB contention), the draft file stays
+    on disk so the user can retry ``accept`` — ``index_wiki_page``
+    is idempotent on the same ``wiki_source`` (``clear_table`` +
+    re-write).
 
     Raises :class:`FileNotFoundError` when the draft does not exist.
     """
@@ -201,13 +268,25 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     if not draft.is_file():
         raise FileNotFoundError(f"draft not found: {slug}")
     raw = draft.read_text(encoding="utf-8")
-    clean = _strip_drift_marker(raw)
+    pending_kind = _parse_pending_kind(raw)
 
-    published = _find_published(wiki_root, slug)
+    if pending_kind == PENDING_KIND_PARSE:
+        draft.unlink()
+        log.info(
+            "Accepted PENDING-PARSE marker %s; run `lilbee wiki build` "
+            "to regenerate the missing section.",
+            slug,
+        )
+        return AcceptResult(slug=slug, moved_to=draft, reindexed_chunks=0)
+
+    clean = _strip_pending_markers(_strip_drift_marker(raw))
+
+    target_slug = _base_slug_for_collision(slug) if pending_kind == PENDING_KIND_COLLISION else slug
+    published = _find_published(wiki_root, target_slug)
     if published is not None:
         target = published
     else:
-        target = wiki_root / SUMMARIES_SUBDIR / f"{slug}.md"
+        target = wiki_root / SUMMARIES_SUBDIR / f"{target_slug}.md"
         log.info(
             "Draft %s has no published counterpart; accepting into %s",
             slug,
@@ -219,7 +298,7 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     reindexed = _reindex_accepted_page(target, wiki_root, store)
     draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
-    return AcceptResult(slug=slug, moved_to=target, reindexed_chunks=reindexed)
+    return AcceptResult(slug=target_slug, moved_to=target, reindexed_chunks=reindexed)
 
 
 def reject_draft(slug: str, wiki_root: Path) -> None:
