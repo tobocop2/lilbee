@@ -1053,6 +1053,7 @@ class _PlainEnvSource:
             if self._ignore_empty and raw == "":
                 continue
             result[field_name] = raw
+        _warn_deprecated_env_keys(self._prefix)
         return result
 
 
@@ -1064,6 +1065,32 @@ _DEPRECATED_WIKI_KEYS: frozenset[str] = frozenset(
         "wiki_concept_prompt",
     }
 )
+
+_deprecated_env_warned: set[str] = set()
+
+
+def _warn_deprecated_env_keys(prefix: str) -> None:
+    """Emit one ``log.warning`` per dropped Phase-D env var seen in ``os.environ``.
+
+    Mirrors ``_TomlSource._warn_deprecated`` so users on env-var configs
+    (``LILBEE_WIKI_FAITHFULNESS_THRESHOLD`` etc.) also see a migration
+    hint instead of silent Pydantic ``extra="ignore"`` discards. Cached
+    per-field so running with the same env set across multiple Config
+    constructions does not spam the log.
+    """
+    for key in _DEPRECATED_WIKI_KEYS:
+        env_name = f"{prefix}{key.upper()}"
+        if env_name in _deprecated_env_warned:
+            continue
+        if env_name in os.environ:
+            _deprecated_env_warned.add(env_name)
+            log.warning(
+                "Environment variable %r is no longer used and was ignored. "
+                "Phase D removed the LLM faithfulness path; see "
+                "LILBEE_WIKI_EMBEDDING_FAITHFULNESS_THRESHOLD and "
+                "LILBEE_WIKI_ENTITY_BATCH_PROMPT for the replacements.",
+                env_name,
+            )
 
 
 class _TomlSource:

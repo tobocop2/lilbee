@@ -212,6 +212,45 @@ class TestTomlConfigFile:
         ):
             assert key in warning_text
 
+    def test_deprecated_env_vars_log_warning_on_load(self, tmp_path, caplog):
+        """Environment-variable override path mirrors the TOML deprecation
+        warning so users on env configs also see the migration hint."""
+        from lilbee import config as config_module
+
+        config_module._deprecated_env_warned.clear()
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_WIKI_FAITHFULNESS_THRESHOLD"] = "0.7"
+        env["LILBEE_WIKI_CONCEPT_PROMPT"] = "old-prompt"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level("WARNING", logger="lilbee.config"),
+        ):
+            c = Config()
+        assert not hasattr(c, "wiki_faithfulness_threshold")
+        assert not hasattr(c, "wiki_concept_prompt")
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "LILBEE_WIKI_FAITHFULNESS_THRESHOLD" in warning_text
+        assert "LILBEE_WIKI_CONCEPT_PROMPT" in warning_text
+
+    def test_deprecated_env_vars_warn_once(self, tmp_path, caplog):
+        """Repeated Config constructions with the same deprecated env var
+        don't spam the log — the per-key set caches the first emission."""
+        from lilbee import config as config_module
+
+        config_module._deprecated_env_warned.clear()
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_WIKI_FAITHFULNESS_THRESHOLD"] = "0.7"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level("WARNING", logger="lilbee.config"),
+        ):
+            Config()
+            Config()
+        hits = [r for r in caplog.records if "LILBEE_WIKI_FAITHFULNESS_THRESHOLD" in r.message]
+        assert len(hits) == 1
+
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('embedding_model = "my-embed"\n')
