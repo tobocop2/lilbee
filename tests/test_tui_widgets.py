@@ -2457,9 +2457,7 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
-            embed_sel.set_options(
-                [ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5")]
-            )
+            embed_sel.set_options([ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5")])
             write_tracker = mock.Mock()
             with (
                 mock.patch("lilbee.settings.set_value", write_tracker),
