@@ -25,10 +25,40 @@ _ALLOWED_NER_LABELS: frozenset[str] = frozenset(
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Pre-spaCy markdown-noise strippers. Compiled once at module scope so
+# the extractor's hot path does not recompile them per chunk. Match on
+# line boundaries via re.MULTILINE; each sub() empties the matched
+# line so downstream line-joins collapse the hole to a single newline.
+_TABLE_ROW_RE = re.compile(r"^\|.*\|\s*$", re.MULTILINE)
+_PAGE_NUMBER_RE = re.compile(r"^\s*\d{1,4}\s*$", re.MULTILINE)
+_NAV_CHROME_RE = re.compile(
+    r"^\s*(?:Home|Menu|Navigation|Edit this page|Jump to navigation|Jump to search)\s*$",
+    re.MULTILINE,
+)
+
 
 def _normalize(text: str) -> str:
     """Lowercase, strip, and collapse internal whitespace for dedup keys."""
     return _WHITESPACE_RE.sub(" ", text.strip().lower())
+
+
+def pre_clean_for_ner(text: str) -> str:
+    """Strip markdown-structural noise before handing text to spaCy.
+
+    Removes whole-line markdown-table rows (``| Designer | Irv ... |``),
+    standalone page-number lines from PDF extraction (``42``), and
+    Wikipedia / CMS navigation chrome (``Edit this page``). Leaves
+    prose untouched: every regex anchors to a full line and emits an
+    empty line in place of the match, which spaCy treats as a sentence
+    break.
+
+    Only targets the noise patterns actually observed in the bb-8b7s
+    QA corpus. Fuller markdown parsing is deferred; a regex pre-clean
+    is sufficient for the current signal-to-noise ratio.
+    """
+    text = _TABLE_ROW_RE.sub("", text)
+    text = _PAGE_NUMBER_RE.sub("", text)
+    return _NAV_CHROME_RE.sub("", text)
 
 
 class NerConceptsExtractor:
@@ -56,7 +86,8 @@ class NerConceptsExtractor:
         concept_records: dict[str, _Aggregate] = {}
 
         debug_enabled = log.isEnabledFor(logging.DEBUG)
-        for chunk, doc in zip(chunks, nlp.pipe(c.chunk for c in chunks), strict=True):
+        cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
+        for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
             ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
             for ent in doc.ents:
                 if ent.label_ not in _ALLOWED_NER_LABELS:
