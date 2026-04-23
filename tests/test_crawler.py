@@ -1043,8 +1043,12 @@ class TestCrawlAndSave:
             # Mimic the real streaming contract: invoke the flush callback
             # per-page before returning the full list.
             if on_result is not None:
+                import inspect
+
                 for r in streamed:
-                    on_result(r)
+                    rv = on_result(r)
+                    if inspect.isawaitable(rv):
+                        await rv
             return streamed
 
         mock_crawl_recursive.side_effect = _fake_recursive
