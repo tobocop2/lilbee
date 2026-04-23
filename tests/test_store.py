@@ -69,6 +69,67 @@ class TestEnsureFtsIndex:
             store.ensure_fts_index()
             assert not store._fts_ready
 
+    def test_second_call_optimizes_instead_of_rebuilding(self, store):
+        """Incremental path: once the FTS index exists, ensure_fts_index
+        calls table.optimize() rather than rebuilding from scratch. Prevents
+        O(total_chunks) rebuild cost on every sync."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        assert store._fts_ready
+
+        table = store.open_table("chunks")
+        assert table is not None
+        with (
+            mock.patch.object(type(table), "create_fts_index") as create_spy,
+            mock.patch.object(type(table), "optimize") as optimize_spy,
+        ):
+            store.ensure_fts_index()
+
+        create_spy.assert_not_called()
+        optimize_spy.assert_called_once()
+
+    def test_first_call_creates_without_replace(self, store):
+        """Fresh table goes through create_fts_index path with replace=False."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+
+        with mock.patch.object(type(table), "create_fts_index") as create_spy:
+            store.ensure_fts_index()
+
+        create_spy.assert_called_once()
+        # Verify replace was NOT True (would defeat the purpose of incremental)
+        _args, kwargs = create_spy.call_args
+        assert kwargs.get("replace") is False
+
+
+class TestHasFtsIndex:
+    def test_returns_false_on_fresh_table(self, store):
+        store.add_chunks(_make_records())
+        from lilbee.store import _has_fts_index
+
+        table = store.open_table("chunks")
+        assert table is not None
+        assert _has_fts_index(table) is False
+
+    def test_returns_true_after_create(self, store):
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        from lilbee.store import _has_fts_index
+
+        table = store.open_table("chunks")
+        assert table is not None
+        assert _has_fts_index(table) is True
+
+    def test_returns_false_on_list_indices_error(self, store):
+        store.add_chunks(_make_records())
+        from lilbee.store import _has_fts_index
+
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
+            assert _has_fts_index(table) is False
+
 
 class TestFtsIndexStaleFlag:
     def test_add_chunks_marks_stale(self, store):

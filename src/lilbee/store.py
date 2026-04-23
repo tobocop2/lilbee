@@ -268,6 +268,17 @@ def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float)
     return len(sorted_results)
 
 
+def _has_fts_index(table: lancedb.table.Table) -> bool:
+    """Return True when an FTS index on the chunk column already exists."""
+    try:
+        for idx in table.list_indices():
+            if idx.index_type == "FTS" and "chunk" in idx.columns:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 class Store:
     """LanceDB vector store — wraps all DB operations with config-driven defaults."""
 
@@ -311,20 +322,28 @@ class Store:
         return db.open_table(name)
 
     def ensure_fts_index(self) -> None:
-        """Create or replace the FTS index on the chunks table.
-        No-op when the table doesn't exist or is empty.  Sets _fts_ready
-        on success so hybrid_search can be used.
+        """Ensure the FTS index on the chunks table is current.
+
+        First call creates the index; subsequent calls run ``table.optimize()``
+        which folds newly added rows into the existing index incrementally.
+        Prior behavior tore down and rebuilt the full FTS index on every
+        sync with any change (O(total_chunks) per sync), which dominates
+        sync time at scale. No-op when the table doesn't exist.
         """
         with write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return
             try:
-                table.create_fts_index("chunk", replace=True)
+                if _has_fts_index(table):
+                    table.optimize()
+                    log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
+                else:
+                    table.create_fts_index("chunk", replace=False)
+                    log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._fts_ready = True
-                log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
             except Exception:
-                log.debug("FTS index creation failed (empty table?)", exc_info=True)
+                log.debug("FTS index ensure failed (empty table?)", exc_info=True)
 
     def add_chunks(self, records: list[dict]) -> int:
         """Add chunk records to the store. Returns count added."""
