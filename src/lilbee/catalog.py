@@ -571,6 +571,17 @@ def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
     return 0.0  # unknown — display as "?" in UI
 
 
+def _search_blob(m: CatalogModel) -> str:
+    """Lowercased join of searchable fields on a catalog row.
+
+    One ``str.lower()`` per model per filter pass instead of four, since
+    the ``or``-chain in the old filter had to call ``.lower()`` on each
+    property up to the first match (four calls in the common no-match
+    case). Null char joins so a search term never straddles fields.
+    """
+    return f"{m.name}\0{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
+
+
 def get_catalog(
     task: str | None = None,
     *,
@@ -608,17 +619,12 @@ def get_catalog(
     if task:
         all_models = [m for m in all_models if m.task == task]
 
-    # Filter by search
+    # Filter by search. Single join+lower per model per keystroke instead
+    # of four separate lowers + substring checks; the no-match path
+    # (the common case) runs four times fewer ``str.lower()`` calls.
     if search:
         search_lower = search.lower()
-        all_models = [
-            m
-            for m in all_models
-            if search_lower in m.name.lower()
-            or search_lower in m.display_name.lower()
-            or search_lower in m.hf_repo.lower()
-            or search_lower in m.description.lower()
-        ]
+        all_models = [m for m in all_models if search_lower in _search_blob(m)]
 
     # Filter by size
     if size and size in _SIZE_RANGES:
