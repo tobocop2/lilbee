@@ -387,17 +387,20 @@ class TestBuildWikiMessages:
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
 
 
+_COHERENT_WIKI = "# Test\n\nThe test concept refers to the thing under test."
+
+
 class TestCheckFaithfulness:
     def test_returns_score(self):
         provider = MagicMock()
         provider.chat.return_value = "0.85"
-        score = _check_faithfulness("chunks", "wiki", provider, "test")
+        score = _check_faithfulness("chunks", _COHERENT_WIKI, provider, "test")
         assert score == 0.85
 
     def test_failure_returns_zero(self):
         provider = MagicMock()
         provider.chat.side_effect = ConnectionError("down")
-        score = _check_faithfulness("chunks", "wiki", provider, "test")
+        score = _check_faithfulness("chunks", _COHERENT_WIKI, provider, "test")
         assert score == 0.0
 
     def test_passes_faithfulness_max_tokens_cap(self):
@@ -409,7 +412,7 @@ class TestCheckFaithfulness:
         provider = MagicMock()
         provider.chat.return_value = "0.85"
         cfg.wiki_faithfulness_max_tokens = 42
-        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
+        _check_faithfulness("chunks", _COHERENT_WIKI, provider, "test", cfg)
         _, kwargs = provider.chat.call_args
         assert kwargs["options"]["max_tokens"] == 42
 
@@ -418,9 +421,73 @@ class TestCheckFaithfulness:
         provider = MagicMock()
         provider.chat.return_value = "0.85"
         cfg.wiki_temperature = 0.05
-        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
+        _check_faithfulness("chunks", _COHERENT_WIKI, provider, "test", cfg)
         _, kwargs = provider.chat.call_args
         assert kwargs["options"]["temperature"] == 0.05
+
+
+class TestTitleContentCoherence:
+    """B3: deterministic pre-check on title-and-body concept grounding."""
+
+    def test_garbage_title_caps_score(self):
+        """QA-driven (bb-8b7s): a garbage H1 with coherent body no
+        longer passes the faithfulness gate."""
+        provider = MagicMock()
+        provider.chat.return_value = "0.90"
+        wiki = "# | | designer\n\nThe designer refers to an individual."
+        score = _check_faithfulness("chunks", wiki, provider, "designer")
+        assert score == pytest.approx(0.5)
+
+    def test_missing_concept_mention_caps_score(self):
+        """Body must mention the concept; a page titled correctly but
+        whose body wanders off topic still fails."""
+        provider = MagicMock()
+        provider.chat.return_value = "0.95"
+        wiki = "# Brakes\n\nThis page talks about tires and wheels."
+        score = _check_faithfulness("chunks", wiki, provider, "brakes")
+        assert score == pytest.approx(0.5)
+
+    def test_missing_h1_caps_score(self):
+        provider = MagicMock()
+        provider.chat.return_value = "0.95"
+        wiki = "No heading here, just prose about brakes."
+        score = _check_faithfulness("chunks", wiki, provider, "brakes")
+        assert score == pytest.approx(0.5)
+
+    def test_llm_score_below_cap_is_not_raised(self):
+        """The pre-check caps at 0.5 but never LIFTS a lower LLM score."""
+        provider = MagicMock()
+        provider.chat.return_value = "0.2"
+        wiki = "# | | bad\n\nThe bad page."
+        score = _check_faithfulness("chunks", wiki, provider, "bad")
+        assert score == pytest.approx(0.2)
+
+    def test_coherent_page_preserves_llm_score(self):
+        provider = MagicMock()
+        provider.chat.return_value = "0.88"
+        score = _check_faithfulness(
+            "chunks",
+            "# Chevrolet\n\nChevrolet is a manufacturer of vehicles.",
+            provider,
+            "Chevrolet",
+        )
+        assert score == pytest.approx(0.88)
+
+    def test_display_name_cleanup_before_comparison(self):
+        """Structural chars in the label don't block coherence matching
+        because clean_label_for_display normalizes the comparison key."""
+        provider = MagicMock()
+        provider.chat.return_value = "0.8"
+        wiki = "# Designer\n\nThe designer of the Caprice was Irv Rybicki."
+        score = _check_faithfulness("chunks", wiki, provider, "| | designer")
+        assert score == pytest.approx(0.8)
+
+    def test_logs_info_on_coherence_failure(self, caplog: pytest.LogCaptureFixture):
+        provider = MagicMock()
+        provider.chat.return_value = "0.9"
+        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        _check_faithfulness("chunks", "# bad\n\nbody", provider, "brakes")
+        assert any("coherence failed" in r.message for r in caplog.records)
 
 
 class TestGroupChunksByPage:
@@ -609,9 +676,15 @@ class TestResolveMultiSourceCitations:
         assert records[0]["source_filename"] == "fallback.md"
 
 
-def _synthesis_wiki_text(sources: list[str]) -> str:
-    """Build a valid synthesis wiki text with citations to the given sources."""
-    lines = ["# Synthesis\n"]
+def _synthesis_wiki_text(sources: list[str], topic: str | None = None) -> str:
+    """Build a valid synthesis wiki text with citations to the given sources.
+
+    Heading defaults to ``# <topic>`` so the B3 title/body coherence
+    gate passes; override ``topic`` when a test wants to exercise a
+    mismatched-heading path.
+    """
+    heading = topic or "topic"
+    lines = [f"# {heading}\n", f"This page is about {heading}.\n"]
     cite_lines = [
         "---",
         "<!-- citations (auto-generated from _citations table -- do not edit) -->",
@@ -631,7 +704,7 @@ class TestGenerateSynthesisPage:
         chunks_by_source = {
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
-        wiki_text = _synthesis_wiki_text(sources)
+        wiki_text = _synthesis_wiki_text(sources, topic="gradual typing")
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
@@ -939,7 +1012,7 @@ class TestSynthesisDriftDetection:
         chunks_by_source = {
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
-        wiki_text = _synthesis_wiki_text(sources)
+        wiki_text = _synthesis_wiki_text(sources, topic="gradual typing")
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
@@ -1172,6 +1245,4 @@ class TestBuildFrontmatter:
         chunks = [_make_chunk("body", source=pathological, chunk_index=0)]
         fm = _build_frontmatter(cfg, ["benign.md"], 0.5, chunks=chunks)
         parsed = parse_frontmatter(fm + "body\n")
-        assert parsed["provenance"]["chunks"] == [
-            {"source": pathological, "chunk_index": 0}
-        ]
+        assert parsed["provenance"]["chunks"] == [{"source": pathological, "chunk_index": 0}]

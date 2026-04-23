@@ -57,6 +57,7 @@ from lilbee.wiki.shared import (
     WIKI_LOG_ACTION_GENERATED,
     PageTarget,
     clean_label_for_display,
+    is_valid_label,
     make_slug,
     parse_frontmatter,
 )
@@ -416,6 +417,50 @@ def _verify_citations(
     return verified
 
 
+_FAITHFULNESS_TITLE_CAP = 0.5
+
+
+def _title_content_coherence(wiki_text: str, label: str) -> bool:
+    """Deterministic pre-check: title and body must reference the concept.
+
+    The LLM faithfulness score evaluates whether the prose reflects
+    the source chunks but does not penalize structural noise in the
+    title (bb-8b7s: ``| | designer`` passed at 0.90 because the body
+    was coherent). This pre-check asserts three invariants:
+
+    1. The first ``# `` heading must be a sanity-valid label per
+       :func:`is_valid_label`. A heading like ``| | designer`` fails
+       the structural-char gate even though it contains the cleaned
+       display name as a substring.
+    2. The cleaned display name must appear in the heading as a
+       case-insensitive substring. Covers LLM drift where the
+       heading names a different concept than requested.
+    3. The body must mention the display name at least once outside
+       the heading. Covers the "LLM talked about something adjacent
+       but never named the concept" regression.
+
+    Returns True when all three hold, False otherwise.
+    """
+    display = clean_label_for_display(label).lower()
+    if not display:
+        return False
+    heading: str | None = None
+    body_parts: list[str] = []
+    for line in wiki_text.splitlines():
+        if heading is None and line.startswith("# "):
+            heading = line[2:].strip()
+            continue
+        body_parts.append(line)
+    if heading is None:
+        return False
+    if not is_valid_label(heading):
+        return False
+    if display not in heading.lower():
+        return False
+    body = "\n".join(body_parts).lower()
+    return display in body
+
+
 def _check_faithfulness(
     chunks_text: str,
     wiki_text: str,
@@ -423,7 +468,14 @@ def _check_faithfulness(
     label: str,
     config: Config | None = None,
 ) -> float:
-    """Run the faithfulness check and return the score (0.0 on failure)."""
+    """Run the faithfulness check and return the score (0.0 on failure).
+
+    Caps the final score at :data:`_FAITHFULNESS_TITLE_CAP` (0.5) when
+    the deterministic title/body coherence pre-check fails, so pages
+    with garbage H1s or missing concept mentions drop below the
+    default faithfulness threshold (0.7) and route to drafts for
+    review even if the LLM self-scores the prose highly.
+    """
     if config is None:
         config = cfg
     template = config.wiki_faithfulness_prompt
@@ -435,10 +487,21 @@ def _check_faithfulness(
     )
     try:
         response = provider.chat(messages, stream=False, options=options)
-        return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
+        llm_score = _parse_faithfulness_score(strip_reasoning(cast(str, response)))
     except Exception as exc:
         log.warning("Faithfulness check failed for %s: %s", label, exc)
         return 0.0
+
+    if _title_content_coherence(wiki_text, label):
+        return llm_score
+    log.info(
+        "Faithfulness title/body coherence failed for %r; capping score "
+        "at %.2f (LLM returned %.2f)",
+        label,
+        _FAITHFULNESS_TITLE_CAP,
+        llm_score,
+    )
+    return min(llm_score, _FAITHFULNESS_TITLE_CAP)
 
 
 def _build_frontmatter(
@@ -813,7 +876,7 @@ def _generate_synthesis_page(
         )
 
     return _generate_page(
-        label=repr(topic),
+        label=topic,
         prompt=prompt,
         chunks=all_chunks,
         chunks_text=chunks_text,
