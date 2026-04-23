@@ -128,8 +128,41 @@ def json_output(data: dict) -> None:
 
 
 def clean_result(result: SearchChunk) -> dict:
-    """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores)."""
-    return result.model_dump(exclude={"vector"}, exclude_none=True)
+    """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores).
+
+    When ``cfg.vault_base`` is set, stamp ``vault_path`` — a vault-relative
+    path for the source file — so clients can deep-link into the native UI
+    instead of round-tripping through ``/api/source``. Best-effort: vault_path
+    is ``None`` when the source filename cannot be located under vault_base.
+    """
+    payload = result.model_dump(exclude={"vector"}, exclude_none=True)
+    vault_path = resolve_vault_path(result.source)
+    if vault_path is not None:
+        payload["vault_path"] = vault_path
+    return payload
+
+
+def resolve_vault_path(source_filename: str) -> str | None:
+    """Return ``source_filename`` as a vault-relative path, or ``None`` if unresolvable.
+
+    Returns a path when ``documents_dir`` is nested inside ``vault_base`` and
+    the source file actually exists on disk at the expected location. The
+    ``.is_file()`` check keeps clients from deep-linking into stale paths
+    left over from a deleted document or a mid-flight migration.
+
+    Sources ingested via ``/api/add`` that live outside ``documents_dir``
+    (e.g. a plugin pointing at a vault file in-place) still return ``None``
+    and fall back to the preview modal.
+    """
+    if cfg.vault_base is None:
+        return None
+    try:
+        relative_docs_dir = cfg.documents_dir.relative_to(cfg.vault_base)
+    except ValueError:
+        return None
+    if not (cfg.documents_dir / source_filename).is_file():
+        return None
+    return str(relative_docs_dir / source_filename)
 
 
 def gather_status() -> StatusResult:

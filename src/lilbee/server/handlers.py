@@ -52,6 +52,7 @@ from lilbee.server.models import (
     ModelsInstalledResponse,
     ModelsShowResponse,
     SetModelResponse,
+    SourceContentResponse,
     StatusResponse,
     SyncSummary,
 )
@@ -539,10 +540,19 @@ async def _set_model(
 
 
 def _require_model_available(model: str) -> str:
-    """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
+    """Validate that *model* exists locally. Returns the normalized name or raises ValueError.
+
+    Callers may pass the catalog ``name:tag`` (``qwen3:4b``), the HuggingFace
+    repo id (``Qwen/Qwen3-4B-GGUF``, with or without ``:latest``), the
+    display name, or a provider-prefixed ref. Normalise via
+    ``find_catalog_entry`` first so a single installed variant resolves
+    regardless of which form the caller used.
+    """
+    from lilbee.catalog import find_catalog_entry
     from lilbee.models import ensure_tag
 
-    normalized = ensure_tag(model)
+    entry = find_catalog_entry(model)
+    normalized = entry.ref if entry is not None else ensure_tag(model)
     available = get_services().provider.list_models()
     # ``available`` lists bare tags from /api/tags; stored refs may carry an
     # ``ollama/`` prefix. Match on either form so both client styles work.
@@ -713,6 +723,44 @@ async def get_config() -> ConfigResponse:
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     return ConfigResponse(**result)
+
+
+async def get_source_content(
+    source: str, raw: bool = False
+) -> SourceContentResponse | tuple[bytes, str]:
+    """Read a stored source file and return its contents.
+
+    Resolves ``documents_dir / source`` and requires the result to stay
+    inside ``documents_dir``. With ``raw=True`` the caller gets
+    ``(bytes, content_type)`` to stream; otherwise the JSON shape is
+    populated with markdown text for textual formats and an empty
+    ``markdown`` field for binary ones (the caller should re-request
+    with ``raw=1`` in that case).
+    """
+    import mimetypes
+
+    from lilbee.wiki.index import parse_title
+
+    if not source or not source.strip():
+        raise ValueError("source must not be empty")
+    documents_dir = cfg.documents_dir
+    resolved = validate_path_within(documents_dir / source, documents_dir)
+    if not resolved.is_file():
+        raise FileNotFoundError(source)
+
+    content_type, _ = mimetypes.guess_type(resolved.name)
+    if content_type is None:
+        content_type = "application/octet-stream"
+
+    if raw:
+        return resolved.read_bytes(), content_type
+
+    if not content_type.startswith("text/"):
+        return SourceContentResponse(markdown="", content_type=content_type, title=None)
+
+    text = resolved.read_text(encoding="utf-8", errors="replace")
+    title = parse_title(text) or None
+    return SourceContentResponse(markdown=text, content_type=content_type, title=title)
 
 
 @functools.cache

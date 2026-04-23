@@ -27,6 +27,7 @@ from lilbee.server.routes.general import (
     config_route,
     config_update_route,
     health_route,
+    source_content_route,
     status_route,
 )
 from lilbee.server.routes.models import (
@@ -107,6 +108,7 @@ def create_app() -> Litestar:
             config_route,
             config_defaults_route,
             config_update_route,
+            source_content_route,
             search_route,
             ask_route,
             ask_stream_route,

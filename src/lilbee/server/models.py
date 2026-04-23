@@ -48,6 +48,19 @@ class SetModelRequest(BaseModel):
     model: str
 
 
+class SourceContentResponse(BaseModel):
+    """Response for GET /api/source?source=... (raw=0 JSON shape).
+
+    ``markdown`` holds UTF-8 text for markdown/html/plaintext sources.
+    For binary formats like PDFs, clients should request ``raw=1`` and
+    handle the bytes themselves; this JSON shape isn't populated for them.
+    """
+
+    markdown: str
+    content_type: str
+    title: str | None = None
+
+
 class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
@@ -68,6 +81,11 @@ class CleanedChunk(BaseModel):
     line_start: int = 0
     line_end: int = 0
     chunk_index: int = 0
+    # Vault-relative path when ``cfg.vault_base`` is set and the source file
+    # lives inside the vault. Absent when the server is running headless or
+    # the source isn't resolvable as a vault file. Clients use this to open
+    # the source in a native editor instead of fetching ``/api/source``.
+    vault_path: str | None = None
 
 
 class StatusSourceInfo(BaseModel):
