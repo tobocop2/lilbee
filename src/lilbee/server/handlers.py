@@ -719,14 +719,7 @@ async def get_config() -> ConfigResponse:
 
 @functools.cache
 def _compute_config_defaults() -> dict[str, Any]:
-    """Materialize Config defaults once per process.
-
-    Defaults are baked into the class, so iterating ``Config.model_fields``
-    and invoking default_factory callables on every request is pure
-    waste. Some factories (e.g. ``crawl_exclude_patterns`` which builds
-    a 30+ regex list) are measurable. Cache keyed on nothing since the
-    class doesn't change at runtime.
-    """
+    """Materialize Config defaults once per process."""
     defaults: dict[str, Any] = {}
     for name, info in Config.model_fields.items():
         is_writable_public = name in WRITABLE_CONFIG_FIELDS and name in _PUBLIC_CONFIG_FIELDS

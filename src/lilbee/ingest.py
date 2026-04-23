@@ -167,11 +167,10 @@ def file_hash(path: Path) -> str:
 
 
 def _file_unchanged_since_ingest(path: Path, ingested_at: str) -> bool:
-    """Fast-path gate: True when mtime is strictly older than the stored ingest time.
+    """True when the file's mtime is strictly older than *ingested_at*.
 
-    Used to skip full SHA-256 hashing on unchanged files during sync. Any
-    failure (missing timestamp, unparseable ISO string, stat error) returns
-    False so the caller falls through to the authoritative hash compare.
+    Returns False on any failure (missing timestamp, unparseable ISO,
+    stat error) so callers fall through to a hash compare.
     """
     if not ingested_at:
         return False

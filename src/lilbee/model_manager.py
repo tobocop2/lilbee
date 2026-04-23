@@ -75,12 +75,10 @@ class ModelManager:
         self._installed_cache: dict[ModelSource | None, tuple[float, list[str]]] = {}
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
-        """List installed model names. source=None lists all sources.
+        """List installed model names. ``source=None`` lists all sources.
 
-        Result is cached for ``_INSTALLED_CACHE_TTL_SECONDS`` and invalidated
-        eagerly on any ``pull``/``remove`` mutation so callers only see
-        stale data during the narrow window when no local change has
-        happened and the cached backend response has not yet aged out.
+        Memoized with a ``_INSTALLED_CACHE_TTL_SECONDS`` TTL and
+        invalidated eagerly by ``pull``/``remove``.
         """
         now = time.monotonic()
         cached = self._installed_cache.get(source)

@@ -354,9 +354,8 @@ class ModelRegistry:
     def _find_by_alias(self, alias: str) -> ModelManifest | None:
         """Look up *alias* via the cached alias index.
 
-        The cache is built on first call and cleared on install/remove,
-        so the expensive manifest-tree walk happens at most once per
-        mutation rather than once per alias-resolution attempt.
+        Amortized O(1) per lookup; index rebuild on first miss after
+        install/remove is O(total manifests).
         """
         if self._alias_cache is None:
             self._alias_cache = self._build_alias_index()

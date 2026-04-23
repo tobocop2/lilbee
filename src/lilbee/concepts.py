@@ -309,12 +309,10 @@ class ConceptGraph:
         return related
 
     def get_related_concepts(self, concept: str, depth: int = 1) -> list[str]:
-        """Find concepts related via graph edges.
+        """Find concepts related to *concept* via graph edges, up to *depth* hops.
 
-        Each depth level fires one batched query (``source IN (...) OR
-        target IN (...)``) instead of one query per frontier node, so
-        expansion costs one DB round-trip per level instead of scaling
-        with frontier size.
+        One batched query per depth level — O(depth) DB round-trips,
+        independent of frontier size.
         """
         table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if table is None:
@@ -348,13 +346,12 @@ class ConceptGraph:
         return [c for c in visited if c != concept]
 
     def top_communities(self, k: int = 10) -> list[Community]:
-        """Return the k largest concept communities.
+        """Return the *k* largest concept communities.
 
-        Counts cluster membership with ``pyarrow.compute.value_counts`` on
-        the columnar table so we never materialize a full ``list[dict]`` of
-        every node, then only pulls the members for the top-k clusters.
-        Previously this materialized every node and bucketed by cluster_id
-        in Python, scaling memory with the total concept count.
+        Uses ``pyarrow.compute.value_counts`` to pick the top-k
+        cluster_ids in columnar memory, then materializes only those
+        clusters' members. Peak Python memory scales with members of
+        the top *k* clusters, not the total node count.
         """
         table = self._store.open_table(CONCEPT_NODES_TABLE)
         if table is None:
@@ -440,11 +437,7 @@ class ConceptGraph:
         }
 
     def get_cluster_label(self, cluster_id: int) -> str:
-        """Return a human-readable label for a cluster (its highest-degree concept).
-
-        Pushes the cluster_id filter into the DB so we only materialize
-        rows for the target cluster, not the entire nodes table.
-        """
+        """Return a human-readable label for *cluster_id* (highest-degree concept)."""
         table = self._store.open_table(CONCEPT_NODES_TABLE)
         if table is None:
             return f"cluster-{cluster_id}"

@@ -104,12 +104,9 @@ def mmr_rerank(
     0.0 = maximum diversity, 1.0 = pure relevance.
     Defaults to ``cfg.mmr_lambda`` (0.5).
 
-    Runs the redundancy step as a vectorized numpy dot-product against
-    a running max-redundancy vector. Previously the inner loop did
-    ``max(cosine_sim(candidate.vector, s.vector) for s in selected)``
-    which recomputed pairs already seen on every outer iteration
-    (O(top_k² · N) dot products). The vectorized form is O(top_k · N)
-    and uses numpy's SIMD under the hood.
+    Complexity: O(top_k · N · D) time, O(N · D) space for N candidates
+    of dimension D. Each outer iteration updates a running max-redundancy
+    vector via one matmul rather than recomputing pairs pairwise.
     """
     if mmr_lambda is None:
         mmr_lambda = cfg.mmr_lambda
@@ -299,11 +296,7 @@ def _has_fts_index(table: lancedb.table.Table) -> bool:
 
 
 def _sources_search_filter(search: str | None) -> str | None:
-    """Build a LanceDB WHERE clause for case-insensitive filename match.
-
-    Returns ``None`` for an empty search so callers can skip the
-    ``.where`` chain entirely and hit the unfiltered fast path.
-    """
+    """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
     if not search:
         return None
     escaped = escape_sql_string(search.lower())
@@ -326,13 +319,7 @@ class Store:
         self._source_ingested_cache = None
 
     def source_ingested_at_map(self) -> dict[str, str]:
-        """Return {filename: ingested_at} for every source, cached.
-
-        Rebuilt only when ``upsert_source`` / ``delete_source`` /
-        ``delete_by_source`` / ``remove_documents`` / ``drop_all`` fire.
-        Previously the temporal-filter call path in query.py rebuilt
-        this dict on every query.
-        """
+        """Return {filename: ingested_at} for every source, cached until mutation."""
         if self._source_ingested_cache is not None:
             return self._source_ingested_cache
         mapping = {s["filename"]: s.get("ingested_at", "") for s in self.get_sources()}
@@ -374,13 +361,10 @@ class Store:
         return db.open_table(name)
 
     def ensure_fts_index(self) -> None:
-        """Ensure the FTS index on the chunks table is current.
+        """Create the chunks FTS index, or run ``optimize()`` to fold new rows in.
 
-        First call creates the index; subsequent calls run ``table.optimize()``
-        which folds newly added rows into the existing index incrementally.
-        Prior behavior tore down and rebuilt the full FTS index on every
-        sync with any change (O(total_chunks) per sync), which dominates
-        sync time at scale. No-op when the table doesn't exist.
+        ``optimize()`` is incremental (work scales with added rows);
+        ``create_fts_index(replace=True)`` would be O(total_chunks) per call.
         """
         with write_lock():
             table = self.open_table(CHUNKS_TABLE)
@@ -534,12 +518,7 @@ class Store:
         return [r for r in results if _get_distance(r) <= threshold]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
-        """Return all chunks for a given source file.
-
-        Scales with a single document's chunk count (bounded by document
-        size, not corpus size). Callers (delete, export, rebuild) need the
-        complete set — no artificial cap here.
-        """
+        """Return every chunk whose ``source`` equals *source*."""
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
@@ -547,11 +526,10 @@ class Store:
         try:
             rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
         except Exception:
-            # Fallback for tables whose FTS-enabled search() returns an
-            # incompatible query builder. Push the source filter into
-            # pyarrow.compute (C++) rather than materializing the whole
-            # chunks table into Python memory and filtering there, which
-            # scaled O(total corpus chunks) per call.
+            # FTS-enabled tables return a query builder that cannot
+            # handle .where() on arbitrary columns; fall through to a
+            # pyarrow.compute filter on the Arrow table so the source
+            # match runs in C++ without materializing non-matching rows.
             log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
             arrow_tbl = table.to_arrow()
             filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
@@ -573,12 +551,7 @@ class Store:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[SourceRecord]:
-        """Get tracked source file records, optionally filtered and paginated.
-
-        Filter and pagination run in LanceDB so large corpora don't
-        materialize the full SOURCES table per request. The previous
-        signature (no args, returns all) is preserved as the default.
-        """
+        """Return source records, filtered by *search* and sliced by offset/limit."""
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []

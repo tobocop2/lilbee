@@ -438,8 +438,7 @@ class Searcher:
 
         LLM variants run through ``_apply_guardrails``; concept-graph
         variants bypass it since they come from deterministic traversal.
-        Embeddings are batched per source so expansion costs one provider
-        round-trip per source, not one per variant.
+        Embeddings batch per source: one provider round-trip per source.
         """
         count = self._config.query_expansion_count
         if count <= 0 and not self._config.concept_graph:

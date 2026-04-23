@@ -574,10 +574,7 @@ def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
 def _search_blob(m: CatalogModel) -> str:
     """Lowercased join of searchable fields on a catalog row.
 
-    One ``str.lower()`` per model per filter pass instead of four, since
-    the ``or``-chain in the old filter had to call ``.lower()`` on each
-    property up to the first match (four calls in the common no-match
-    case). Null char joins so a search term never straddles fields.
+    Null char joins the fields so a search term never straddles them.
     """
     return f"{m.name}\0{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
 
