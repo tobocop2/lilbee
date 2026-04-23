@@ -188,6 +188,13 @@ class TestEmbeddingFaithfulness:
         assert _embedding_faithfulness_score([], [[1.0]]) == 0.0
         assert _embedding_faithfulness_score([1.0], []) == 0.0
 
+    def test_score_zero_on_dim_mismatch_and_warns(self, caplog: pytest.LogCaptureFixture):
+        """Off-shape body vector vs source-mean vector returns 0.0 with a warning."""
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        score = _embedding_faithfulness_score([1.0, 0.0], [[1.0, 0.0, 0.0]])
+        assert score == 0.0
+        assert any("does not match source vector dim" in r.message for r in caplog.records)
+
 
 class TestExtractExcerpt:
     def test_normal_quoted_excerpt(self):
@@ -498,6 +505,57 @@ class TestCheckFaithfulness:
         svc = MagicMock()
         monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
         score = _check_faithfulness([], _COHERENT_WIKI, "test")
+        assert score == 0.0
+
+    def test_empty_display_label_returns_zero(self, monkeypatch):
+        """clean_label_for_display → empty string → coherence False."""
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0])]
+        # A label made entirely of structural chars reduces to empty
+        # display under clean_label_for_display, hitting the guard
+        # in _title_content_coherence.
+        score = _check_faithfulness(chunks, "# anything\n\nbody", "|||")
+        assert score == 0.0
+        # Embedder is never called because coherence already failed.
+        svc.embedder.embed_batch.assert_not_called()
+
+    def test_empty_body_after_citation_strip_returns_zero(self, monkeypatch):
+        """A page whose body is entirely citation block collapses to empty."""
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        # Construct a wiki text whose body (after strip_citation_block)
+        # is blank. ``## footnotes`` is the citation block header used
+        # by render_citation_block, so strip_citation_block removes
+        # everything from it downward. The H1 alone remains above it.
+        # The title-coherence check still needs the body to mention the
+        # display name; we craft a page where H1 passes the coherence
+        # gate (display in heading, display in body just once in the
+        # paragraph) so we reach the embedder stage, then swap in a
+        # wiki whose citation strip zeroes the body.
+        wiki = (
+            "# test\n\n"
+            "The test concept applies here.\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "x"\n'
+        )
+        # Monkeypatch strip_citation_block to return an empty body so
+        # we exercise the empty-body guard directly without fighting
+        # the title-coherence gate semantics.
+        monkeypatch.setattr("lilbee.wiki.gen.strip_citation_block", lambda _: "   ")
+        chunks = [_chunk_with_vector([1.0])]
+        score = _check_faithfulness(chunks, wiki, "test")
+        assert score == 0.0
+        svc.embedder.embed_batch.assert_not_called()
+
+    def test_empty_body_vectors_returns_zero(self, monkeypatch):
+        """Embedder returned an empty list → score 0.0 without crashing."""
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = []
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == 0.0
 
 

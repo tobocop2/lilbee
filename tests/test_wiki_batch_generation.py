@@ -21,7 +21,11 @@ from lilbee.wiki.entity_extractor import (
     ExtractedEntity,
 )
 from lilbee.wiki.gen import (
+    _all_sources_in_scope,
+    _chunks_for_source,
+    _delete_pending_marker_if_present,
     _generate_source_batch,
+    _prefix_heading,
     _split_batched_output,
     build_wiki,
 )
@@ -135,6 +139,288 @@ class TestSplitBatchedOutput:
         # Only Ford Motor had a body under its heading.
         assert "Ford Motor" in parsed
         assert "Henry Ford" not in parsed
+
+    def test_no_headers_returns_empty_dict(self):
+        """A response that contains no H1/H2/bold headers recovers nothing."""
+        text = "just a paragraph with no headings at all.\n\n> some body text\n"
+        parsed = _split_batched_output(text, {"Henry Ford"})
+        assert parsed == {}
+
+    def test_bold_header_matches_expected_entity(self):
+        """Bold-line header fallback (``**Name**``) hits the boldname group."""
+        text = "**Henry Ford**\n\n> Henry Ford founded the company.\n"
+        parsed = _split_batched_output(text, {"Henry Ford"})
+        assert "Henry Ford" in parsed
+        kind, _body = parsed["Henry Ford"]
+        assert kind is EntityKind.ENTITY
+
+
+class TestPrefixHeading:
+    def test_adds_h1_when_missing(self):
+        out = _prefix_heading("Henry Ford", "body text")
+        assert out.startswith("# Henry Ford\n\n")
+        assert "body text" in out
+
+    def test_preserves_existing_h1(self):
+        # Body already starts with an H1 — we keep it verbatim.
+        already = "# Henry Ford\n\nbody"
+        assert _prefix_heading("Henry Ford", already) == already
+
+
+class TestChunksForSource:
+    def test_filters_chunks_by_source(self):
+        c1 = _chunk("a.md", 0, "a0")
+        c2 = _chunk("b.md", 0, "b0")
+        c3 = _chunk("a.md", 1, "a1")
+        filtered = _chunks_for_source([c1, c2, c3], "a.md")
+        assert [c.chunk_index for c in filtered] == [0, 1]
+        assert all(c.source == "a.md" for c in filtered)
+
+
+class TestDeletePendingMarkerIfPresent:
+    def test_returns_false_when_path_missing(self, tmp_path: Path):
+        assert _delete_pending_marker_if_present(tmp_path, "missing") is False
+
+    def test_returns_false_when_file_is_not_pending_marker(self, tmp_path: Path):
+        drafts = tmp_path / "drafts"
+        drafts.mkdir()
+        path = drafts / "foo.md"
+        # No leading PENDING-PARSE / PENDING-COLLISION marker.
+        path.write_text("just a plain draft body\n")
+        assert _delete_pending_marker_if_present(drafts, "foo") is False
+        assert path.exists()
+
+    def test_returns_false_on_read_oserror(self, tmp_path: Path, monkeypatch):
+        drafts = tmp_path / "drafts"
+        drafts.mkdir()
+        path = drafts / "foo.md"
+        path.write_text("ignored\n")
+
+        def boom(self, *a, **kw):  # type: ignore[no-untyped-def]
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        assert _delete_pending_marker_if_present(drafts, "foo") is False
+        # File stays on disk since we couldn't even read it.
+        assert path.exists()
+
+
+class TestGenerateSourceBatchEdgeCases:
+    """Phase D guard branches in ``_generate_source_batch``."""
+
+    def test_empty_chunks_returns_empty_list(self, stub_embedder):
+        provider = _mock_batch_provider("unused")
+        pages = _generate_source_batch(
+            source="s.txt",
+            entities=[],
+            chunks=[],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        provider.chat.assert_not_called()
+
+    def test_provider_exception_returns_empty_list(self, stub_embedder, caplog):
+        chunks = [_chunk("s.txt", 0, "body")]
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("LLM down")
+        provider.get_capabilities.return_value = []
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        pages = _generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry", "Henry", ["s.txt"])],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        assert any("Batched LLM call failed" in r.message for r in caplog.records)
+
+    def test_empty_response_returns_empty_list(self, stub_embedder, caplog):
+        chunks = [_chunk("s.txt", 0, "body")]
+        # strip_reasoning + .strip() produces an empty string.
+        provider = _mock_batch_provider("   \n  \n")
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        pages = _generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry", "Henry", ["s.txt"])],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        assert any("empty response" in r.message for r in caplog.records)
+
+
+class TestFinalizeSectionGuards:
+    """``_finalize_section`` safety rails that run before any write."""
+
+    def test_empty_header_label_produces_empty_slug_and_skips(self, stub_embedder, caplog):
+        """A header that slugifies to empty (all-punctuation) is dropped."""
+        chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
+        # ``---`` splits into a section whose header is ``---`` — after
+        # make_slug, this yields the empty string and the section is
+        # dropped with an INFO log. The downstream faithfulness /
+        # citation checks never run.
+        text = "## ---\n\n> Henry Ford founded Ford Motor. [^src1]\n" + _valid_citation_block()
+        provider = _mock_batch_provider(text)
+        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        # Concept-curation mode so the unmatched header is tagged as a
+        # concept and reaches _finalize_section (entities-only mode
+        # would just drop it in _split_batched_output).
+        pages = _generate_source_batch(
+            source="s.txt",
+            entities=[],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=True,
+            written_concept_slugs={},
+        )
+        assert pages == []
+        assert any("Empty slug" in r.message for r in caplog.records)
+
+    def test_below_threshold_routes_to_drafts(self, stub_embedder, monkeypatch, caplog):
+        """Score below the faithfulness threshold → draft subdir + info log."""
+        # Force the faithfulness score below the threshold by making
+        # the body vector orthogonal to the chunk vectors.
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[0.0] * cfg.embedding_dim]
+        # First entry to zero-vec body, then flip one element on
+        # subsequent calls (index step), so the chunk vectors used
+        # earlier still differ.
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
+        text = (
+            _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
+            + _valid_citation_block()
+        )
+        provider = _mock_batch_provider(text)
+        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        pages = _generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=chunks,
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+        )
+        # The page landed under drafts, not entities.
+        assert len(pages) == 1
+        assert DRAFTS_SUBDIR in pages[0].parts
+        assert any("sending to drafts" in r.message for r in caplog.records)
+
+
+class TestAllSourcesInScope:
+    def test_extract_concepts_false_returns_grouped_sources_only(self):
+        store = MagicMock()
+        grouped = {"a.md": []}
+        result = _all_sources_in_scope(
+            entities=[],
+            grouped=grouped,
+            store=store,
+            config=cfg,
+            extract_concepts=False,
+        )
+        assert result == {"a.md"}
+        # get_sources must not be called when concepts are disabled.
+        store.get_sources.assert_not_called()
+
+    def test_get_sources_exception_falls_back_to_grouped(self, caplog):
+        store = MagicMock()
+        store.get_sources.side_effect = RuntimeError("backend down")
+        grouped = {"a.md": []}
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        result = _all_sources_in_scope(
+            entities=[],
+            grouped=grouped,
+            store=store,
+            config=cfg,
+            extract_concepts=True,
+        )
+        assert result == {"a.md"}
+        assert any("get_sources failed" in r.message for r in caplog.records)
+
+    def test_skips_empty_filenames_and_non_dict_records(self):
+        store = MagicMock()
+        store.get_sources.return_value = [
+            {"filename": "", "chunk_count": 10},
+            "not a dict",
+            {"filename": "b.md", "chunk_count": 5},
+        ]
+        cfg.wiki_batch_min_chunks = 1
+        result = _all_sources_in_scope(
+            entities=[],
+            grouped={},
+            store=store,
+            config=cfg,
+            extract_concepts=True,
+        )
+        assert result == {"b.md"}
+
+    def test_skips_sources_already_grouped(self):
+        store = MagicMock()
+        store.get_sources.return_value = [
+            {"filename": "a.md", "chunk_count": 100},
+        ]
+        cfg.wiki_batch_min_chunks = 1
+        result = _all_sources_in_scope(
+            entities=[],
+            grouped={"a.md": []},
+            store=store,
+            config=cfg,
+            extract_concepts=True,
+        )
+        # Still a single-element set — dedup kept the grouped entry.
+        assert result == {"a.md"}
+
+    def test_skips_sources_below_min_chunks(self):
+        store = MagicMock()
+        store.get_sources.return_value = [
+            {"filename": "big.md", "chunk_count": 10},
+            {"filename": "small.md", "chunk_count": 1},
+        ]
+        cfg.wiki_batch_min_chunks = 5
+        result = _all_sources_in_scope(
+            entities=[],
+            grouped={},
+            store=store,
+            config=cfg,
+            extract_concepts=True,
+        )
+        assert result == {"big.md"}
+
+
+class TestBuildWikiSkipLogging:
+    def test_build_wiki_logs_skipped_source_when_below_floor(self, stub_embedder, caplog):
+        """A source with no entities AND below min_chunks logs a skip."""
+        cfg.wiki_batch_min_chunks = 5
+        store = MagicMock()
+        # Source makes it into the union via _all_sources_in_scope
+        # (chunk_count >= min in that path) but store.get_chunks_by_source
+        # returns fewer chunks, so source_extract ends up False again.
+        store.get_sources.return_value = [
+            {"filename": "s.txt", "chunk_count": 5},
+        ]
+        store.get_chunks_by_source.return_value = [_chunk("s.txt", 0, "x")]
+        provider = _mock_batch_provider("unused")
+        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        pages = build_wiki([], provider, store, cfg, extract_concepts=True)
+        assert pages == []
+        assert any("Skipping source" in r.message for r in caplog.records)
+        provider.chat.assert_not_called()
 
 
 class TestBatchGeneration:

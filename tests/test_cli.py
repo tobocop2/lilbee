@@ -2569,6 +2569,142 @@ class TestWikiPrune:
         assert "old.md" in result.output
 
 
+class TestWikiDraftsCli:
+    """Phase B1/D: ``wiki drafts list / diff / accept / reject`` CLI surface."""
+
+    def _seed(self, isolated_env: Path) -> Path:
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        drafts = isolated_env / "wiki" / "drafts"
+        drafts.mkdir(parents=True)
+        (drafts / "x.md").write_text(
+            "<!-- DRIFT: 25% content changed - flagged for human review -->\n\n"
+            "---\nfaithfulness_score: 0.8\n---\n\n# X\n\nnew body\n",
+            encoding="utf-8",
+        )
+        summaries = isolated_env / "wiki" / "summaries"
+        summaries.mkdir(parents=True)
+        (summaries / "x.md").write_text("old body\n", encoding="utf-8")
+        return isolated_env
+
+    def test_list_no_drafts(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        assert "No drafts pending review" in result.output
+
+    def test_list_renders_table(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        result = runner.invoke(app, ["wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        assert "x" in result.output
+        assert "25%" in result.output or "0.8" in result.output
+
+    def test_list_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_list"
+        assert data["total"] == 1
+
+    def test_diff_shows_unified_diff(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        result = runner.invoke(app, ["wiki", "drafts", "diff", "x"])
+        assert result.exit_code == 0
+        assert "-old body" in result.output
+        assert "+new body" in result.output
+
+    def test_diff_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "diff", "x"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_diff"
+
+    def test_diff_missing_slug_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "diff", "missing"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_diff_missing_slug_json_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "diff", "missing"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+    def test_accept_moves_draft_into_published(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 0
+        assert "Accepted" in result.output
+        assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
+
+    def test_accept_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = runner.invoke(app, ["--json", "wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_accept"
+        assert data["slug"] == "x"
+
+    def test_accept_missing_slug_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "accept", "missing"])
+        assert result.exit_code == 1
+
+    def test_accept_missing_slug_json_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "accept", "missing"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+    def test_reject_deletes_draft(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "x"])
+        assert result.exit_code == 0
+        assert "Rejected" in result.output
+        assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
+
+    def test_reject_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "reject", "x"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_reject"
+
+    def test_reject_missing_slug_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "missing"])
+        assert result.exit_code == 1
+
+    def test_reject_missing_slug_json_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "reject", "missing"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+
 class TestCrawlProgressCallback:
     def test_crawl_page_event(self):
         """Crawl progress callback handles CrawlPageEvent."""
