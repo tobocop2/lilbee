@@ -607,7 +607,10 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
         return
 
     if len(touched) > cfg.wiki_ingest_update_cap:
-        log.info(
+        # warning, not info: the default LILBEE_LOG_LEVEL is WARNING, so
+        # log.info would silently drop the manual-update hint and the user
+        # would see no signal at all during `lilbee sync` when the cap trips.
+        log.warning(
             "Wiki auto-update skipped: %d pages touched (cap %d). "
             "Run 'lilbee wiki update' to refresh.",
             len(touched),

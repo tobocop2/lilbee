@@ -112,14 +112,17 @@ class TestIncrementalWikiUpdate:
 
     @pytest.mark.asyncio
     async def test_cap_exceeded_skips_regeneration_and_logs_hint(
-        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        _isolated_wiki: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         cfg.wiki_ingest_update_cap = 1
         touched_a = _entity("a", EntityKind.CONCEPT, ["changed.txt"])
         touched_b = _entity("b", EntityKind.CONCEPT, ["changed.txt"])
         touched_c = _entity("c", EntityKind.CONCEPT, ["changed.txt"])
         _install_service_stubs(monkeypatch, [touched_a, touched_b, touched_c])
-        with patch("lilbee.wiki.build_wiki") as build:
+        with patch("lilbee.wiki.build_wiki") as build, caplog.at_level("WARNING"):
             await _incremental_wiki_update({"changed.txt"})
         build.assert_not_called()
         log_path = _isolated_wiki / "wiki" / "log.md"
@@ -127,6 +130,11 @@ class TestIncrementalWikiUpdate:
         content = log_path.read_text()
         assert "skipped" in content
         assert "exceeds cap" in content
+        # The manual-update hint must land at WARNING level so the default
+        # LILBEE_LOG_LEVEL surfaces it during `lilbee sync`.
+        hint_records = [r for r in caplog.records if "lilbee wiki update" in r.getMessage()]
+        assert hint_records, "expected manual-update hint in logs"
+        assert all(r.levelname == "WARNING" for r in hint_records)
 
     @pytest.mark.asyncio
     async def test_writes_ingest_log_entry_on_success(

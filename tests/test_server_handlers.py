@@ -1180,6 +1180,22 @@ class TestUpdateConfig:
         config = await handlers.get_config()
         assert "llm_api_key" not in config.model_dump()
 
+    async def test_wiki_toggle_via_patch(self, tmp_path):
+        """The wiki feature flag must round-trip through PATCH /api/config.
+
+        settings_map exposes it under /settings and docs advertise
+        LILBEE_WIKI as a supported override; the HTTP surface has to
+        accept it too or the three entry points drift out of parity.
+        """
+        cfg.wiki = True
+        result = await handlers.update_config({"wiki": False})
+        assert result.updated == ["wiki"]
+        assert cfg.wiki is False
+        # And back on.
+        result = await handlers.update_config({"wiki": True})
+        assert result.updated == ["wiki"]
+        assert cfg.wiki is True
+
     async def test_multi_field_bad_second_no_partial_apply(self):
         """If second field is invalid, first field should NOT be applied."""
         original_temp = cfg.temperature

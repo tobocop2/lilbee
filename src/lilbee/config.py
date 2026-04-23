@@ -518,10 +518,11 @@ class Config(BaseSettings):
     # Set via apply_model_defaults() when switching models.
     _model_defaults: Any = None
 
-    # Wiki layer — LLM-maintained synthesis pages with citation provenance.
-    # On by default; no extras required. Set to False to hide the Wiki view
-    # and disable wiki generation/sync.
-    wiki: bool = True
+    # Wiki layer. LLM-maintained synthesis pages with citation provenance.
+    # On by default, no extras required. Set to False to hide the Wiki view
+    # and disable wiki generation/sync. Writable so the HTTP /api/config
+    # route, TUI /settings, and LILBEE_WIKI env var all round-trip.
+    wiki: bool = ConfigField(default=True, writable=True)
     wiki_dir: str = "wiki"
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
     wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)

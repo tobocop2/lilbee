@@ -93,6 +93,15 @@ class TestSkipRegions:
         assert "tire pressure in code" in result
         assert "After fence [[tire-pressure]]." in result
 
+    def test_tilde_code_fence_not_rewritten(self) -> None:
+        """Tilde-delimited code fences are recognized by CommonMark just like backtick
+        fences. The rewriter must skip both so a ``~~~``-wrapped code sample doesn't
+        get its content turned into ``[[links]]``."""
+        content = "Before fence.\n~~~\ntire pressure in code\n~~~\nAfter fence tire pressure.\n"
+        result = rewrite_wiki_links(content, {"tire pressure": "tire-pressure"})
+        assert "tire pressure in code" in result
+        assert "After fence [[tire-pressure]]." in result
+
     def test_nested_code_fences_toggle_correctly(self) -> None:
         content = (
             "Outside tire pressure.\n"
