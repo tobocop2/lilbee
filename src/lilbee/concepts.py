@@ -27,10 +27,10 @@ from lilbee.config import (
     Config,
 )
 from lilbee.store import Store, escape_sql_string
+from lilbee.wiki.shared import is_valid_label
 
 log = logging.getLogger(__name__)
 
-_MIN_CONCEPT_LEN = 2
 _MIN_LEIDEN_WEIGHT = 0.01
 
 
@@ -85,12 +85,19 @@ def load_spacy_pipeline() -> Any:
 
 
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
-    """Extract deduplicated, filtered noun chunks from a spaCy doc."""
+    """Extract deduplicated, filtered noun chunks from a spaCy doc.
+
+    Applies the same :func:`is_valid_label` gate the wiki entity
+    extractor uses, so structural-noise concepts (markdown table
+    delimiters, page-number-prefixed tokens, sub-three-char fragments)
+    never enter the co-occurrence graph and therefore never become a
+    synthesis-page cluster label.
+    """
     seen: set[str] = set()
     concepts: list[str] = []
     for chunk in doc.noun_chunks:
         concept = chunk.text.lower().strip()
-        if len(concept) < _MIN_CONCEPT_LEN:
+        if not is_valid_label(concept):
             continue
         if concept in seen:
             continue

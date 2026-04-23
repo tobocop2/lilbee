@@ -54,6 +54,7 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     WIKI_LOG_ACTION_GENERATED,
     PageTarget,
+    clean_label_for_display,
     make_slug,
     parse_frontmatter,
 )
@@ -744,7 +745,8 @@ def _generate_synthesis_page(
     chunks_text = _chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
     template = config.wiki_synthesis_prompt
-    prompt = template.format(topic=topic, source_list=source_list, chunks_text=chunks_text)
+    display_topic = clean_label_for_display(topic)
+    prompt = template.format(topic=display_topic, source_list=source_list, chunks_text=chunks_text)
     slug = make_slug(topic)
 
     source_hashes: dict[str, str] = {}
@@ -915,7 +917,7 @@ def _generate_concept_like_page(
     source_list = "\n".join(f"- {name}" for name in source_names)
 
     prompt = config.wiki_concept_prompt.format(
-        topic=label,
+        topic=clean_label_for_display(label),
         kind=kind,
         source_list=source_list,
         chunks_text=chunks_text,
