@@ -262,6 +262,27 @@ _META_EXCLUDE: tuple[str, ...] = (
     r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
 )
 
+# Mediawiki / Wikipedia chrome that sits in every article's DOM before the
+# body. Without these a BFS from ``/wiki/Chevrolet_Caprice`` spends its
+# first hop on ``Main_Page`` / ``Wikipedia:Contents`` / ``Portal:Current_events``
+# because those nav links appear ahead of the article prose in the HTML.
+_MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
+    r"/wiki/Main_Page$",
+    r"/wiki/Wikipedia:",
+    r"/wiki/Portal:",
+    r"/wiki/Help:",
+    r"/wiki/Special:",
+    r"/wiki/Category:",
+    r"/wiki/Template:",
+    r"/wiki/Template_talk:",
+    r"/wiki/Talk:",
+    r"/wiki/File:",
+    r"/wiki/File_talk:",
+    r"/wiki/User:",
+    r"/wiki/User_talk:",
+    r"/w/index\.php",
+)
+
 DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_WP_EXCLUDE,
     *_ARCHIVE_EXCLUDE,
@@ -272,6 +293,7 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_ECOMMERCE_EXCLUDE,
     *_TRACKING_EXCLUDE,
     *_META_EXCLUDE,
+    *_MEDIAWIKI_EXCLUDE,
 )
 
 
