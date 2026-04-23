@@ -310,15 +310,9 @@ class ModelBar(Widget, can_focus=False):
     ) -> None:
         """Populate Select widgets from scanned models (main thread).
 
-        ``_populating`` stays ``True`` until after the next refresh so
-        the async-delivered ``Select.Changed`` events queued by
-        ``set_options`` (Textual auto-selects the first option before
-        the caller reassigns the configured value) reach the handler
-        while the guard is still set. Clearing synchronously at the
-        end of this method leaves a window where an intermediate
-        event carrying the widget's auto-picked default would write
-        itself into cfg, bypassing the user's configured model and
-        tripping the featured-catalog validator.
+        ``_populating`` is cleared via ``call_after_refresh`` so the
+        guard spans the async ``Select.Changed`` events Textual queues
+        when options are replaced.
         """
         self._populating = True
 
@@ -339,15 +333,10 @@ class ModelBar(Widget, can_focus=False):
 
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
-        """Handle chat model selection change.
+        """Write the new chat model to cfg and settings.
 
-        No-op when the incoming value matches the current config. Textual
-        posts ``Select.Changed`` asynchronously, so the ``_populating``
-        guard may already have cleared by the time the event is delivered
-        during startup. Without the equality short-circuit, Textual's
-        default-selection of the alphabetically-first option would
-        clobber a user's configured model (and trigger the
-        featured-catalog validator on a non-featured installed model).
+        The ``value == cfg.chat_model`` guard skips redundant writes from
+        the Changed events queued by :meth:`_populate`.
         """
         value = self._extract_value(event)
         if value is None or value == cfg.chat_model:
@@ -358,11 +347,7 @@ class ModelBar(Widget, can_focus=False):
 
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:
-        """Handle embedding model selection change.
-
-        Same equality guard as :meth:`_on_chat_model_changed` for the
-        same async-event-ordering reason.
-        """
+        """Write the new embedding model to cfg and settings."""
         value = self._extract_value(event)
         if value is None or value == cfg.embedding_model:
             return
