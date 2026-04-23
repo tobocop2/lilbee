@@ -397,6 +397,47 @@ class TestGetRelatedConcepts:
         result = cg.get_related_concepts("python")
         assert result == []
 
+    def test_single_batched_query_per_depth_level(self, cg, mock_svc):
+        """Frontier expansion must fire one query per depth level, not one per node."""
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            {"source": "python", "target": "django", "weight": 1.0},
+            {"source": "python", "target": "flask", "weight": 0.9},
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+
+        cg.get_related_concepts("python", depth=1)
+        # One depth level => exactly one .search() call.
+        assert mock_table.search.call_count == 1
+        # The WHERE clause should use IN with all frontier nodes, not per-node equality.
+        where_args = mock_table.search.return_value.where.call_args.args[0]
+        assert " IN (" in where_args
+        assert "'python'" in where_args
+
+    def test_depth_two_batches_both_levels(self, cg, mock_svc):
+        """depth=2 triggers exactly 2 batched queries (one per level)."""
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.side_effect = [
+            [
+                {"source": "python", "target": "django", "weight": 1.0},
+                {"source": "python", "target": "flask", "weight": 0.9},
+            ],
+            [
+                {"source": "django", "target": "rest", "weight": 0.8},
+                {"source": "flask", "target": "werkzeug", "weight": 0.7},
+            ],
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+
+        related = cg.get_related_concepts("python", depth=2)
+        assert mock_table.search.call_count == 2
+        # Level-2 WHERE clause should include both frontier nodes found at level 1.
+        level_two_where = mock_table.search.return_value.where.call_args_list[1].args[0]
+        assert "'django'" in level_two_where
+        assert "'flask'" in level_two_where
+        # All neighbors from both levels end up in the result.
+        assert set(related) >= {"django", "flask", "rest", "werkzeug"}
+
 
 class TestTopCommunities:
     def test_top_communities(self, cg, mock_svc):

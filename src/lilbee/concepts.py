@@ -308,30 +308,41 @@ class ConceptGraph:
         return related
 
     def get_related_concepts(self, concept: str, depth: int = 1) -> list[str]:
-        """Find concepts related via graph edges."""
+        """Find concepts related via graph edges.
+
+        Each depth level fires one batched query (``source IN (...) OR
+        target IN (...)``) instead of one query per frontier node, so
+        expansion costs one DB round-trip per level instead of scaling
+        with frontier size.
+        """
         table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if table is None:
             return []
         visited: set[str] = {concept}
         frontier: list[str] = [concept]
         for _ in range(depth):
+            if not frontier:
+                break
+            escaped_list = ", ".join(f"'{escape_sql_string(n)}'" for n in frontier)
+            try:
+                rows = (
+                    table.search()
+                    .where(f"source IN ({escaped_list}) OR target IN ({escaped_list})")
+                    .to_list()
+                )
+            except Exception:
+                log.debug(
+                    "concept expand batch failed at frontier size %d",
+                    len(frontier),
+                    exc_info=True,
+                )
+                break
             next_frontier: list[str] = []
-            for node in frontier:
-                escaped = escape_sql_string(node)
-                try:
-                    rows = (
-                        table.search()
-                        .where(f"source = '{escaped}' OR target = '{escaped}'")
-                        .to_list()
-                    )
-                except Exception:
-                    log.debug("concept expand failed for %s", node, exc_info=True)
-                    continue
-                for row in rows:
-                    neighbor = row["target"] if row["source"] == node else row["source"]
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        next_frontier.append(neighbor)
+            for row in rows:
+                for endpoint in (row["source"], row["target"]):
+                    if endpoint not in visited:
+                        visited.add(endpoint)
+                        next_frontier.append(endpoint)
             frontier = next_frontier
         return [c for c in visited if c != concept]
 
