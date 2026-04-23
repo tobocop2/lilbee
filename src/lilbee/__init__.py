@@ -44,7 +44,31 @@ def _install_thread_only_tqdm_lock() -> None:
         _tqdm_base._lock = threading.RLock()
 
 
+def _prestart_mp_resource_tracker() -> None:
+    """Spawn multiprocessing's resource tracker now, while stderr is still real.
+
+    ``popen_spawn_posix._launch`` calls ``resource_tracker.getfd()`` every
+    time we start a worker subprocess, and the *first* call to ``getfd()``
+    fork_execs the tracker. Textual's App wrapper makes ``sys.stderr.fileno()
+    == -1``, which propagates into fork_exec's fds_to_keep tuple and raises
+    ``ValueError: bad value(s) in fds_to_keep`` before the tracker's own
+    pipe is even reached. Starting the tracker here, before Textual swaps
+    stderr, keeps the fd tracker alive for the rest of the process so every
+    later ``Process.start()`` in the TUI only sees a cached fd.
+    """
+    try:
+        from multiprocessing import resource_tracker
+
+        resource_tracker.ensure_running()
+    except Exception:
+        # Best-effort: if the tracker already crashed or cannot be started
+        # in the current env, leave the state alone. The worker's own
+        # spawn will surface a real error at call time.
+        pass
+
+
 _install_thread_only_tqdm_lock()
+_prestart_mp_resource_tracker()
 
 
 def _shrink_hf_download_chunk_size() -> None:

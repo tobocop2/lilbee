@@ -725,6 +725,57 @@ class TestWorkerProcessVision:
         ):
             wp.vision_ocr(b"png", "model")
 
+    def test_vision_uses_cfg_ocr_timeout(self, config_snap: ConfigSnapshot) -> None:
+        """vision_ocr passes cfg.ocr_timeout into the round-trip deadline.
+
+        Prevents an image-heavy page from being killed by the built-in 120s
+        cap when the user has explicitly raised LILBEE_VISION_TIMEOUT /
+        cfg.ocr_timeout for a slow vision model.
+        """
+        from lilbee.config import cfg
+
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        mock_proc = mock.MagicMock()
+        mock_proc.is_alive.return_value = True
+        wp._process = mock_proc
+        wp._request_queue = mock.MagicMock()
+
+        cfg.ocr_timeout = 600.0
+        seen: list[float] = []
+
+        def capture_round_trip(_req, _resp_type, timeout, *, label):
+            seen.append(timeout)
+            return VisionResponse(text="ok", request_id=1)
+
+        with mock.patch.object(wp, "_round_trip", side_effect=capture_round_trip):
+            wp.vision_ocr(b"png", "model")
+
+        assert seen == [600.0]
+
+    def test_vision_zero_timeout_means_no_limit(self, config_snap: ConfigSnapshot) -> None:
+        """cfg.ocr_timeout == 0 is translated to a day-long finite deadline."""
+        from lilbee.config import cfg
+
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        mock_proc = mock.MagicMock()
+        mock_proc.is_alive.return_value = True
+        wp._process = mock_proc
+        wp._request_queue = mock.MagicMock()
+
+        cfg.ocr_timeout = 0.0
+        seen: list[float] = []
+
+        def capture_round_trip(_req, _resp_type, timeout, *, label):
+            seen.append(timeout)
+            return VisionResponse(text="ok", request_id=1)
+
+        with mock.patch.object(wp, "_round_trip", side_effect=capture_round_trip):
+            wp.vision_ocr(b"png", "model")
+
+        assert seen == [86_400.0]
+
 
 class TestWorkerProcessLoadModel:
     def test_load_model_sends_request(self, config_snap: ConfigSnapshot) -> None:

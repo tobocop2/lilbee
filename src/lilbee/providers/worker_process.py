@@ -192,6 +192,8 @@ class WorkerProcess:
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
         """Send a vision OCR request and wait for the response.
         Auto-starts the worker if not running. Retries once on crash.
+        Honours ``cfg.ocr_timeout`` when set above zero so image-heavy pages
+        on slow vision models can complete instead of being skipped.
         """
         self._ensure_started()
         req = VisionRequest(
@@ -200,7 +202,13 @@ class WorkerProcess:
             prompt=prompt,
             request_id=self._next_request_id(),
         )
-        resp = self._round_trip(req, VisionResponse, _VISION_TIMEOUT_S, label="vision OCR")
+        from lilbee.config import cfg
+
+        # ``cfg.ocr_timeout == 0`` means the user asked for no limit. We
+        # still need a finite value for the internal deadline loop, so we
+        # substitute a day's worth of seconds.
+        timeout = cfg.ocr_timeout if cfg.ocr_timeout > 0 else 86_400.0
+        resp = self._round_trip(req, VisionResponse, timeout, label="vision OCR")
         return resp.text
 
     def _round_trip(
