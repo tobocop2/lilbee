@@ -1234,7 +1234,13 @@ def wiki_build(
         _wiki_build_dry_run_output(entities)
         return
 
-    pages = build_wiki(entities, svc.provider, svc.store, cfg)
+    pages = build_wiki(
+        entities,
+        svc.provider,
+        svc.store,
+        cfg,
+        extract_concepts=cfg.wiki_extract_concepts,
+    )
     update_wiki_index()
     append_wiki_log(
         WIKI_LOG_ACTION_BUILD,
@@ -1355,7 +1361,7 @@ def wiki_drafts_list(
 ) -> None:
     """List pending wiki drafts with drift, faithfulness, and pairing info."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.wiki.drafts import list_drafts
+    from lilbee.wiki.drafts import PENDING_KIND_DRIFT, list_drafts
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     drafts = list_drafts(wiki_root)
@@ -1381,7 +1387,7 @@ def wiki_drafts_list(
     table.add_column("Faithfulness")
     table.add_column("Published?", style=theme.MUTED)
     for d in drafts:
-        kind = d.pending_kind or "drift"
+        kind = d.pending_kind or PENDING_KIND_DRIFT
         drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
         faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
         published = "yes" if d.published_exists else "no"
@@ -1436,14 +1442,7 @@ def wiki_drafts_accept(
         raise typer.Exit(1) from None
 
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "wiki_drafts_accept",
-                "slug": result.slug,
-                "moved_to": result.moved_to.as_posix(),
-                "reindexed_chunks": result.reindexed_chunks,
-            }
-        )
+        json_output({"command": "wiki_drafts_accept", **result.to_dict()})
         return
     console.print(
         f"Accepted [{theme.ACCENT}]{slug}[/{theme.ACCENT}] -> "

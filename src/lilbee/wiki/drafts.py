@@ -24,10 +24,32 @@ from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
     ENTITIES_SUBDIR,
+    PENDING_KIND_COLLISION,
+    PENDING_KIND_DRIFT,
+    PENDING_KIND_PARSE,
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
     parse_frontmatter,
 )
+
+# Re-export the kind constants from wiki.shared so existing imports
+# (``from lilbee.wiki.drafts import PENDING_KIND_PARSE``) keep working.
+# Their canonical home is :mod:`lilbee.wiki.shared` — the writer side
+# in :mod:`lilbee.wiki.gen` would create a circular import if it
+# reached into this module for them.
+__all__ = [
+    "PENDING_KIND_COLLISION",
+    "PENDING_KIND_DRIFT",
+    "PENDING_KIND_PARSE",
+    "AcceptResult",
+    "DraftInfo",
+    "accept_draft",
+    "diff_draft",
+    "list_drafts",
+    "reject_draft",
+]
 
 log = logging.getLogger(__name__)
 
@@ -39,19 +61,22 @@ _DRIFT_MARKER_RE = re.compile(
 # Phase D: batched-generation pending markers. The per-source batched
 # call writes one of these when the parser could not recover a
 # requested section, or when two sources proposed the same concept
-# slug and the second write lost the race.
+# slug and the second write lost the race. The keyword phrases live
+# in ``wiki.shared`` so writer (gen) and reader (drafts) agree on the
+# exact wording; this regex adds the ``<!--`` wrapper plus ``\s+`` in
+# place of each literal space, so the reader tolerates double-space
+# variations in cached markers. Keywords carry no regex metacharacters
+# so ``re.escape`` is unnecessary.
+_PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
+_COLLISION_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_COLLISION.replace(" ", r"\s+")
 _PENDING_PARSE_MARKER_RE = re.compile(
-    r"<!--\s*PENDING:\s*batch parse failed[^>]*-->",
+    rf"<!--\s*{_PARSE_KEYWORD_PATTERN}[^>]*-->",
     re.IGNORECASE,
 )
 _PENDING_COLLISION_MARKER_RE = re.compile(
-    r"<!--\s*PENDING:\s*concept slug collision[^>]*-->",
+    rf"<!--\s*{_COLLISION_KEYWORD_PATTERN}[^>]*-->",
     re.IGNORECASE,
 )
-
-# Kind labels exposed to callers (CLI, JSON) via ``DraftInfo.pending_kind``.
-PENDING_KIND_PARSE = "parse"
-PENDING_KIND_COLLISION = "collision"
 
 # Published wiki subdirs searched in priority order when pairing a
 # draft slug with its counterpart. Summaries and synthesis come first

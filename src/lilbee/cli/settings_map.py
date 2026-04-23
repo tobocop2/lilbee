@@ -280,12 +280,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "alongside the pre-extracted entity list."
         ),
     ),
-    "wiki_batch_by_source": SettingDef(
-        bool,
-        nullable=False,
-        group="Wiki",
-        help_text="Group entities per primary source and issue one LLM call per source.",
-    ),
     "wiki_batch_min_chunks": SettingDef(
         int,
         nullable=False,

@@ -40,6 +40,26 @@ WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (
 
 WIKI_DISABLED_ERROR = "wiki not enabled"
 
+# PENDING-marker keyword phrases written into ``drafts/<slug>.md`` by the
+# batched generator and matched by the drafts-review surface. Centralized
+# here so the gen-side writer and the drafts-side reader agree on the
+# exact wording. Changing a keyword here requires updating any cached
+# markers on disk (one-shot find -delete or a regen).
+PENDING_MARKER_KEYWORD_PARSE = "PENDING: batch parse failed"
+PENDING_MARKER_KEYWORD_COLLISION = "PENDING: concept slug collision"
+
+# Values written into the ``pending_kind`` frontmatter field and
+# surfaced verbatim through ``DraftInfo.pending_kind`` to CLI / HTTP /
+# MCP callers. Kept as plain string constants (not an enum) because the
+# value round-trips through YAML and JSON without translation.
+PENDING_KIND_PARSE = "parse"
+PENDING_KIND_COLLISION = "collision"
+# Display-only default shown to users when a draft has no PENDING marker
+# (i.e. a regular drift draft). Never written into
+# ``DraftInfo.pending_kind`` on disk; consumers fall back to this
+# constant instead of hard-coding ``"drift"``.
+PENDING_KIND_DRIFT = "drift"
+
 # wiki/log.md action labels. Distinct from WIKI_STATUS_* (which are result
 # statuses returned to CLI/MCP/HTTP callers); these are internal audit trail
 # verbs written into the log file.

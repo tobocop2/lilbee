@@ -701,11 +701,6 @@ class Config(BaseSettings):
     # path uses this to avoid churning concept slugs per source-touch).
     wiki_extract_concepts: bool = ConfigField(default=True, writable=True)
 
-    # Whether wiki build groups entities per primary source and issues
-    # one LLM call per source. False falls through to the legacy
-    # per-entity / per-concept path (debug/rollback only).
-    wiki_batch_by_source: bool = ConfigField(default=True, writable=True)
-
     # Minimum chunk count a source must contribute before it is eligible
     # for concept curation. Sources below the floor still get a batched
     # call when they have entities (the prompt writes entity-only

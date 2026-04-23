@@ -51,6 +51,9 @@ from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     ENTITIES_SUBDIR,
     MIN_CLUSTER_SOURCES,
+    PENDING_KIND_PARSE,
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
@@ -1069,9 +1072,11 @@ def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
 
 # Pending-marker conventions: the drafts listing surface
 # (``lilbee.wiki.drafts``) scans for these prefixes to classify a
-# draft as PARSE or COLLISION instead of a drift-routed regen.
-_PENDING_PARSE_MARKER_PREFIX = "<!-- PENDING: batch parse failed"
-_PENDING_COLLISION_MARKER_PREFIX = "<!-- PENDING: concept slug collision"
+# draft as PARSE or COLLISION instead of a drift-routed regen. The
+# keyword phrases live in ``wiki.shared`` so writer (gen) and reader
+# (drafts) stay in sync on the exact wording.
+_PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
+_PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 
 
 def _write_pending_marker(
@@ -1379,13 +1384,18 @@ def _generate_source_batch(
                 f"entity/concept {entity.label} - "
                 "run wiki build again or manually accept via wiki drafts accept -->"
             )
-            frontmatter = (
-                "---\n"
-                f"pending_source: {source}\n"
-                f"pending_label: {entity.label}\n"
-                f"pending_kind: parse\n"
-                "---\n"
+            # Route through ``yaml.safe_dump`` so a label or source
+            # containing a colon, quote, or newline does not produce a
+            # frontmatter block that ``parse_frontmatter`` silently drops.
+            frontmatter_body = yaml.safe_dump(
+                {
+                    "pending_source": source,
+                    "pending_label": entity.label,
+                    "pending_kind": PENDING_KIND_PARSE,
+                },
+                sort_keys=False,
             )
+            frontmatter = f"---\n{frontmatter_body}---\n"
             path = _write_pending_marker(drafts_dir, entity.slug, marker, frontmatter)
             log.info("Wrote PENDING-PARSE marker for %s -> %s", entity.slug, path)
 
