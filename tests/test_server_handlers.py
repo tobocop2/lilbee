@@ -651,6 +651,57 @@ class TestDrainFallback:
         assert task.done()
 
 
+class TestDrainHeartbeat:
+    """Root cause for obsidian-lilbee-v8y: a long-running producer (vision OCR
+    on an image-heavy PDF) keeps the queue empty for longer than the plugin's
+    120s STREAM_IDLE_TIMEOUT_MS, so drain() must emit heartbeat events while
+    the producer is alive but silent."""
+
+    async def test_heartbeat_emitted_while_queue_idle(self):
+        """drain() emits heartbeat events while the producer is silent."""
+        from lilbee.server.handlers import SseStream
+
+        cfg.sse_heartbeat_interval = 0.05
+        sse = SseStream()
+
+        async def slow_producer():
+            await asyncio.sleep(0.25)
+            sse.queue.put_nowait("event: progress\ndata: {}\n\n")
+            sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(slow_producer())
+        events = [e async for e in sse.drain(task, "slow")]
+
+        heartbeats = [e for e in events if e.startswith("event: heartbeat")]
+        progress = [e for e in events if e.startswith("event: progress")]
+        assert heartbeats, "expected at least one heartbeat while producer was idle"
+        assert progress == ["event: progress\ndata: {}\n\n"]
+        # Heartbeat payload must be JSON with a monotonic timestamp.
+        ts_payload = json.loads(heartbeats[0].split("data: ")[1].strip())
+        assert isinstance(ts_payload.get("ts"), int | float)
+
+    async def test_heartbeat_skipped_when_producer_emits_faster_than_interval(self):
+        """A chatty producer never triggers a heartbeat."""
+        from lilbee.server.handlers import SseStream
+
+        cfg.sse_heartbeat_interval = 5.0
+        sse = SseStream()
+
+        async def chatty_producer():
+            for i in range(3):
+                sse.queue.put_nowait(f'event: progress\ndata: {{"i": {i}}}\n\n')
+                await asyncio.sleep(0.01)
+            sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(chatty_producer())
+        events = [e async for e in sse.drain(task, "chatty")]
+
+        heartbeats = [e for e in events if e.startswith("event: heartbeat")]
+        assert heartbeats == []
+        progress = [e for e in events if e.startswith("event: progress")]
+        assert len(progress) == 3
+
+
 class TestListModels:
     @patch("lilbee.server.handlers.get_model_manager")
     async def test_returns_catalogs(self, mock_get_mm):
