@@ -1342,9 +1342,14 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await search.action_submit()
                 await app.workers.wait_for_complete()
-                await pilot.pause()
+                for _ in range(20):
+                    if "no-such-model-anywhere" in call_log:
+                        break
+                    await pilot.pause()
 
-                assert "no-such-model-anywhere" in call_log
+                assert "no-such-model-anywhere" in call_log, (
+                    f"search term never reached catalog after polling: {call_log}"
+                )
 
     async def test_trigger_remote_search_blocked_while_in_flight(self, _mock_resolve):
         """A second _trigger_remote_search while one is in flight is a no-op."""
