@@ -479,8 +479,6 @@ class TestEntityTypeFilter:
 
     def test_config_override_narrows_allowed_types(self) -> None:
         """Setting a narrower override via config keeps only those types."""
-        from dataclasses import replace  # noqa: F401  (pattern documentation)
-
         doc = _FakeDoc(
             ents=[
                 _FakeSpan("Chevrolet", "ORG"),
@@ -522,7 +520,8 @@ class TestFunnelLogging:
         assert "raw_ents=3" in message
         assert "raw_noun_chunks=2" in message
         assert "type_filter_dropped=1" in message  # the QUANTITY
-        assert "label_sanity_dropped=2" in message  # "| bad" and "ab"
+        assert "label_sanity_dropped_entities=1" in message  # "| bad"
+        assert "label_sanity_dropped_concepts=1" in message  # "ab"
         assert "kept_entity_surfaces=1" in message  # Chevrolet
         assert "kept_concept_surfaces=1" in message  # the car
 
