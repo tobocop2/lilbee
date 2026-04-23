@@ -68,12 +68,16 @@ WIKI_TYPE_HEADINGS: dict[WikiPageType, str] = {
 }
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
-_DISPLAY_STRUCTURAL_RE = re.compile(r"[|#>]+")
+
+# Characters that signal markdown-structural noise in a concept label.
+# Single source of truth for both ``is_valid_label`` (membership check)
+# and ``clean_label_for_display`` (regex strip).
+_STRUCTURAL_CHARS = frozenset("|#>")
+_DISPLAY_STRUCTURAL_RE = re.compile(f"[{re.escape(''.join(_STRUCTURAL_CHARS))}]+")
 _DISPLAY_WHITESPACE_RE = re.compile(r"\s+")
 
 LABEL_SANITY_MIN_LEN = 3
 LABEL_SANITY_MIN_ALNUM_RATIO = 0.5
-_STRUCTURAL_CHARS = frozenset("|#>")
 
 
 @dataclass(frozen=True)
