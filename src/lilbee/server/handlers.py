@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import threading
@@ -716,11 +717,15 @@ async def get_config() -> ConfigResponse:
     return ConfigResponse(**result)
 
 
-async def get_config_defaults() -> ConfigResponse:
-    """Return canonical defaults for every public config field.
+@functools.cache
+def _compute_config_defaults() -> dict[str, Any]:
+    """Materialize Config defaults once per process.
 
-    Covers writable fields (resettable via PATCH /api/config) and the
-    model-role fields (resettable via PUT /api/models/<role>).
+    Defaults are baked into the class, so iterating ``Config.model_fields``
+    and invoking default_factory callables on every request is pure
+    waste. Some factories (e.g. ``crawl_exclude_patterns`` which builds
+    a 30+ regex list) are measurable. Cache keyed on nothing since the
+    class doesn't change at runtime.
     """
     defaults: dict[str, Any] = {}
     for name, info in Config.model_fields.items():
@@ -731,7 +736,16 @@ async def get_config_defaults() -> ConfigResponse:
         if value is PydanticUndefined:  # pragma: no cover
             continue
         defaults[name] = value
-    return ConfigResponse(**defaults)
+    return defaults
+
+
+async def get_config_defaults() -> ConfigResponse:
+    """Return canonical defaults for every public config field.
+
+    Covers writable fields (resettable via PATCH /api/config) and the
+    model-role fields (resettable via PUT /api/models/<role>).
+    """
+    return ConfigResponse(**_compute_config_defaults())
 
 
 async def models_show(model: str) -> ModelsShowResponse:
