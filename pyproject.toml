@@ -79,6 +79,7 @@ dev = [
     "types-pyyaml>=6.0.12.20250915",
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
+    "pytest-timeout>=2.3",
 ]
 
 [tool.pytest.ini_options]
@@ -86,6 +87,7 @@ pythonpath = [".", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/integration"
+timeout = 60
 markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",

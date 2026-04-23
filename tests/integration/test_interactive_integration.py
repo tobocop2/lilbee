@@ -11,7 +11,6 @@ in ~/.lilbee/models/ for subsequent runs.
 Marked @pytest.mark.slow -- excluded from default `make check`.
 """
 
-import asyncio
 import ipaddress
 import json
 import os
@@ -171,6 +170,7 @@ def isolated_env(tmp_path, real_models):
     cfg.concept_graph = False
     cfg.query_expansion_count = 0
     cfg.hyde = False
+    cfg.wiki = False
     cfg.max_tokens = 512
     cfg.chunk_size = 128
     cfg.chunk_overlap = 20
@@ -216,22 +216,31 @@ def _write_all_docs():
         (cfg.documents_dir / name).write_text(content)
 
 
-def _sync():
-    """Run real sync."""
+@pytest.fixture
+def sync_fn(run_async):
+    """Real ingest.sync wrapped to run on the shared session loop."""
     from lilbee.ingest import sync
 
-    return asyncio.run(sync(quiet=True))
+    def _run():
+        return run_async(sync(quiet=True))
+
+    return _run
 
 
-def _sync_with_docs():
-    """Write all docs and sync."""
-    _write_all_docs()
-    return _sync()
+@pytest.fixture
+def sync_with_docs(sync_fn):
+    """Write all test docs then sync."""
+
+    def _run():
+        _write_all_docs()
+        return sync_fn()
+
+    return _run
 
 
 class TestSearch:
-    def test_search_finds_exact_keyword(self, isolated_env):
-        _sync_with_docs()
+    def test_search_finds_exact_keyword(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["--json", "search", "Thunderbolt X500"])
         assert result.exit_code == 0, result.output
         data = _parse_json_output(result.output)
@@ -239,8 +248,8 @@ class TestSearch:
         sources = [r["source"] for r in results]
         assert any("specs.md" in s for s in sources), f"Expected specs.md in {sources}"
 
-    def test_search_finds_semantic(self, isolated_env):
-        _sync_with_docs()
+    def test_search_finds_semantic(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["--json", "search", "engine specifications"])
         assert result.exit_code == 0, result.output
         data = _parse_json_output(result.output)
@@ -251,16 +260,16 @@ class TestSearch:
 
 class TestAsk:
     @skip_if_small_chat_model
-    def test_ask_known_fact(self, isolated_env):
-        _sync_with_docs()
+    def test_ask_known_fact(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["--json", "ask", "What is the oil capacity?"])
         assert result.exit_code == 0, result.output
         data = _parse_json_output(result.output)
         answer = data.get("answer", "").lower()
         assert "6.5" in answer or "quart" in answer, f"Expected oil capacity in: {answer}"
 
-    def test_ask_includes_citations(self, isolated_env):
-        _sync_with_docs()
+    def test_ask_includes_citations(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["--json", "ask", "What is the oil capacity?"])
         assert result.exit_code == 0, result.output
         data = _parse_json_output(result.output)
@@ -272,8 +281,8 @@ class TestAsk:
 
 
 class TestDiversity:
-    def test_mmr_diverse_sources(self, isolated_env):
-        _sync_with_docs()
+    def test_mmr_diverse_sources(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["--json", "search", "authentication", "-k", "10"])
         assert result.exit_code == 0, result.output
         data = _parse_json_output(result.output)
@@ -283,8 +292,8 @@ class TestDiversity:
 
 
 class TestAddAndDelete:
-    def test_add_file_then_search(self, isolated_env):
-        _sync_with_docs()
+    def test_add_file_then_search(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         external = isolated_env / "external.md"
         external.write_text(
             "# Zymurgy Reference\n\n"
@@ -299,8 +308,8 @@ class TestAddAndDelete:
         results = data.get("results", [])
         assert len(results) > 0, "Expected to find added document"
 
-    def test_delete_removes(self, isolated_env):
-        _sync_with_docs()
+    def test_delete_removes(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["remove", "specs.md"])
         assert result.exit_code == 0, result.output
 
@@ -315,19 +324,19 @@ class TestAddAndDelete:
 
 
 class TestSync:
-    def test_sync_idempotent(self, isolated_env):
+    def test_sync_idempotent(self, isolated_env, sync_fn):
         _write_all_docs()
-        r1 = _sync()
+        r1 = sync_fn()
         assert len(r1.added) > 0
 
-        r2 = _sync()
+        r2 = sync_fn()
         assert r2.added == [], f"Second sync should add nothing, got {r2.added}"
         assert r2.unchanged > 0
 
 
 class TestRebuild:
-    def test_rebuild_works(self, isolated_env):
-        _sync_with_docs()
+    def test_rebuild_works(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 0, result.output
 
@@ -339,8 +348,8 @@ class TestRebuild:
 
 
 class TestCodeSearch:
-    def test_code_search(self, isolated_env):
-        _sync_with_docs()
+    def test_code_search(self, isolated_env, sync_with_docs):
+        sync_with_docs()
         result = runner.invoke(app, ["--json", "search", "fibonacci"])
         assert result.exit_code == 0, result.output
         data = _parse_json_output(result.output)

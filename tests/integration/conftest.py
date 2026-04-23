@@ -29,6 +29,17 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
 TEST_DOCS = {f.name: f.read_text() for f in sorted(DOCS_DIR.iterdir()) if f.is_file()}
 
+# Integration tests run real LLM inference; the global 60s unit-test cap is too
+# aggressive. 180s is ~4x the slowest observed test on Metal. Any test exceeding
+# it on CPU-only CI runners is a hang, not a slow pass. Tests can opt in to a
+# different cap with @pytest.mark.timeout(X).
+_INTEGRATION_TIMEOUT_SECONDS = 180
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+
 
 @pytest.fixture(autouse=True)
 def _preserve_models_dir():
@@ -51,6 +62,21 @@ def _integration_loop():
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.run_until_complete(asyncio.sleep(0.1))
         loop.close()
+
+
+@pytest.fixture
+def run_async(_integration_loop):
+    """Run a coroutine on the shared session loop.
+
+    Tests must NOT use asyncio.run() directly. A fresh loop tears down
+    call_soon_threadsafe plumbing that the llama-cpp provider's daemon-thread
+    embed/rerank workers depend on, wedging subsequent awaits on CPU-only CI.
+    """
+
+    def _run(coro):
+        return _integration_loop.run_until_complete(coro)
+
+    return _run
 
 
 @pytest.fixture(scope="session")
@@ -85,6 +111,7 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
+    cfg.wiki = False
     cfg.max_tokens = 512  # keep inference fast on slow CI runners
 
     reset_provider()
