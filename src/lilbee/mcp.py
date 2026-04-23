@@ -535,4 +535,12 @@ def clean(result: SearchChunk) -> dict[str, object]:
 
 def main() -> None:
     """Entry point for the MCP server."""
+    # Preload so the first tool call doesn't pay the cold-start cost
+    # of provider/embedder/store init. Failures (missing model, bad
+    # config) still surface on the first tool call rather than crashing
+    # the server before it attaches to stdio.
+    try:
+        get_services()
+    except Exception:
+        log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
     mcp.run()
