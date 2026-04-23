@@ -137,16 +137,27 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Path | None:
+@dataclass(frozen=True)
+class SaveOutcome:
+    """Return value of ``_save_single_result``: written path and the hash/filename used."""
+
+    path: Path
+    filename: str
+    content_hash: str
+
+
+def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> SaveOutcome | None:
     """Write one crawl result to disk if it's new or changed.
 
-    Returns the written path, or None if skipped (failure, empty markdown,
-    unchanged hash with file on disk, or blocked by path traversal).
+    Returns the outcome (written path plus reusable filename/hash), or
+    None if skipped (failure, empty markdown, unchanged hash with file
+    on disk, or blocked by path traversal).
     """
     if not result.success or not result.markdown.strip():
         return None
+    filename = url_to_filename(result.url)
     web_dir = _web_dir()
-    file_path = web_dir / url_to_filename(result.url)
+    file_path = web_dir / filename
     resolved_web_dir = web_dir.resolve()
     try:
         validate_path_within(file_path, resolved_web_dir)
@@ -160,13 +171,18 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Path
         return None
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(result.markdown, encoding="utf-8")
-    return file_path
+    return SaveOutcome(path=file_path, filename=filename, content_hash=new_hash)
 
 
-def _update_single_metadata(meta: dict[str, CrawlMeta], result: CrawlResult, now: str) -> None:
-    """Update the metadata dict in place for one just-saved result."""
-    meta[result.url] = CrawlMeta(
-        file=url_to_filename(result.url),
-        content_hash=content_hash(result.markdown),
+def _update_single_metadata(
+    meta: dict[str, CrawlMeta],
+    url: str,
+    outcome: SaveOutcome,
+    now: str,
+) -> None:
+    """Update the metadata dict in place with a previously-computed outcome."""
+    meta[url] = CrawlMeta(
+        file=outcome.filename,
+        content_hash=outcome.content_hash,
         crawled_at=now,
     )

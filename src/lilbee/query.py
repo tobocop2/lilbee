@@ -382,7 +382,7 @@ class Searcher:
         if keyword is None:
             return results
         date_range = resolve_date_range(keyword)
-        source_dates = {s["filename"]: s.get("ingested_at", "") for s in self._store.get_sources()}
+        source_dates = self._store.source_ingested_at_map()
         filtered: list[SearchChunk] = []
         for r in results:
             ingested_at = source_dates.get(r.source, "")
@@ -438,6 +438,7 @@ class Searcher:
 
         LLM variants run through ``_apply_guardrails``; concept-graph
         variants bypass it since they come from deterministic traversal.
+        Embeddings batch per source: one provider round-trip per source.
         """
         count = self._config.query_expansion_count
         if count <= 0 and not self._config.concept_graph:
@@ -445,11 +446,17 @@ class Searcher:
         try:
             llm_variants: list[tuple[str, list[float]]] = []
             if count > 0:
-                for text in self._llm_expand(question, count):
-                    llm_variants.append((text, self._embedder.embed(text)))
+                llm_texts = list(self._llm_expand(question, count))
+                if llm_texts:
+                    llm_vectors = self._embedder.embed_batch(llm_texts)
+                    llm_variants = list(zip(llm_texts, llm_vectors, strict=True))
             llm_variants = self._apply_guardrails(llm_variants, question_vec)
-            for concept in self._concept_query_expansion(question):
-                llm_variants.append((concept, self._embedder.embed(concept)))
+
+            concept_texts = list(self._concept_query_expansion(question))
+            if concept_texts:
+                concept_vectors = self._embedder.embed_batch(concept_texts)
+                llm_variants.extend(zip(concept_texts, concept_vectors, strict=True))
+
             return llm_variants
         except Exception as exc:
             log.warning("Query expansion disabled for this call: %s", exc, exc_info=True)
@@ -470,12 +477,14 @@ class Searcher:
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
-        if not self._config.concept_graph:
+        if not self._config.concept_graph or not results:
             return results
         try:
             if not self._concepts.get_graph():
                 return results
             query_concepts = self._concepts.extract_concepts(question)
+            if not query_concepts:
+                return results
             return self._concepts.boost_results(results, query_concepts)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)

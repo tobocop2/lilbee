@@ -130,21 +130,21 @@ class TestSdkModelManagement:
 
 class TestSdkFactory:
     def test_create_sdk_provider_for_litellm_config(self) -> None:
-        """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == 'litellm'."""
+        """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == "remote"."""
         from lilbee.providers.factory import create_provider
 
-        cfg.llm_provider = "litellm"
-        cfg.litellm_base_url = OLLAMA_HOST
+        cfg.llm_provider = "remote"
+        cfg.remote_base_url = OLLAMA_HOST
         provider = create_provider(cfg)
 
         assert isinstance(provider, SdkLLMProvider)
 
-    def test_ollama_alias(self) -> None:
-        """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == 'ollama'."""
+    def test_legacy_ollama_alias_rejected(self) -> None:
+        """'ollama' is no longer a valid llm_provider value; only "remote" is."""
+        from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "ollama"
-        cfg.litellm_base_url = OLLAMA_HOST
-        provider = create_provider(cfg)
-
-        assert isinstance(provider, SdkLLMProvider)
+        cfg.remote_base_url = OLLAMA_HOST
+        with pytest.raises(ProviderError, match="Unknown LLM provider"):
+            create_provider(cfg)

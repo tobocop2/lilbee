@@ -367,6 +367,34 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = iter(["stream"])
         assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
 
+    def test_batches_llm_variants_in_one_call(self, mock_svc):
+        """LLM variants should embed via a single embed_batch call, not N embed calls."""
+        mock_svc.provider.chat.return_value = "variant one\nvariant two\nvariant three"
+        get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        assert mock_svc.embedder.embed_batch.call_count >= 1
+        batch_call_args = mock_svc.embedder.embed_batch.call_args_list[0].args[0]
+        assert len(batch_call_args) == 3
+        # Single-shot embed must not be used for the variant loop.
+        mock_svc.embedder.embed.assert_not_called()
+
+    def test_batches_concept_expansion_separately(self, mock_svc):
+        """Concept-graph variants embed through embed_batch too (separate call
+        because they bypass guardrails and must come through after guardrails
+        apply to LLM variants)."""
+        old_concept = cfg.concept_graph
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.expand_query.return_value = ["kubernetes", "scheduling"]
+        mock_svc.provider.chat.return_value = "restate one\nrestate two"
+        try:
+            get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        finally:
+            cfg.concept_graph = old_concept
+        # Two sources (LLM + concepts) => exactly 2 batch calls.
+        assert mock_svc.embedder.embed_batch.call_count == 2
+        concept_batch = mock_svc.embedder.embed_batch.call_args_list[1].args[0]
+        assert concept_batch == ["kubernetes", "scheduling"]
+
 
 class TestAskRaw:
     def test_returns_structured_result(self, mock_svc):
@@ -796,10 +824,10 @@ class TestTemporalFilter:
         from datetime import UTC, datetime, timedelta
 
         recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
-            {"filename": "new.md", "ingested_at": recent},
-        ]
+        mock_svc.store.source_ingested_at_map.return_value = {
+            "old.md": "2020-01-01T00:00:00+00:00",
+            "new.md": recent,
+        }
         results = [
             _make_result(source="old.md"),
             _make_result(source="new.md"),
@@ -807,6 +835,13 @@ class TestTemporalFilter:
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert any(r.source == "new.md" for r in filtered)
         assert not any(r.source == "old.md" for r in filtered)
+
+    def test_result_without_ingested_at_passes_through(self, mock_svc):
+        """Sources absent from the ingested_at map are kept (no date info = don't filter)."""
+        mock_svc.store.source_ingested_at_map.return_value = {}
+        results = [_make_result(source="mystery.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
+        assert [r.source for r in filtered] == ["mystery.md"]
 
     def test_no_temporal_keyword_passes_through(self, mock_svc):
         results = [_make_result()]
@@ -988,6 +1023,20 @@ class TestConceptBoosting:
             assert results[0].distance == 0.5
         finally:
             cfg.query_expansion_count = 3
+
+    def test_boost_skipped_when_extract_returns_empty(self, mock_svc):
+        """extract_concepts returning no concepts short-circuits before boost_results."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = []
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            results = [_make_result(source="a.md", distance=0.5)]
+            out = get_services().searcher._apply_concept_boost(results, "empty question")
+            assert out == results
+            mock_svc.concepts.boost_results.assert_not_called()
+        finally:
+            cfg.concept_graph = old
 
     def test_boost_failure_returns_original(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]

@@ -11,6 +11,7 @@ HTTP, TUI) import these functions via the package façade in
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import math
 import threading
@@ -185,7 +186,9 @@ async def _drain_page_stream(
         results.append(new_result)
         if on_result is not None:
             try:
-                on_result(new_result)
+                rv = on_result(new_result)
+                if inspect.isawaitable(rv):
+                    await rv
             except OSError:
                 # A disk-side flush failure must not masquerade as a crawl
                 # failure. Log and keep streaming; the caller still sees the
@@ -347,23 +350,31 @@ def _make_flush_page(
     meta: dict[str, CrawlMeta],
     written_paths: list[Path],
     counter: dict[str, int],
-) -> Callable[[CrawlResult], Path | None]:
+) -> Callable[[CrawlResult], Any]:
     """Build a per-result flush closure that batches metadata writes.
+
+    Filesystem work runs through ``asyncio.to_thread`` so the streaming
+    event loop isn't blocked by per-page writes on slow filesystems.
 
     ``counter`` is a single-entry dict used as a mutable int so the closure
     can share counter state with the caller without nonlocal gymnastics.
     """
 
-    def flush_page(result: CrawlResult) -> Path | None:
-        path = save._save_single_result(result, meta)
-        if path is None:
+    def _sync_flush(result: CrawlResult) -> Path | None:
+        outcome = save._save_single_result(result, meta)
+        if outcome is None:
             return None
-        save._update_single_metadata(meta, result, datetime.now(UTC).isoformat())
+        save._update_single_metadata(meta, result.url, outcome, datetime.now(UTC).isoformat())
         counter["pending"] += 1
         if counter["pending"] >= METADATA_FLUSH_INTERVAL:
             save.save_crawl_metadata(meta)
             counter["pending"] = 0
-        written_paths.append(path)
+        return outcome.path
+
+    async def flush_page(result: CrawlResult) -> Path | None:
+        path = await asyncio.to_thread(_sync_flush, result)
+        if path is not None:
+            written_paths.append(path)
         return path
 
     return flush_page
@@ -422,7 +433,7 @@ async def crawl_and_save(
             result = await crawl_single(url, quiet=quiet)
             pages_seen = 1
             try:
-                flush_page(result)
+                await flush_page(result)
             except OSError:
                 log.exception("Flush failed for %s", result.url)
             if on_progress:

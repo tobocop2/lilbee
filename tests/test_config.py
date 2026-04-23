@@ -104,6 +104,15 @@ class TestEnvVarOverrides:
         cfg.vision_model = ""
         assert cfg.vision_model == ""
 
+    def test_normalize_model_tag_blank_chat_rejected(self):
+        """Required roles (chat_model, embedding_model) reject blank strings."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="chat_model must not be blank"):
+            cfg.chat_model = "   "
+        with pytest.raises(ValidationError, match="embedding_model must not be blank"):
+            cfg.embedding_model = "\t"
+
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
             c = Config()
@@ -869,12 +878,12 @@ class TestIgnoreDirsFallback:
 
 
 class TestOllamaHostFallback:
-    def test_ollama_host_sets_litellm_base_url(self, tmp_path):
+    def test_ollama_host_sets_remote_base_url(self, tmp_path):
         env = _clean_env(tmp_path)
         env["OLLAMA_HOST"] = "http://custom:11434"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.litellm_base_url == "http://custom:11434"
+        assert c.remote_base_url == "http://custom:11434"
 
 
 class TestParseEnableOcrFallback:
@@ -1095,195 +1104,127 @@ def _validator_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-class TestModelTaskFieldValidator:
-    """Per-role catalog-task validation runs on every write path (construction + assignment)."""
+@pytest.fixture()
+def _task_validation_enabled():
+    """Unset the conftest-level bypass so validate_model_task_assignment fires."""
+    import os
 
-    def test_chat_slot_accepts_chat_model(self, tmp_path):
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "qwen3:0.6b"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.chat_model.endswith("qwen3:0.6b")
+    prev = os.environ.pop("LILBEE_SKIP_MODEL_TASK_VALIDATION", None)
+    try:
+        yield
+    finally:
+        if prev is not None:
+            os.environ["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = prev
 
-    def test_chat_slot_rejects_vision_model(self, tmp_path):
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "lightonocr:2-1b"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception, match="vision"),  # pydantic ValidationError wraps it
-        ):
-            Config()
 
-    def test_chat_slot_rejects_reranker_model(self, tmp_path):
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "bge-reranker-v2-m3:latest"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception, match="rerank"),
-        ):
-            Config()
+class TestValidateModelTaskAssignment:
+    """Explicit validator replaces the old per-setattr Pydantic field_validator.
 
-    def test_embedding_slot_rejects_chat_model(self, tmp_path):
-        env = _validator_env(tmp_path)
-        env["LILBEE_EMBEDDING_MODEL"] = "qwen3:0.6b"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception, match="chat"),
-        ):
-            Config()
+    The hot path (PATCH /api/config, model-role toggles) now calls this
+    helper once per field per request rather than running the catalog
+    lookup on every setattr through validate_assignment=True.
+    """
 
-    def test_vision_slot_rejects_chat_model(self, tmp_path):
-        env = _validator_env(tmp_path)
-        env["LILBEE_VISION_MODEL"] = "qwen3:0.6b"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception, match="chat"),
-        ):
-            Config()
+    def test_chat_slot_accepts_chat_model(self, _task_validation_enabled):
+        from lilbee.config import validate_model_task_assignment
 
-    def test_reranker_slot_rejects_vision_model(self, tmp_path):
-        env = _validator_env(tmp_path)
-        env["LILBEE_RERANKER_MODEL"] = "lightonocr:2-1b"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception, match="vision"),
-        ):
-            Config()
+        result = validate_model_task_assignment("chat_model", "qwen3:0.6b")
+        assert result.endswith("qwen3:0.6b")
 
-    def test_empty_vision_model_allowed(self, tmp_path):
-        """Vision and reranker roles allow empty strings (unset)."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_VISION_MODEL"] = ""
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.vision_model == ""
+    def test_chat_slot_rejects_vision_model(self, _task_validation_enabled):
+        from lilbee.config import validate_model_task_assignment
 
-    def test_assignment_path_rejects_wrong_task(self, tmp_path):
-        """validate_assignment=True means cfg.X = ref also runs the validator."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "qwen3:0.6b"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            with pytest.raises(Exception, match="vision"):
-                c.chat_model = "lightonocr:2-1b"
+        with pytest.raises(ValueError, match="vision"):
+            validate_model_task_assignment("chat_model", "lightonocr:2-1b")
 
-    def test_provider_prefix_canonicalized_on_assignment(self, tmp_path):
-        """Direct ``cfg.X = ref`` canonicalizes provider-prefixed refs.
+    def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
+        from lilbee.config import validate_model_task_assignment
 
-        Mirrors PATCH /api/models behavior: the validator returns the
-        catalog's canonical ``name:tag`` so stored refs match the
-        registry key regardless of input variant. Covers R4-F2.
-        """
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "qwen3:0.6b"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            c.chat_model = "ollama/qwen3:0.6b"
-            assert c.chat_model == "qwen3:0.6b"
+        with pytest.raises(ValueError, match="rerank"):
+            validate_model_task_assignment("chat_model", "bge-reranker-v2-m3:latest")
 
-    def test_hf_repo_canonicalized_on_assignment(self, tmp_path):
+    def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
+        from lilbee.config import validate_model_task_assignment
+
+        with pytest.raises(ValueError, match="chat"):
+            validate_model_task_assignment("embedding_model", "qwen3:0.6b")
+
+    def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
+        from lilbee.config import validate_model_task_assignment
+
+        with pytest.raises(ValueError, match="chat"):
+            validate_model_task_assignment("vision_model", "qwen3:0.6b")
+
+    def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
+        from lilbee.config import validate_model_task_assignment
+
+        with pytest.raises(ValueError, match="vision"):
+            validate_model_task_assignment("reranker_model", "lightonocr:2-1b")
+
+    def test_empty_string_passes_through(self, _task_validation_enabled):
+        """Empty or whitespace refs bypass validation (role unset)."""
+        from lilbee.config import validate_model_task_assignment
+
+        assert validate_model_task_assignment("vision_model", "") == ""
+        assert validate_model_task_assignment("reranker_model", "   ") == "   "
+
+    def test_provider_prefix_canonicalized(self, _task_validation_enabled):
+        """Provider-prefixed refs canonicalize to the catalog ``name:tag``."""
+        from lilbee.config import validate_model_task_assignment
+
+        result = validate_model_task_assignment("chat_model", "ollama/qwen3:0.6b")
+        assert result == "qwen3:0.6b"
+
+    def test_hf_repo_canonicalized(self, _task_validation_enabled):
         """``hf_repo`` form canonicalizes to the catalog ``name:tag``."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "qwen3:0.6b"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            c.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF:latest"
-            assert c.reranker_model == "bge-reranker-v2-m3:latest"
+        from lilbee.config import validate_model_task_assignment
 
-    def test_env_load_canonicalizes(self, tmp_path):
-        """Env-var load path also canonicalizes (validator runs at construction)."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "ollama/qwen3:0.6b"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.chat_model == "qwen3:0.6b"
+        result = validate_model_task_assignment(
+            "reranker_model", "gpustack/bge-reranker-v2-m3-GGUF:latest"
+        )
+        assert result == "bge-reranker-v2-m3:latest"
 
-    def test_out_of_catalog_rejected(self, tmp_path):
+    def test_out_of_catalog_rejected(self, _task_validation_enabled):
         """Out-of-catalog model names are rejected since we can't verify the role."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "totally-unknown-model:99b"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception, match="featured catalog"),
-        ):
-            Config()
+        from lilbee.config import validate_model_task_assignment
+
+        with pytest.raises(ValueError, match="featured catalog"):
+            validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
 
     def test_skip_env_var_disables_check(self, tmp_path):
         """LILBEE_SKIP_MODEL_TASK_VALIDATION bypasses the role check when pytest is imported."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
-        env["LILBEE_CHAT_MODEL"] = "totally-unknown-model:99b"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.chat_model.endswith("totally-unknown-model:99b")
+        from lilbee.config import validate_model_task_assignment
+
+        with mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}):
+            # Bypass: returns input unchanged, does not raise.
+            result = validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+        assert result == "totally-unknown-model:99b"
 
     def test_skip_env_var_alone_does_not_bypass_in_production(self, tmp_path):
         """Shell-level env var without the pytest sentinel must not bypass validation."""
         import sys
 
-        env = _validator_env(tmp_path)
-        env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
-        env["LILBEE_CHAT_MODEL"] = "totally-unknown-model:99b"
+        from lilbee.config import validate_model_task_assignment
+
         saved_pytest = sys.modules.pop("pytest", None)
         try:
             with (
-                mock.patch.dict(os.environ, env, clear=True),
-                pytest.raises(Exception, match="featured catalog"),
+                mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}),
+                pytest.raises(ValueError, match="featured catalog"),
             ):
-                Config()
+                validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
         finally:
             if saved_pytest is not None:
                 sys.modules["pytest"] = saved_pytest
 
-    def test_whitespace_only_model_normalized_to_empty(self, tmp_path):
-        """Whitespace-only values normalize to empty instead of raising."""
-        env = _validator_env(tmp_path)
-        env["LILBEE_VISION_MODEL"] = "   "
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.vision_model == ""
-
-    def test_whitespace_assignment_normalized_to_empty(self, tmp_path):
-        """Direct assignment of whitespace also normalizes cleanly."""
-        env = _validator_env(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            c.vision_model = " "
-            assert c.vision_model == ""
-
-    def test_whitespace_chat_model_rejected(self, tmp_path):
-        """Whitespace-only chat_model is rejected (required field)."""
-        from pydantic import ValidationError
-
-        env = _validator_env(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            with pytest.raises(ValidationError, match="chat_model"):
-                c.chat_model = "   "
-
-    def test_whitespace_embedding_model_rejected(self, tmp_path):
-        """Whitespace-only embedding_model is rejected (required field)."""
-        from pydantic import ValidationError
-
-        env = _validator_env(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            with pytest.raises(ValidationError, match="embedding_model"):
-                c.embedding_model = "   "
-
-    def test_task_mismatch_message_parity_with_handler(self, tmp_path):
-        """Validator and handler produce identical 422 messages via shared helper."""
+    def test_task_mismatch_message_parity_with_handler(self, _task_validation_enabled):
+        """Validator helper and handler produce identical 422 messages."""
+        from lilbee.config import validate_model_task_assignment
         from lilbee.models import ModelTask
         from lilbee.server.handlers import format_task_mismatch
 
-        env = _validator_env(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "lightonocr:2-1b"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(Exception) as exc_info,
-        ):
-            Config()
+        with pytest.raises(ValueError) as exc_info:
+            validate_model_task_assignment("chat_model", "lightonocr:2-1b")
 
         handler_message = format_task_mismatch("lightonocr:2-1b", ModelTask.VISION, ModelTask.CHAT)
-        # Pydantic wraps the raw ValueError; check the core message is present.
         assert handler_message in str(exc_info.value)

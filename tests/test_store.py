@@ -69,6 +69,67 @@ class TestEnsureFtsIndex:
             store.ensure_fts_index()
             assert not store._fts_ready
 
+    def test_second_call_optimizes_instead_of_rebuilding(self, store):
+        """Incremental path: once the FTS index exists, ensure_fts_index
+        calls table.optimize() rather than rebuilding from scratch. Prevents
+        O(total_chunks) rebuild cost on every sync."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        assert store._fts_ready
+
+        table = store.open_table("chunks")
+        assert table is not None
+        with (
+            mock.patch.object(type(table), "create_fts_index") as create_spy,
+            mock.patch.object(type(table), "optimize") as optimize_spy,
+        ):
+            store.ensure_fts_index()
+
+        create_spy.assert_not_called()
+        optimize_spy.assert_called_once()
+
+    def test_first_call_creates_without_replace(self, store):
+        """Fresh table goes through create_fts_index path with replace=False."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+
+        with mock.patch.object(type(table), "create_fts_index") as create_spy:
+            store.ensure_fts_index()
+
+        create_spy.assert_called_once()
+        # Verify replace was NOT True (would defeat the purpose of incremental)
+        _args, kwargs = create_spy.call_args
+        assert kwargs.get("replace") is False
+
+
+class TestHasFtsIndex:
+    def test_returns_false_on_fresh_table(self, store):
+        store.add_chunks(_make_records())
+        from lilbee.store import _has_fts_index
+
+        table = store.open_table("chunks")
+        assert table is not None
+        assert _has_fts_index(table) is False
+
+    def test_returns_true_after_create(self, store):
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        from lilbee.store import _has_fts_index
+
+        table = store.open_table("chunks")
+        assert table is not None
+        assert _has_fts_index(table) is True
+
+    def test_returns_false_on_list_indices_error(self, store):
+        store.add_chunks(_make_records())
+        from lilbee.store import _has_fts_index
+
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
+            assert _has_fts_index(table) is False
+
 
 class TestFtsIndexStaleFlag:
     def test_add_chunks_marks_stale(self, store):
@@ -533,6 +594,97 @@ class TestSourceTypeField:
         sources = store.get_sources()
         assert len(sources) == 1
         assert sources[0]["source_type"] == "wiki"
+
+
+class TestGetSourcesPagination:
+    """LanceDB-side limit/offset/search for /api/documents scalability."""
+
+    def _seed(self, store, n: int = 10) -> None:
+        for i in range(n):
+            store.upsert_source(f"doc{i:02d}.md", f"hash{i}", i + 1)
+
+    def test_no_args_returns_all(self, store):
+        self._seed(store, 5)
+        assert len(store.get_sources()) == 5
+
+    def test_limit_caps_returned_rows(self, store):
+        self._seed(store, 10)
+        assert len(store.get_sources(limit=3)) == 3
+
+    def test_offset_skips_leading_rows(self, store):
+        self._seed(store, 10)
+        filenames = {s["filename"] for s in store.get_sources(offset=5, limit=5)}
+        # Offset runs in LanceDB, so exactly 5 of the 10 come back.
+        assert len(filenames) == 5
+
+    def test_search_filters_by_filename_case_insensitive(self, store):
+        store.upsert_source("README.md", "h1", 1)
+        store.upsert_source("setup.py", "h2", 1)
+        store.upsert_source("readme_dev.md", "h3", 1)
+        matches = {s["filename"] for s in store.get_sources(search="readme")}
+        assert matches == {"README.md", "readme_dev.md"}
+
+    def test_search_and_limit_compose(self, store):
+        for i in range(20):
+            store.upsert_source(f"readme_{i}.md", f"h{i}", 1)
+        store.upsert_source("other.py", "h99", 1)
+        result = store.get_sources(search="readme", limit=5)
+        assert len(result) == 5
+
+
+class TestCountSources:
+    def test_count_matches_row_count(self, store):
+        for i in range(7):
+            store.upsert_source(f"doc{i}.md", f"h{i}", 1)
+        assert store.count_sources() == 7
+
+    def test_count_with_search_filter(self, store):
+        store.upsert_source("readme.md", "h1", 1)
+        store.upsert_source("setup.py", "h2", 1)
+        store.upsert_source("README_2.md", "h3", 1)
+        assert store.count_sources(search="readme") == 2
+
+    def test_count_empty_table_returns_zero(self, store):
+        assert store.count_sources() == 0
+
+
+class TestSourceIngestedAtMap:
+    """Query-side temporal filter calls this per query; caching avoids
+    a fresh get_sources() materialization for every question."""
+
+    def test_returns_filename_to_ingested_at(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.upsert_source("b.md", "h2", 1)
+        result = store.source_ingested_at_map()
+        assert set(result) == {"a.md", "b.md"}
+        assert all(v for v in result.values())
+
+    def test_cache_is_reused_until_mutation(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        first = store.source_ingested_at_map()
+        # Same object identity means the cache served the call without
+        # a re-materialization pass over SOURCES.
+        assert store.source_ingested_at_map() is first
+
+    def test_upsert_invalidates_cache(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        first = store.source_ingested_at_map()
+        store.upsert_source("b.md", "h2", 1)
+        second = store.source_ingested_at_map()
+        assert first is not second
+        assert "b.md" in second
+
+    def test_delete_invalidates_cache(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.source_ingested_at_map()
+        store.delete_source("a.md")
+        assert store.source_ingested_at_map() == {}
+
+    def test_drop_all_invalidates_cache(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.source_ingested_at_map()
+        store.drop_all()
+        assert store.source_ingested_at_map() == {}
 
 
 def _make_citation(**overrides) -> CitationRecord:

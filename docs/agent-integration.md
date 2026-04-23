@@ -65,7 +65,7 @@ All commands accept `--json` (or `-j`) before the subcommand for structured outp
 ### Two modes
 
 - **`search`** — Raw chunk retrieval. No LLM call at query time. Use when your agent has its own LLM and just needs relevant document chunks.
-- **`ask`** — Full local RAG via llama-cpp (or litellm if installed). Use for fully-local workflows.
+- **`ask`** — Full local RAG via llama-cpp (or the SDK backend if installed). Use for fully-local workflows.
 
 ### Commands
 

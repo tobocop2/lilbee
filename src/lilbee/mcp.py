@@ -431,10 +431,10 @@ def wiki_generate(source: str) -> dict[str, Any]:
 
 @mcp.tool()
 def model_list(source: str = "", task: str = "") -> dict[str, Any]:
-    """List installed models across native and litellm sources.
+    """List installed models across native and SDK-backend sources.
 
     Args:
-        source: Filter by source: "native", "litellm", or "" for all.
+        source: Filter by source: "native", "remote", or "" for all.
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.cli.model import list_models_data
@@ -481,7 +481,7 @@ async def model_pull(
 
     Args:
         model: Model ref to pull (e.g. "qwen3:0.6b").
-        source: "native" (HuggingFace GGUF) or "litellm" (remote backend).
+        source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
     """
     from lilbee.catalog import DownloadProgress
     from lilbee.cli.model import pull_model_data
@@ -516,7 +516,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
 
     Args:
         model: Model ref to remove.
-        source: Restrict to "native" or "litellm"; empty = both.
+        source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.cli.model import remove_model_data
     from lilbee.model_manager import ModelSource
@@ -535,4 +535,12 @@ def clean(result: SearchChunk) -> dict[str, object]:
 
 def main() -> None:
     """Entry point for the MCP server."""
+    # Preload so the first tool call doesn't pay the cold-start cost
+    # of provider/embedder/store init. Failures (missing model, bad
+    # config) still surface on the first tool call rather than crashing
+    # the server before it attaches to stdio.
+    try:
+        get_services()
+    except Exception:
+        log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
     mcp.run()

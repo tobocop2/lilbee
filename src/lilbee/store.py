@@ -10,7 +10,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
@@ -101,29 +103,47 @@ def mmr_rerank(
     ``mmr_lambda`` controls the relevance/diversity tradeoff:
     0.0 = maximum diversity, 1.0 = pure relevance.
     Defaults to ``cfg.mmr_lambda`` (0.5).
+
+    Complexity: O(top_k · N · D) time, O(N · D) space for N candidates
+    of dimension D. Each outer iteration updates a running max-redundancy
+    vector via one matmul rather than recomputing pairs pairwise.
+    Candidate vectors run through numpy in ``float32``, which can pick a
+    different candidate than the pure-Python ``float64`` loop on
+    ties within ~1e-7; distinct in principle, unobservable in practice
+    since sub-float32 differences are below retrieval signal.
     """
     if mmr_lambda is None:
         mmr_lambda = cfg.mmr_lambda
     if len(results) <= top_k:
         return results
 
-    relevance_map = {id(r): cosine_sim(query_vector, r.vector) for r in results}
-    selected: list[SearchChunk] = []
-    remaining = list(results)
+    candidate_vecs = np.asarray([r.vector for r in results], dtype=np.float32)
+    query = np.asarray(query_vector, dtype=np.float32)
+    # L2-normalize once so cosine becomes a plain dot product.
+    cand_norms = np.linalg.norm(candidate_vecs, axis=1, keepdims=True)
+    cand_norms[cand_norms == 0] = 1.0
+    cand_unit = candidate_vecs / cand_norms
+    query_norm = float(np.linalg.norm(query)) or 1.0
+    query_unit = query / query_norm
 
-    for _ in range(top_k):
-        best_score = -float("inf")
-        best_idx = 0
-        for i, candidate in enumerate(remaining):
-            relevance = relevance_map[id(candidate)]
-            redundancy = 0.0
-            if selected:
-                redundancy = max(cosine_sim(candidate.vector, s.vector) for s in selected)
-            score = mmr_lambda * relevance - (1 - mmr_lambda) * redundancy
-            if score > best_score:
-                best_score = score
-                best_idx = i
-        selected.append(remaining.pop(best_idx))
+    relevance = cand_unit @ query_unit  # shape (N,)
+
+    n = len(results)
+    max_redundancy = np.zeros(n, dtype=np.float32)
+    available = np.ones(n, dtype=bool)
+    selected: list[SearchChunk] = []
+
+    for picks in range(top_k):
+        redundancy_term = max_redundancy if picks > 0 else np.zeros(n, dtype=np.float32)
+        score = mmr_lambda * relevance - (1.0 - mmr_lambda) * redundancy_term
+        # Mask already-picked candidates so argmax skips them.
+        score = np.where(available, score, -np.inf)
+        best = int(np.argmax(score))
+        selected.append(results[best])
+        available[best] = False
+        # Update running max redundancy against the newly-selected vector.
+        similarity = cand_unit @ cand_unit[best]
+        max_redundancy = np.maximum(max_redundancy, similarity)
 
     return selected
 
@@ -268,6 +288,25 @@ def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float)
     return len(sorted_results)
 
 
+def _has_fts_index(table: lancedb.table.Table) -> bool:
+    """Return True when an FTS index on the chunk column already exists."""
+    try:
+        for idx in table.list_indices():
+            if idx.index_type == "FTS" and "chunk" in idx.columns:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _sources_search_filter(search: str | None) -> str | None:
+    """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
+    if not search:
+        return None
+    escaped = escape_sql_string(search.lower())
+    return f"LOWER(filename) LIKE '%{escaped}%'"
+
+
 class Store:
     """LanceDB vector store — wraps all DB operations with config-driven defaults."""
 
@@ -275,6 +314,27 @@ class Store:
         self._config = config
         self._fts_ready: bool = False
         self._db: lancedb.DBConnection | None = None
+        # Cache of {filename: ingested_at} rebuilt only when sources
+        # mutate; callers (temporal filter) hit it per-query.
+        self._source_ingested_cache: dict[str, str] | None = None
+
+    def _invalidate_source_cache(self) -> None:
+        """Drop the cached {filename: ingested_at} map."""
+        self._source_ingested_cache = None
+
+    def source_ingested_at_map(self) -> dict[str, str]:
+        """Return {filename: ingested_at} for every source, cached until mutation.
+
+        Best-effort: a reader racing a concurrent invalidation can store a
+        pre-mutation snapshot. The only consumer (temporal query filter)
+        treats a missing/stale entry as "do not filter," so staleness
+        degrades ranking precision, never correctness.
+        """
+        if self._source_ingested_cache is not None:
+            return self._source_ingested_cache
+        mapping = {s["filename"]: s.get("ingested_at", "") for s in self.get_sources()}
+        self._source_ingested_cache = mapping
+        return mapping
 
     def _chunks_schema(self) -> pa.Schema:
         return pa.schema(
@@ -311,20 +371,28 @@ class Store:
         return db.open_table(name)
 
     def ensure_fts_index(self) -> None:
-        """Create or replace the FTS index on the chunks table.
-        No-op when the table doesn't exist or is empty.  Sets _fts_ready
-        on success so hybrid_search can be used.
+        """Create the chunks FTS index, or run ``optimize()`` once it exists.
+
+        ``optimize()`` folds newly added rows into the FTS index and also
+        runs LanceDB's default compaction + version pruning (default prune
+        window: 7 days). Work scales with recent deltas rather than total
+        chunk count, so large corpora no longer pay the full
+        ``create_fts_index(replace=True)`` rebuild cost on every sync.
         """
         with write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return
             try:
-                table.create_fts_index("chunk", replace=True)
+                if _has_fts_index(table):
+                    table.optimize()
+                    log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
+                else:
+                    table.create_fts_index("chunk", replace=False)
+                    log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._fts_ready = True
-                log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
             except Exception:
-                log.debug("FTS index creation failed (empty table?)", exc_info=True)
+                log.debug("FTS index ensure failed (empty table?)", exc_info=True)
 
     def add_chunks(self, records: list[dict]) -> int:
         """Add chunk records to the store. Returns count added."""
@@ -463,7 +531,7 @@ class Store:
         return [r for r in results if _get_distance(r) <= threshold]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
-        """Return all chunks for a given source file."""
+        """Return every chunk whose ``source`` equals *source*."""
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
@@ -471,11 +539,14 @@ class Store:
         try:
             rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
         except Exception:
-            # Fallback: on tables with FTS indexes, search() may return an
-            # incompatible query builder.  Scan the Arrow table directly.
+            # FTS-enabled tables return a query builder that cannot
+            # handle .where() on arbitrary columns; fall through to a
+            # pyarrow.compute filter on the Arrow table so the source
+            # match runs in C++ without materializing non-matching rows.
             log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
-            all_rows = table.to_arrow().to_pylist()
-            rows = [r for r in all_rows if r.get("source") == source]
+            arrow_tbl = table.to_arrow()
+            filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
+            rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
     def delete_by_source(self, source: str) -> None:
@@ -484,14 +555,37 @@ class Store:
             table = self.open_table(CHUNKS_TABLE)
             if table is not None:
                 _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
+        self._invalidate_source_cache()
 
-    def get_sources(self) -> list[SourceRecord]:
-        """Get all tracked source file records."""
+    def get_sources(
+        self,
+        *,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[SourceRecord]:
+        """Return source records, filtered by *search* and sliced by offset/limit."""
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
-        result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
+        query = table.search()
+        where = _sources_search_filter(search)
+        if where is not None:
+            query = query.where(where)
+        if offset:
+            query = query.offset(offset)
+        query = query.limit(limit)
+        result: list[SourceRecord] = query.to_list()  # type: ignore[assignment]
         return result
+
+    def count_sources(self, *, search: str | None = None) -> int:
+        """Count tracked sources matching *search* without materializing rows."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return 0
+        where = _sources_search_filter(search)
+        count: int = table.count_rows() if where is None else table.count_rows(filter=where)
+        return count
 
     def upsert_source(
         self,
@@ -516,6 +610,7 @@ class Store:
                     }
                 ]
             )
+        self._invalidate_source_cache()
 
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
@@ -523,6 +618,7 @@ class Store:
             table = self.open_table(SOURCES_TABLE)
             if table is not None:
                 _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+        self._invalidate_source_cache()
 
     def remove_documents(
         self,
@@ -619,3 +715,4 @@ class Store:
             db = self.get_db()
             for name in _table_names(db):
                 db.drop_table(name)
+        self._invalidate_source_cache()

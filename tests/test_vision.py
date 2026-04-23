@@ -242,6 +242,22 @@ class TestExtractPdfVision:
         assert len(result) == 1
         assert result[0][1] == "success text"
 
+    def test_bounded_inflight_drains_midloop(self, mock_provider, monkeypatch) -> None:
+        """With concurrency=1, a 5-page PDF must drain inflight futures
+        mid-loop (max_inflight=2) instead of submitting all pages up-front.
+        Exercises the vision.py inflight-full branch."""
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "vision_concurrency", 1)
+        mock_iter = _mock_iterator(num_pages=5)
+        mock_provider.chat.return_value = "ok"
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
+            from lilbee.vision import extract_pdf_vision
+
+            result = extract_pdf_vision(Path("big.pdf"), "model", quiet=True)
+        assert len(result) == 5
+        assert [page for page, _ in result] == [1, 2, 3, 4, 5]
+
     def test_skips_empty_text(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=2)
         mock_provider.chat.side_effect = ["  \n  ", "real text"]

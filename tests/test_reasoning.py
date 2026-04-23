@@ -163,6 +163,17 @@ class TestReasoningTruncation:
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "the answer" in response
 
+    def test_re_entered_thinking_is_not_yielded_as_response(self):
+        """After truncation, content the model emits inside a fresh <think>
+        tag is tagged as reasoning and excluded from the response stream."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 500)
+        tokens = [f"<think>{long_think}", "</think>", "<think>", "more thinking"]
+        result = _collect(tokens, show=True)
+        response = "".join(st.content for st in result if not st.is_reasoning)
+        assert "more thinking" not in response
+
     def test_runaway_reasoning_truncated_show_false(self):
         """Reasoning cap works even when show_reasoning=False.
 

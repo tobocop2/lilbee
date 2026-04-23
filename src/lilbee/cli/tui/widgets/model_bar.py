@@ -17,9 +17,9 @@ from lilbee import settings
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
-from lilbee.model_manager import OLLAMA_PROVIDER_NAME
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
+from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME, detect_backend_name
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def _is_mmproj(name: str) -> bool:
 
 def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     """Classify installed models into (chat, embedding) lists.
-    Uses registry manifests for native models and the litellm backend's
+    Uses registry manifests for native models and the SDK backend's
     backend metadata for remote models. Filters out mmproj files.
     """
     buckets: dict[ModelTask, list[ModelOption]] = {
@@ -104,12 +104,12 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm/Ollama) models to buckets, prefixed for routing."""
+    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing."""
     try:
-        from lilbee.model_manager import classify_remote_models, detect_provider
+        from lilbee.model_manager import classify_remote_models
 
-        base_url = cfg.litellm_base_url
-        is_ollama = detect_provider(base_url) == OLLAMA_PROVIDER_NAME
+        base_url = cfg.remote_base_url
+        is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
@@ -134,7 +134,7 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         for display_name, models in discover_api_models().items():
             for model in models:
                 # model.provider is the display name ("Anthropic"), but the ref
-                # needs the litellm prefix ("anthropic/model-name") for routing.
+                # needs the backend-qualified prefix ("anthropic/model-name") for routing.
                 prefix = display_name.lower()
                 qualified = f"{prefix}/{model.name}"
                 if qualified in seen:
