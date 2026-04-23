@@ -201,7 +201,19 @@ class TestModelSwitchSafety:
             bar = screen.query_one("#model-bar", ModelBar)
             bar._populating = False
 
-            # Simulate model change
+            # Simulate model change — set sel.value synchronously so that
+            # _extract_value's stale-event check (event.value must match
+            # sel.value) is satisfied. In production, Textual posts the
+            # Changed event from the value reactive, so the two always
+            # match when the handler runs.
+            from textual.widgets import Select
+
+            from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+            chat_sel = bar.query_one("#chat-model-select", Select)
+            chat_sel.set_options([ModelOption("new-model.gguf", "new-model.gguf")])
+            chat_sel.value = "new-model.gguf"
+
             event = mock.MagicMock()
             event.value = "new-model.gguf"
             event.select = mock.MagicMock()
