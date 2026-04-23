@@ -16,6 +16,7 @@ from lilbee.cli import (
     clean_result,
     get_version,
 )
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
 from lilbee.ingest import SyncResult
 from lilbee.models import list_installed_models
@@ -2161,6 +2162,20 @@ class TestWikiSynthesize:
         assert data["command"] == "wiki_synthesize"
         assert data["count"] == 1
 
+    def test_wiki_disabled_prints_message(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert msg.CMD_WIKI_DISABLED in result.output
+
+    def test_wiki_disabled_json_mode(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "synthesize"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["error"] == msg.CMD_WIKI_DISABLED
+
 
 class TestWikiBuild:
     def _stub_extraction(self, monkeypatch):
@@ -2239,6 +2254,12 @@ class TestWikiBuild:
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
         assert chunk_calls == ["a.txt", "b.txt"]
+
+    def test_wiki_disabled_prints_message(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        result = runner.invoke(app, ["wiki", "build"])
+        assert result.exit_code == 0
+        assert msg.CMD_WIKI_DISABLED in result.output
 
 
 class TestWikiCitations:

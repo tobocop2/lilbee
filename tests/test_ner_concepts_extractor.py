@@ -280,3 +280,18 @@ class TestReturnRecordShape:
         rec = result[0]
         assert isinstance(rec, ExtractedEntity)
         assert rec.slug == "ford-motor-company"
+
+    def test_empty_slug_record_is_dropped(self) -> None:
+        """Labels of only punctuation slug-clean to '' and must not
+        become ExtractedEntity records; otherwise the generator would
+        try to write a file called '.md'.
+        """
+        # Use a noun_chunk because make_slug() on punctuation strips
+        # everything. ">>>>" is >=2 chars (passes _MIN_CONCEPT_LEN),
+        # normalizes to ">>>>", but make_slug returns "".
+        doc = _FakeDoc(noun_chunks=[_FakeSpan(">>>>"), _FakeSpan("tires")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"tires"}
