@@ -337,8 +337,26 @@ class TestLabelSanityRejection:
 
     def test_logs_rejection_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level("DEBUG", logger="lilbee.wiki.entity_extractor.ner_concepts")
-        doc = _FakeDoc(noun_chunks=[_FakeSpan("| bad |"), _FakeSpan("tires")])
+        doc = _FakeDoc(
+            ents=[_FakeSpan("| pipe-entity", "PERSON")],
+            noun_chunks=[_FakeSpan("| bad |"), _FakeSpan("tires")],
+        )
         extractor = NerConceptsExtractor(MagicMock(), cfg)
         with _patch_pipeline({"t": doc}):
             extractor.extract([_chunk("s.txt", 0, "t")])
-        assert any("label-sanity" in r.message for r in caplog.records)
+        messages = [r.message for r in caplog.records]
+        assert any("rejected entity" in m for m in messages)
+        assert any("rejected noun-chunk" in m for m in messages)
+
+    def test_unicode_label_passes_sanity_but_slugs_empty(self) -> None:
+        """Unicode letters satisfy ``is_valid_label`` (alnum + length) but
+        slug-clean to empty since ``make_slug`` restricts to ``[a-z0-9-]``.
+        The defensive ``if not slug`` check in ``_make_record`` drops the
+        aggregate rather than writing a file named ``.md``.
+        """
+        doc = _FakeDoc(ents=[_FakeSpan("αβγ", "PERSON"), _FakeSpan("Ford", "ORG")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"Ford"}
