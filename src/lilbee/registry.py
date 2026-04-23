@@ -126,6 +126,30 @@ class ModelRegistry:
     def __init__(self, models_dir: Path) -> None:
         self._root = models_dir
         self._manifests_dir = models_dir / "manifests"
+        # Lazy alias -> manifest cache for _find_by_alias. Built on first
+        # alias miss, dropped on install()/remove(). Avoids walking the
+        # entire manifests tree and JSON-parsing every tag file on every
+        # uncanonical ref that lands here.
+        self._alias_cache: dict[str, ModelManifest] | None = None
+
+    def _invalidate_alias_cache(self) -> None:
+        self._alias_cache = None
+
+    def _build_alias_index(self) -> dict[str, ModelManifest]:
+        """Scan every manifest once and index its aliases."""
+        index: dict[str, ModelManifest] = {}
+        if not self._manifests_dir.exists():
+            return index
+        for name_dir in self._manifests_dir.iterdir():
+            if not name_dir.is_dir():
+                continue
+            for tag_file in name_dir.glob("*.json"):
+                manifest = self._load_manifest_file(tag_file)
+                if manifest is None:
+                    continue
+                for alias in manifest.aliases:
+                    index[alias] = manifest
+        return index
 
     def resolve(self, ref: str | ModelRef) -> Path:
         """Resolve model name to file path in HF cache.
@@ -201,6 +225,7 @@ class ModelRegistry:
             aliases=merged_aliases,
         )
         self._write_manifest(ref, updated)
+        self._invalidate_alias_cache()
         return blob_path
 
     def write_latest_alias(self, ref: ModelRef) -> None:
@@ -239,6 +264,7 @@ class ModelRegistry:
         name_dir = manifest_path.parent
         if name_dir.exists() and not any(name_dir.iterdir()):
             name_dir.rmdir()
+        self._invalidate_alias_cache()
         log.info("Removed manifest for %s (cache file untouched)", r)
         return True
 
@@ -326,17 +352,15 @@ class ModelRegistry:
             raise
 
     def _find_by_alias(self, alias: str) -> ModelManifest | None:
-        """Search all manifests for one that lists *alias* in its aliases."""
-        if not self._manifests_dir.exists():
-            return None
-        for name_dir in self._manifests_dir.iterdir():
-            if not name_dir.is_dir():
-                continue
-            for tag_file in name_dir.glob("*.json"):
-                manifest = self._load_manifest_file(tag_file)
-                if manifest is not None and alias in manifest.aliases:
-                    return manifest
-        return None
+        """Look up *alias* via the cached alias index.
+
+        The cache is built on first call and cleared on install/remove,
+        so the expensive manifest-tree walk happens at most once per
+        mutation rather than once per alias-resolution attempt.
+        """
+        if self._alias_cache is None:
+            self._alias_cache = self._build_alias_index()
+        return self._alias_cache.get(alias)
 
     def _absorb_conflicting_aliases(
         self,
