@@ -229,7 +229,7 @@ class TestDedupAndAggregation:
             ("a.txt", 1),
         }
 
-    def test_output_sorted_entities_before_concepts_then_by_slug(self) -> None:
+    def test_output_sorted_concepts_before_entities_then_by_slug(self) -> None:
         doc = _FakeDoc(
             ents=[_FakeSpan("Zulu", "PERSON"), _FakeSpan("Alpha", "PERSON")],
             noun_chunks=[_FakeSpan("banana pudding"), _FakeSpan("apple sauce")],
