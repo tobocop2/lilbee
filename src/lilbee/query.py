@@ -234,42 +234,6 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     return f"  → {source_display}"
 
 
-def _source_slug(source_name: str) -> str:
-    """Derive the wiki filename stem from a raw source name.
-    Mirrors the slug logic in gen.py: "subdir/doc.md" -> "subdir--doc".
-    """
-    return source_name.replace("/", "--").rsplit(".", 1)[0]
-
-
-def _wiki_covered_raw_sources(results: list[SearchChunk]) -> set[str]:
-    """Build a set of raw source names that have wiki coverage.
-    Wiki chunks have sources like "wiki/summaries/subdir--doc.md" while raw
-    chunks have sources like "subdir/doc.md". Match by comparing the wiki
-    file stem against the slug derived from the raw source name.
-    """
-    wiki_stems: set[str] = set()
-    for r in results:
-        if r.chunk_type == "wiki":
-            # "wiki/summaries/subdir--doc.md" -> "subdir--doc"
-            filename = r.source.rsplit("/", 1)[-1]
-            wiki_stems.add(filename.rsplit(".", 1)[0])
-    if not wiki_stems:
-        return set()
-    raw_covered: set[str] = set()
-    for r in results:
-        if r.chunk_type != "wiki" and _source_slug(r.source) in wiki_stems:
-            raw_covered.add(r.source)
-    return raw_covered
-
-
-def prefer_wiki(results: list[SearchChunk]) -> list[SearchChunk]:
-    """When both wiki and raw chunks exist for the same source, prefer wiki."""
-    covered = _wiki_covered_raw_sources(results)
-    if not covered:
-        return results
-    return [r for r in results if r.chunk_type == "wiki" or r.source not in covered]
-
-
 def deduplicate_sources(
     results: list[SearchChunk],
     max_citations: int = 5,
@@ -597,12 +561,14 @@ class Searcher:
         question: str,
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
+        chunk_type: str | None = None,
     ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
-        """Build RAG context from search results."""
-        results = self.search(question, top_k=top_k)
-        mode, _ = self._parse_structured_query(question)
-        if mode is None and self._config.wiki:
-            results = prefer_wiki(results)
+        """Build RAG context from search results.
+
+        ``chunk_type`` restricts the pool to ``"raw"`` or ``"wiki"`` rows;
+        ``None`` (default) searches the mixed pool.
+        """
+        results = self.search(question, top_k=top_k, chunk_type=chunk_type)
         results = filter_results(
             results, self._config.max_distance, self._config.min_relevance_score
         )
@@ -647,6 +613,7 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
+        chunk_type: str | None = None,
     ) -> AskResult:
         """Ask a question and get a structured result."""
         if not self._embedder.embedding_available():
@@ -656,7 +623,7 @@ class Searcher:
             raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
             clean = raw if self._config.show_reasoning else strip_reasoning(raw)
             return AskResult(answer=self._NO_EMBED_WARNING + clean, sources=[])
-        rag = self.build_rag_context(question, top_k=top_k, history=history)
+        rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
             return AskResult(
                 answer=self._NO_RESULTS_MESSAGE,
@@ -675,9 +642,12 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
+        chunk_type: str | None = None,
     ) -> str:
         """Ask a question and get a formatted answer with citations."""
-        result = self.ask_raw(question, top_k=top_k, history=history, options=options)
+        result = self.ask_raw(
+            question, top_k=top_k, history=history, options=options, chunk_type=chunk_type
+        )
         if not result.sources:
             return result.answer
         cited = _extract_cited_indices(result.answer)
@@ -693,6 +663,7 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
+        chunk_type: str | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
         from lilbee.reasoning import StreamToken, filter_reasoning
@@ -716,7 +687,7 @@ class Searcher:
                     raw.close()
             return
 
-        rag = self.build_rag_context(question, top_k=top_k, history=history)
+        rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
             yield StreamToken(
                 content=self._NO_RESULTS_MESSAGE,

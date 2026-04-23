@@ -7,6 +7,7 @@ import math
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -57,6 +58,33 @@ READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 # pages written by the wiki producer; callers filter with ``Store.search(chunk_type=...)``.
 CHUNK_TYPE_RAW = "raw"
 CHUNK_TYPE_WIKI = "wiki"
+
+
+class SearchScope(StrEnum):
+    """What the user wants to search over.
+
+    Values are used as-is on CLI flags, MCP params, and HTTP query strings.
+    ``BOTH`` resolves to a ``None`` ``chunk_type`` (no filter); the two
+    others map 1:1 to the chunks-table values.
+    """
+
+    RAW = CHUNK_TYPE_RAW
+    WIKI = CHUNK_TYPE_WIKI
+    BOTH = "both"
+
+
+def scope_to_chunk_type(scope: SearchScope | str | None) -> str | None:
+    """Translate a user-facing scope into a ``Store.search`` ``chunk_type`` arg.
+
+    ``None``/``"both"`` → no filter. ``"raw"`` / ``"wiki"`` → the matching
+    chunks-table value. Raises ``ValueError`` on any other string.
+    """
+    if scope is None:
+        return None
+    normalized = SearchScope(scope)
+    if normalized is SearchScope.BOTH:
+        return None
+    return normalized.value
 
 
 class SearchChunk(BaseModel):

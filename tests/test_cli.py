@@ -809,6 +809,30 @@ class TestSearch:
         assert "error" in data
         mock_svc.searcher.search.assert_not_called()
 
+    def test_search_scope_wiki_passes_wiki_chunk_type(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "--scope", "wiki", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "wiki"
+
+    def test_search_scope_raw_passes_raw_chunk_type(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "--scope", "raw", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "raw"
+
+    def test_search_default_scope_is_mixed_pool(self, mock_svc):
+        """Omitting --scope means chunk_type=None (both)."""
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") is None
+
+    def test_search_invalid_scope_exits_nonzero(self, mock_svc):
+        result = runner.invoke(app, ["search", "--scope", "bogus", "q"])
+        assert result.exit_code != 0
+        mock_svc.searcher.search.assert_not_called()
+
     def test_search_json_provider_error(self, mock_svc):
         mock_svc.searcher.search.side_effect = RuntimeError("provider down")
         result = runner.invoke(app, ["--json", "search", "test"])

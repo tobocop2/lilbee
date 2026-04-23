@@ -8,10 +8,12 @@ from lilbee.config import cfg
 from lilbee.store import (
     CitationRecord,
     SearchChunk,
+    SearchScope,
     Store,
     cosine_sim,
     escape_sql_string,
     mmr_rerank,
+    scope_to_chunk_type,
 )
 
 
@@ -728,3 +730,26 @@ class TestSuppressLancedbThreadError:
 
         assert len(calls) == 1
         assert calls[0] is args
+
+
+class TestScopeResolution:
+    """scope_to_chunk_type maps user-facing scope strings to store filter values."""
+
+    def test_none_is_passthrough(self):
+        assert scope_to_chunk_type(None) is None
+
+    def test_both_disables_filter(self):
+        assert scope_to_chunk_type("both") is None
+        assert scope_to_chunk_type(SearchScope.BOTH) is None
+
+    def test_raw_maps_to_raw(self):
+        assert scope_to_chunk_type("raw") == "raw"
+        assert scope_to_chunk_type(SearchScope.RAW) == "raw"
+
+    def test_wiki_maps_to_wiki(self):
+        assert scope_to_chunk_type("wiki") == "wiki"
+        assert scope_to_chunk_type(SearchScope.WIKI) == "wiki"
+
+    def test_invalid_scope_raises(self):
+        with pytest.raises(ValueError):
+            scope_to_chunk_type("bogus")

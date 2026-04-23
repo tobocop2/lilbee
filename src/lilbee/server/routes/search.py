@@ -42,6 +42,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
             question=data.question,
             top_k=data.top_k,
             options=data.options,
+            chunk_type=data.chunk_type,
         )
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
@@ -57,6 +58,7 @@ async def ask_stream_route(data: AskRequest) -> Stream:
             question=data.question,
             top_k=data.top_k,
             options=data.options,
+            chunk_type=data.chunk_type,
         ),
         media_type="text/event-stream",
     )

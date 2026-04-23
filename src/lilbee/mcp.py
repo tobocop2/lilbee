@@ -29,14 +29,25 @@ mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed d
 
 
 @mcp.tool()
-def search(query: str, top_k: int = 5) -> list[dict[str, Any]] | dict[str, Any]:
+def search(
+    query: str, top_k: int = 5, scope: str = "both"
+) -> list[dict[str, Any]] | dict[str, Any]:
     """Search the knowledge base for relevant document chunks.
-    Returns chunks sorted by relevance. No LLM call -- uses pre-computed embeddings.
+
+    ``scope`` picks the pool: ``"raw"`` (source chunks), ``"wiki"`` (wiki
+    page bodies), or ``"both"`` (default, unfiltered). Returns chunks
+    sorted by relevance. No LLM call -- uses pre-computed embeddings.
     """
     if not query or not query.strip():
         return {"error": "query must not be empty"}
+    from lilbee.store import scope_to_chunk_type
+
     try:
-        results = get_services().searcher.search(query, top_k=top_k)
+        chunk_type = scope_to_chunk_type(scope)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    try:
+        results = get_services().searcher.search(query, top_k=top_k, chunk_type=chunk_type)
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean(r) for r in results]
     except Exception as exc:

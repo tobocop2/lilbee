@@ -102,7 +102,9 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "meaning?"})
         assert resp.status_code == 201
         assert resp.json()["answer"] == "42"
-        mock_ask.assert_awaited_once_with(question="meaning?", top_k=0, options=None)
+        mock_ask.assert_awaited_once_with(
+            question="meaning?", top_k=0, options=None, chunk_type=None
+        )
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -112,7 +114,7 @@ class TestAskRoute:
     def test_forwards_top_k(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
         assert resp.status_code == 201
-        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None)
+        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None, chunk_type=None)
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -142,6 +144,16 @@ class TestAskRoute:
         assert sources[0]["source"] == "doc.pdf"
         assert sources[0]["distance"] == 0.1
 
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_forwards_chunk_type_raw(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "raw"})
+        assert resp.status_code == 201
+        assert mock_ask.call_args.kwargs.get("chunk_type") == "raw"
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")
@@ -151,6 +163,13 @@ class TestAskStreamRoute:
         assert resp.status_code == 201
         assert "text/event-stream" in resp.headers["content-type"]
         assert b"event: token" in resp.content
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_forwards_chunk_type(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("")
+        resp = client.post("/api/ask/stream", json={"question": "hi", "chunk_type": "wiki"})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs.get("chunk_type") == "wiki"
 
 
 class TestChatRoute:
