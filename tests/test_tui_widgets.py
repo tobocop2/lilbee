@@ -2418,13 +2418,12 @@ class TestModelBarAdditional:
         Textual auto-pick intermediate Changed event clobber cfg.
 
         When ``set_options`` receives a multi-option list whose first
-        entry does NOT match ``cfg.chat_model``, Textual synchronously
-        sets ``value = options[0].ref`` and posts a Changed event, then
-        the caller reassigns ``sel.value = cfg.chat_model`` and posts
-        another. If ``_populating`` is cleared synchronously, the first
-        (non-matching) event slips through and rewrites cfg to the
-        auto-picked value — next startup trips the featured-catalog
-        validator. The fix is ``call_after_refresh(_clear_populating_guard)``.
+        entry does NOT match ``cfg.chat_model``, Textual posts a Changed
+        event carrying the auto-picked value and then, after the caller
+        reassigns ``sel.value = cfg.chat_model``, posts a second Changed
+        with the configured value. The handler must reject the stale
+        intermediate event. The synchronous defense is
+        ``str(event.value) != str(sel.value)`` in ``_extract_value``.
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 

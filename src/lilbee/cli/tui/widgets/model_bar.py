@@ -308,12 +308,7 @@ class ModelBar(Widget, can_focus=False):
         chat_models: list[ModelOption],
         embed_models: list[ModelOption],
     ) -> None:
-        """Populate Select widgets from scanned models (main thread).
-
-        ``_populating`` is cleared via ``call_after_refresh`` so the
-        guard spans the async ``Select.Changed`` events Textual queues
-        when options are replaced.
-        """
+        """Populate Select widgets from scanned models (main thread)."""
         self._populating = True
 
         chat_sel = self.query_one("#chat-model-select", Select)
@@ -325,20 +320,13 @@ class ModelBar(Widget, can_focus=False):
         _sync_select(chat_sel, chat_opts, cfg.chat_model)
         _sync_select(embed_sel, embed_opts, cfg.embedding_model)
 
-        self.call_after_refresh(self._clear_populating_guard)
-
-    def _clear_populating_guard(self) -> None:
-        """Drop the ``_populating`` flag after queued Changed events drain."""
         self._populating = False
 
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
-        """Write the new chat model to cfg and settings.
-
-        The ``value == cfg.chat_model`` guard skips redundant writes from
-        the Changed events queued by :meth:`_populate`.
-        """
-        value = self._extract_value(event)
+        """Write the new chat model to cfg and settings."""
+        chat_sel = self.query_one("#chat-model-select", Select)
+        value = self._extract_value(event, chat_sel)
         if value is None or value == cfg.chat_model:
             return
         cfg.chat_model = value
@@ -348,7 +336,8 @@ class ModelBar(Widget, can_focus=False):
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:
         """Write the new embedding model to cfg and settings."""
-        value = self._extract_value(event)
+        embed_sel = self.query_one("#embed-model-select", Select)
+        value = self._extract_value(event, embed_sel)
         if value is None or value == cfg.embedding_model:
             return
         cfg.embedding_model = value
@@ -363,14 +352,26 @@ class ModelBar(Widget, can_focus=False):
         session starts at "both" and the user opts into a narrower pool
         explicitly each time.
         """
-        value = self._extract_value(event)
+        scope_sel = self.query_one("#scope-select", Select)
+        value = self._extract_value(event, scope_sel)
         if value is None:
             return
         self._scope = SearchScope(value)
 
-    def _extract_value(self, event: Select.Changed) -> str | None:
-        """Extract a non-empty value from a Select.Changed event, or None to skip."""
+    def _extract_value(self, event: Select.Changed, sel: Select) -> str | None:
+        """Extract a non-empty value from a Select.Changed event, or None to skip.
+
+        Drops events whose payload no longer matches the widget's current
+        value. Textual posts Select.Changed asynchronously, so a prior
+        event carrying an intermediate auto-picked option can still be in
+        the queue after ``_populate`` reassigns ``sel.value`` to the
+        configured model. The stale-event check is deterministic across
+        platforms because it compares two synchronously-set values rather
+        than relying on event-loop ordering.
+        """
         if self._populating:
+            return None
+        if str(event.value) != str(sel.value):
             return None
         if event.value is _DISABLED or event.value is None or str(event.value) == "":
             return None
