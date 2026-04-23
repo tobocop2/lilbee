@@ -1,5 +1,6 @@
 """Tests for the document sync engine (mocked — no live server needed)."""
 
+import os
 import sys
 from pathlib import Path
 from unittest import mock
@@ -45,9 +46,18 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.get_sources.side_effect = lambda: list(_sources.values())
     store.add_chunks.side_effect = lambda records: len(records)
-    store.upsert_source.side_effect = lambda fn, fh, cc: _sources.update(
-        {fn: {"filename": fn, "file_hash": fh, "chunk_count": cc, "ingested_at": ""}}
-    )
+
+    def _upsert(fn, fh, cc):
+        from datetime import UTC, datetime
+
+        _sources[fn] = {
+            "filename": fn,
+            "file_hash": fh,
+            "chunk_count": cc,
+            "ingested_at": datetime.now(UTC).isoformat(),
+        }
+
+    store.upsert_source.side_effect = _upsert
     store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
     store.delete_by_source.return_value = None
     store.drop_all.side_effect = lambda: _sources.clear()
@@ -1634,3 +1644,105 @@ class TestUnsupportedFileInSync:
 
             with pytest.raises(ValueError, match="Unsupported file slipped through"):
                 await sync(quiet=True)
+
+
+class TestMtimeGate:
+    """Fast-path gate that skips SHA-256 when file mtime is older than ingested_at."""
+
+    def test_mtime_older_than_ingest_returns_true(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+
+        from lilbee.ingest import _file_unchanged_since_ingest
+
+        f = tmp_path / "old.txt"
+        f.write_text("content")
+        # Backdate mtime to an hour before "now"
+        past = datetime.now(UTC) - timedelta(hours=1)
+        os.utime(f, (past.timestamp(), past.timestamp()))
+        ingested = datetime.now(UTC).isoformat()
+        assert _file_unchanged_since_ingest(f, ingested) is True
+
+    def test_mtime_after_ingest_returns_false(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+
+        from lilbee.ingest import _file_unchanged_since_ingest
+
+        f = tmp_path / "new.txt"
+        f.write_text("content")
+        # Ingested in the past, file was modified "now"
+        ingested = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        assert _file_unchanged_since_ingest(f, ingested) is False
+
+    def test_empty_ingested_at_returns_false(self, tmp_path):
+        from lilbee.ingest import _file_unchanged_since_ingest
+
+        f = tmp_path / "file.txt"
+        f.write_text("content")
+        assert _file_unchanged_since_ingest(f, "") is False
+
+    def test_malformed_ingested_at_returns_false(self, tmp_path):
+        from lilbee.ingest import _file_unchanged_since_ingest
+
+        f = tmp_path / "file.txt"
+        f.write_text("content")
+        assert _file_unchanged_since_ingest(f, "not-a-timestamp") is False
+
+    def test_missing_file_returns_false(self, tmp_path):
+        from datetime import UTC, datetime
+
+        from lilbee.ingest import _file_unchanged_since_ingest
+
+        ghost = tmp_path / "does-not-exist.txt"
+        assert _file_unchanged_since_ingest(ghost, datetime.now(UTC).isoformat()) is False
+
+    def test_naive_ingested_at_treated_as_utc(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+
+        from lilbee.ingest import _file_unchanged_since_ingest
+
+        f = tmp_path / "naive.txt"
+        f.write_text("content")
+        past = datetime.now(UTC) - timedelta(hours=1)
+        os.utime(f, (past.timestamp(), past.timestamp()))
+        # Stored without explicit tz (legacy record) — should be treated as
+        # UTC so aware/naive comparison doesn't raise TypeError.
+        naive_iso = (datetime.now(UTC) + timedelta(minutes=1)).replace(tzinfo=None).isoformat()
+        assert _file_unchanged_since_ingest(f, naive_iso) is True
+
+    async def test_sync_skips_file_hash_on_fast_path(self, isolated_env, mock_svc):
+        """Second sync of an unchanged file must not re-hash it."""
+        from datetime import UTC, datetime, timedelta
+
+        f = isolated_env / "stable.txt"
+        f.write_text("content that does not change")
+        # Ensure mtime is older than the next ingested_at timestamp
+        past = datetime.now(UTC) - timedelta(seconds=5)
+        os.utime(f, (past.timestamp(), past.timestamp()))
+
+        from lilbee.ingest import sync
+
+        await sync(quiet=True)
+
+        with mock.patch("lilbee.ingest.file_hash") as hash_spy:
+            result = await sync(quiet=True)
+
+        assert result.unchanged == 1
+        assert hash_spy.call_count == 0
+
+    async def test_sync_hashes_when_file_modified_after_ingest(self, isolated_env, mock_svc):
+        """File touched after ingest must fall through to hashing."""
+        f = isolated_env / "modified.txt"
+        f.write_text("original content")
+
+        from lilbee.ingest import sync
+
+        await sync(quiet=True)
+
+        # Modify the file — mtime now postdates ingested_at
+        f.write_text("modified content — different hash")
+
+        with mock.patch("lilbee.ingest.file_hash", return_value="different-hash") as hash_spy:
+            result = await sync(quiet=True)
+
+        assert hash_spy.call_count >= 1
+        assert "modified.txt" in result.updated

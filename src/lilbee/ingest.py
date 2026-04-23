@@ -10,6 +10,7 @@ import os
 import threading
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
@@ -163,6 +164,25 @@ def file_hash(path: Path) -> str:
         for block in iter(lambda: f.read(8192), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _file_unchanged_since_ingest(path: Path, ingested_at: str) -> bool:
+    """Fast-path gate: True when mtime is strictly older than the stored ingest time.
+
+    Used to skip full SHA-256 hashing on unchanged files during sync. Any
+    failure (missing timestamp, unparseable ISO string, stat error) returns
+    False so the caller falls through to the authoritative hash compare.
+    """
+    if not ingested_at:
+        return False
+    try:
+        ingested_dt = datetime.fromisoformat(ingested_at)
+        mtime_dt = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except (OSError, ValueError):
+        return False
+    if ingested_dt.tzinfo is None:
+        ingested_dt = ingested_dt.replace(tzinfo=UTC)
+    return mtime_dt < ingested_dt
 
 
 def _relative_name(path: Path) -> str:
@@ -616,7 +636,9 @@ async def sync(
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
-    existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
+    existing_sources = {
+        s["filename"]: (s["file_hash"], s.get("ingested_at", "")) for s in _store.get_sources()
+    }
 
     added: list[str] = []
     updated: list[str] = []
@@ -641,8 +663,14 @@ async def sync(
         if content_type is None:
             raise ValueError(f"Unsupported file slipped through discovery: {name}")
 
+        old = existing_sources.get(name)
+        old_hash = old[0] if old is not None else None
+
+        if old is not None and _file_unchanged_since_ingest(path, old[1]):
+            unchanged += 1
+            continue
+
         current_hash = file_hash(path)
-        old_hash = existing_sources.get(name)
 
         if old_hash == current_hash:
             unchanged += 1
