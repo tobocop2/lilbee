@@ -298,9 +298,7 @@ class SettingsScreen(Screen[None]):
 
         One DOM walk at first keystroke, O(1) lookups after.
         """
-        cached: list[tuple[Any, list[Any]]] | None = getattr(
-            self, "_settings_filter_index", None
-        )
+        cached: list[tuple[Any, list[Any]]] | None = getattr(self, "_settings_filter_index", None)
         if cached is not None:
             return cached
         index: list[tuple[Any, list[Any]]] = [
