@@ -37,9 +37,6 @@ node_modules/
 *.mp4
 PLAN.md
 .DS_Store
-scripts/*
-!scripts/qa-wiki-rerank.sh
-!scripts/_qa_slice_pdf.py
-!scripts/_qa_wiki_diff.py
+scripts/
 .DS_Store
 .superpowers/
