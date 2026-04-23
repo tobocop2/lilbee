@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual import on
 from textual.app import ComposeResult
@@ -284,14 +284,30 @@ class SettingsScreen(Screen[None]):
     def _filter_settings(self, event: Input.Changed) -> None:
         """Filter visible settings based on search input."""
         term = event.value.strip().lower()
-        for group in self.query(".setting-group"):
+        for group, rows in self._filter_index():
             visible_count = 0
-            for row in group.query(".setting-row"):
+            for row in rows:
                 matches = not term or term in (row.name or "")
                 row.display = matches
                 if matches:
                     visible_count += 1
             group.display = visible_count > 0
+
+    def _filter_index(self) -> list[tuple[Any, list[Any]]]:
+        """Lazy cache of (group, rows) for the filter handler.
+
+        One DOM walk at first keystroke, O(1) lookups after.
+        """
+        cached: list[tuple[Any, list[Any]]] | None = getattr(
+            self, "_settings_filter_index", None
+        )
+        if cached is not None:
+            return cached
+        index: list[tuple[Any, list[Any]]] = [
+            (group, list(group.query(".setting-row"))) for group in self.query(".setting-group")
+        ]
+        self._settings_filter_index = index
+        return index
 
     @on(Input.Submitted, ".setting-editor")
     @on(Input.Blurred, ".setting-editor")
