@@ -411,6 +411,16 @@ class TestModelRegistry:
         registry = ModelRegistry(models_dir)
         assert registry._find_by_alias("anything") is None
 
+    def test_find_by_alias_skips_corrupt_manifest(self, tmp_path: Path) -> None:
+        """Unreadable manifest files are skipped when building the alias index."""
+        models_dir = tmp_path / "models"
+        manifests_dir = models_dir / "manifests" / "corrupt-model"
+        manifests_dir.mkdir(parents=True)
+        (manifests_dir / "latest.json").write_text("{ not valid json")
+        registry = ModelRegistry(models_dir)
+        # No crash and no match (alias index is empty after skipping the bad file).
+        assert registry._find_by_alias("anything") is None
+
     def test_absorb_skips_corrupt_manifest(self, tmp_path: Path) -> None:
         """_absorb_conflicting_aliases ignores corrupt manifests."""
         models_dir = tmp_path / "models"

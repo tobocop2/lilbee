@@ -299,7 +299,7 @@ def list_installed_models() -> list[str]:
     """Return installed chat-task model names.
 
     Sources both the native registry (manifest ``task`` field) and the
-    litellm backend catalog (classified by name/family). Non-chat roles
+    SDK backend catalog (classified by name/family). Non-chat roles
     (embedding, vision, rerank) are excluded so TUI pickers don't offer
     refs that fail pydantic task validation at assignment time.
     """

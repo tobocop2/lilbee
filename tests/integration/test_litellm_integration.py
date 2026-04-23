@@ -139,12 +139,12 @@ class TestSdkFactory:
 
         assert isinstance(provider, SdkLLMProvider)
 
-    def test_ollama_alias(self) -> None:
-        """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == 'ollama'."""
+    def test_legacy_ollama_alias_rejected(self) -> None:
+        """'ollama' is no longer a valid llm_provider value; only 'backend' is."""
+        from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "ollama"
         cfg.backend_base_url = OLLAMA_HOST
-        provider = create_provider(cfg)
-
-        assert isinstance(provider, SdkLLMProvider)
+        with pytest.raises(ProviderError, match="Unknown LLM provider"):
+            create_provider(cfg)

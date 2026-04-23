@@ -836,6 +836,13 @@ class TestTemporalFilter:
         assert any(r.source == "new.md" for r in filtered)
         assert not any(r.source == "old.md" for r in filtered)
 
+    def test_result_without_ingested_at_passes_through(self, mock_svc):
+        """Sources absent from the ingested_at map are kept (no date info = don't filter)."""
+        mock_svc.store.source_ingested_at_map.return_value = {}
+        results = [_make_result(source="mystery.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
+        assert [r.source for r in filtered] == ["mystery.md"]
+
     def test_no_temporal_keyword_passes_through(self, mock_svc):
         results = [_make_result()]
         searcher = get_services().searcher
@@ -1016,6 +1023,20 @@ class TestConceptBoosting:
             assert results[0].distance == 0.5
         finally:
             cfg.query_expansion_count = 3
+
+    def test_boost_skipped_when_extract_returns_empty(self, mock_svc):
+        """extract_concepts returning no concepts short-circuits before boost_results."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = []
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            results = [_make_result(source="a.md", distance=0.5)]
+            out = get_services().searcher._apply_concept_boost(results, "empty question")
+            assert out == results
+            mock_svc.concepts.boost_results.assert_not_called()
+        finally:
+            cfg.concept_graph = old
 
     def test_boost_failure_returns_original(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]

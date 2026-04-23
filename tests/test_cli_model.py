@@ -168,15 +168,15 @@ class TestModelEntryFactories:
         assert entry.size_gb is None
         assert entry.display_name == ""
 
-    def test_from_litellm_with_remote(self):
+    def test_from_backend_with_remote(self):
         remote = _remote("llama3:latest", task="chat", parameter_size="8B")
-        entry = ModelEntry.from_litellm("llama3:latest", remote)
+        entry = ModelEntry.from_backend("llama3:latest", remote)
         assert entry.source == "backend"
         assert entry.task == "chat"
         assert entry.display_name == "8B"
 
-    def test_from_litellm_missing_remote(self):
-        entry = ModelEntry.from_litellm("llama3:latest", None)
+    def test_from_backend_missing_remote(self):
+        entry = ModelEntry.from_backend("llama3:latest", None)
         assert entry.task is None
         assert entry.display_name == ""
 

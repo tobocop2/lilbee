@@ -438,6 +438,18 @@ class TestGetRelatedConcepts:
         # All neighbors from both levels end up in the result.
         assert set(related) >= {"django", "flask", "rest", "werkzeug"}
 
+    def test_empty_frontier_mid_traversal_breaks(self, cg, mock_svc):
+        """Depth > 1 but no new neighbors at level 1 → loop breaks on empty frontier."""
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.return_value = []
+        mock_svc.store.open_table.return_value = mock_table
+
+        related = cg.get_related_concepts("isolated", depth=3)
+        assert related == []
+        # depth=3 would normally fire 3 queries; empty frontier after level 1
+        # breaks out after the first.
+        assert mock_table.search.call_count == 1
+
 
 class TestTopCommunities:
     def test_top_communities(self, cg, mock_svc):
@@ -476,6 +488,21 @@ class TestTopCommunities:
                     pa.field("degree", pa.int32()),
                 ]
             ),
+        )
+        mock_svc.store.open_table.return_value = mock_table
+        assert cg.top_communities() == []
+
+    def test_top_communities_only_null_cluster_ids(self, cg, mock_svc):
+        """Rows with NULL cluster_id yield no top clusters."""
+        import pyarrow as pa
+
+        mock_table = MagicMock()
+        mock_table.to_arrow.return_value = pa.table(
+            {
+                "concept": ["python", "ml"],
+                "cluster_id": pa.array([None, None], type=pa.int32()),
+                "degree": [5, 3],
+            }
         )
         mock_svc.store.open_table.return_value = mock_table
         assert cg.top_communities() == []

@@ -1609,15 +1609,15 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+backend = [
+    { name = "litellm" },
+]
 crawler = [
     { name = "crawl4ai" },
 ]
 graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
-]
-litellm = [
-    { name = "litellm" },
 ]
 
 [package.dev-dependencies]
@@ -1645,7 +1645,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.11.0" },
     { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
+    { name = "litellm", marker = "extra == 'backend'", specifier = ">=1.50" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
@@ -1660,7 +1660,7 @@ requires-dist = [
     { name = "typer" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["litellm", "graph", "crawler"]
+provides-extras = ["backend", "graph", "crawler"]
 
 [package.metadata.requires-dev]
 dev = [

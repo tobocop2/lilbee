@@ -126,7 +126,7 @@ class RoutingProvider(LLMProvider):
             raise ProviderError(
                 f"Cannot rerank with {cfg.reranker_model!r}: "
                 "hosted rerank backend not available. "
-                "Install the 'litellm' extra to enable hosted reranking."
+                "Install the 'backend' extra to enable hosted reranking."
             )
         return sdk.rerank(query, candidates)
 

@@ -163,6 +163,18 @@ class TestReasoningTruncation:
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "the answer" in response
 
+    def test_drain_breaks_when_model_re_enters_thinking(self):
+        """After truncation, encountering a fresh <think> tag stops the drain."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 500)
+        tokens = [f"<think>{long_think}", "</think>", "<think>", "more thinking"]
+        result = _collect(tokens, show=True)
+        response = "".join(st.content for st in result if not st.is_reasoning)
+        # The "more thinking" token arrives after the parser re-entered
+        # thinking mode; the drain breaks before it can leak as response.
+        assert "more thinking" not in response
+
     def test_runaway_reasoning_truncated_show_false(self):
         """Reasoning cap works even when show_reasoning=False.
 

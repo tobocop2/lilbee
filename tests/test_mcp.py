@@ -514,6 +514,13 @@ class TestMain:
         main()
         mock_mcp.run.assert_called_once()
 
+    @mock.patch("lilbee.mcp.mcp")
+    @mock.patch("lilbee.mcp.get_services", side_effect=RuntimeError("boom"))
+    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_mcp):
+        """A crash in the pre-warm path falls through to mcp.run() instead of aborting."""
+        main()
+        mock_mcp.run.assert_called_once()
+
 
 class TestAddWithUrls:
     async def test_add_url_without_crawler(self, isolated_env):

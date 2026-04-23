@@ -747,7 +747,7 @@ def _candidate_keys(q: str, idx: CatalogIndex) -> list[str]:
         head = q.split(":", 1)[0]
         if "/" in head:
             candidates.append(head)
-    # Provider-prefixed refs like ``ollama/qwen3:0.6b`` or ``litellm/...``
+    # Provider-prefixed refs like ``ollama/qwen3:0.6b`` or ``openai/...``
     # carry the native model ref after the first slash. The hf_repo form
     # (e.g. ``gpustack/bge-reranker-v2-m3-GGUF``) also has a slash, so we
     # only strip when the prefix does not match any hf_repo owner.

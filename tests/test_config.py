@@ -104,6 +104,15 @@ class TestEnvVarOverrides:
         cfg.vision_model = ""
         assert cfg.vision_model == ""
 
+    def test_normalize_model_tag_blank_chat_rejected(self):
+        """Required roles (chat_model, embedding_model) reject blank strings."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="chat_model must not be blank"):
+            cfg.chat_model = "   "
+        with pytest.raises(ValidationError, match="embedding_model must not be blank"):
+            cfg.embedding_model = "\t"
+
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
             c = Config()

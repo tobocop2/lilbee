@@ -1,13 +1,12 @@
 """Protocol and value types for SDK-backed LLM backends.
 
-A backend hides one third-party SDK (today: litellm; tomorrow: liter-llm
-or similar). The ``SdkLLMProvider`` speaks to backends exclusively
-through the ``LlmSdkBackend`` Protocol and the value types defined here,
-so SDK response objects never leak outside the adapter.
+A backend hides one third-party SDK. The ``SdkLLMProvider`` speaks to
+backends exclusively through the ``LlmSdkBackend`` Protocol and the
+value types defined here, so SDK response objects never leak outside
+the adapter.
 
-This module is intentionally dependency-free (no SDK imports, no lilbee
-provider imports beyond the shared base types). The PROVIDER_KEYS table
-is backend-agnostic: every OpenAI-compatible SDK reads the same env vars.
+This module is intentionally dependency-free (no SDK imports, no
+lilbee provider imports beyond the shared base types).
 """
 
 from __future__ import annotations
@@ -30,9 +29,8 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
 # Derived set of config field names (for checking which updates touch API keys).
 API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 
-# Display names for the server that the SDK is currently talking to. These
-# are what users see ("connected to Ollama", not "connected via litellm").
-# The adapter's own identity (e.g. "litellm") lives under provider_name.
+# Display names for the active backend the SDK is talking to. The
+# adapter's own identity is exposed separately via provider_name.
 OLLAMA_BACKEND_NAME = "Ollama"
 OPENAI_BACKEND_NAME = "OpenAI"
 ANTHROPIC_BACKEND_NAME = "Anthropic"
@@ -148,9 +146,9 @@ class LlmSdkBackend(Protocol):
 
     Error contract: implementations must raise only ``ProviderError`` or
     ``NotImplementedError`` from any method. ``SdkLLMProvider`` wraps any
-    other exception at the seam, but adapters should contain SDK-specific
-    error types (httpx errors, litellm exceptions, etc.) in their own
-    ``ProviderError`` translations so the provider can pass them through.
+    other exception at the seam; adapters should translate SDK-specific
+    errors (httpx errors, third-party SDK exceptions) into
+    ``ProviderError`` so the provider can pass them through.
     """
 
     @property
@@ -161,10 +159,9 @@ class LlmSdkBackend(Protocol):
     def active_backend_name(self, base_url: str) -> str:
         """Return the display name of the backend the adapter is talking to.
 
-        For a Ollama-compatible URL this is ``"Ollama"``; for an OpenAI
-        URL it is ``"OpenAI"``; unknown URLs fall back to ``"Remote"``.
-        The adapter's own identity (e.g. ``"litellm"``) is separately
-        exposed through ``provider_name``.
+        ``"Ollama"`` for an Ollama URL, ``"OpenAI"`` for an OpenAI URL,
+        etc.; unknown URLs fall back to ``"Remote"``. The adapter's own
+        identity is exposed separately through ``provider_name``.
         """
         ...
 

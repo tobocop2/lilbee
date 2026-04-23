@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 
 _BYTES_PER_GB = 1024**3  # Model sizes are reported to users in GiB.
-_LITELLM_LIST_TIMEOUT_S = 2.0  # Keep `model list` snappy when backend is down.
+_BACKEND_LIST_TIMEOUT_S = 2.0  # Keep `model list` snappy when backend is down.
 
 
 def _bytes_to_gb(n: int) -> float:
@@ -90,7 +90,7 @@ class ModelEntry(BaseModel):
         )
 
     @classmethod
-    def from_litellm(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
+    def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
         from lilbee.model_manager import ModelSource
 
         return cls(
@@ -260,12 +260,12 @@ def _collect_native_entries() -> list[ModelEntry]:
     return [ModelEntry.from_native(ref, manifests.get(ref)) for ref in refs]
 
 
-def _collect_litellm_entries() -> list[ModelEntry]:
+def _collect_backend_entries() -> list[ModelEntry]:
     from lilbee.model_manager import classify_remote_models
 
-    remote_list = classify_remote_models(cfg.backend_base_url, timeout=_LITELLM_LIST_TIMEOUT_S)
+    remote_list = classify_remote_models(cfg.backend_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
     remote_by_name = {rm.name: rm for rm in remote_list}
-    return [ModelEntry.from_litellm(ref, remote_by_name[ref]) for ref in sorted(remote_by_name)]
+    return [ModelEntry.from_backend(ref, remote_by_name[ref]) for ref in sorted(remote_by_name)]
 
 
 def list_models_data(
@@ -274,9 +274,8 @@ def list_models_data(
 ) -> ListModelsResult:
     """Build the list of installed models with source and task metadata.
 
-    Discovers remote (litellm) models via a single HTTP call with a
-    short timeout so the command stays responsive when the backend is
-    down.
+    Discovers remote models via a single HTTP call with a short timeout
+    so the command stays responsive when the backend is down.
     """
     from lilbee.model_manager import ModelSource
 
@@ -284,7 +283,7 @@ def list_models_data(
     if source is None or source is ModelSource.NATIVE:
         entries.extend(_collect_native_entries())
     if source is None or source is ModelSource.BACKEND:
-        entries.extend(_collect_litellm_entries())
+        entries.extend(_collect_backend_entries())
     if task:
         entries = [e for e in entries if e.task == task]
     return ListModelsResult(models=entries, total=len(entries))
@@ -314,7 +313,7 @@ def show_model_data(ref: str) -> ShowModelResult:
     )
 
 
-def _litellm_event_to_progress(
+def _backend_event_to_progress(
     on_update: Callable[[DownloadProgress], None],
     event: dict[str, Any],
 ) -> None:
@@ -338,7 +337,7 @@ def _build_pull_callbacks(
 
     if on_update is None:
         return None, None
-    dict_cb = functools.partial(_litellm_event_to_progress, on_update)
+    dict_cb = functools.partial(_backend_event_to_progress, on_update)
     bytes_cb = make_download_callback(on_update)
     return dict_cb, bytes_cb
 

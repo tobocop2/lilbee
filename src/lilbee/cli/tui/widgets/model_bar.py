@@ -43,7 +43,7 @@ def _is_mmproj(name: str) -> bool:
 
 def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     """Classify installed models into (chat, embedding) lists.
-    Uses registry manifests for native models and the litellm backend's
+    Uses registry manifests for native models and the SDK backend's
     backend metadata for remote models. Filters out mmproj files.
     """
     buckets: dict[ModelTask, list[ModelOption]] = {
@@ -134,7 +134,7 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         for display_name, models in discover_api_models().items():
             for model in models:
                 # model.provider is the display name ("Anthropic"), but the ref
-                # needs the litellm prefix ("anthropic/model-name") for routing.
+                # needs the backend-qualified prefix ("anthropic/model-name") for routing.
                 prefix = display_name.lower()
                 qualified = f"{prefix}/{model.name}"
                 if qualified in seen:

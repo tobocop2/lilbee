@@ -1746,3 +1746,24 @@ class TestMtimeGate:
 
         assert hash_spy.call_count >= 1
         assert "modified.txt" in result.updated
+
+    async def test_sync_touched_but_unchanged_file_reports_unchanged(self, isolated_env, mock_svc):
+        """File touched (mtime bumped) without content change still lands in unchanged."""
+        from datetime import UTC, datetime, timedelta
+
+        f = isolated_env / "touched.txt"
+        f.write_text("stable content")
+
+        from lilbee.ingest import sync
+
+        await sync(quiet=True)
+
+        # Bump mtime into the future so the fast mtime gate falls through,
+        # but leave content (and therefore hash) identical.
+        future = datetime.now(UTC) + timedelta(hours=1)
+        os.utime(f, (future.timestamp(), future.timestamp()))
+
+        result = await sync(quiet=True)
+        assert result.unchanged == 1
+        assert result.added == []
+        assert result.updated == []
