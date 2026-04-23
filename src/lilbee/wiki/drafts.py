@@ -189,13 +189,11 @@ def _strip_pending_markers(text: str) -> str:
 def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
     """Single-pass read: parse kind, drift ratio, and return marker-stripped body.
 
-    ``list_drafts`` originally ran five separate regex scans over every
-    draft file (two for pending-kind detection, two for pending-marker
-    stripping, one for drift-ratio parsing) plus a sixth pass in
-    ``_strip_drift_marker``. At 100+ drafts that adds up. This helper
-    walks the text once per pattern family and returns everything the
-    caller needs, so ``list_drafts`` makes three total regex passes
-    instead of five.
+    ``list_drafts`` used to run five ``.sub()`` traversals per draft
+    (two for pending-marker stripping, three across the drift helpers
+    and their callers). This helper does three ``.sub()`` passes plus
+    the three ``.search()`` scans needed to detect which markers are
+    present, returning kind, drift ratio, and stripped body together.
     """
     pending_kind = _parse_pending_kind(text)
     drift = _parse_drift_ratio(text)

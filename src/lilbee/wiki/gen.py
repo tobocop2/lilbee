@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import yaml
 
 from lilbee.chunk import chunk_text
@@ -455,8 +456,6 @@ def _mean_vector(vectors: list[list[float]]) -> list[float]:
     """
     if not vectors:
         return []
-    import numpy as np
-
     return np.asarray(vectors, dtype=np.float32).mean(axis=0).tolist()
 
 

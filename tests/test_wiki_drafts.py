@@ -185,6 +185,32 @@ class TestAcceptDraft:
         with pytest.raises(FileNotFoundError):
             accept_draft("missing", tmp_path / "wiki", MagicMock())
 
+    def test_collision_accept_returns_rename_result(self, tmp_path: Path) -> None:
+        """End-to-end: a PENDING-COLLISION draft under the hashed slug
+        lands at the de-hashed base slug, and the AcceptResult surfaces
+        both so HTTP clients can follow the rename."""
+        wiki_root = tmp_path / "wiki"
+        collision_slug = "brakes-collision-a1b2c3d4"
+        collision_marker = (
+            "<!-- PENDING: concept slug collision with source first.md, "
+            "content from second.md held for review -->\n\n"
+        )
+        _write(
+            wiki_root / DRAFTS_SUBDIR / f"{collision_slug}.md",
+            collision_marker + _draft_content("brake system body"),
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = accept_draft(collision_slug, wiki_root, store)
+        assert result.requested_slug == collision_slug
+        assert result.slug == "brakes"
+        assert result.moved_to.name == "brakes.md"
+        # Collision marker stripped from the landed content.
+        landed = result.moved_to.read_text(encoding="utf-8")
+        assert "PENDING: concept slug collision" not in landed
+        # Draft file gone.
+        assert not (wiki_root / DRAFTS_SUBDIR / f"{collision_slug}.md").exists()
+
 
 class TestRejectDraft:
     def test_deletes_draft_file(self, tmp_path: Path) -> None:
