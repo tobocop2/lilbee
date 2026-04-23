@@ -374,6 +374,7 @@ class TestWikiDraftsEndpoints:
             captured["root"] = root
             return AcceptResult(
                 slug=slug,
+                requested_slug=slug,
                 moved_to=root / "summaries" / f"{slug}.md",
                 reindexed_chunks=3,
             )
@@ -384,6 +385,7 @@ class TestWikiDraftsEndpoints:
         assert resp.status_code == 201
         body = resp.json()
         assert body["slug"] == "cv-manual"
+        assert body["requested_slug"] == "cv-manual"
         assert body["reindexed_chunks"] == 3
         assert body["moved_to"].endswith("summaries/cv-manual.md")
         assert captured["slug"] == "cv-manual"

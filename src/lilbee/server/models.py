@@ -389,9 +389,16 @@ class WikiDraftDiffResponse(BaseModel):
 
 
 class WikiDraftAcceptResponse(BaseModel):
-    """Outcome of accepting a draft: where it landed and how many chunks reindexed."""
+    """Outcome of accepting a draft: where it landed and how many chunks reindexed.
+
+    ``slug`` is the slug where the content was published.
+    ``requested_slug`` is the slug the client asked to accept. The two
+    differ for PENDING-COLLISION drafts, where the request slug carries
+    a ``-collision-<hash>`` suffix that is stripped on publish.
+    """
 
     slug: str
+    requested_slug: str
     moved_to: str
     reindexed_chunks: int
 

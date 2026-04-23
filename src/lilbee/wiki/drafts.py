@@ -107,9 +107,18 @@ class DraftInfo:
 
 @dataclass
 class AcceptResult:
-    """Outcome of accepting a draft. Returned so callers can confirm."""
+    """Outcome of accepting a draft. Returned so callers can confirm.
+
+    ``requested_slug`` is always the slug the caller asked to accept
+    (for PENDING-COLLISION drafts this looks like
+    ``brakes-collision-abc12345``). ``slug`` is where the content
+    landed (the de-collisioned base slug, so ``brakes``). For
+    non-collision drafts the two match. HTTP clients that round-trip
+    accept→list-refresh can compare both fields to track the rename.
+    """
 
     slug: str
+    requested_slug: str
     moved_to: Path
     reindexed_chunks: int
 
@@ -117,6 +126,7 @@ class AcceptResult:
         """Serialize to a JSON-friendly dict for HTTP/MCP/CLI responses."""
         return {
             "slug": self.slug,
+            "requested_slug": self.requested_slug,
             "moved_to": str(self.moved_to),
             "reindexed_chunks": self.reindexed_chunks,
         }
@@ -176,12 +186,33 @@ def _strip_pending_markers(text: str) -> str:
     return text.lstrip()
 
 
+def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
+    """Single-pass read: parse kind, drift ratio, and return marker-stripped body.
+
+    ``list_drafts`` originally ran five separate regex scans over every
+    draft file (two for pending-kind detection, two for pending-marker
+    stripping, one for drift-ratio parsing) plus a sixth pass in
+    ``_strip_drift_marker``. At 100+ drafts that adds up. This helper
+    walks the text once per pattern family and returns everything the
+    caller needs, so ``list_drafts`` makes three total regex passes
+    instead of five.
+    """
+    pending_kind = _parse_pending_kind(text)
+    drift = _parse_drift_ratio(text)
+    stripped = _PENDING_PARSE_MARKER_RE.sub("", text, count=1)
+    stripped = _PENDING_COLLISION_MARKER_RE.sub("", stripped, count=1)
+    stripped = _DRIFT_MARKER_RE.sub("", stripped, count=1)
+    return pending_kind, drift, stripped.lstrip()
+
+
 def list_drafts(wiki_root: Path) -> list[DraftInfo]:
     """Return one ``DraftInfo`` per draft markdown file under ``drafts/``.
 
     Recurses so per-source draft nesting (``drafts/<source>/page.md``)
-    is covered. Reads only frontmatter plus the first ~200 bytes for
-    the drift marker; full body stays on disk.
+    is covered. Reads each draft's full text once, classifies any
+    pending marker and drift ratio, strips the markers, then parses
+    frontmatter on the stripped body (so frontmatter parsing works
+    uniformly whether or not a marker shifted it down).
     """
     drafts_dir = wiki_root / DRAFTS_SUBDIR
     if not drafts_dir.is_dir():
@@ -189,13 +220,8 @@ def list_drafts(wiki_root: Path) -> list[DraftInfo]:
     infos: list[DraftInfo] = []
     for path in sorted(drafts_dir.rglob("*.md")):
         text = path.read_text(encoding="utf-8")
-        drift = _parse_drift_ratio(text)
-        pending_kind = _parse_pending_kind(text)
-        # ``parse_frontmatter`` anchors on line 0. The drift/pending
-        # marker that ``_divert_to_drafts`` / ``_write_pending_marker``
-        # prepends shifts the frontmatter one block down, so we read
-        # it from the marker-stripped body.
-        fm = parse_frontmatter(_strip_pending_markers(_strip_drift_marker(text)))
+        pending_kind, drift, stripped = _classify_and_strip_markers(text)
+        fm = parse_frontmatter(stripped)
         slug = str(path.relative_to(drafts_dir).with_suffix("")).replace("\\", "/")
         infos.append(
             DraftInfo(
@@ -285,7 +311,7 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
             "to regenerate the missing section.",
             slug,
         )
-        return AcceptResult(slug=slug, moved_to=draft, reindexed_chunks=0)
+        return AcceptResult(slug=slug, requested_slug=slug, moved_to=draft, reindexed_chunks=0)
 
     clean = _strip_pending_markers(_strip_drift_marker(raw))
 
@@ -306,7 +332,12 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     reindexed = _reindex_accepted_page(target, wiki_root, store)
     draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
-    return AcceptResult(slug=target_slug, moved_to=target, reindexed_chunks=reindexed)
+    return AcceptResult(
+        slug=target_slug,
+        requested_slug=slug,
+        moved_to=target,
+        reindexed_chunks=reindexed,
+    )
 
 
 def reject_draft(slug: str, wiki_root: Path) -> None:

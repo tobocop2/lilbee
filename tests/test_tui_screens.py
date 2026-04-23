@@ -5785,7 +5785,12 @@ class TestWikiDraftsScreen:
 
         def _fake_accept(slug, root, store):
             captured["slug"] = slug
-            return AcceptResult(slug=slug, moved_to=root / f"{slug}.md", reindexed_chunks=1)
+            return AcceptResult(
+                slug=slug,
+                requested_slug=slug,
+                moved_to=root / f"{slug}.md",
+                reindexed_chunks=1,
+            )
 
         monkeypatch.setattr(drafts_screen_mod, "accept_draft", _fake_accept)
         # get_services is called by _do_accept; stub it to avoid touching real services.

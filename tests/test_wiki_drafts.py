@@ -228,14 +228,30 @@ class TestAcceptResultToDict:
     def test_to_dict_serialises_all_fields(self) -> None:
         result = AcceptResult(
             slug="cv-manual",
+            requested_slug="cv-manual",
             moved_to=Path("/wiki/summaries/cv-manual.md"),
             reindexed_chunks=7,
         )
         assert result.to_dict() == {
             "slug": "cv-manual",
+            "requested_slug": "cv-manual",
             "moved_to": "/wiki/summaries/cv-manual.md",
             "reindexed_chunks": 7,
         }
+
+    def test_to_dict_reports_rename_on_collision_accept(self) -> None:
+        """Collision drafts are published under a different slug than
+        the one the caller requested; both are surfaced so HTTP clients
+        can follow the rename."""
+        result = AcceptResult(
+            slug="brakes",
+            requested_slug="brakes-collision-a1b2c3d4",
+            moved_to=Path("/wiki/concepts/brakes.md"),
+            reindexed_chunks=4,
+        )
+        payload = result.to_dict()
+        assert payload["requested_slug"] == "brakes-collision-a1b2c3d4"
+        assert payload["slug"] == "brakes"
 
 
 class TestAcceptCrashSafety:

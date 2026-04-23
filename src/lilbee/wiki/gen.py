@@ -446,18 +446,18 @@ def _title_content_coherence(wiki_text: str, label: str) -> bool:
 def _mean_vector(vectors: list[list[float]]) -> list[float]:
     """Compute the element-wise mean of a non-empty vector list.
 
-    No-ops the orthogonal case where the caller handed an empty list:
-    return an empty list. Callers must check for that before any
+    Empty input returns an empty list; callers must check before any
     downstream dot-product so we do not leak a shape mismatch.
+
+    Routes through numpy so the inner loop runs in C: for the typical
+    ``D=768``, ``N=10`` case this cuts per-call cost from ~8k Python
+    ops to a single SIMD-backed reduction.
     """
     if not vectors:
         return []
-    length = len(vectors[0])
-    total = [0.0] * length
-    for vec in vectors:
-        for i, value in enumerate(vec):
-            total[i] += value
-    return [value / len(vectors) for value in total]
+    import numpy as np
+
+    return np.asarray(vectors, dtype=np.float32).mean(axis=0).tolist()
 
 
 def _embedding_faithfulness_score(
@@ -1154,6 +1154,11 @@ _SECTION_HEADER_RE = re.compile(
     re.MULTILINE,
 )
 
+# In-body ``[^keyN]`` footnote-marker pattern. Module-scope so the
+# batched-generation hot path (`_finalize_section`) does not recompile
+# it on every recovered section.
+_FOOTNOTE_MARKER_RE = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
+
 
 def _split_batched_output(
     text: str,
@@ -1423,8 +1428,7 @@ def _finalize_section(
     # Fall back to in-body ``[^keyN]`` references when no definitions
     # live inside the section: count occurrences of the footnote
     # marker against the shared definition set.
-    body_marker_re = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
-    section_keys.update(body_marker_re.findall(body))
+    section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
     verified = _verify_citations(citation_resolver(relevant), chunks, header_label, config)
     if not verified:
