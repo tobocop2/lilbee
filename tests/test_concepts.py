@@ -221,9 +221,7 @@ class TestExtractConceptsBatch:
     @patch("lilbee.concepts._ensure_spacy_model")
     def test_batch_caps_at_max(self, mock_spacy, cg):
         cfg.concept_max_per_chunk = 2
-        mock_spacy.return_value = _make_mock_nlp(
-            {"text": ["alpha", "beta", "gamma", "delta"]}
-        )
+        mock_spacy.return_value = _make_mock_nlp({"text": ["alpha", "beta", "gamma", "delta"]})
         result = cg.extract_concepts_batch(["text"])
         assert len(result[0]) == 2
 
