@@ -154,6 +154,20 @@ class TestAskRoute:
         assert resp.status_code == 201
         assert mock_ask.call_args.kwargs.get("chunk_type") == "raw"
 
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_chunk_type_both_normalizes_to_none(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "both"})
+        assert resp.status_code == 201
+        assert mock_ask.call_args.kwargs.get("chunk_type") is None
+
+    def test_invalid_chunk_type_rejected_with_400(self, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "bogus"})
+        assert resp.status_code == 400
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")

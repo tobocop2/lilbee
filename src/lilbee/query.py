@@ -22,7 +22,14 @@ from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
-from lilbee.store import CitationRecord, SearchChunk, Store, cosine_sim
+from lilbee.store import (
+    CHUNK_TYPE_RAW,
+    CHUNK_TYPE_WIKI,
+    CitationRecord,
+    SearchChunk,
+    Store,
+    cosine_sim,
+)
 
 log = logging.getLogger(__name__)
 
@@ -215,7 +222,7 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     For wiki chunks, shows the wiki page path followed by indented transitive citations.
     """
     source_display = display_source_path(result.source)
-    if result.chunk_type == "wiki" and citations:
+    if result.chunk_type == CHUNK_TYPE_WIKI and citations:
         parts = [f"  → {source_display}"]
         for cit in citations:
             parts.append(_format_citation(cit))
@@ -465,13 +472,33 @@ class Searcher:
             log.debug("HyDE search failed", exc_info=True)
             return []
 
+    def _normalize_chunk_type(self, chunk_type: str | None) -> str | None:
+        """Drop ``chunk_type="wiki"`` when wiki generation is disabled.
+
+        With wiki off the chunks table contains only raw rows, so the
+        filter would return empty. Logging once keeps the surprise out
+        of the user's way while surfacing the misuse in logs.
+        """
+        if chunk_type == CHUNK_TYPE_WIKI and not self._config.wiki:
+            log.warning(
+                "wiki scope requested but wiki is disabled; searching the full pool instead"
+            )
+            return None
+        return chunk_type
+
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
         for prefix in ("term:", "vec:", "hyde:", "wiki:", "raw:"):
             if question.strip().lower().startswith(prefix):
                 return prefix[:-1], question.strip()[len(prefix) :].strip()
         return None, question
 
-    def _search_structured(self, mode: str, query: str, top_k: int) -> list[SearchChunk]:
+    def _search_structured(
+        self,
+        mode: str,
+        query: str,
+        top_k: int,
+        chunk_type: str | None = None,
+    ) -> list[SearchChunk]:
         if mode == "term":
             return self._store.bm25_probe(query, top_k=top_k)
         if mode == "vec":
@@ -479,9 +506,13 @@ class Searcher:
             return self._store.search(query_vec, top_k=top_k, query_text=None)
         if mode == "hyde":
             return self._hyde_search(query, top_k)
-        if mode in ("wiki", "raw"):
+        if mode in (CHUNK_TYPE_WIKI, CHUNK_TYPE_RAW):
+            # Explicit ``chunk_type`` arg beats the prefix shortcut.
+            effective = chunk_type if chunk_type is not None else mode
             query_vec = self._embedder.embed(query)
-            return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=mode)
+            return self._store.search(
+                query_vec, top_k=top_k, query_text=query, chunk_type=effective
+            )
         return []
 
     def select_context(
@@ -511,17 +542,28 @@ class Searcher:
         self,
         question: str,
         top_k: int = 0,
+        *,
         chunk_type: str | None = None,
     ) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for downstream filtering.
-        When *chunk_type* is set, only chunks of that type are returned.
+
+        When *chunk_type* is set (``"raw"`` or ``"wiki"``), only chunks of
+        that type are returned. An explicit ``chunk_type`` always wins
+        over the ``wiki:``/``raw:`` prefix shortcut in *question* so the
+        user-facing scope choice has the final say.
+
+        When ``chunk_type="wiki"`` but wiki generation is disabled on the
+        config, the filter is normalized to ``None`` (mixed pool) and a
+        warning is logged — with wiki off the chunks table has no wiki
+        rows, so honouring the filter would silently return zero results.
         """
         if top_k == 0:
             top_k = self._config.top_k
+        chunk_type = self._normalize_chunk_type(chunk_type)
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
-            return self._search_structured(mode, clean_query, top_k)
+            return self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
         query_vec = self._embedder.embed(question)
         results = self._store.search(
             query_vec,
@@ -561,6 +603,7 @@ class Searcher:
         question: str,
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
+        *,
         chunk_type: str | None = None,
     ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
         """Build RAG context from search results.
@@ -613,6 +656,7 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
+        *,
         chunk_type: str | None = None,
     ) -> AskResult:
         """Ask a question and get a structured result."""
@@ -642,6 +686,7 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
+        *,
         chunk_type: str | None = None,
     ) -> str:
         """Ask a question and get a formatted answer with citations."""
@@ -663,6 +708,7 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
+        *,
         chunk_type: str | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""

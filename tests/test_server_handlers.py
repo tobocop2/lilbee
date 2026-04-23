@@ -201,6 +201,13 @@ class TestAsk:
         with pytest.raises(ValueError, match="question must not be empty"):
             await handlers.ask("   ")
 
+    async def test_forwards_chunk_type_to_searcher(self, mock_svc):
+        from lilbee.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
+        await handlers.ask("q", chunk_type="wiki")
+        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
+
 
 class TestAskStream:
     async def test_no_results_yields_error(self, mock_svc):
@@ -221,6 +228,12 @@ class TestAskStream:
         assert "token" in event_types
         assert "sources" in event_types
         assert "done" in event_types
+
+    async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = None
+        async for _ in handlers.ask_stream("q", chunk_type="wiki"):
+            pass
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
 
     async def test_provider_error_yields_error_event(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -306,6 +319,13 @@ class TestChat:
             "follow up", top_k=0, history=history, options=None, chunk_type=None
         )
 
+    async def test_forwards_chunk_type(self, mock_svc):
+        from lilbee.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+        await handlers.chat("q", [], chunk_type="raw")
+        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "raw"
+
 
 class TestChatStream:
     async def test_no_results_yields_error(self, mock_svc):
@@ -324,6 +344,12 @@ class TestChatStream:
         event_types = [e.split("\n")[0].replace("event: ", "") for e in non_empty]
         assert "token" in event_types
         assert "done" in event_types
+
+    async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = None
+        async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
+            pass
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
     async def test_provider_error_yields_error_event(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()

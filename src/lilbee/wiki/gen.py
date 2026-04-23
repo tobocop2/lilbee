@@ -501,17 +501,14 @@ def _assemble_content(
     return full
 
 
-def _index_wiki_page(
-    content: str,
-    target: PageTarget,
-    store: Store,
-    config: Config,
-) -> None:
+def _index_wiki_page(content: str, target: PageTarget, store: Store) -> None:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
     Drafts and archive pages never enter the search pool. Stale rows for
     the same ``wiki_source`` are cleared first so regeneration replaces
-    instead of accumulating.
+    instead of accumulating. Record shape matches the markdown-ingest
+    convention in ``ingest.py``: ``content_type="text"``, all four
+    page/line positions ``0`` (wiki pages are not paginated).
     """
     if target.subdir not in WIKI_CONTENT_SUBDIRS:
         return
@@ -532,12 +529,12 @@ def _index_wiki_page(
     records = [
         {
             "source": target.wiki_source,
-            "content_type": "text/markdown",
+            "content_type": "text",
             "chunk_type": CHUNK_TYPE_WIKI,
-            "page_start": 1,
-            "page_end": 1,
-            "line_start": 1,
-            "line_end": 1,
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
             "chunk": text,
             "chunk_index": idx,
             "vector": vector,
@@ -564,7 +561,7 @@ def _persist_and_finalize(
     store.delete_citations_for_wiki(target.wiki_source)
     store.add_citations(verified)
 
-    _index_wiki_page(content, target, store, config)
+    _index_wiki_page(content, target, store)
 
     if config.wiki_prune_raw:
         for name in source_names:

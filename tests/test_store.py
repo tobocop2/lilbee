@@ -263,8 +263,8 @@ class TestMMRRerank:
     def test_wiki_paraphrase_near_duplicate_diversified_out(self):
         """Wiki paraphrase lands near its raw source in vector space; MMR
         drops one of them at ``top_k=2`` in favour of a clearly different
-        candidate. Whichever side wins is acceptable — "always a choice"
-        means neither is preferred by default; diversity should simply
+        candidate. Whichever side wins is acceptable (always a choice:
+        neither is preferred by default) so diversity should simply
         do its job on near-duplicates regardless of ``chunk_type``.
 
         The query is at ``[1, 1]/√2`` so both the near-dup cluster on
@@ -314,7 +314,7 @@ class TestMMRRerank:
         )
         selected = mmr_rerank(query, [wiki_chunk, raw_duplicate, distinct], top_k=2, mmr_lambda=0.5)
         sources = {r.source for r in selected}
-        # The orthogonal chunk must appear — it's the diversity win.
+        # The orthogonal chunk must appear. That's the diversity win.
         assert "other.md" in sources
         # Only one of the two near-duplicates survives.
         dup_count = sum(1 for r in selected if r.source in ("wiki/summaries/doc.md", "doc.md"))

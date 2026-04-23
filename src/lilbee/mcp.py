@@ -14,6 +14,7 @@ from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.services import get_services, reset_services
+from lilbee.store import SearchScope, scope_to_chunk_type
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
@@ -30,7 +31,7 @@ mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed d
 
 @mcp.tool()
 def search(
-    query: str, top_k: int = 5, scope: str = "both"
+    query: str, top_k: int = 5, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Search the knowledge base for relevant document chunks.
 
@@ -40,8 +41,6 @@ def search(
     """
     if not query or not query.strip():
         return {"error": "query must not be empty"}
-    from lilbee.store import scope_to_chunk_type
-
     try:
         chunk_type = scope_to_chunk_type(scope)
     except ValueError as exc:

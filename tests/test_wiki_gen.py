@@ -996,7 +996,7 @@ class TestWikiIndexing:
                 return_value=["Brakes convert kinetic energy to heat through friction pads."],
             ),
         ):
-            _index_wiki_page(content, target, store, cfg)
+            _index_wiki_page(content, target, store)
 
         store.clear_table.assert_called_once()
         call_args = store.clear_table.call_args
@@ -1011,14 +1011,17 @@ class TestWikiIndexing:
         rec = records[0]
         assert rec["chunk_type"] == CHUNK_TYPE_WIKI
         assert rec["source"] == target.wiki_source
-        assert rec["content_type"] == "text/markdown"
+        assert rec["content_type"] == "text"
+        # page/line positions follow the markdown ingest convention: all zero
+        assert rec["page_start"] == 0
+        assert rec["line_start"] == 0
         assert "friction pads" in rec["chunk"]
         # Frontmatter and citation block are stripped from what gets chunked
         assert "title: Brakes" not in rec["chunk"]
         assert "src1" not in rec["chunk"]
 
     def test_drafts_subdir_is_not_indexed(self):
-        """Drafts never enter the search pool — no clear, no add."""
+        """Drafts never enter the search pool. No clear, no add."""
         store = MagicMock(spec=Store)
         target = self._target(subdir=DRAFTS_SUBDIR)
 
@@ -1026,7 +1029,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=["body"]),
         ):
-            _index_wiki_page(self._content("body"), target, store, cfg)
+            _index_wiki_page(self._content("body"), target, store)
 
         store.clear_table.assert_not_called()
         store.add_chunks.assert_not_called()
@@ -1037,7 +1040,7 @@ class TestWikiIndexing:
         """
         store = MagicMock(spec=Store)
         target = self._target()
-        # Body is pure whitespace — after extract_body + strip, nothing remains
+        # Body is pure whitespace. After extract_body + strip, nothing remains
         content = (
             "---\ntitle: Empty\n---\n\n   \n\n"
             "---\n"
@@ -1049,7 +1052,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text") as chunker,
         ):
-            _index_wiki_page(content, target, store, cfg)
+            _index_wiki_page(content, target, store)
 
         store.clear_table.assert_called_once()
         chunker.assert_not_called()
@@ -1064,13 +1067,13 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=[]),
         ):
-            _index_wiki_page(self._content("some body"), target, store, cfg)
+            _index_wiki_page(self._content("some body"), target, store)
 
         store.clear_table.assert_called_once()
         store.add_chunks.assert_not_called()
 
     def test_regen_invalidates_before_writing(self):
-        """Second call still clears first, then adds — no accumulation."""
+        """Second call still clears first, then adds. No accumulation."""
         store = MagicMock(spec=Store)
         target = self._target()
 
@@ -1082,7 +1085,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=["one chunk"]),
         ):
-            _index_wiki_page(self._content("first body"), target, store, cfg)
-            _index_wiki_page(self._content("second body"), target, store, cfg)
+            _index_wiki_page(self._content("first body"), target, store)
+            _index_wiki_page(self._content("second body"), target, store)
 
         assert call_order == ["clear", "add", "clear", "add"]

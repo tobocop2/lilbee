@@ -45,6 +45,7 @@ from lilbee.progress import EventType, ProgressEvent
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
+from lilbee.store import scope_to_chunk_type
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -766,8 +767,6 @@ class ChatScreen(Screen[None]):
         (e.g. test apps).
         """
         from textual.css.query import NoMatches
-
-        from lilbee.store import scope_to_chunk_type
 
         try:
             bar = self.query_one("#model-bar", ModelBar)

@@ -196,7 +196,7 @@ class TestMixedPoolBias:
             self._wiki_chunk("wiki/summaries/b.md", "wiki b", relevance=0.5),
             _chunk("b.md", "raw b", relevance=0.5),
         ]
-        # Identical provider scores — tie-break falls to blended fusion
+        # Identical provider scores. Tie-break falls to blended fusion
         # weighting; no systematic wiki or raw bias should drop either.
         with _patch_provider(lambda query, cands: [0.5] * len(cands)):
             reranked = reranker.rerank("query", results)

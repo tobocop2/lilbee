@@ -262,23 +262,44 @@ def escape_sql_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "''")
 
 
+def _chunk_type_predicate(chunk_type: str) -> str:
+    """SQL predicate that matches ``chunk_type`` while tolerating NULL rows.
+
+    Rows written before ``chunk_type`` was populated land as NULL. They
+    are semantically raw, so a ``'raw'`` filter still includes them; a
+    ``'wiki'`` filter excludes them.
+    """
+    escaped = escape_sql_string(chunk_type)
+    if chunk_type == CHUNK_TYPE_RAW:
+        return f"(chunk_type = '{escaped}' OR chunk_type IS NULL)"
+    return f"chunk_type = '{escaped}'"
+
+
 def _hybrid_search(
     table: lancedb.table.Table,
     query_text: str,
     query_vector: list[float],
     top_k: int,
+    chunk_type: str | None = None,
 ) -> list[SearchChunk]:
-    """Run hybrid (vector + FTS) search with RRF reranking."""
+    """Run hybrid (vector + FTS) search with RRF reranking.
+
+    When ``chunk_type`` is set, the predicate is pushed into the query so
+    the limit applies *after* the type filter. Post-filtering would
+    silently starve wiki-only queries whose matches live past the top-K
+    hybrid window.
+    """
     from lancedb.rerankers import RRFReranker
 
-    rows = (
+    query = (
         table.search(query_type="hybrid")
         .vector(query_vector)
         .text(query_text)
         .rerank(RRFReranker())
-        .limit(top_k)
-        .to_list()
     )
+    if chunk_type:
+        query = query.where(_chunk_type_predicate(chunk_type))
+    rows = query.limit(top_k).to_list()
     return [SearchChunk(**r) for r in rows]
 
 
@@ -425,17 +446,14 @@ class Store:
 
         if query_text and self._fts_ready:
             try:
-                results = _hybrid_search(table, query_text, query_vector, top_k)
-                if chunk_type:
-                    results = [r for r in results if r.chunk_type == chunk_type]
-                return results
+                return _hybrid_search(table, query_text, query_vector, top_k, chunk_type)
             except Exception:
                 log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
         candidate_k = top_k * self._config.candidate_multiplier
         query = table.search(query_vector).metric("cosine").limit(candidate_k)
         if chunk_type:
-            query = query.where(f"chunk_type = '{escape_sql_string(chunk_type)}'")
+            query = query.where(_chunk_type_predicate(chunk_type))
         rows = query.to_list()
         log.debug(
             "Vector search: query=%r, candidates=%d, max_distance=%.2f",

@@ -16,6 +16,7 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
 )
+from lilbee.store import scope_to_chunk_type
 
 
 @get("/api/search")
@@ -26,6 +27,10 @@ async def search_route(
     chunk_type: str | None = Parameter(query="chunk_type", default=None),
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
+    try:
+        chunk_type = scope_to_chunk_type(chunk_type)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
     except ValueError as exc:
