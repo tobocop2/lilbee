@@ -308,7 +308,18 @@ class ModelBar(Widget, can_focus=False):
         chat_models: list[ModelOption],
         embed_models: list[ModelOption],
     ) -> None:
-        """Populate Select widgets from scanned models (main thread)."""
+        """Populate Select widgets from scanned models (main thread).
+
+        ``_populating`` stays ``True`` until after the next refresh so
+        the async-delivered ``Select.Changed`` events queued by
+        ``set_options`` (Textual auto-selects the first option before
+        the caller reassigns the configured value) reach the handler
+        while the guard is still set. Clearing synchronously at the
+        end of this method leaves a window where an intermediate
+        event carrying the widget's auto-picked default would write
+        itself into cfg, bypassing the user's configured model and
+        tripping the featured-catalog validator.
+        """
         self._populating = True
 
         chat_sel = self.query_one("#chat-model-select", Select)
@@ -320,6 +331,10 @@ class ModelBar(Widget, can_focus=False):
         _sync_select(chat_sel, chat_opts, cfg.chat_model)
         _sync_select(embed_sel, embed_opts, cfg.embedding_model)
 
+        self.call_after_refresh(self._clear_populating_guard)
+
+    def _clear_populating_guard(self) -> None:
+        """Drop the ``_populating`` flag after queued Changed events drain."""
         self._populating = False
 
     @on(Select.Changed, "#chat-model-select")
