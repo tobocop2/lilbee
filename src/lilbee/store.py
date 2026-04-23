@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -102,29 +103,46 @@ def mmr_rerank(
     ``mmr_lambda`` controls the relevance/diversity tradeoff:
     0.0 = maximum diversity, 1.0 = pure relevance.
     Defaults to ``cfg.mmr_lambda`` (0.5).
+
+    Runs the redundancy step as a vectorized numpy dot-product against
+    a running max-redundancy vector. Previously the inner loop did
+    ``max(cosine_sim(candidate.vector, s.vector) for s in selected)``
+    which recomputed pairs already seen on every outer iteration
+    (O(top_k² · N) dot products). The vectorized form is O(top_k · N)
+    and uses numpy's SIMD under the hood.
     """
     if mmr_lambda is None:
         mmr_lambda = cfg.mmr_lambda
     if len(results) <= top_k:
         return results
 
-    relevance_map = {id(r): cosine_sim(query_vector, r.vector) for r in results}
-    selected: list[SearchChunk] = []
-    remaining = list(results)
+    candidate_vecs = np.asarray([r.vector for r in results], dtype=np.float32)
+    query = np.asarray(query_vector, dtype=np.float32)
+    # L2-normalize once so cosine becomes a plain dot product.
+    cand_norms = np.linalg.norm(candidate_vecs, axis=1, keepdims=True)
+    cand_norms[cand_norms == 0] = 1.0
+    cand_unit = candidate_vecs / cand_norms
+    query_norm = float(np.linalg.norm(query)) or 1.0
+    query_unit = query / query_norm
 
-    for _ in range(top_k):
-        best_score = -float("inf")
-        best_idx = 0
-        for i, candidate in enumerate(remaining):
-            relevance = relevance_map[id(candidate)]
-            redundancy = 0.0
-            if selected:
-                redundancy = max(cosine_sim(candidate.vector, s.vector) for s in selected)
-            score = mmr_lambda * relevance - (1 - mmr_lambda) * redundancy
-            if score > best_score:
-                best_score = score
-                best_idx = i
-        selected.append(remaining.pop(best_idx))
+    relevance = cand_unit @ query_unit  # shape (N,)
+
+    n = len(results)
+    max_redundancy = np.zeros(n, dtype=np.float32)
+    available = np.ones(n, dtype=bool)
+    selected: list[SearchChunk] = []
+
+    for picks in range(top_k):
+        redundancy_term = max_redundancy if picks > 0 else np.zeros(n, dtype=np.float32)
+        score = mmr_lambda * relevance - (1.0 - mmr_lambda) * redundancy_term
+        # Mask already-picked candidates so argmax skips them.
+        score = np.where(available, score, -np.inf)
+        best = int(np.argmax(score))
+        selected.append(results[best])
+        available[best] = False
+        # Update running max redundancy against the newly-selected vector.
+        similarity = cand_unit @ cand_unit[best]
+        max_redundancy = np.maximum(max_redundancy, similarity)
 
     return selected
 
