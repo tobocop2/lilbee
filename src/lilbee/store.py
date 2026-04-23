@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
@@ -482,7 +483,12 @@ class Store:
         return [r for r in results if _get_distance(r) <= threshold]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
-        """Return all chunks for a given source file."""
+        """Return all chunks for a given source file.
+
+        Scales with a single document's chunk count (bounded by document
+        size, not corpus size). Callers (delete, export, rebuild) need the
+        complete set — no artificial cap here.
+        """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
@@ -490,11 +496,15 @@ class Store:
         try:
             rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
         except Exception:
-            # Fallback: on tables with FTS indexes, search() may return an
-            # incompatible query builder.  Scan the Arrow table directly.
+            # Fallback for tables whose FTS-enabled search() returns an
+            # incompatible query builder. Push the source filter into
+            # pyarrow.compute (C++) rather than materializing the whole
+            # chunks table into Python memory and filtering there, which
+            # scaled O(total corpus chunks) per call.
             log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
-            all_rows = table.to_arrow().to_pylist()
-            rows = [r for r in all_rows if r.get("source") == source]
+            arrow_tbl = table.to_arrow()
+            filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
+            rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
     def delete_by_source(self, source: str) -> None:

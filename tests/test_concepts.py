@@ -441,12 +441,17 @@ class TestGetRelatedConcepts:
 
 class TestTopCommunities:
     def test_top_communities(self, cg, mock_svc):
+        import pyarrow as pa
+
         mock_table = MagicMock()
-        mock_table.to_arrow.return_value.to_pylist.return_value = [
-            {"concept": "python", "cluster_id": 0, "degree": 5},
-            {"concept": "ml", "cluster_id": 0, "degree": 3},
-            {"concept": "web", "cluster_id": 1, "degree": 2},
-        ]
+        # Real Arrow table so pyarrow.compute ops actually run.
+        mock_table.to_arrow.return_value = pa.table(
+            {
+                "concept": ["python", "ml", "web"],
+                "cluster_id": [0, 0, 1],
+                "degree": [5, 3, 2],
+            }
+        )
         mock_svc.store.open_table.return_value = mock_table
 
         communities = cg.top_communities(k=2)
@@ -456,6 +461,23 @@ class TestTopCommunities:
 
     def test_top_communities_no_table(self, cg, mock_svc):
         mock_svc.store.open_table.return_value = None
+        assert cg.top_communities() == []
+
+    def test_top_communities_empty_table(self, cg, mock_svc):
+        import pyarrow as pa
+
+        mock_table = MagicMock()
+        mock_table.to_arrow.return_value = pa.table(
+            {"concept": [], "cluster_id": [], "degree": []},
+            schema=pa.schema(
+                [
+                    pa.field("concept", pa.utf8()),
+                    pa.field("cluster_id", pa.int32()),
+                    pa.field("degree", pa.int32()),
+                ]
+            ),
+        )
+        mock_svc.store.open_table.return_value = mock_table
         assert cg.top_communities() == []
 
 
@@ -714,13 +736,17 @@ class TestGetClusterSources:
 class TestGetClusterLabel:
     def test_returns_highest_degree_concept(self, cg, mock_svc):
         mock_table = MagicMock()
-        mock_table.to_arrow.return_value.to_pylist.return_value = [
+        # New implementation pushes the cluster_id filter to the DB, so
+        # the mock only needs to return the rows for that cluster.
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"concept": "python", "cluster_id": 0, "degree": 5},
             {"concept": "ml", "cluster_id": 0, "degree": 3},
-            {"concept": "web", "cluster_id": 1, "degree": 2},
         ]
         mock_svc.store.open_table.return_value = mock_table
         assert cg.get_cluster_label(0) == "python"
+        # Confirm the filter was actually pushed down.
+        where_args = mock_table.search.return_value.where.call_args.args[0]
+        assert "cluster_id = 0" in where_args
 
     def test_returns_fallback_when_no_table(self, cg, mock_svc):
         mock_svc.store.open_table.return_value = None
@@ -728,11 +754,18 @@ class TestGetClusterLabel:
 
     def test_returns_fallback_for_unknown_cluster(self, cg, mock_svc):
         mock_table = MagicMock()
-        mock_table.to_arrow.return_value.to_pylist.return_value = [
-            {"concept": "python", "cluster_id": 0, "degree": 5},
-        ]
+        # Unknown cluster => DB returns zero rows for the WHERE clause.
+        mock_table.search.return_value.where.return_value.to_list.return_value = []
         mock_svc.store.open_table.return_value = mock_table
         assert cg.get_cluster_label(99) == "cluster-99"
+
+    def test_returns_fallback_on_query_exception(self, cg, mock_svc):
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.side_effect = RuntimeError(
+            "query failed"
+        )
+        mock_svc.store.open_table.return_value = mock_table
+        assert cg.get_cluster_label(7) == "cluster-7"
 
 
 class TestFilterNounChunks:
