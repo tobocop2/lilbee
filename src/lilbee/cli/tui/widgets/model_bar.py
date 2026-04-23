@@ -324,9 +324,18 @@ class ModelBar(Widget, can_focus=False):
 
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
-        """Handle chat model selection change."""
+        """Handle chat model selection change.
+
+        No-op when the incoming value matches the current config. Textual
+        posts ``Select.Changed`` asynchronously, so the ``_populating``
+        guard may already have cleared by the time the event is delivered
+        during startup. Without the equality short-circuit, Textual's
+        default-selection of the alphabetically-first option would
+        clobber a user's configured model (and trigger the
+        featured-catalog validator on a non-featured installed model).
+        """
         value = self._extract_value(event)
-        if value is None:
+        if value is None or value == cfg.chat_model:
             return
         cfg.chat_model = value
         settings.set_value(cfg.data_root, "chat_model", value)
@@ -334,9 +343,13 @@ class ModelBar(Widget, can_focus=False):
 
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:
-        """Handle embedding model selection change."""
+        """Handle embedding model selection change.
+
+        Same equality guard as :meth:`_on_chat_model_changed` for the
+        same async-event-ordering reason.
+        """
         value = self._extract_value(event)
-        if value is None:
+        if value is None or value == cfg.embedding_model:
             return
         cfg.embedding_model = value
         settings.set_value(cfg.data_root, "embedding_model", value)

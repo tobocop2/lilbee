@@ -2413,6 +2413,63 @@ class TestModelBarAdditional:
                 await pilot.pause()
             assert cfg.embedding_model == "new-embed:latest"
 
+    async def test_chat_model_change_noop_when_value_matches_config(self) -> None:
+        """bb-zvrv regression: an async Changed event whose value matches
+        cfg.chat_model already must NOT rewrite cfg. Textual posts
+        Select.Changed asynchronously, so the ``_populating`` guard can
+        clear before the event is delivered; this equality short-circuit
+        is the correct defense.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "test-embed"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populating = False
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            chat_sel.set_options([ModelOption("qwen3:8b", "qwen3:8b")])
+            write_tracker = mock.Mock()
+            with (
+                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                chat_sel.value = "qwen3:8b"
+                await pilot.pause()
+            assert cfg.chat_model == "qwen3:8b"
+            write_tracker.assert_not_called()
+
+    async def test_embed_model_change_noop_when_value_matches_config(self) -> None:
+        """Same bb-zvrv guard for the embedding-model Select."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "nomic-embed-text:v1.5"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populating = False
+            from textual.widgets import Select
+
+            embed_sel = app.query_one("#embed-model-select", Select)
+            embed_sel.set_options(
+                [ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5")]
+            )
+            write_tracker = mock.Mock()
+            with (
+                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                embed_sel.value = "nomic-embed-text:v1.5"
+                await pilot.pause()
+            assert cfg.embedding_model == "nomic-embed-text:v1.5"
+            write_tracker.assert_not_called()
+
     async def test_populate_embed_model_in_scanned(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
