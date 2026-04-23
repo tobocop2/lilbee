@@ -138,6 +138,16 @@ class TestIsValidLabel:
         # The bb-8b7s "158 vehicle" pattern: page numbers prepended to entities.
         assert is_valid_label("158 vehicle") is False
 
+    def test_rejects_paren_prefix(self):
+        # bb-8b7s: "(7.0 l)" slipped past the original digit-only first-char
+        # guard because "(" is not a digit; slug-cleanup then stripped the
+        # paren and wrote "70-l.md" on disk.
+        assert is_valid_label("(7.0 l)") is False
+
+    def test_rejects_hyphen_prefix(self):
+        # bb-8b7s: "-answers" from markdown bracket-link extraction residue.
+        assert is_valid_label("-answers") is False
+
     def test_rejects_low_alnum_ratio(self):
         assert is_valid_label("---!!") is False
 

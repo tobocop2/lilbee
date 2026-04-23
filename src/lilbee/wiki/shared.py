@@ -131,18 +131,27 @@ def make_slug(label: str) -> str:
 def is_valid_label(label: str) -> bool:
     """Reject structural-noise labels before aggregation.
 
-    Catches the noise patterns observed in QA: empty/very-short
-    fragments (``cro``-class length gates), markdown table delimiters
-    (``| | designer``), page-number ordinals (``158 vehicle``), and
-    punctuation-heavy tokens that slipped past NER. Left intentionally
-    coarse: the alnum-ratio gate plus the structural-character gate
-    catch ~90% of the QA noise without rejecting legitimate labels
-    like ``E-mail`` or ``C++``.
+    Catches the noise patterns observed in QA (bb-8b7s):
+
+    - empty or sub-three-char fragments,
+    - markdown table delimiters (``| | designer``),
+    - page-number-prefixed tokens (``158 vehicle``),
+    - paren-prefixed numerics (``(7.0 l)`` — would otherwise slug to
+      ``70-l`` after punctuation cleanup),
+    - hyphen-prefixed fragments (``-answers`` — trailing text from
+      markdown bracket-link extraction).
+
+    Requires the first non-whitespace character to be a Unicode letter
+    so any non-alpha prefix (digit, bracket, hyphen, punctuation) is
+    rejected up front. Legitimate labels like ``E-mail`` or ``iPhone``
+    pass. Still permissive on three-char fragments like ``cro`` /
+    ``fus``; A3's entity-type filter and ``wiki_entity_min_mentions``
+    catch those downstream.
     """
     stripped = label.strip()
     if len(stripped) < LABEL_SANITY_MIN_LEN:
         return False
-    if stripped[0].isdigit():
+    if not stripped[0].isalpha():
         return False
     if any(ch in _STRUCTURAL_CHARS for ch in stripped):
         return False
