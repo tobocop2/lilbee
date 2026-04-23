@@ -371,9 +371,9 @@ class ModelBar(Widget, can_focus=False):
         """
         if self._populating:
             return None
-        if str(event.value) != str(sel.value):
-            return None
         if event.value is _DISABLED or event.value is None or str(event.value) == "":
+            return None
+        if str(event.value) != str(sel.value):
             return None
         return str(event.value)
 
