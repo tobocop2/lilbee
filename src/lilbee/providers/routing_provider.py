@@ -10,7 +10,7 @@ from typing import Any
 from lilbee.catalog import is_rerank_ref
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
-from lilbee.providers.litellm_sdk import LitellmSdkBackend, litellm_available
+from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
@@ -29,7 +29,7 @@ class RoutingProvider(LLMProvider):
 
     def __init__(self) -> None:
         self._llama_cpp: LLMProvider | None = None
-        self._sdk_provider: LLMProvider | None = None
+        self._sdk_provider: SdkLLMProvider | None = None
 
     def _get_llama_cpp(self) -> LLMProvider:
         if self._llama_cpp is None:
@@ -38,7 +38,7 @@ class RoutingProvider(LLMProvider):
             self._llama_cpp = LlamaCppProvider()
         return self._llama_cpp
 
-    def _get_sdk_provider(self) -> LLMProvider:
+    def _get_sdk_provider(self) -> SdkLLMProvider:
         if self._sdk_provider is None:
             self._sdk_provider = SdkLLMProvider(
                 LitellmSdkBackend(),
@@ -77,25 +77,28 @@ class RoutingProvider(LLMProvider):
         native: set[str] = set()
         with contextlib.suppress(Exception):
             native = set(self._get_llama_cpp().list_models())
-        if not litellm_available():
+        sdk = self._get_sdk_provider()
+        if not sdk.available():
             return sorted(native)
         try:
-            remote = set(self._get_sdk_provider().list_models())
+            remote = set(sdk.list_models())
         except Exception:
             return sorted(native)
         return sorted(native | remote)
 
     def list_chat_models(self, provider: str) -> list[str]:
         """Delegate to the SDK backend; native llama-cpp has no catalog."""
-        if not litellm_available():
+        sdk = self._get_sdk_provider()
+        if not sdk.available():
             return []
-        return self._get_sdk_provider().list_chat_models(provider)
+        return sdk.list_chat_models(provider)
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull via the SDK backend if installed, otherwise raise."""
-        if not litellm_available():
+        sdk = self._get_sdk_provider()
+        if not sdk.available():
             raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
-        self._get_sdk_provider().pull_model(model, on_progress=on_progress)
+        sdk.pull_model(model, on_progress=on_progress)
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Show model info from the backend selected by the ref prefix."""
@@ -110,22 +113,22 @@ class RoutingProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
 
-        Native GGUF refs go to llama-cpp; hosted refs (Cohere, Voyage,
-        Jina, Together AI, HF TEI) go through the SDK provider, which
-        requires the ``litellm`` extra.
-
-        Raises ``ProviderError`` when ``cfg.reranker_model`` is empty or
-        hosted dispatch is requested without the ``litellm`` extra.
+        Native GGUF refs go to llama-cpp; hosted refs go through the SDK
+        provider. Raises ``ProviderError`` when ``cfg.reranker_model`` is
+        empty or the selected backend does not support reranking.
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
         if _is_native_rerank_ref(cfg.reranker_model):
             return self._get_llama_cpp().rerank(query, candidates)
-        if not litellm_available():
+        sdk = self._get_sdk_provider()
+        if not sdk.supports_rerank():
             raise ProviderError(
-                f"Cannot rerank with {cfg.reranker_model!r}: litellm extra not installed"
+                f"Cannot rerank with {cfg.reranker_model!r}: "
+                "hosted rerank backend not available. "
+                "Install the 'litellm' extra to enable hosted reranking."
             )
-        return self._get_sdk_provider().rerank(query, candidates)
+        return sdk.rerank(query, candidates)
 
     def supports_rerank(self) -> bool:
         """Capability probe: can the routed backend rerank if configured?
@@ -142,7 +145,7 @@ class RoutingProvider(LLMProvider):
             return True
         if _is_native_rerank_ref(model):
             return self._get_llama_cpp().supports_rerank()
-        return litellm_available()
+        return self._get_sdk_provider().supports_rerank()
 
     def shutdown(self) -> None:
         """Shut down sub-providers to release resources."""
