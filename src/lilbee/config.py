@@ -93,6 +93,34 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
     raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
 
 
+def validate_model_task_assignment(field_name: str, ref: str) -> str:
+    """Validate a model role assignment and return its canonical catalog ref.
+
+    This was previously a Pydantic ``field_validator`` on ``Config`` that
+    fired on every ``setattr``, which meant a single PATCH /api/config
+    touching several fields rescanned the featured catalog index once
+    per field. Callers now invoke this explicitly from the handler layer
+    so the catalog lookup runs at most once per field per request, and
+    zero times for unrelated fields.
+
+    Returns the catalog's canonical ``name:tag`` (for registry-key match)
+    or the input ``ref`` unchanged when validation is bypassed in tests.
+    Raises ``ValueError`` on unknown refs or role-task mismatch.
+    """
+    if not ref or not ref.strip() or _model_task_validation_bypassed():
+        return ref
+    entry = _find_model_catalog_entry(ref)
+    if entry is None:
+        raise ValueError(
+            f"Model '{ref}' is not in the featured catalog. "
+            "Pick a featured model for this role, or install one via "
+            "POST /api/models/pull with a known catalog ref."
+        )
+    _enforce_role_match(ref, entry, field_name)
+    canonical: str = entry.ref
+    return canonical
+
+
 _BOOL_TRUE = frozenset({"true", "1", "yes"})
 _BOOL_FALSE = frozenset({"false", "0", "no"})
 
@@ -685,34 +713,11 @@ class Config(BaseSettings):
 
         return parse_model_ref(v).for_openai_prefix()
 
-    @field_validator(
-        "chat_model", "embedding_model", "vision_model", "reranker_model", mode="after"
-    )
-    @classmethod
-    def _validate_model_task(cls, v: str, info: ValidationInfo) -> str:
-        """Reject model refs whose catalog task doesn't match the role slot.
-
-        Runs at every write path (PATCH /api/config, direct assignment, env
-        loading) via ``validate_assignment=True``. Returns the catalog's
-        canonical ``name:tag`` so every stored ref matches the registry
-        key regardless of the input variant (hf_repo, provider-prefixed,
-        display name). Skipped only when both
-        ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` is set and pytest is imported.
-        """
-        if not v or not v.strip() or _model_task_validation_bypassed():
-            return v
-        # info.field_name is always set when pydantic dispatches field_validator.
-        assert info.field_name is not None
-        entry = _find_model_catalog_entry(v)
-        if entry is None:
-            raise ValueError(
-                f"Model '{v}' is not in the featured catalog. "
-                "Pick a featured model for this role, or install one via "
-                "POST /api/models/pull with a known catalog ref."
-            )
-        _enforce_role_match(v, entry, info.field_name)
-        canonical: str = entry.ref
-        return canonical
+    # Model-task validation lives in the handler layer now (see
+    # lilbee.server.handlers._validate_config_updates and the
+    # validate_model_task_assignment helper below). Running it inside a
+    # field_validator fired on every setattr, and a single PATCH /api/config
+    # with six fields would rescan the featured catalog six times.
 
     @field_validator("cors_origins", mode="before")
     @classmethod
