@@ -64,6 +64,21 @@ def _integration_loop():
         loop.close()
 
 
+@pytest.fixture
+def run_async(_integration_loop):
+    """Run a coroutine on the shared session loop.
+
+    Tests must NOT use asyncio.run() directly. A fresh loop tears down
+    call_soon_threadsafe plumbing that the llama-cpp provider's daemon-thread
+    embed/rerank workers depend on, wedging subsequent awaits on CPU-only CI.
+    """
+
+    def _run(coro):
+        return _integration_loop.run_until_complete(coro)
+
+    return _run
+
+
 @pytest.fixture(scope="session")
 def rag_pipeline(tmp_path_factory, _integration_loop):
     """Set up a real RAG pipeline with downloaded models and test documents.
@@ -96,6 +111,7 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
+    cfg.wiki = False
     cfg.max_tokens = 512  # keep inference fast on slow CI runners
 
     reset_provider()
