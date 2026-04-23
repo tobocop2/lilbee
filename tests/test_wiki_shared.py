@@ -112,6 +112,13 @@ class TestMakeSlug:
     def test_punctuation_only_returns_empty(self):
         assert make_slug("!!!") == ""
 
+    def test_hyphens_only_returns_empty(self):
+        # Separate branch from general punctuation: hyphens survive the
+        # slug-clean regex and are removed only by the leading/trailing
+        # strip. ``"---"`` must still collapse to ``""`` so the
+        # ``if not slug: return None`` guard in the extractor fires.
+        assert make_slug("---") == ""
+
 
 class TestIsValidLabel:
     def test_accepts_ordinary_label(self):

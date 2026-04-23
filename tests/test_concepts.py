@@ -731,3 +731,23 @@ class TestFilterNounChunks:
         doc = _make_mock_doc(["alpha", "beta", "gamma"])
         result = _filter_noun_chunks(doc, max_concepts=2)
         assert len(result) == 2
+
+    def test_filter_noun_chunks_rejects_structural_noise(self):
+        """Direct coverage of the structural-rejection branch inside
+        ``_filter_noun_chunks`` (bb-8b7s). Asserts that the module's
+        own filter drops the table, page-number, and paren-prefix
+        patterns even without going through ``extract_concepts``.
+        """
+        from lilbee.concepts import _filter_noun_chunks
+
+        doc = _make_mock_doc(
+            [
+                "| | body",
+                "158 vehicle",
+                "(7.0 l)",
+                "-answers",
+                "chevrolet caprice",
+            ]
+        )
+        result = _filter_noun_chunks(doc, max_concepts=10)
+        assert result == ["chevrolet caprice"]

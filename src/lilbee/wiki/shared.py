@@ -166,11 +166,18 @@ def is_valid_label(label: str) -> bool:
 def clean_label_for_display(label: str) -> str:
     """Return a prompt-safe version of *label* for the ``{topic}`` slot.
 
-    Removes markdown-structural characters and collapses internal
-    whitespace so the LLM never sees ``| | designer`` and echoes it
-    into the generated H1. Preserves the original capitalization so
-    proper nouns (``Chevrolet Caprice``, ``iPhone``) survive intact;
-    the model title-cases lowercase common nouns on its own.
+    Defense-in-depth behind :func:`is_valid_label`: a concept or entity
+    label that reached this function already passed the sanity gate
+    and should not contain ``|#>`` in practice. The structural-char
+    strip here guards against a future code path that bypasses the
+    gate (synthesis cluster labels sourced from ``concept_nodes``,
+    user-supplied topics, tests). The always-useful work is whitespace
+    normalization: spaCy surface forms can carry internal runs of
+    whitespace that would reach the H1 verbatim.
+
+    Preserves the original capitalization so proper nouns
+    (``Chevrolet Caprice``, ``iPhone``) survive intact; the model
+    title-cases lowercase common nouns on its own.
     """
     clean = _DISPLAY_STRUCTURAL_RE.sub("", label)
     return _DISPLAY_WHITESPACE_RE.sub(" ", clean).strip()
