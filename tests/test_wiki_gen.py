@@ -10,6 +10,7 @@ import pytest
 from lilbee.config import CHUNKS_TABLE, cfg
 from lilbee.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation
+from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.gen import (
     _check_faithfulness,
     _chunks_to_text,
@@ -29,14 +30,12 @@ from lilbee.wiki.gen import (
     _mean_vector,
     _resolve_citations,
     _resolve_multi_source_citations,
-    _split_batched_output,
     _truncate_chunks_to_budget,
     _unwrap_archived_links,
     _verify_citations,
     generate_synthesis_pages,
     index_wiki_page,
 )
-from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
@@ -513,9 +512,7 @@ class TestTitleContentCoherence:
         score = _check_faithfulness(chunks, wiki, "designer")
         assert score == 0.0
 
-    def test_logs_info_on_coherence_failure(
-        self, monkeypatch, caplog: pytest.LogCaptureFixture
-    ):
+    def test_logs_info_on_coherence_failure(self, monkeypatch, caplog: pytest.LogCaptureFixture):
         svc = MagicMock()
         monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
         caplog.set_level("INFO", logger="lilbee.wiki.gen")
@@ -831,9 +828,7 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
-    def test_faithfulness_failure_uses_zero(
-        self, tmp_path: Path, _stub_wiki_index_services
-    ):
+    def test_faithfulness_failure_uses_zero(self, tmp_path: Path, _stub_wiki_index_services):
         """Phase D: body-embedding failure routes to drafts (score 0.0)."""
         sources = ["a.md"]
         (tmp_path / "documents" / "a.md").write_text("Fact from a.md.")

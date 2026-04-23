@@ -25,7 +25,7 @@ from lilbee.wiki.gen import (
     _split_batched_output,
     build_wiki,
 )
-from lilbee.wiki.shared import CONCEPTS_SUBDIR, DRAFTS_SUBDIR, ENTITIES_SUBDIR
+from lilbee.wiki.shared import DRAFTS_SUBDIR, ENTITIES_SUBDIR
 
 
 def _chunk(source: str, idx: int, text: str) -> SearchChunk:
@@ -79,12 +79,8 @@ def _mock_batch_provider(text: str) -> MagicMock:
 
 def _mock_store_for_source(source: str, chunks: list[SearchChunk]) -> MagicMock:
     store = MagicMock()
-    store.get_chunks_by_source.side_effect = (
-        lambda name: chunks if name == source else []
-    )
-    store.get_sources.return_value = [
-        {"filename": source, "chunk_count": len(chunks)}
-    ]
+    store.get_chunks_by_source.side_effect = lambda name: chunks if name == source else []
+    store.get_sources.return_value = [{"filename": source, "chunk_count": len(chunks)}]
     return store
 
 
@@ -200,8 +196,7 @@ class TestBatchGeneration:
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
         entities = [_entity("henry-ford", "Henry Ford", ["s.txt"])]
         text = (
-            "# Henry Ford\n\n> Henry Ford founded Ford Motor. [^src1]\n"
-            + _valid_citation_block()
+            "# Henry Ford\n\n> Henry Ford founded Ford Motor. [^src1]\n" + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
         pages = _generate_source_batch(
@@ -226,10 +221,7 @@ class TestBatchGeneration:
             _entity("ford-motor", "Ford Motor", ["s.txt"]),
         ]
         # Only one section is present; Ford Motor fails to parse.
-        text = (
-            _section("Henry Ford", "> body.[^src1]\n")
-            + _valid_citation_block()
-        )
+        text = _section("Henry Ford", "> body.[^src1]\n") + _valid_citation_block()
         provider = _mock_batch_provider(text)
         _generate_source_batch(
             source="s.txt",
@@ -247,9 +239,7 @@ class TestBatchGeneration:
         assert "PENDING: batch parse failed" in body
         assert "ford motor" in body.lower()
 
-    def test_batch_generation_slug_collision_writes_collision_marker(
-        self, stub_embedder
-    ):
+    def test_batch_generation_slug_collision_writes_collision_marker(self, stub_embedder):
         """Two sources proposing the same concept slug → collision marker."""
         chunks1 = [_chunk("s1.txt", 0, "Brake system details.")]
         chunks2 = [_chunk("s2.txt", 0, "Brake system details.")]
@@ -309,9 +299,7 @@ class TestBatchGeneration:
         """
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
         store = MagicMock()
-        store.get_sources.return_value = [
-            {"filename": "s.txt", "chunk_count": len(chunks)}
-        ]
+        store.get_sources.return_value = [{"filename": "s.txt", "chunk_count": len(chunks)}]
         store.get_chunks_by_source.return_value = chunks
         entities = [_entity("henry-ford", "Henry Ford", ["s.txt"])]
         text = (

@@ -545,7 +545,7 @@ class Config(BaseSettings):
     # source chunk vectors before a page is published (below → drafts).
     # Replaces the old LLM-based faithfulness score: mean-of-chunks is a
     # deterministic, zero-LLM-call signal that routes topic-drifted
-    # pages to drafts without the 0.0–1.0 ambiguity of a model-emitted
+    # pages to drafts without the 0.0 to 1.0 ambiguity of a model-emitted
     # number. Tuning knob: swap to per-chunk max or top-K-mean if the
     # default 0.5 produces false drafts.
     wiki_embedding_faithfulness_threshold: float = ConfigField(

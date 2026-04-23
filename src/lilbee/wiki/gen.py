@@ -1053,9 +1053,7 @@ def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
     """
     if not archived_slugs:
         return
-    patterns = [
-        (re.compile(r"\[\[" + re.escape(slug) + r"\]\]"), slug) for slug in archived_slugs
-    ]
+    patterns = [(re.compile(r"\[\[" + re.escape(slug) + r"\]\]"), slug) for slug in archived_slugs]
     for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = wiki_root / subdir
         if not subdir_path.is_dir():
@@ -1115,9 +1113,9 @@ def _delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     except OSError:
         return False
     first_line = body.splitlines()[0] if body else ""
-    is_pending = first_line.startswith(
-        _PENDING_PARSE_MARKER_PREFIX
-    ) or first_line.startswith(_PENDING_COLLISION_MARKER_PREFIX)
+    is_pending = first_line.startswith(_PENDING_PARSE_MARKER_PREFIX) or first_line.startswith(
+        _PENDING_COLLISION_MARKER_PREFIX
+    )
     if not is_pending:
         return False
     draft_path.unlink()
@@ -1235,9 +1233,7 @@ def _prefix_heading(name: str, body: str) -> str:
     return f"# {name}\n\n{body}"
 
 
-def _chunks_for_source(
-    chunks: list[SearchChunk], source: str
-) -> list[SearchChunk]:
+def _chunks_for_source(chunks: list[SearchChunk], source: str) -> list[SearchChunk]:
     """Return the subset of *chunks* whose ``source`` matches, preserving order."""
     return [c for c in chunks if c.source == source]
 

@@ -180,18 +180,16 @@ class TestTomlConfigFile:
             c = Config()
             assert c.chat_model == "qwen3:0.6b"
 
-    def test_deprecated_config_keys_log_warning_on_load(
-        self, tmp_path, caplog
-    ):
+    def test_deprecated_config_keys_log_warning_on_load(self, tmp_path, caplog):
         """Phase D dropped four wiki config keys; each should log a
         warning when present in config.toml, and neither survive as
         a Config attribute.
         """
         toml_path = tmp_path / "config.toml"
         toml_path.write_text(
-            'wiki_faithfulness_threshold = 0.7\n'
+            "wiki_faithfulness_threshold = 0.7\n"
             'wiki_faithfulness_prompt = "old"\n'
-            'wiki_faithfulness_max_tokens = 256\n'
+            "wiki_faithfulness_max_tokens = 256\n"
             'wiki_concept_prompt = "old"\n'
         )
         env = _clean_env()

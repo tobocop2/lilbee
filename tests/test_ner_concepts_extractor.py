@@ -186,9 +186,7 @@ class TestDedupAndAggregation:
         )
         extractor = NerConceptsExtractor(MagicMock(), cfg)
         with _patch_pipeline({"t0": doc, "t1": doc}):
-            result = extractor.extract(
-                [_chunk("a.txt", 0, "t0"), _chunk("a.txt", 1, "t1")]
-            )
+            result = extractor.extract([_chunk("a.txt", 0, "t0"), _chunk("a.txt", 1, "t1")])
         assert len(result) == 1
         rec = result[0]
         assert len(rec.chunk_refs) == 2
