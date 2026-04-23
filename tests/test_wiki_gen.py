@@ -1121,7 +1121,8 @@ class TestBuildFrontmatter:
         fm = _build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
         assert "provenance:" in fm
         assert f"extraction_method: {cfg.wiki_entity_mode.value}" in fm
-        assert 'source: "doc.md"' in fm
+        # yaml.safe_dump emits block style; unquoted scalars on safe names.
+        assert "source: doc.md" in fm
         assert "chunk_index: 0" in fm
         assert "chunk_index: 1" in fm
 
@@ -1152,3 +1153,25 @@ class TestBuildFrontmatter:
         parsed = parse_frontmatter(fm)
         assert parsed["faithfulness_score"] == 0.90
         assert "provenance" not in parsed
+
+    def test_provenance_quotes_safely_on_pathological_chunk_source(self):
+        """Chunk sources with ``"``, ``\\``, ``:``, or newlines must
+        still yield valid YAML inside the provenance block. Before B2
+        review this rendered inline as ``source: "<raw>"`` and broke
+        the parser on any embedded quote; ``yaml.safe_dump`` escapes
+        them correctly now.
+
+        The outer ``sources:`` list is pre-existing hand-rolled YAML
+        (not part of this PR); pass a benign value for the sources
+        list so the test isolates the provenance-block behavior.
+        """
+        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
+
+        pathological = 'weird "name": with\\slash\n'
+        chunks = [_make_chunk("body", source=pathological, chunk_index=0)]
+        fm = _build_frontmatter(cfg, ["benign.md"], 0.5, chunks=chunks)
+        parsed = parse_frontmatter(fm + "body\n")
+        assert parsed["provenance"]["chunks"] == [
+            {"source": pathological, "chunk_index": 0}
+        ]

@@ -19,6 +19,8 @@ from operator import itemgetter
 from pathlib import Path
 from typing import cast
 
+import yaml
+
 from lilbee.chunk import chunk_text
 from lilbee.clustering import SourceClusterer
 from lilbee.config import CHUNKS_TABLE, Config, cfg
@@ -473,15 +475,18 @@ def _build_frontmatter(
 def _render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
     """Render the provenance block: chunk references + extraction method.
 
-    Chunk refs stay as block-style YAML entries for readability; a page
-    backed by a handful of chunks keeps the frontmatter scannable.
+    Routes through ``yaml.safe_dump`` rather than hand-rolled string
+    formatting so a chunk source containing a quote, backslash,
+    colon, or newline does not produce invalid YAML that
+    ``parse_frontmatter`` would silently drop on read.
     """
-    lines = ["provenance:"]
-    lines.append(f"  extraction_method: {config.wiki_entity_mode.value}")
-    lines.append("  chunks:")
-    for chunk in chunks:
-        lines.append(f'    - {{source: "{chunk.source}", chunk_index: {chunk.chunk_index}}}')
-    return "\n".join(lines) + "\n"
+    block = {
+        "provenance": {
+            "extraction_method": config.wiki_entity_mode.value,
+            "chunks": [{"source": c.source, "chunk_index": c.chunk_index} for c in chunks],
+        }
+    }
+    return yaml.safe_dump(block, sort_keys=False)
 
 
 def _write_page(
