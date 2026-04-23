@@ -1616,7 +1616,7 @@ graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
 ]
-remote = [
+litellm = [
     { name = "litellm" },
 ]
 
@@ -1645,7 +1645,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.11.0" },
     { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
-    { name = "litellm", marker = "extra == 'remote'", specifier = ">=1.50" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
@@ -1660,7 +1660,7 @@ requires-dist = [
     { name = "typer" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["remote", "graph", "crawler"]
+provides-extras = ["litellm", "graph", "crawler"]
 
 [package.metadata.requires-dev]
 dev = [

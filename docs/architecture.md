@@ -87,7 +87,7 @@ flowchart TD
 ```
 
 - **auto** (default): `RoutingProvider` checks if litellm is installed and the model is available via its API. If so, uses it; otherwise falls back to local GGUF via llama-cpp.
-- **litellm**: force all calls through LiteLLM (Ollama, OpenAI, Azure, etc.). Requires `pip install lilbee[remote]`.
+- **litellm**: force all calls through LiteLLM (Ollama, OpenAI, Azure, etc.). Requires `pip install lilbee[litellm]`.
 - **ollama**: deprecated alias for `litellm`
 - **llama-cpp**: force local GGUF inference via llama-cpp-python (always available)
 - Model downloads come from HuggingFace. lilbee manages its own GGUF files. External models (e.g. Ollama) are used for inference when available but not managed by lilbee.

@@ -38,7 +38,7 @@ def create_provider(config: Config) -> LLMProvider:
         backend = LitellmSdkBackend()
         if not backend.available():
             raise ProviderError(
-                "SDK backend adapter is not installed. Install with: pip install 'lilbee[remote]'"
+                "SDK backend adapter is not installed. Install with: pip install 'lilbee[litellm]'"
             )
         return SdkLLMProvider(
             backend,

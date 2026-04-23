@@ -113,4 +113,4 @@ SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `
 - Use MCP when available — it's more direct than shelling out
 - Run `status` / `status()` first to check if documents are indexed
 - Run `sync` / `sync()` after adding documents to update the index
-- An LLM backend is needed for: (1) embedding during sync/indexing, (2) `ask` for LLM answers. Once indexed, `search` works without an LLM. By default, llama-cpp handles both. Install `lilbee[remote]` to use external backends like Ollama or OpenAI.
+- An LLM backend is needed for: (1) embedding during sync/indexing, (2) `ask` for LLM answers. Once indexed, `search` works without an LLM. By default, llama-cpp handles both. Install `lilbee[litellm]` to use external backends like Ollama or OpenAI.
