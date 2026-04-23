@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 # Disable huggingface_hub's xet transfer layer before any HF submodule loads.
 # huggingface_hub.constants reads HF_HUB_DISABLE_XET at import time, so this
@@ -16,9 +17,34 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 # Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that
 # leak cursor escapes into the TUI. Our custom tqdm_class is NOT a subclass
 # of huggingface_hub.utils.tqdm, so huggingface_hub's `_create_progress_bar`
-# instantiates it directly without honoring this flag — download callbacks
+# instantiates it directly without honoring this flag. Download callbacks
 # continue to fire. See lilbee/catalog.py::_CallbackProgressBar.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def _install_thread_only_tqdm_lock() -> None:
+    """Pin tqdm's class lock to a threading.RLock before anything touches tqdm.
+
+    Textual's App swaps stdout/stderr for a wrapper whose ``fileno()`` returns
+    -1. The first call to ``tqdm.get_lock()`` lazily builds a
+    ``TqdmDefaultWriteLock``, which ends up spawning multiprocessing's
+    resource tracker via ``_posixsubprocess.fork_exec``. fork_exec rejects
+    fd -1 with ``ValueError: bad value(s) in fds_to_keep``, which in lilbee
+    surfaces as every vision OCR page failing the moment the TUI is the
+    frontmost process. Setting ``_lock`` on the base class short-circuits
+    the lazy path for every tqdm instance in the process, including the
+    ones HF hub, sentence-transformers, and llama-cpp create on their own.
+    Matches the approach taken upstream in huggingface_hub PR #4065.
+    """
+    try:
+        from tqdm.std import tqdm as _tqdm_base
+    except ImportError:
+        return
+    if getattr(_tqdm_base, "_lock", None) is None:
+        _tqdm_base._lock = threading.RLock()
+
+
+_install_thread_only_tqdm_lock()
 
 
 def _shrink_hf_download_chunk_size() -> None:

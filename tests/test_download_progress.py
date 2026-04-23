@@ -218,6 +218,47 @@ class TestCallbackProgressBarLockSafety:
         assert calls == [(250, 1000), (500, 1000), (1000, 1000)]
 
 
+class TestBaseTqdmLockInstalled:
+    """Pinning tqdm's class lock is the only way to keep vanilla tqdm (HF, llama-cpp,
+    sentence-transformers, anything that imports ``tqdm.auto``) from crashing when
+    Textual swaps stderr for a wrapper whose ``fileno()`` returns -1.
+    Mirrors huggingface_hub PR #4065 but applies at the base class so every tqdm
+    subclass in the process inherits the same lock via MRO.
+    """
+
+    def test_tqdm_std_lock_is_threading(self) -> None:
+        """Base ``tqdm.std.tqdm._lock`` was pinned to a threading RLock at package import."""
+        import threading
+
+        from tqdm.std import tqdm as _tqdm_base
+
+        assert isinstance(_tqdm_base._lock, type(threading.RLock()))
+
+    def test_vanilla_tqdm_get_lock_survives_bad_stderr_fileno(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Vanilla ``tqdm.auto.tqdm.get_lock()`` no longer triggers MP-lock lazy init."""
+
+        class _FakeStderr:
+            def write(self, _s: str) -> int:
+                return 0
+
+            def flush(self) -> None:
+                pass
+
+            def isatty(self) -> bool:
+                return True
+
+            def fileno(self) -> int:
+                return -1
+
+        monkeypatch.setattr("sys.stderr", _FakeStderr())
+        from tqdm.auto import tqdm as _vanilla
+
+        lock = _vanilla.get_lock()
+        assert lock is not None
+
+
 class TestDownloadModelProgressChain:
     """Verify download_model correctly chains progress through to the user callback."""
 
