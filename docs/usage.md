@@ -13,7 +13,7 @@
   - [Concept graph](#concept-graph)
   - [Cross-encoder reranking](#cross-encoder-reranking)
   - [Web crawling](#web-crawling)
-  - [litellm (remote providers)](#litellm-remote-providers)
+  - [Remote providers (SDK backend)](#remote-providers-sdk-backend)
 
 ---
 
@@ -350,15 +350,15 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 
 ---
 
-### litellm (remote providers)
+### Remote providers (SDK backend)
 
-Connect to remote LLM providers instead of (or alongside) local llama-cpp inference.
+Connect to hosted LLM providers instead of (or alongside) local llama-cpp inference.
 
-**What it does:** Routes chat and embedding calls to any litellm-supported backend. The routing provider automatically detects which models are available locally vs. remotely and routes each call to the right backend. Supports hundreds of providers and models.
+**What it does:** Routes chat and embedding calls to any provider reachable via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and many more). The routing provider automatically detects which models are available locally vs. remotely and routes each call to the right backend.
 
 **When to use it:** When you want to use your favorite frontier model for chat while keeping embeddings local for privacy, or when you're already running Ollama and want to use its models.
 
-**Install:** `pip install lilbee[litellm]`
+**Install:** `pip install lilbee[litellm]` (pip extra retains the adapter library name).
 
 **Configuration:**
 
@@ -366,7 +366,7 @@ Connect to remote LLM providers instead of (or alongside) local llama-cpp infere
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
 export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # Ollama default
 export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
-export LILBEE_CHAT_MODEL=your-model      # any litellm-supported model name
+export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
 Provider options: `auto` (default, routes intelligently), `llama-cpp` (local only), `remote` (hosted only).
