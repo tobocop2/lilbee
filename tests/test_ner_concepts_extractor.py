@@ -18,7 +18,10 @@ import pytest
 from lilbee.config import cfg
 from lilbee.store import SearchChunk
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
-from lilbee.wiki.entity_extractor.ner_concepts import NerConceptsExtractor
+from lilbee.wiki.entity_extractor.ner_concepts import (
+    NerConceptsExtractor,
+    pre_clean_for_ner,
+)
 
 
 @dataclass
@@ -360,3 +363,78 @@ class TestLabelSanityRejection:
             result = extractor.extract([_chunk("s.txt", 0, "t")])
         labels = {e.label for e in result}
         assert labels == {"Ford"}
+
+
+class TestPreCleanForNer:
+    """Pure-function unit tests for the A2 markdown-noise stripper."""
+
+    def test_strips_markdown_table_row(self) -> None:
+        noisy = "intro\n| Designer | Irv Rybicki |\noutro"
+        cleaned = pre_clean_for_ner(noisy)
+        assert "| Designer" not in cleaned
+        assert "intro" in cleaned
+        assert "outro" in cleaned
+
+    def test_strips_page_number_only_line(self) -> None:
+        noisy = "paragraph text\n  42  \nmore text"
+        cleaned = pre_clean_for_ner(noisy)
+        assert " 42 " not in cleaned
+        assert "paragraph text" in cleaned
+        assert "more text" in cleaned
+
+    def test_preserves_inline_numbers(self) -> None:
+        # "42" inside prose must NOT be stripped; only standalone
+        # page-number-only lines get removed.
+        noisy = "Chapter 42 introduces the concept."
+        assert pre_clean_for_ner(noisy) == noisy
+
+    def test_strips_nav_chrome(self) -> None:
+        noisy = "lede\nEdit this page\nJump to search\nbody"
+        cleaned = pre_clean_for_ner(noisy)
+        assert "Edit this page" not in cleaned
+        assert "Jump to search" not in cleaned
+        assert "lede" in cleaned
+        assert "body" in cleaned
+
+    def test_normal_prose_round_trips_unchanged(self) -> None:
+        prose = "The Chevrolet Caprice is a full-size car.\nIt was produced from 1965."
+        assert pre_clean_for_ner(prose) == prose
+
+    def test_mixed_noise_and_prose(self) -> None:
+        noisy = (
+            "The Caprice was designed by\n"
+            "| Designer | Irv Rybicki |\n"
+            "| --- | --- |\n"
+            "Irv Rybicki, a GM designer."
+        )
+        cleaned = pre_clean_for_ner(noisy)
+        assert "|" not in cleaned
+        assert "The Caprice was designed by" in cleaned
+        assert "Irv Rybicki, a GM designer." in cleaned
+
+    def test_empty_input(self) -> None:
+        assert pre_clean_for_ner("") == ""
+
+
+class TestExtractorAppliesPreClean:
+    """Integration: the extractor hands pre-cleaned text to spaCy."""
+
+    def test_table_row_never_reaches_pipeline(self) -> None:
+        """Captured pipeline input must not contain the table markup."""
+        seen_texts: list[str] = []
+
+        class _CapturingPipeline:
+            def pipe(self, texts: Any) -> Any:
+                for text in texts:
+                    seen_texts.append(text)
+                    yield _FakeDoc()
+
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        noisy = "Chevrolet Caprice.\n| Designer | Irv Rybicki |\n"
+        with patch(
+            "lilbee.wiki.entity_extractor.ner_concepts._load_spacy",
+            return_value=_CapturingPipeline(),
+        ):
+            extractor.extract([_chunk("s.txt", 0, noisy)])
+        assert seen_texts, "extractor should have called the pipeline"
+        assert all("| Designer" not in t for t in seen_texts)
