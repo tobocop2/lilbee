@@ -21,7 +21,6 @@ from lilbee.wiki.gen import (
     _find_excerpt_source,
     _generate_synthesis_page,
     _group_chunks_by_page,
-    _index_wiki_page,
     _leaf_hash,
     _match_citation_source,
     _parse_faithfulness_score,
@@ -30,6 +29,7 @@ from lilbee.wiki.gen import (
     _truncate_chunks_to_budget,
     _verify_citations,
     generate_synthesis_pages,
+    index_wiki_page,
 )
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
@@ -953,7 +953,7 @@ class TestSynthesisDriftDetection:
 
 
 class TestWikiIndexing:
-    """``_index_wiki_page`` chunks, embeds and writes wiki page bodies."""
+    """``index_wiki_page`` chunks, embeds and writes wiki page bodies."""
 
     @staticmethod
     def _target(subdir: str = CONCEPTS_SUBDIR, slug: str = "brakes") -> PageTarget:
@@ -996,7 +996,7 @@ class TestWikiIndexing:
                 return_value=["Brakes convert kinetic energy to heat through friction pads."],
             ),
         ):
-            _index_wiki_page(content, target, store)
+            index_wiki_page(content, target.wiki_source, store)
 
         store.clear_table.assert_called_once()
         call_args = store.clear_table.call_args
@@ -1029,7 +1029,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=["body"]),
         ):
-            _index_wiki_page(self._content("body"), target, store)
+            index_wiki_page(self._content("body"), target.wiki_source, store)
 
         store.clear_table.assert_not_called()
         store.add_chunks.assert_not_called()
@@ -1052,7 +1052,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text") as chunker,
         ):
-            _index_wiki_page(content, target, store)
+            index_wiki_page(content, target.wiki_source, store)
 
         store.clear_table.assert_called_once()
         chunker.assert_not_called()
@@ -1067,7 +1067,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=[]),
         ):
-            _index_wiki_page(self._content("some body"), target, store)
+            index_wiki_page(self._content("some body"), target.wiki_source, store)
 
         store.clear_table.assert_called_once()
         store.add_chunks.assert_not_called()
@@ -1085,7 +1085,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=["one chunk"]),
         ):
-            _index_wiki_page(self._content("first body"), target, store)
-            _index_wiki_page(self._content("second body"), target, store)
+            index_wiki_page(self._content("first body"), target.wiki_source, store)
+            index_wiki_page(self._content("second body"), target.wiki_source, store)
 
         assert call_order == ["clear", "add", "clear", "add"]

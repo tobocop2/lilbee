@@ -502,34 +502,39 @@ def _assemble_content(
     return full
 
 
-def _index_wiki_page(content: str, target: PageTarget, store: Store) -> None:
+def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
-    Drafts and archive pages never enter the search pool. Stale rows for
-    the same ``wiki_source`` are cleared first so regeneration replaces
+    Drafts and archive pages never enter the search pool: a
+    ``wiki_source`` whose first path component is not a content
+    subdir returns 0 without touching the store. Stale rows for the
+    same ``wiki_source`` are cleared first so regeneration replaces
     instead of accumulating. Record shape matches the markdown-ingest
     convention in ``ingest.py``: ``content_type="text"``, all four
     page/line positions ``0`` (wiki pages are not paginated).
+
+    Returns the number of chunk rows written.
     """
-    if target.subdir not in WIKI_CONTENT_SUBDIRS:
-        return
+    subdir = _subdir_from_wiki_source(wiki_source)
+    if subdir is None or subdir not in WIKI_CONTENT_SUBDIRS:
+        return 0
 
     body = extract_body(content).strip()
     store.clear_table(
         CHUNKS_TABLE,
-        f"source = '{escape_sql_string(target.wiki_source)}' AND chunk_type = '{CHUNK_TYPE_WIKI}'",
+        f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{CHUNK_TYPE_WIKI}'",
     )
     if not body:
-        return
+        return 0
 
     chunks = chunk_text(body, mime_type="text/markdown", use_semantic=True)
     if not chunks:
-        return
+        return 0
 
     vectors = get_services().embedder.embed_batch(chunks)
     records = [
         {
-            "source": target.wiki_source,
+            "source": wiki_source,
             "content_type": "text",
             "chunk_type": CHUNK_TYPE_WIKI,
             "page_start": 0,
@@ -543,6 +548,18 @@ def _index_wiki_page(content: str, target: PageTarget, store: Store) -> None:
         for idx, (text, vector) in enumerate(zip(chunks, vectors, strict=True))
     ]
     store.add_chunks(records)
+    return len(records)
+
+
+def _subdir_from_wiki_source(wiki_source: str) -> str | None:
+    """Return the subdir component (``summaries``, ``concepts``, ...) of *wiki_source*.
+
+    ``wiki_source`` is the ``<wiki_dir>/<subdir>/<slug>.md`` path
+    stored in citations and chunks. Returns None when the path has
+    fewer than two components.
+    """
+    parts = wiki_source.split("/")
+    return parts[1] if len(parts) >= 2 else None
 
 
 def _persist_and_finalize(
@@ -562,7 +579,7 @@ def _persist_and_finalize(
     store.delete_citations_for_wiki(target.wiki_source)
     store.add_citations(verified)
 
-    _index_wiki_page(content, target, store)
+    index_wiki_page(content, target.wiki_source, store)
 
     if config.wiki_prune_raw:
         for name in source_names:

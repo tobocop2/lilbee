@@ -1260,3 +1260,134 @@ def wiki_update(
     lands in the ingest-hook task and will re-route this command then.
     """
     wiki_build(data_dir=data_dir, use_global=use_global)
+
+
+drafts_app = typer.Typer(help="Review wiki drafts: list, diff, accept, reject.")
+wiki_app.add_typer(drafts_app, name="drafts")
+
+
+@drafts_app.command(name="list")
+def wiki_drafts_list(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """List pending wiki drafts with drift, faithfulness, and pairing info."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import list_drafts
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    drafts = list_drafts(wiki_root)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_drafts_list",
+                "drafts": [d.to_dict() for d in drafts],
+                "total": len(drafts),
+            }
+        )
+        return
+
+    if not drafts:
+        console.print("No drafts pending review.")
+        return
+
+    table = Table(title="Wiki Drafts")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Drift")
+    table.add_column("Faithfulness")
+    table.add_column("Published?", style=theme.MUTED)
+    for d in drafts:
+        drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
+        faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
+        published = "yes" if d.published_exists else "no"
+        table.add_row(d.slug, drift, faith, published)
+    console.print(table)
+
+
+@drafts_app.command(name="diff")
+def wiki_drafts_diff(
+    slug: str = typer.Argument(..., help="Draft slug (e.g. chevrolet)."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Show a unified diff of the draft against its published counterpart."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import diff_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        diff = diff_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
+        return
+    console.print(diff or "(no differences)")
+
+
+@drafts_app.command(name="accept")
+def wiki_drafts_accept(
+    slug: str = typer.Argument(..., help="Draft slug to accept."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Overwrite the published page with the draft and re-index its chunks."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import accept_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        result = accept_draft(slug, wiki_root, get_services().store)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_drafts_accept",
+                "slug": result.slug,
+                "moved_to": str(result.moved_to),
+                "reindexed_chunks": result.reindexed_chunks,
+            }
+        )
+        return
+    console.print(
+        f"Accepted [{theme.ACCENT}]{slug}[/{theme.ACCENT}] -> "
+        f"{result.moved_to} ({result.reindexed_chunks} chunks re-indexed)"
+    )
+
+
+@drafts_app.command(name="reject")
+def wiki_drafts_reject(
+    slug: str = typer.Argument(..., help="Draft slug to reject."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Delete the draft file. Does not touch the published page or index."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import reject_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        reject_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_reject", "slug": slug})
+        return
+    console.print(f"Rejected [{theme.ACCENT}]{slug}[/{theme.ACCENT}]")
