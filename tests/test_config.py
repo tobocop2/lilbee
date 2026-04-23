@@ -825,6 +825,15 @@ class TestConceptAllowedEntTypes:
             c = Config()
             assert "PERSON" in c.concept_allowed_ent_types
 
+    def test_non_string_non_collection_input_falls_back_to_default(self):
+        """A programmatic override with an unsupported type keeps defaults.
+
+        The validator accepts str/set/frozenset/list. Anything else (None,
+        int, bytes) hits the trailing fallback branch instead of raising.
+        """
+        c = Config(concept_allowed_ent_types=None)  # type: ignore[arg-type]
+        assert "PERSON" in c.concept_allowed_ent_types
+
 
 class TestEmptyStringValidation:
     def test_empty_chat_model_rejected(self, tmp_path):

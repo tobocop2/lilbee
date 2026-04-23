@@ -141,6 +141,13 @@ class TestIsValidLabel:
     def test_rejects_structural_angle(self):
         assert is_valid_label(">>>>") is False
 
+    def test_rejects_structural_char_mid_label(self):
+        # Leading char is alpha so the first-char gate passes; the
+        # structural-char membership check (line 161) is what rejects
+        # ``foo|bar``. Guards against a label that sneaks past the
+        # first-char filter but still carries markdown-table noise.
+        assert is_valid_label("foo|bar") is False
+
     def test_rejects_leading_digit(self):
         # The bb-8b7s "158 vehicle" pattern: page numbers prepended to entities.
         assert is_valid_label("158 vehicle") is False

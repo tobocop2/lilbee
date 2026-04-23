@@ -8,8 +8,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.wiki.drafts import (
+    PENDING_KIND_COLLISION,
+    PENDING_KIND_PARSE,
     AcceptResult,
     DraftInfo,
+    _base_slug_for_collision,
     accept_draft,
     diff_draft,
     list_drafts,
@@ -250,3 +253,95 @@ class TestListDraftsWithOnlyDriftMarker:
         assert d.drift_ratio == pytest.approx(0.15)
         assert d.faithfulness_score is None
         assert d.bad_title is False
+
+
+class TestPendingKindDetection:
+    """Phase D: batched-generation markers surface via ``pending_kind``."""
+
+    def test_pending_parse_marker_surfaces_kind(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / DRAFTS_SUBDIR / "henry-ford.md",
+            "<!-- PENDING: batch parse failed for source s.txt, "
+            "entity/concept Henry Ford - retry -->\n",
+        )
+        [d] = list_drafts(wiki_root)
+        assert d.pending_kind == PENDING_KIND_PARSE
+        assert d.drift_ratio is None
+
+    def test_pending_collision_marker_surfaces_kind(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / DRAFTS_SUBDIR / "brakes-collision-deadbeef.md",
+            "<!-- PENDING: concept slug collision with source s1.txt, "
+            "content from s2.txt held for review -->\n\nbody\n",
+        )
+        [d] = list_drafts(wiki_root)
+        assert d.pending_kind == PENDING_KIND_COLLISION
+        assert d.drift_ratio is None
+
+
+class TestBaseSlugForCollision:
+    """Collision suffix stripping so accept lands on the winning slug."""
+
+    def test_strips_collision_hash(self) -> None:
+        assert _base_slug_for_collision("brakes-collision-deadbeef") == "brakes"
+
+    def test_leaves_non_collision_slugs_untouched(self) -> None:
+        assert _base_slug_for_collision("brakes") == "brakes"
+
+    def test_only_strips_trailing_suffix(self) -> None:
+        # Slug with "collision" in the middle should NOT be stripped;
+        # only the trailing ``-collision-<8hex>`` pattern is recognized.
+        assert _base_slug_for_collision("collision-course-12345678") == "collision-course-12345678"
+
+
+class TestAcceptPendingParse:
+    """Accepting a PENDING-PARSE marker deletes the marker and reports zero chunks."""
+
+    def test_accept_pending_parse_deletes_marker_and_returns_zero(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        marker = wiki_root / DRAFTS_SUBDIR / "henry-ford.md"
+        _write(
+            marker,
+            "<!-- PENDING: batch parse failed for source s.txt, "
+            "entity/concept Henry Ford - retry -->\n",
+        )
+        store = MagicMock()
+        # No call to index_wiki_page should occur on a PENDING-PARSE
+        # accept; patching to blow up if called would make the failure
+        # mode obvious.
+        with patch("lilbee.wiki.drafts.index_wiki_page") as idx:
+            result = accept_draft("henry-ford", wiki_root, store)
+        assert isinstance(result, AcceptResult)
+        assert result.slug == "henry-ford"
+        assert result.reindexed_chunks == 0
+        assert result.moved_to == marker
+        assert not marker.exists()
+        idx.assert_not_called()
+
+    def test_accept_pending_collision_lands_on_base_slug(self, tmp_path: Path) -> None:
+        """Collision draft accepts overwrite the winning page."""
+        wiki_root = tmp_path / "wiki"
+        # Winning source already wrote the concept page.
+        _write(wiki_root / CONCEPTS_SUBDIR / "brakes.md", "winning body\n")
+        # Losing source's collision marker.
+        draft = wiki_root / DRAFTS_SUBDIR / "brakes-collision-deadbeef.md"
+        _write(
+            draft,
+            "<!-- PENDING: concept slug collision with source s1.txt, "
+            "content from s2.txt held for review -->\n\n"
+            "---\nfaithfulness_score: 0.9\n---\n\n"
+            "# Brakes\n\nlosing body that won curation\n",
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = accept_draft("brakes-collision-deadbeef", wiki_root, store)
+        # The accepted slug collapses to the winning base slug.
+        assert result.slug == "brakes"
+        assert CONCEPTS_SUBDIR in result.moved_to.parts
+        # Published page was overwritten with the collision draft's body.
+        body = (wiki_root / CONCEPTS_SUBDIR / "brakes.md").read_text()
+        assert "losing body that won curation" in body
+        assert "PENDING" not in body
+        assert not draft.exists()

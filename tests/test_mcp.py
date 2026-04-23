@@ -23,6 +23,8 @@ from lilbee.mcp import (
     status,
     sync,
     wiki_citations,
+    wiki_drafts_diff,
+    wiki_drafts_list,
     wiki_lint,
     wiki_list,
     wiki_prune,
@@ -855,3 +857,43 @@ class TestMcpSubcommand:
         result = runner.invoke(app, ["mcp"])
         assert result.exit_code == 0
         mock_main.assert_called_once()
+
+
+class TestWikiDraftsMcp:
+    """Phase D: drafts MCP tools surface the same data as the CLI list/diff."""
+
+    def test_wiki_drafts_list_returns_entries(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        drafts_dir = isolated_env / "wiki" / "drafts"
+        drafts_dir.mkdir(parents=True)
+        (drafts_dir / "x.md").write_text(
+            "---\nfaithfulness_score: 0.7\n---\n\nbody\n", encoding="utf-8"
+        )
+        result = wiki_drafts_list()
+        assert result["command"] == "wiki_drafts_list"
+        assert result["total"] == 1
+        assert result["drafts"][0]["slug"] == "x"
+
+    def test_wiki_drafts_diff_returns_unified_diff(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        wiki_root = isolated_env / "wiki"
+        (wiki_root / "summaries").mkdir(parents=True)
+        (wiki_root / "summaries" / "x.md").write_text("old\n", encoding="utf-8")
+        (wiki_root / "drafts").mkdir(parents=True)
+        (wiki_root / "drafts" / "x.md").write_text("new\n", encoding="utf-8")
+        result = wiki_drafts_diff("x")
+        assert result["command"] == "wiki_drafts_diff"
+        assert result["slug"] == "x"
+        assert "-old" in result["diff"]
+        assert "+new" in result["diff"]
+
+    def test_wiki_drafts_diff_missing_returns_error(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        result = wiki_drafts_diff("missing")
+        assert "error" in result
