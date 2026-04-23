@@ -45,6 +45,7 @@ from lilbee.progress import EventType, ProgressEvent
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
+from lilbee.store import scope_to_chunk_type
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -756,10 +757,27 @@ class ChatScreen(Screen[None]):
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
         self.streaming = True
-        self._stream_response(text, assistant_msg)
+        self._stream_response(text, assistant_msg, self._current_chunk_type())
+
+    def _current_chunk_type(self) -> str | None:
+        """Translate the ModelBar scope selection into a ``chunk_type`` arg.
+
+        Returns ``None`` for "both" (no filter) and the raw/wiki string
+        otherwise. Defaults to ``None`` when the ModelBar isn't mounted
+        (e.g. test apps).
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            bar = self.query_one("#model-bar", ModelBar)
+        except NoMatches:
+            return None
+        return scope_to_chunk_type(bar.scope)
 
     @work(thread=True)
-    def _stream_response(self, question: str, widget: AssistantMessage) -> None:
+    def _stream_response(
+        self, question: str, widget: AssistantMessage, chunk_type: str | None
+    ) -> None:
         """Stream LLM response in a background thread."""
         worker = _get_worker()
         response_parts: list[str] = []
@@ -769,7 +787,9 @@ class ChatScreen(Screen[None]):
         try:
             with self._history_lock:
                 history_snapshot = self._history[:-1]
-            stream = get_services().searcher.ask_stream(question, history=history_snapshot)
+            stream = get_services().searcher.ask_stream(
+                question, history=history_snapshot, chunk_type=chunk_type
+            )
             for token in stream:
                 if worker.is_cancelled:
                     break

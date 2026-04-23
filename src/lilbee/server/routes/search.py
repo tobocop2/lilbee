@@ -16,6 +16,7 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
 )
+from lilbee.store import scope_to_chunk_type
 
 
 @get("/api/search")
@@ -26,6 +27,10 @@ async def search_route(
     chunk_type: str | None = Parameter(query="chunk_type", default=None),
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
+    try:
+        chunk_type = scope_to_chunk_type(chunk_type)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
     except ValueError as exc:
@@ -42,6 +47,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
             question=data.question,
             top_k=data.top_k,
             options=data.options,
+            chunk_type=data.chunk_type,
         )
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
@@ -57,6 +63,7 @@ async def ask_stream_route(data: AskRequest) -> Stream:
             question=data.question,
             top_k=data.top_k,
             options=data.options,
+            chunk_type=data.chunk_type,
         ),
         media_type="text/event-stream",
     )
@@ -73,6 +80,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         history=history,
         top_k=data.top_k,
         options=data.options,
+        chunk_type=data.chunk_type,
     )
 
 
@@ -88,6 +96,7 @@ async def chat_stream_route(data: ChatRequest) -> Stream:
             history=history,
             top_k=data.top_k,
             options=data.options,
+            chunk_type=data.chunk_type,
         ),
         media_type="text/event-stream",
     )

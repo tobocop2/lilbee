@@ -271,6 +271,42 @@ class TestAsk:
         result = runner.invoke(app, ["ask", "question", "--model", "llama3"])
         assert result.exit_code == 0
 
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_scope_wiki_reaches_ask_stream(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "--scope", "wiki", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") == "wiki"
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_scope_raw_reaches_ask_stream(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "--scope", "raw", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") == "raw"
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_default_scope_is_mixed_pool(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") is None
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_invalid_scope_exits_nonzero(self, mock_sync, mock_svc):
+        result = runner.invoke(app, ["ask", "--scope", "bogus", "q"])
+        assert result.exit_code != 0
+        mock_svc.searcher.ask_stream.assert_not_called()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_scope_reaches_ask_raw(self, mock_sync, mock_svc):
+        from lilbee.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
+        result = runner.invoke(app, ["--json", "ask", "--scope", "wiki", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
+
 
 class TestDataDirFlag:
     def test_status_with_data_dir(self, tmp_path):
@@ -807,6 +843,30 @@ class TestSearch:
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "error" in data
+        mock_svc.searcher.search.assert_not_called()
+
+    def test_search_scope_wiki_passes_wiki_chunk_type(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "--scope", "wiki", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "wiki"
+
+    def test_search_scope_raw_passes_raw_chunk_type(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "--scope", "raw", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "raw"
+
+    def test_search_default_scope_is_mixed_pool(self, mock_svc):
+        """Omitting --scope means chunk_type=None (both)."""
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") is None
+
+    def test_search_invalid_scope_exits_nonzero(self, mock_svc):
+        result = runner.invoke(app, ["search", "--scope", "bogus", "q"])
+        assert result.exit_code != 0
         mock_svc.searcher.search.assert_not_called()
 
     def test_search_json_provider_error(self, mock_svc):

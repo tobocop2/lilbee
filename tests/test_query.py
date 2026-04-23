@@ -13,7 +13,6 @@ from lilbee.query import (
     deduplicate_sources,
     filter_results,
     format_source,
-    prefer_wiki,
     sort_by_relevance,
     strip_llm_citations,
 )
@@ -248,6 +247,26 @@ class TestDiversifySources:
         results = [_make_result(source="a.md", distance=float(i) / 10) for i in range(5)]
         diverse = diversify_sources(results)
         assert len(diverse) == 3
+
+    def test_wiki_and_raw_with_same_stem_are_independent_sources(self):
+        """``wiki/summaries/doc.md`` and ``doc.md`` keep separate caps.
+
+        Per-source cap keys on the exact ``source`` string. A wiki page
+        paraphrasing ``doc.md`` becomes ``wiki/summaries/doc.md`` in the
+        store, which is a distinct source. So the cap applies to each
+        side independently. With ``max_per_source=1`` both sides still
+        surface together.
+        """
+        from lilbee.query import diversify_sources
+
+        results = [
+            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki", distance=0.1),
+            _make_result(source="doc.md", chunk_type="raw", distance=0.2),
+            _make_result(source="doc.md", chunk_type="raw", distance=0.3),
+        ]
+        diverse = diversify_sources(results, max_per_source=1)
+        assert len(diverse) == 2
+        assert {r.chunk_type for r in diverse} == {"wiki", "raw"}
 
 
 class TestBuildContext:
@@ -1162,88 +1181,99 @@ class TestFormatSourceWiki:
         assert "wiki/summaries/doc.md" in result.replace("\\", "/")
 
 
-class TestPreferWiki:
-    def test_prefers_wiki_over_raw(self):
-        results = [
-            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki"),
-            _make_result(source="doc.md", chunk_type="raw"),
-        ]
-        filtered = prefer_wiki(results)
-        assert len(filtered) == 1
-        assert filtered[0].chunk_type == "wiki"
+class TestChunkTypeScope:
+    """build_rag_context and ask_stream forward ``chunk_type`` to the store search.
 
-    def test_keeps_raw_when_no_wiki(self):
-        results = [
-            _make_result(source="doc.md", chunk_type="raw"),
-            _make_result(source="other.md", chunk_type="raw"),
-        ]
-        assert prefer_wiki(results) == results
+    Replaced the former implicit pool preference. Callers (CLI --scope,
+    MCP scope, HTTP chunk_type, TUI toggle) always choose raw/wiki/both
+    explicitly.
+    """
 
-    def test_keeps_raw_without_wiki_coverage(self):
-        results = [
-            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki"),
-            _make_result(source="other.md", chunk_type="raw"),
-        ]
-        filtered = prefer_wiki(results)
-        assert len(filtered) == 2
-
-    def test_empty_input(self):
-        assert prefer_wiki([]) == []
-
-    def test_nested_path_matching(self):
-        """Raw source "subdir/doc.md" maps to wiki slug "subdir--doc"."""
-        results = [
-            _make_result(source="wiki/summaries/subdir--doc.md", chunk_type="wiki"),
-            _make_result(source="subdir/doc.md", chunk_type="raw"),
-        ]
-        filtered = prefer_wiki(results)
-        assert len(filtered) == 1
-        assert filtered[0].chunk_type == "wiki"
-
-    def test_deeply_nested_path_matching(self):
-        """Raw source "a/b/c.md" maps to wiki slug "a--b--c"."""
-        results = [
-            _make_result(source="wiki/summaries/a--b--c.md", chunk_type="wiki"),
-            _make_result(source="a/b/c.md", chunk_type="raw"),
-        ]
-        filtered = prefer_wiki(results)
-        assert len(filtered) == 1
-        assert filtered[0].chunk_type == "wiki"
-
-
-class TestPreferWikiGuard:
-    """prefer_wiki should only run in build_rag_context when wiki is enabled."""
-
-    def test_prefer_wiki_skipped_when_wiki_disabled(self, mock_svc):
+    def test_build_rag_context_default_is_mixed_pool(self, mock_svc):
+        """No ``chunk_type`` arg means no filter. Both sides survive."""
         wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
         raw_chunk = _make_result(source="doc.md", chunk_type="raw")
         mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
-        old_wiki = cfg.wiki
+        result = get_services().searcher.build_rag_context("question")
+        assert result is not None
+        chunks, _ = result
+        assert len(chunks) == 2
+
+    def test_build_rag_context_forwards_chunk_type_to_store(self, mock_svc):
+        mock_svc.store.search.return_value = []
+        get_services().searcher.build_rag_context("question", chunk_type="wiki")
+        assert mock_svc.store.search.called
+        kwargs = mock_svc.store.search.call_args.kwargs
+        assert kwargs.get("chunk_type") == "wiki"
+
+    def test_ask_raw_forwards_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(source="doc.md", chunk_type="raw")]
+        mock_svc.provider.chat.return_value = "answer"
+        get_services().searcher.ask_raw("question", chunk_type="raw")
+        kwargs = mock_svc.store.search.call_args.kwargs
+        assert kwargs.get("chunk_type") == "raw"
+
+    def test_ask_forwards_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(source="doc.md", chunk_type="raw")]
+        mock_svc.provider.chat.return_value = "answer"
+        get_services().searcher.ask("question", chunk_type="raw")
+        kwargs = mock_svc.store.search.call_args.kwargs
+        assert kwargs.get("chunk_type") == "raw"
+
+    def test_ask_stream_forwards_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [
+            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
+        ]
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        tokens = list(get_services().searcher.ask_stream("question", chunk_type="wiki"))
+        assert tokens  # stream produced something
+        kwargs = mock_svc.store.search.call_args.kwargs
+        assert kwargs.get("chunk_type") == "wiki"
+
+
+class TestNormalizeChunkType:
+    """Wiki-scope requests normalize to no-filter when wiki generation is off.
+
+    Keeps the CLI/MCP/HTTP experience honest (no silent empty results)
+    and mirrors the TUI hiding the toggle altogether.
+    """
+
+    def test_wiki_scope_with_wiki_disabled_normalizes_to_none(self, mock_svc, caplog):
         cfg.wiki = False
         try:
-            result = get_services().searcher.build_rag_context("question")
-            assert result is not None
-            chunks, _ = result
-            # Both chunks survive — prefer_wiki was NOT applied
-            assert len(chunks) == 2
+            mock_svc.store.search.return_value = []
+            get_services().searcher.search("q", chunk_type="wiki")
+            kwargs = mock_svc.store.search.call_args.kwargs
+            assert kwargs.get("chunk_type") is None
+            assert any("wiki is disabled" in r.message for r in caplog.records)
         finally:
-            cfg.wiki = old_wiki
+            cfg.wiki = True
 
-    def test_prefer_wiki_applied_when_wiki_enabled(self, mock_svc):
-        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
-        raw_chunk = _make_result(source="doc.md", chunk_type="raw")
-        mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
-        old_wiki = cfg.wiki
-        cfg.wiki = True
+    def test_raw_scope_with_wiki_disabled_unchanged(self, mock_svc):
+        cfg.wiki = False
         try:
-            result = get_services().searcher.build_rag_context("question")
-            assert result is not None
-            chunks, _ = result
-            # Only wiki chunk survives — prefer_wiki removed the raw duplicate
-            assert len(chunks) == 1
-            assert chunks[0].chunk_type == "wiki"
+            mock_svc.store.search.return_value = []
+            get_services().searcher.search("q", chunk_type="raw")
+            kwargs = mock_svc.store.search.call_args.kwargs
+            assert kwargs.get("chunk_type") == "raw"
         finally:
-            cfg.wiki = old_wiki
+            cfg.wiki = True
+
+
+class TestStructuredQueryScopeInteraction:
+    """Explicit ``chunk_type`` beats the ``wiki:``/``raw:`` prefix shortcut."""
+
+    def test_explicit_chunk_type_overrides_wiki_prefix(self, mock_svc):
+        mock_svc.store.search.return_value = []
+        get_services().searcher.search("wiki: energy", chunk_type="raw")
+        kwargs = mock_svc.store.search.call_args.kwargs
+        assert kwargs.get("chunk_type") == "raw"
+
+    def test_wiki_prefix_alone_still_filters_to_wiki(self, mock_svc):
+        mock_svc.store.search.return_value = []
+        get_services().searcher.search("wiki: energy")
+        kwargs = mock_svc.store.search.call_args.kwargs
+        assert kwargs.get("chunk_type") == "wiki"
 
 
 class TestStructuredQueryWikiRaw:

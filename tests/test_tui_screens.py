@@ -1990,6 +1990,47 @@ async def test_chat_slash_unknown_command():
             assert "Unknown command" in mock_notify.call_args[0][0]
 
 
+async def test_chat_current_chunk_type_reflects_model_bar():
+    """The helper reads the scope Select via query_one; test the happy path."""
+    from lilbee.cli.tui.widgets.model_bar import ModelBar
+    from lilbee.store import SearchScope
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        # Default scope is "both" -> chunk_type None
+        assert app.screen._current_chunk_type() is None
+
+        # Flip the ModelBar scope state directly; the change-handler path is
+        # exercised by test_tui_widgets.TestModelBar.test_scope_change_updates_bar_state.
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        bar._scope = SearchScope.WIKI
+        assert app.screen._current_chunk_type() == "wiki"
+
+
+async def test_chat_current_chunk_type_without_model_bar_returns_none():
+    """Test apps without a ModelBar (e.g. mounting ChatScreen in isolation)
+    must get ``None`` from the helper, not a ``NoMatches`` crash.
+    """
+    from textual.app import App
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    class _BareChatApp(App):
+        def on_mount(self) -> None:
+            # Push ChatScreen but manually remove the ModelBar after mount
+            self.push_screen(ChatScreen())
+
+    app = _BareChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Uninstall the ModelBar so the NoMatches branch fires
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        await bar.remove()
+        await pilot.pause()
+        assert app.screen._current_chunk_type() is None
+
+
 async def test_chat_slash_version():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:

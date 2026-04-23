@@ -43,6 +43,7 @@ from lilbee.progress import (
 )
 from lilbee.security import validate_path_within
 from lilbee.services import get_services
+from lilbee.store import CHUNK_TYPE_RAW
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ class ChunkRecord(TypedDict):
 
     source: str
     content_type: str
+    chunk_type: str
     page_start: int
     page_end: int
     line_start: int
@@ -353,6 +355,7 @@ async def _vision_fallback(
         ChunkRecord(
             source=source_name,
             content_type=content_type,
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=page_num,
             page_end=page_num,
             line_start=0,
@@ -460,6 +463,7 @@ async def ingest_document(
         ChunkRecord(
             source=source_name,
             content_type=content_type,
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=chunk.metadata.get("first_page") or 0,
             page_end=chunk.metadata.get("last_page") or 0,
             line_start=0,
@@ -490,6 +494,7 @@ def ingest_code_sync(
         ChunkRecord(
             source=source_name,
             content_type="code",
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=0,
             page_end=0,
             line_start=cc.line_start,
@@ -526,6 +531,7 @@ async def ingest_markdown(
         ChunkRecord(
             source=source_name,
             content_type="text",
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=0,
             page_end=0,
             line_start=0,

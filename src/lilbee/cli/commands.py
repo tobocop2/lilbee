@@ -48,6 +48,7 @@ from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_i
 from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
+from lilbee.store import SearchScope, scope_to_chunk_type
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
@@ -60,6 +61,13 @@ _ocr_timeout_option = typer.Option(
     None,
     "--ocr-timeout",
     help="Per-page timeout in seconds for vision OCR (default: 120, 0 = no limit).",
+)
+_scope_option = typer.Option(
+    SearchScope.BOTH,
+    "--scope",
+    "-s",
+    help="Restrict the pool to raw chunks, wiki pages, or both (default).",
+    case_sensitive=False,
 )
 
 
@@ -81,6 +89,7 @@ _paths_argument = typer.Argument(
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
+    scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -95,7 +104,11 @@ def search(
         raise SystemExit(1)
 
     try:
-        results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
+        results = get_services().searcher.search(
+            query,
+            top_k=top_k or cfg.top_k,
+            chunk_type=scope_to_chunk_type(scope),
+        )
     except Exception as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -525,6 +538,7 @@ def remove(
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="Question to ask"),
+    scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     use_global: bool = global_option,
@@ -560,8 +574,10 @@ def ask(
         else:
             auto_sync(console)
 
+        chunk_type = scope_to_chunk_type(scope)
+
         if cfg.json_mode:
-            result = get_services().searcher.ask_raw(question)
+            result = get_services().searcher.ask_raw(question, chunk_type=chunk_type)
             json_output(
                 {
                     "command": "ask",
@@ -572,7 +588,7 @@ def ask(
             )
             return
 
-        for token in get_services().searcher.ask_stream(question):
+        for token in get_services().searcher.ask_stream(question, chunk_type=chunk_type):
             console.print(token.content, end="")
         console.print()
     except (RuntimeError, ProviderError) as exc:

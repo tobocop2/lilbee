@@ -130,7 +130,7 @@ class TestSearch:
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3, chunk_type=None)
 
     def test_empty_results(self, mock_svc):
         mock_svc.searcher.search.return_value = []
@@ -151,6 +151,26 @@ class TestSearch:
         result = search("test", top_k=3)
         assert "error" in result
         assert "embed failed" in result["error"]
+
+    def test_scope_wiki_filters_to_wiki_chunks(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        search("q", top_k=3, scope="wiki")
+        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="wiki")
+
+    def test_scope_raw_filters_to_raw_chunks(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        search("q", top_k=3, scope="raw")
+        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="raw")
+
+    def test_scope_both_means_no_filter(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        search("q", top_k=3, scope="both")
+        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
+
+    def test_invalid_scope_returns_error(self, mock_svc):
+        result = search("q", top_k=3, scope="bogus")
+        assert "error" in result
+        mock_svc.searcher.search.assert_not_called()
 
     def test_filters_irrelevant_results(self, mock_svc):
         """Results with distance > max_distance are excluded."""

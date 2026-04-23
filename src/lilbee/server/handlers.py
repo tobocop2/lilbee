@@ -251,12 +251,19 @@ async def search(q: str, top_k: int = 5, chunk_type: str | None = None) -> list[
     return group(results)
 
 
-async def ask(question: str, top_k: int = 0, options: dict[str, Any] | None = None) -> AskResponse:
+async def ask(
+    question: str,
+    top_k: int = 0,
+    options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
+) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
     if not question or not question.strip():
         raise ValueError("question must not be empty")
     opts = _resolve_generation_options(options)
-    result = get_services().searcher.ask_raw(question, top_k=top_k, options=opts)
+    result = get_services().searcher.ask_raw(
+        question, top_k=top_k, options=opts, chunk_type=chunk_type
+    )
     return AskResponse(
         answer=result.answer,
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
@@ -298,11 +305,14 @@ async def _stream_rag_response(
     history: list[ChatMessage] | None = None,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
 
-    rag = get_services().searcher.build_rag_context(question, top_k=top_k, history=history)
+    rag = get_services().searcher.build_rag_context(
+        question, top_k=top_k, history=history, chunk_type=chunk_type
+    )
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
@@ -334,10 +344,13 @@ async def _stream_rag_response(
 
 
 def ask_stream(
-    question: str, top_k: int = 0, options: dict[str, Any] | None = None
+    question: str,
+    top_k: int = 0,
+    options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events: token, sources, done."""
-    return _stream_rag_response(question, top_k=top_k, options=options)
+    return _stream_rag_response(question, top_k=top_k, options=options, chunk_type=chunk_type)
 
 
 async def chat(
@@ -345,10 +358,13 @@ async def chat(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources."""
     opts = _resolve_generation_options(options)
-    result = get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=opts)
+    result = get_services().searcher.ask_raw(
+        question, top_k=top_k, history=history, options=opts, chunk_type=chunk_type
+    )
     return AskResponse(
         answer=result.answer,
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
@@ -360,9 +376,12 @@ def chat_stream(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events with chat history support."""
-    return _stream_rag_response(question, history=history, top_k=top_k, options=options)
+    return _stream_rag_response(
+        question, history=history, top_k=top_k, options=options, chunk_type=chunk_type
+    )
 
 
 async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:

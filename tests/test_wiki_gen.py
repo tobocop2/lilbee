@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.store import SearchChunk, Store
+from lilbee.config import CHUNKS_TABLE, cfg
+from lilbee.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation
 from lilbee.wiki.gen import (
     _check_faithfulness,
@@ -21,6 +21,7 @@ from lilbee.wiki.gen import (
     _find_excerpt_source,
     _generate_synthesis_page,
     _group_chunks_by_page,
+    _index_wiki_page,
     _leaf_hash,
     _match_citation_source,
     _parse_faithfulness_score,
@@ -30,12 +31,32 @@ from lilbee.wiki.gen import (
     _verify_citations,
     generate_synthesis_pages,
 )
-from lilbee.wiki.shared import make_slug
+from lilbee.wiki.shared import (
+    CONCEPTS_SUBDIR,
+    DRAFTS_SUBDIR,
+    PageTarget,
+    make_slug,
+)
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(wiki_isolated_env: Path):
     yield wiki_isolated_env
+
+
+@pytest.fixture(autouse=True)
+def _stub_wiki_index_services(monkeypatch):
+    """Stub ``get_services`` inside ``wiki.gen`` so tests that drive
+    ``_persist_and_finalize`` don't hit the real provider when the new
+    wiki-body indexer runs. ``TestWikiIndexing`` re-patches explicitly
+    to exercise the indexer's own assertions.
+    """
+    svc = MagicMock()
+    svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
+        [0.1] * cfg.embedding_dim for _ in texts
+    ]
+    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    return svc
 
 
 def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
@@ -929,3 +950,142 @@ class TestSynthesisDriftDetection:
         assert "drafts" in str(result)
         # Original should be unchanged
         assert "Totally different synthesis" in existing.read_text()
+
+
+class TestWikiIndexing:
+    """``_index_wiki_page`` chunks, embeds and writes wiki page bodies."""
+
+    @staticmethod
+    def _target(subdir: str = CONCEPTS_SUBDIR, slug: str = "brakes") -> PageTarget:
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        return PageTarget(
+            wiki_root=wiki_root,
+            subdir=subdir,
+            slug=slug,
+            wiki_source=f"{cfg.wiki_dir}/{subdir}/{slug}.md",
+            page_type=subdir.rstrip("s"),  # summaries -> summary, concepts -> concept
+            label=slug,
+        )
+
+    @staticmethod
+    def _services_mock(vector_dim: int | None = None) -> MagicMock:
+        dim = vector_dim if vector_dim is not None else cfg.embedding_dim
+        svc = MagicMock()
+        svc.embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * dim for _ in texts]
+        return svc
+
+    @staticmethod
+    def _content(body: str) -> str:
+        return (
+            "---\ntitle: Brakes\ntype: concept\n---\n\n"
+            f"{body}\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "brake fluid"\n'
+        )
+
+    def test_concept_page_writes_wiki_chunks(self):
+        store = MagicMock(spec=Store)
+        target = self._target()
+        content = self._content("Brakes convert kinetic energy to heat through friction pads.")
+
+        with (
+            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
+            patch(
+                "lilbee.wiki.gen.chunk_text",
+                return_value=["Brakes convert kinetic energy to heat through friction pads."],
+            ),
+        ):
+            _index_wiki_page(content, target, store)
+
+        store.clear_table.assert_called_once()
+        call_args = store.clear_table.call_args
+        assert call_args.args[0] == CHUNKS_TABLE
+        predicate = call_args.args[1]
+        assert target.wiki_source in predicate
+        assert CHUNK_TYPE_WIKI in predicate
+
+        store.add_chunks.assert_called_once()
+        records = store.add_chunks.call_args.args[0]
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["chunk_type"] == CHUNK_TYPE_WIKI
+        assert rec["source"] == target.wiki_source
+        assert rec["content_type"] == "text"
+        # page/line positions follow the markdown ingest convention: all zero
+        assert rec["page_start"] == 0
+        assert rec["line_start"] == 0
+        assert "friction pads" in rec["chunk"]
+        # Frontmatter and citation block are stripped from what gets chunked
+        assert "title: Brakes" not in rec["chunk"]
+        assert "src1" not in rec["chunk"]
+
+    def test_drafts_subdir_is_not_indexed(self):
+        """Drafts never enter the search pool. No clear, no add."""
+        store = MagicMock(spec=Store)
+        target = self._target(subdir=DRAFTS_SUBDIR)
+
+        with (
+            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.gen.chunk_text", return_value=["body"]),
+        ):
+            _index_wiki_page(self._content("body"), target, store)
+
+        store.clear_table.assert_not_called()
+        store.add_chunks.assert_not_called()
+
+    def test_empty_body_clears_stale_but_adds_nothing(self):
+        """A page whose body is empty after frontmatter+citation stripping invalidates
+        old rows but writes none, so stale wiki rows from a prior generation are removed.
+        """
+        store = MagicMock(spec=Store)
+        target = self._target()
+        # Body is pure whitespace. After extract_body + strip, nothing remains
+        content = (
+            "---\ntitle: Empty\n---\n\n   \n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "x"\n'
+        )
+
+        with (
+            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.gen.chunk_text") as chunker,
+        ):
+            _index_wiki_page(content, target, store)
+
+        store.clear_table.assert_called_once()
+        chunker.assert_not_called()
+        store.add_chunks.assert_not_called()
+
+    def test_chunker_returns_empty_skips_add(self):
+        """If chunk_text returns no chunks, invalidate stale rows and return."""
+        store = MagicMock(spec=Store)
+        target = self._target()
+
+        with (
+            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.gen.chunk_text", return_value=[]),
+        ):
+            _index_wiki_page(self._content("some body"), target, store)
+
+        store.clear_table.assert_called_once()
+        store.add_chunks.assert_not_called()
+
+    def test_regen_invalidates_before_writing(self):
+        """Second call still clears first, then adds. No accumulation."""
+        store = MagicMock(spec=Store)
+        target = self._target()
+
+        call_order: list[str] = []
+        store.clear_table.side_effect = lambda *a, **kw: call_order.append("clear")
+        store.add_chunks.side_effect = lambda records: call_order.append("add") or len(records)
+
+        with (
+            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.gen.chunk_text", return_value=["one chunk"]),
+        ):
+            _index_wiki_page(self._content("first body"), target, store)
+            _index_wiki_page(self._content("second body"), target, store)
+
+        assert call_order == ["clear", "add", "clear", "add"]

@@ -33,6 +33,20 @@ from lilbee.wiki.gen import (
 from lilbee.wiki.shared import CONCEPTS_SUBDIR, ENTITIES_SUBDIR
 
 
+@pytest.fixture(autouse=True)
+def _stub_wiki_index_services(monkeypatch):
+    """Stub ``get_services`` inside ``wiki.gen`` so tests that drive
+    ``_persist_and_finalize`` don't hit the real provider when the new
+    wiki-body indexer runs.
+    """
+    svc = MagicMock()
+    svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
+        [0.1] * cfg.embedding_dim for _ in texts
+    ]
+    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    return svc
+
+
 def _chunk(source: str, idx: int, text: str = "t") -> SearchChunk:
     return SearchChunk(
         source=source,

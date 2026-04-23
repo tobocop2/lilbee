@@ -91,6 +91,10 @@ class TestSearchRoute:
         client.get("/api/search", params={"q": "x"})
         mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
 
+    def test_invalid_chunk_type_rejected_with_400(self, client):
+        resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
+        assert resp.status_code == 400
+
 
 class TestAskRoute:
     @mock.patch(
@@ -102,7 +106,9 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "meaning?"})
         assert resp.status_code == 201
         assert resp.json()["answer"] == "42"
-        mock_ask.assert_awaited_once_with(question="meaning?", top_k=0, options=None)
+        mock_ask.assert_awaited_once_with(
+            question="meaning?", top_k=0, options=None, chunk_type=None
+        )
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -112,7 +118,7 @@ class TestAskRoute:
     def test_forwards_top_k(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
         assert resp.status_code == 201
-        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None)
+        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None, chunk_type=None)
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -142,6 +148,30 @@ class TestAskRoute:
         assert sources[0]["source"] == "doc.pdf"
         assert sources[0]["distance"] == 0.1
 
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_forwards_chunk_type_raw(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "raw"})
+        assert resp.status_code == 201
+        assert mock_ask.call_args.kwargs.get("chunk_type") == "raw"
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_chunk_type_both_normalizes_to_none(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "both"})
+        assert resp.status_code == 201
+        assert mock_ask.call_args.kwargs.get("chunk_type") is None
+
+    def test_invalid_chunk_type_rejected_with_400(self, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "bogus"})
+        assert resp.status_code == 400
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")
@@ -151,6 +181,13 @@ class TestAskStreamRoute:
         assert resp.status_code == 201
         assert "text/event-stream" in resp.headers["content-type"]
         assert b"event: token" in resp.content
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_forwards_chunk_type(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("")
+        resp = client.post("/api/ask/stream", json={"question": "hi", "chunk_type": "wiki"})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs.get("chunk_type") == "wiki"
 
 
 class TestChatRoute:
@@ -163,7 +200,9 @@ class TestChatRoute:
         history = [{"role": "user", "content": "hi"}]
         resp = client.post("/api/chat", json={"question": "q", "history": history})
         assert resp.status_code == 201
-        mock_chat.assert_awaited_once_with(question="q", history=history, top_k=0, options=None)
+        mock_chat.assert_awaited_once_with(
+            question="q", history=history, top_k=0, options=None, chunk_type=None
+        )
 
     @mock.patch(
         "lilbee.server.handlers.chat",
@@ -172,7 +211,9 @@ class TestChatRoute:
     )
     def test_default_empty_history(self, mock_chat, client):
         client.post("/api/chat", json={"question": "q"})
-        mock_chat.assert_awaited_once_with(question="q", history=[], top_k=0, options=None)
+        mock_chat.assert_awaited_once_with(
+            question="q", history=[], top_k=0, options=None, chunk_type=None
+        )
 
 
 class TestChatStreamRoute:
@@ -185,6 +226,16 @@ class TestChatStreamRoute:
         )
         assert resp.status_code == 201
         assert b"event: done" in resp.content
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_forwards_chunk_type(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("")
+        resp = client.post(
+            "/api/chat/stream",
+            json={"question": "hi", "history": [], "chunk_type": "raw"},
+        )
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
 
 
 class TestSyncRoute:
