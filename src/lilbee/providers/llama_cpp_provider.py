@@ -538,20 +538,26 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
 
 
 def _extract_rerank_score(response: dict[str, Any]) -> float:
-    """Extract a single relevance score from a pooling_type=RANK response."""
+    """Extract a single relevance score from a pooling_type=RANK response.
+
+    llama-cpp-python's ``create_embedding`` with ``LLAMA_POOLING_TYPE_RANK``
+    returns ``data[i]["embedding"]`` as a ``list[float]`` of length
+    ``n_embd`` (1 for rerank models). Any other shape indicates an
+    upstream format change and raises ``ProviderError`` with the observed
+    shape in the message so the drift is visible.
+    """
     data = response.get("data") or []
     if not data:
         raise ProviderError("Reranker returned no data", provider="llama-cpp")
     embedding = data[-1].get("embedding")
-    if isinstance(embedding, (int, float)):
-        return float(embedding)
-    if isinstance(embedding, list) and embedding:
-        first = embedding[0]
-        if isinstance(first, (int, float)):
-            return float(first)
-        if isinstance(first, list) and first:
-            return float(first[0])
-    raise ProviderError("Reranker returned unrecognized score shape", provider="llama-cpp")
+    if isinstance(embedding, list) and embedding and isinstance(embedding[0], (int, float)):
+        return float(embedding[0])
+    raise ProviderError(
+        "Reranker returned unexpected score shape "
+        f"(got {type(embedding).__name__}: {embedding!r}); "
+        "llama-cpp-python may have changed its response format",
+        provider="llama-cpp",
+    )
 
 
 _HF_BLOBS_DIR_NAME = "blobs"
