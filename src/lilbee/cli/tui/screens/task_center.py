@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_POLL_INTERVAL_SECONDS = 0.1
+_POLL_INTERVAL_SECONDS = 0.25
 
 # Quarter-circle rotation cycles every 4 ticks (~0.4 s). Visible motion
 # in the counts strip confirms background work is live when rows are
@@ -187,9 +187,14 @@ class TaskCenter(Screen[None]):
         to communicate 'work in progress' at a glance (bb-18y3).
         """
         counts_label = self.query_one("#task-center-counts", Label)
-        active = sum(1 for t in tasks if t.status == TaskStatus.ACTIVE)
-        queued = sum(1 for t in tasks if t.status == TaskStatus.QUEUED)
-        done = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+        active = queued = done = 0
+        for t in tasks:
+            if t.status == TaskStatus.ACTIVE:
+                active += 1
+            elif t.status == TaskStatus.QUEUED:
+                queued += 1
+            elif t.status == TaskStatus.DONE:
+                done += 1
         body = msg.TASK_CENTER_COUNTS.format(active=active, queued=queued, done=done)
         if active > 0:
             spinner = _COUNTS_SPINNER_FRAMES[self._tick % len(_COUNTS_SPINNER_FRAMES)]
