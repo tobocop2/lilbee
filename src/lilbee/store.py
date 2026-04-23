@@ -156,6 +156,7 @@ class SourceRecord(TypedDict):
     ingested_at: str
     chunk_count: int
     source_type: str
+    source_mtime: float | None
 
 
 class CitationRecord(TypedDict):
@@ -183,8 +184,17 @@ def _sources_schema() -> pa.Schema:
             pa.field("ingested_at", pa.utf8()),
             pa.field("chunk_count", pa.int32()),
             pa.field("source_type", pa.utf8()),
+            pa.field("source_mtime", pa.float64(), nullable=True),
         ]
     )
+
+
+def _ensure_source_mtime_column(table: lancedb.table.Table) -> None:
+    # Source-mtime column was added to resolve a Windows-only mtime gate
+    # precision bug; older stores predate it and need in-place evolution.
+    if "source_mtime" in table.schema.names:
+        return
+    table.add_columns({"source_mtime": "CAST(NULL AS DOUBLE)"})
 
 
 def _citations_schema() -> pa.Schema:
@@ -593,11 +603,13 @@ class Store:
         file_hash: str,
         chunk_count: int,
         source_type: str = "document",
+        source_mtime: float | None = None,
     ) -> None:
         """Add or update a source file tracking record."""
         with write_lock():
             db = self.get_db()
             table = ensure_table(db, SOURCES_TABLE, _sources_schema())
+            _ensure_source_mtime_column(table)
             _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
             table.add(
                 [
@@ -607,6 +619,7 @@ class Store:
                         "ingested_at": datetime.now(UTC).isoformat(),
                         "chunk_count": chunk_count,
                         "source_type": source_type,
+                        "source_mtime": source_mtime,
                     }
                 ]
             )

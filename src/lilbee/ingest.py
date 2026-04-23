@@ -10,7 +10,6 @@ import os
 import threading
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
@@ -166,22 +165,22 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _file_unchanged_since_ingest(path: Path, ingested_at: str) -> bool:
-    """True when the file's mtime is strictly older than *ingested_at*.
+def _file_unchanged_by_mtime(path: Path, stored_mtime: float | None) -> bool:
+    """True when the file's current mtime matches *stored_mtime* within precision.
 
-    Returns False on any failure (missing timestamp, unparseable ISO,
-    stat error) so callers fall through to a hash compare.
+    Comparing mtime to mtime keeps both values in the same reference frame,
+    avoiding the Windows-only failure mode where NTFS mtime precision is
+    coarser than a wall-clock ``ingested_at``. Returns False when no mtime
+    is stored (legacy rows) or on stat error, so callers fall through to a
+    hash compare.
     """
-    if not ingested_at:
+    if stored_mtime is None:
         return False
     try:
-        ingested_dt = datetime.fromisoformat(ingested_at)
-        mtime_dt = datetime.fromtimestamp(path.stat().st_mtime, UTC)
-    except (OSError, ValueError):
+        current_mtime = path.stat().st_mtime
+    except OSError:
         return False
-    if ingested_dt.tzinfo is None:
-        ingested_dt = ingested_dt.replace(tzinfo=UTC)
-    return mtime_dt < ingested_dt
+    return current_mtime <= stored_mtime
 
 
 def _relative_name(path: Path) -> str:
@@ -636,7 +635,7 @@ async def sync(
 
     disk_files = discover_files()
     existing_sources = {
-        s["filename"]: (s["file_hash"], s.get("ingested_at", "")) for s in _store.get_sources()
+        s["filename"]: (s["file_hash"], s.get("source_mtime")) for s in _store.get_sources()
     }
 
     added: list[str] = []
@@ -665,7 +664,7 @@ async def sync(
         old = existing_sources.get(name)
         old_hash = old[0] if old is not None else None
 
-        if old is not None and _file_unchanged_since_ingest(path, old[1]):
+        if old is not None and _file_unchanged_by_mtime(path, old[1]):
             unchanged += 1
             continue
 
@@ -901,4 +900,8 @@ def _apply_result(
         return
 
     fhash = result.file_hash or file_hash(result.path)
-    get_services().store.upsert_source(result.name, fhash, result.chunk_count)
+    try:
+        mtime: float | None = result.path.stat().st_mtime
+    except OSError:
+        mtime = None
+    get_services().store.upsert_source(result.name, fhash, result.chunk_count, source_mtime=mtime)
