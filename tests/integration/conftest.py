@@ -29,6 +29,17 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
 TEST_DOCS = {f.name: f.read_text() for f in sorted(DOCS_DIR.iterdir()) if f.is_file()}
 
+# Integration tests run real LLM inference; the global 60s unit-test cap is too
+# aggressive. 180s is ~4x the slowest observed test on Metal. Any test exceeding
+# it on CPU-only CI runners is a hang, not a slow pass. Tests can opt in to a
+# different cap with @pytest.mark.timeout(X).
+_INTEGRATION_TIMEOUT_SECONDS = 180
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+
 
 @pytest.fixture(autouse=True)
 def _preserve_models_dir():
