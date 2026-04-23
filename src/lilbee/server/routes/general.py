@@ -79,7 +79,9 @@ async def source_content_route(
 
         raise ValidationException(str(exc)) from exc
 
-    if raw:
-        body, content_type = result  # type: ignore[misc]
+    # ``raw=True`` returns ``(bytes, content_type)``; narrow via ``isinstance``
+    # so mypy sees the tuple branch without leaning on ``type: ignore``.
+    if isinstance(result, tuple):
+        body, content_type = result
         return Response(content=body, media_type=content_type, status_code=200)
-    return result  # type: ignore[return-value]
+    return result

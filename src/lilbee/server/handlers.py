@@ -557,9 +557,17 @@ def _require_model_available(model: str) -> str:
     # ``available`` lists bare tags from /api/tags; stored refs may carry an
     # ``ollama/`` prefix. Match on either form so both client styles work.
     bare = parse_model_ref(normalized).name
-    if normalized not in available and bare not in available:
-        raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
-    return normalized
+    if normalized in available or bare in available:
+        return normalized
+    # Providers may report the HuggingFace repo form instead of the catalog
+    # ``name:tag``. When the input resolved to a catalog entry, accept that
+    # entry's ``hf_repo`` (with or without ``:latest``) as an equivalent
+    # installed form so the canonical ref is still returned.
+    if entry is not None:
+        hf_candidates = {entry.hf_repo, ensure_tag(entry.hf_repo)}
+        if hf_candidates.intersection(available):
+            return normalized
+    raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:

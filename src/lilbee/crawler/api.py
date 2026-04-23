@@ -261,8 +261,8 @@ async def crawl_recursive(
 
     # Fail fast when the ``crawler`` extra wasn't installed. Without this
     # the BFS silently drops out and the crawl returns ``files_written=0``
-    # because every lazy ``import crawl4ai`` inside the fetcher swallows
-    # the ImportError locally. Surfacing a clean ``CrawlerBackendMissing``
+    # because every lazy backend import inside the fetcher swallows the
+    # ImportError locally. Surfacing a clean ``CrawlerBackendMissing``
     # here lets the server's SSE layer emit ``event: error`` with a
     # fix-it message instead of a zero-results crawl_done.
     from lilbee.crawler.crawl4ai_fetcher import crawler_available
