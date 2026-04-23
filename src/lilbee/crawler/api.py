@@ -131,8 +131,24 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
-    """Fetch a single URL and return its markdown content."""
+    """Fetch a single URL and return its markdown content.
+
+    Fails fast with :class:`CrawlerBackendMissing` when the ``crawler``
+    extra isn't installed. Without this guard the lazy backend import
+    inside the fetcher would be swallowed by the broad ``except Exception``
+    below, turning a missing-extra install into a silent
+    ``CrawlResult(success=False)`` that the SSE layer renders as
+    ``crawl_done`` with ``files_written=0``. Matches the parity gate
+    :func:`crawl_recursive` already has.
+    """
     validate_crawl_url(url)
+    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
+            "(or 'pip install crawl4ai') to enable web crawling."
+        )
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)

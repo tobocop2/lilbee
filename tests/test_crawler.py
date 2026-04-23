@@ -408,6 +408,24 @@ class TestCrawlSingle:
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_single("https://example.com")
 
+    async def test_missing_crawler_extra_raises_backend_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the ``crawler`` extra installed, crawl_single fails fast.
+
+        Without this guard the lazy ``import crawl4ai`` inside the fetcher
+        would be swallowed by the broad ``except Exception`` at the bottom
+        of crawl_single, turning a missing-extra install into a silent
+        ``CrawlResult(success=False)`` and a ``crawl_done`` with
+        ``files_written=0`` — same silent failure the recursive path
+        already guards against.
+        """
+        from lilbee.crawler import CrawlerBackendMissing
+
+        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        with pytest.raises(CrawlerBackendMissing, match="crawl4ai is not installed"):
+            await crawl_single("https://example.com")
+
 
 class TestBootstrapChromium:
     """bb-wq8g: the subprocess wrapper that installs Playwright's Chromium."""
@@ -845,6 +863,23 @@ class TestCrawlRecursive:
         )
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+            await crawl_recursive("https://example.com", max_depth=1)
+
+    async def test_missing_crawler_extra_raises_backend_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the ``crawler`` extra, crawl_recursive fails fast.
+
+        Without this guard the BFS silently drops out and the crawl returns
+        ``files_written=0`` because every lazy backend import inside the
+        fetcher swallows the ImportError locally. The explicit raise lets
+        the server's SSE layer surface ``event: error`` with a fix-it
+        message instead of a zero-results ``crawl_done``.
+        """
+        from lilbee.crawler import CrawlerBackendMissing
+
+        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        with pytest.raises(CrawlerBackendMissing, match="crawl4ai is not installed"):
             await crawl_recursive("https://example.com", max_depth=1)
 
 
