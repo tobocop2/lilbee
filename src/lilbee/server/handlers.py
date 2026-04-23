@@ -52,6 +52,7 @@ from lilbee.server.models import (
     ModelsInstalledResponse,
     ModelsShowResponse,
     SetModelResponse,
+    SourceContentResponse,
     StatusResponse,
     SyncSummary,
 )
@@ -539,10 +540,19 @@ async def _set_model(
 
 
 def _require_model_available(model: str) -> str:
-    """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
+    """Validate that *model* exists locally. Returns the normalized name or raises ValueError.
+
+    Callers may pass the catalog ``name:tag`` (``qwen3:4b``), the HuggingFace
+    repo id (``Qwen/Qwen3-4B-GGUF``, with or without ``:latest``), the
+    display name, or a provider-prefixed ref. Normalise via
+    ``find_catalog_entry`` first so a single installed variant resolves
+    regardless of which form the caller used.
+    """
+    from lilbee.catalog import find_catalog_entry
     from lilbee.models import ensure_tag
 
-    normalized = ensure_tag(model)
+    entry = find_catalog_entry(model)
+    normalized = entry.ref if entry is not None else ensure_tag(model)
     available = get_services().provider.list_models()
     # ``available`` lists bare tags from /api/tags; stored refs may carry an
     # ``ollama/`` prefix. Match on either form so both client styles work.
@@ -713,6 +723,68 @@ async def get_config() -> ConfigResponse:
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     return ConfigResponse(**result)
+
+
+_TEXTUAL_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".html", ".htm"})
+
+
+async def get_source_content(
+    source: str, raw: bool = False
+) -> SourceContentResponse | tuple[bytes, str]:
+    """Read a stored source file and return its contents.
+
+    Path resolution: resolve ``documents_dir / source`` and require the
+    result to stay inside ``documents_dir``. For raw=1 the caller gets
+    ``(bytes, content_type)`` to stream; for raw=0 the JSON shape is
+    populated with markdown text (suffix-filtered — binary formats like
+    PDF return an empty markdown field and the caller should re-request
+    with raw=1).
+    """
+    if not source or not source.strip():
+        raise ValueError("source must not be empty")
+    documents_dir = cfg.documents_dir
+    resolved = validate_path_within(documents_dir / source, documents_dir)
+    if not resolved.is_file():
+        raise FileNotFoundError(source)
+
+    content_type = _guess_content_type(resolved)
+
+    if raw:
+        return resolved.read_bytes(), content_type
+
+    if resolved.suffix.lower() not in _TEXTUAL_SUFFIXES:
+        return SourceContentResponse(markdown="", content_type=content_type, title=None)
+
+    text = resolved.read_text(encoding="utf-8", errors="replace")
+    title = _extract_title(text)
+    return SourceContentResponse(markdown=text, content_type=content_type, title=title)
+
+
+def _guess_content_type(path: Path) -> str:
+    """Best-effort content-type for source files read via /api/source."""
+    suffix = path.suffix.lower()
+    mapping = {
+        ".md": "text/markdown",
+        ".markdown": "text/markdown",
+        ".txt": "text/plain",
+        ".html": "text/html",
+        ".htm": "text/html",
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+    }
+    return mapping.get(suffix, "application/octet-stream")
+
+
+def _extract_title(markdown: str) -> str | None:
+    """Pull the first H1 heading out of *markdown*, if any."""
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip() or None
+    return None
 
 
 @functools.cache

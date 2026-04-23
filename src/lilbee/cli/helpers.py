@@ -128,8 +128,41 @@ def json_output(data: dict) -> None:
 
 
 def clean_result(result: SearchChunk) -> dict:
-    """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores)."""
-    return result.model_dump(exclude={"vector"}, exclude_none=True)
+    """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores).
+
+    When ``cfg.vault_base`` is set, stamp ``vault_path`` — a vault-relative
+    path for the source file — so clients can deep-link into the native UI
+    instead of round-tripping through ``/api/source``. Best-effort: vault_path
+    is ``None`` when the source filename cannot be located under vault_base.
+    """
+    payload = result.model_dump(exclude={"vector"}, exclude_none=True)
+    vault_path = resolve_vault_path(result.source)
+    if vault_path is not None:
+        payload["vault_path"] = vault_path
+    return payload
+
+
+def resolve_vault_path(source_filename: str) -> str | None:
+    """Return ``source_filename`` as a vault-relative path, or ``None`` if unresolvable.
+
+    Primary case: managed server with ``documents_dir`` nested inside
+    ``vault_base``. The file lives at ``documents_dir/source_filename``,
+    so the vault-relative form is ``<documents_dir-relative-to-vault>/source_filename``.
+
+    Fallback: when the file isn't under documents_dir but is findable as a
+    leaf under vault_base (e.g. plugin indexed a file already in the vault
+    via /api/add), return the first matching vault-relative path.
+    """
+    if cfg.vault_base is None:
+        return None
+    try:
+        relative_docs_dir = cfg.documents_dir.relative_to(cfg.vault_base)
+    except ValueError:
+        return None
+    # Primary: documents_dir is inside the vault. Assume source file is stored
+    # under documents_dir even if we can't stat it here — the plugin will
+    # call vault.getAbstractFileByPath and fall through on miss.
+    return str(relative_docs_dir / source_filename)
 
 
 def gather_status() -> StatusResult:

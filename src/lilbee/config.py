@@ -307,10 +307,19 @@ class Config(BaseSettings):
 
     # Paths — resolved from env/defaults in model_validator(mode='before')
     data_root: Path = Field(default=Path())
-    documents_dir: Path = Field(default=Path())
+    # documents_dir is writable so plugin-managed servers can pivot storage
+    # to a vault-native path on first boot. Changing it on a server with
+    # indexed documents leaves old files in place but invisible to search;
+    # rebuild the index after migration.
+    documents_dir: Path = ConfigField(default=Path(), writable=True)
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
+    # Filesystem root of the Obsidian vault (or equivalent). When set, the
+    # server stamps ``vault_path`` on search result chunks whose source file
+    # lives under this root, so clients can open sources in the native UI
+    # instead of fetching via ``/api/source``. Null = unset (server-local mode).
+    vault_base: Path | None = ConfigField(default=None, writable=True)
 
     chat_model: str = Field(default="qwen3:0.6b", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text:v1.5", min_length=1)
