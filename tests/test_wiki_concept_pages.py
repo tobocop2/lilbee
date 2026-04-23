@@ -486,6 +486,31 @@ class TestBuildWikiRewritesLinks:
         assert "[[henry-ford]]" in body
         assert "[[braking]]" not in body
 
+    def test_empty_page_map_short_circuits(self, tmp_path: Path) -> None:
+        """When the only slug in the surface map is the owning slug, the
+        rewriter skips the file entirely rather than rewriting with an
+        empty map. Ensures the ``if not page_map: continue`` guard runs.
+        """
+        cfg.data_root = tmp_path
+        wiki_root = tmp_path / cfg.wiki_dir
+        (wiki_root / "concepts").mkdir(parents=True)
+        original_body = "# Braking\n\nAll about braking systems.\n"
+        (wiki_root / "concepts" / "braking.md").write_text(original_body)
+        entities = [
+            ExtractedEntity(
+                slug="braking",
+                kind=EntityKind.CONCEPT,
+                label="braking",
+                type_hint="noun_phrase",
+                chunk_refs=(ChunkRef("a.txt", 0),),
+            ),
+        ]
+        with patch("lilbee.wiki.gen.generate_concept_page", return_value=None):
+            build_wiki(entities, MagicMock(), MagicMock(), cfg)
+        # File content unchanged: rewriter saw an empty page_map after
+        # filtering the owning slug and short-circuited before reading.
+        assert (wiki_root / "concepts" / "braking.md").read_text() == original_body
+
     def test_incremental_rebuild_links_to_existing_on_disk_slugs(self, tmp_path: Path) -> None:
         """A touched entity's page links to pre-existing slugs not in the touched set."""
         cfg.data_root = tmp_path
