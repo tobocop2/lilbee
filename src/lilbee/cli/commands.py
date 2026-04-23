@@ -1206,7 +1206,10 @@ def wiki_build(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Run extraction only; skip every LLM call. Prints the candidate entities.",
+        help=(
+            "Run extraction only; skip every LLM call. Prints the NER entity candidates. "
+            "LLM-curated concept pages require a build call and are not shown in dry-run."
+        ),
     ),
 ) -> None:
     """Build the concept and entity wiki across all ingested sources."""
@@ -1261,8 +1264,21 @@ def wiki_build(
         console.print(f"  {path}")
 
 
+_DRY_RUN_CONCEPT_NOTE = (
+    "Note: LLM-curated concepts are not shown in --dry-run. "
+    "Run `lilbee wiki build` to see which concepts the LLM proposes."
+)
+
+
 def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
-    """Render the extraction result as JSON or table without calling any LLM."""
+    """Render the extraction result as JSON or table without calling any LLM.
+
+    Phase D: concepts come from the per-source batched LLM call, so
+    listing them would require the call we are trying to avoid. The
+    dry-run surface is NER-entity only, with a trailing note so a
+    user who expected concepts in the output knows why they are
+    missing.
+    """
     rows = [
         {
             "slug": e.slug,
@@ -1282,15 +1298,17 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
                 "dry_run": True,
                 "entities": rows,
                 "count": len(rows),
+                "note": _DRY_RUN_CONCEPT_NOTE,
             }
         )
         return
 
     if not rows:
         console.print("No candidate entities extracted. Run sync first.")
+        console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
         return
 
-    table = Table(title=f"Wiki build dry-run ({len(rows)} candidates)")
+    table = Table(title=f"Wiki build dry-run ({len(rows)} NER entity candidates)")
     table.add_column("Slug", style=theme.ACCENT)
     table.add_column("Kind", style=theme.MUTED)
     table.add_column("Type")
@@ -1309,6 +1327,7 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
         f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
         "No LLM calls were made."
     )
+    console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
 
 
 @wiki_app.command(name="update")
@@ -1356,14 +1375,16 @@ def wiki_drafts_list(
 
     table = Table(title="Wiki Drafts")
     table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Kind", style=theme.MUTED)
     table.add_column("Drift")
     table.add_column("Faithfulness")
     table.add_column("Published?", style=theme.MUTED)
     for d in drafts:
+        kind = d.pending_kind or "drift"
         drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
         faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
         published = "yes" if d.published_exists else "no"
-        table.add_row(d.slug, drift, faith, published)
+        table.add_row(d.slug, kind, drift, faith, published)
     console.print(table)
 
 

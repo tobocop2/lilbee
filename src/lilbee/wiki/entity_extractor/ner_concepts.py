@@ -1,4 +1,9 @@
-"""spaCy NER + noun-phrase concept extractor (default strategy)."""
+"""spaCy NER entity extractor (default strategy).
+
+Phase D removed the noun-chunk "concept" path from this extractor. The
+per-source batched call in :mod:`lilbee.wiki.gen` now proposes concept
+pages through the LLM. This module produces typed NER entities only.
+"""
 
 from __future__ import annotations
 
@@ -59,13 +64,13 @@ def pre_clean_for_ner(text: str) -> str:
 
 
 class NerConceptsExtractor:
-    """Combine spaCy NER and noun-phrase concepts into one entity set.
+    """Emit typed NER entities (``EntityKind.ENTITY`` only).
 
-    NER surface forms (PERSON/ORG/etc.) become ``EntityKind.ENTITY``
-    records. Noun-phrase concepts become ``EntityKind.CONCEPT`` records.
-    A concept whose normalized form matches an entity's normalized form
-    is folded into the entity record so one topic never splits across
-    two pages.
+    Phase D removed the noun-chunk concept loop: LLM-curated concept
+    pages are produced downstream by the per-source batched call in
+    :mod:`lilbee.wiki.gen`. The class name is kept for backwards
+    compatibility at the factory dispatch site; the implementation
+    emits only ``EntityKind.ENTITY`` records now.
     """
 
     def __init__(self, provider: LLMProvider, config: Config) -> None:
@@ -80,7 +85,6 @@ class NerConceptsExtractor:
             return []
 
         entity_records: dict[str, _Aggregate] = {}
-        concept_records: dict[str, _Aggregate] = {}
         allowed_ent_types = self._config.concept_allowed_ent_types
 
         debug_enabled = log.isEnabledFor(logging.DEBUG)
@@ -89,12 +93,9 @@ class NerConceptsExtractor:
         # one per chunk.
         funnel = {
             "raw_ents": 0,
-            "raw_noun_chunks": 0,
             "type_filter_dropped": 0,
             "label_sanity_dropped_entities": 0,
-            "label_sanity_dropped_concepts": 0,
             "kept_entity_surfaces": 0,
-            "kept_concept_surfaces": 0,
         }
         cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
         for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
@@ -116,44 +117,20 @@ class NerConceptsExtractor:
                 )
                 rec.refs.add(ref)
                 funnel["kept_entity_surfaces"] += 1
-            for noun_chunk in doc.noun_chunks:
-                funnel["raw_noun_chunks"] += 1
-                surface = noun_chunk.text.strip()
-                if not is_valid_label(surface):
-                    funnel["label_sanity_dropped_concepts"] += 1
-                    if debug_enabled:
-                        log.debug("label-sanity: rejected noun-chunk %r", surface)
-                    continue
-                key = _normalize(surface)
-                rec = concept_records.setdefault(
-                    key, _Aggregate(label=key, type_hint="noun_phrase")
-                )
-                rec.refs.add(ref)
-                funnel["kept_concept_surfaces"] += 1
 
         if debug_enabled:
             log.debug(
-                "ner funnel: raw_ents=%(raw_ents)d raw_noun_chunks=%(raw_noun_chunks)d "
+                "ner funnel: raw_ents=%(raw_ents)d "
                 "type_filter_dropped=%(type_filter_dropped)d "
                 "label_sanity_dropped_entities=%(label_sanity_dropped_entities)d "
-                "label_sanity_dropped_concepts=%(label_sanity_dropped_concepts)d "
-                "kept_entity_surfaces=%(kept_entity_surfaces)d "
-                "kept_concept_surfaces=%(kept_concept_surfaces)d",
+                "kept_entity_surfaces=%(kept_entity_surfaces)d",
                 funnel,
             )
-
-        for key, entity_agg in entity_records.items():
-            if key in concept_records:
-                entity_agg.refs.update(concept_records.pop(key).refs)
 
         min_mentions = self._config.wiki_entity_min_mentions
         results: list[ExtractedEntity] = []
         for agg in entity_records.values():
             record = _make_record(agg, EntityKind.ENTITY, min_mentions)
-            if record is not None:
-                results.append(record)
-        for agg in concept_records.values():
-            record = _make_record(agg, EntityKind.CONCEPT, min_mentions)
             if record is not None:
                 results.append(record)
         results.sort(key=lambda e: (e.kind.value, e.slug))
