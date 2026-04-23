@@ -68,6 +68,12 @@ WIKI_TYPE_HEADINGS: dict[WikiPageType, str] = {
 }
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
+_DISPLAY_STRUCTURAL_RE = re.compile(r"[|#>]+")
+_DISPLAY_WHITESPACE_RE = re.compile(r"\s+")
+
+LABEL_SANITY_MIN_LEN = 3
+LABEL_SANITY_MIN_ALNUM_RATIO = 0.5
+_STRUCTURAL_CHARS = frozenset("|#>")
 
 
 @dataclass(frozen=True)
@@ -106,8 +112,52 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
 
 def make_slug(label: str) -> str:
     """Turn a concept label into a filesystem-safe slug.
-    Lowercases, replaces spaces with hyphens, slashes with double-hyphens,
-    and strips non-alphanumeric characters (except hyphens).
+
+    Lowercases, maps whitespace to single hyphens and slashes to double
+    hyphens (path encoding), strips anything outside ``[a-z0-9-]``, and
+    trims leading and trailing hyphens. Returns ``""`` when no sluggable
+    characters remain; callers must treat an empty slug as "skip this
+    entity" so the generator never writes a file called ``.md``.
+
+    Internal hyphen runs from the ``/`` path encoding are preserved;
+    only leading and trailing hyphens (e.g. ``--body`` from a stripped
+    ``| | Body``) are removed.
     """
     slug = label.lower().replace(" ", "-").replace("/", "--")
-    return _SLUG_CLEAN_RE.sub("", slug)
+    slug = _SLUG_CLEAN_RE.sub("", slug)
+    return slug.strip("-")
+
+
+def is_valid_label(label: str) -> bool:
+    """Reject structural-noise labels before aggregation.
+
+    Catches the noise patterns observed in QA: empty/very-short
+    fragments (``cro``-class length gates), markdown table delimiters
+    (``| | designer``), page-number ordinals (``158 vehicle``), and
+    punctuation-heavy tokens that slipped past NER. Left intentionally
+    coarse: the alnum-ratio gate plus the structural-character gate
+    catch ~90% of the QA noise without rejecting legitimate labels
+    like ``E-mail`` or ``C++``.
+    """
+    stripped = label.strip()
+    if len(stripped) < LABEL_SANITY_MIN_LEN:
+        return False
+    if stripped[0].isdigit():
+        return False
+    if any(ch in _STRUCTURAL_CHARS for ch in stripped):
+        return False
+    alnum = sum(1 for ch in stripped if ch.isalnum())
+    return alnum / len(stripped) >= LABEL_SANITY_MIN_ALNUM_RATIO
+
+
+def clean_label_for_display(label: str) -> str:
+    """Return a prompt-safe version of *label* for the ``{topic}`` slot.
+
+    Removes markdown-structural characters and collapses internal
+    whitespace so the LLM never sees ``| | designer`` and echoes it
+    into the generated H1. Preserves the original capitalization so
+    proper nouns (``Chevrolet Caprice``, ``iPhone``) survive intact;
+    the model title-cases lowercase common nouns on its own.
+    """
+    clean = _DISPLAY_STRUCTURAL_RE.sub("", label)
+    return _DISPLAY_WHITESPACE_RE.sub(" ", clean).strip()

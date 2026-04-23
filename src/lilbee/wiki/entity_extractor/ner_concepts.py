@@ -11,7 +11,7 @@ from lilbee.wiki.entity_extractor.base import (
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.shared import make_slug
+from lilbee.wiki.shared import is_valid_label, make_slug
 
 if TYPE_CHECKING:
     from lilbee.config import Config
@@ -23,7 +23,6 @@ log = logging.getLogger(__name__)
 _ALLOWED_NER_LABELS: frozenset[str] = frozenset(
     {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT"}
 )
-_MIN_CONCEPT_LEN = 2
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -56,13 +55,16 @@ class NerConceptsExtractor:
         entity_records: dict[str, _Aggregate] = {}
         concept_records: dict[str, _Aggregate] = {}
 
+        debug_enabled = log.isEnabledFor(logging.DEBUG)
         for chunk, doc in zip(chunks, nlp.pipe(c.chunk for c in chunks), strict=True):
             ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
             for ent in doc.ents:
                 if ent.label_ not in _ALLOWED_NER_LABELS:
                     continue
                 surface = ent.text.strip()
-                if len(surface) < _MIN_CONCEPT_LEN:
+                if not is_valid_label(surface):
+                    if debug_enabled:
+                        log.debug("label-sanity: rejected entity %r", surface)
                     continue
                 key = _normalize(surface)
                 rec = entity_records.setdefault(
@@ -71,7 +73,9 @@ class NerConceptsExtractor:
                 rec.refs.add(ref)
             for noun_chunk in doc.noun_chunks:
                 surface = noun_chunk.text.strip()
-                if len(surface) < _MIN_CONCEPT_LEN:
+                if not is_valid_label(surface):
+                    if debug_enabled:
+                        log.debug("label-sanity: rejected noun-chunk %r", surface)
                     continue
                 key = _normalize(surface)
                 rec = concept_records.setdefault(

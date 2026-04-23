@@ -282,16 +282,63 @@ class TestReturnRecordShape:
         assert rec.slug == "ford-motor-company"
 
     def test_empty_slug_record_is_dropped(self) -> None:
-        """Labels of only punctuation slug-clean to '' and must not
-        become ExtractedEntity records; otherwise the generator would
-        try to write a file called '.md'.
+        """Structural-noise labels never become ExtractedEntity records.
+
+        Belt-and-suspenders: ``is_valid_label`` rejects ``>>>>`` at the
+        extractor boundary (structural char), and ``make_slug`` would
+        also strip it to an empty slug downstream. Either path drops
+        the record before the generator writes ``/.md``.
         """
-        # Use a noun_chunk because make_slug() on punctuation strips
-        # everything. ">>>>" is >=2 chars (passes _MIN_CONCEPT_LEN),
-        # normalizes to ">>>>", but make_slug returns "".
         doc = _FakeDoc(noun_chunks=[_FakeSpan(">>>>"), _FakeSpan("tires")])
         extractor = NerConceptsExtractor(MagicMock(), cfg)
         with _patch_pipeline({"t": doc}):
             result = extractor.extract([_chunk("s.txt", 0, "t")])
         labels = {e.label for e in result}
         assert labels == {"tires"}
+
+
+class TestLabelSanityRejection:
+    """QA-driven (bb-8b7s) regressions on the noise patterns observed
+    in Wikipedia table markup and PDF chrome."""
+
+    def test_rejects_pipe_delimited_ner_entity(self) -> None:
+        doc = _FakeDoc(
+            ents=[
+                _FakeSpan("| | Designer", "PERSON"),
+                _FakeSpan("Chevrolet Caprice", "PRODUCT"),
+            ]
+        )
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"Chevrolet Caprice"}
+
+    def test_rejects_page_number_prefixed_noun_chunk(self) -> None:
+        doc = _FakeDoc(
+            noun_chunks=[
+                _FakeSpan("158 vehicle"),
+                _FakeSpan("brake pads"),
+            ]
+        )
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"brake pads"}
+
+    def test_rejects_short_fragment(self) -> None:
+        doc = _FakeDoc(noun_chunks=[_FakeSpan("ab"), _FakeSpan("tires")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"tires"}
+
+    def test_logs_rejection_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("DEBUG", logger="lilbee.wiki.entity_extractor.ner_concepts")
+        doc = _FakeDoc(noun_chunks=[_FakeSpan("| bad |"), _FakeSpan("tires")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            extractor.extract([_chunk("s.txt", 0, "t")])
+        assert any("label-sanity" in r.message for r in caplog.records)
