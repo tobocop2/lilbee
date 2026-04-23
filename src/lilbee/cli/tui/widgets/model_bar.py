@@ -108,7 +108,7 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
     try:
         from lilbee.model_manager import classify_remote_models
 
-        base_url = cfg.backend_base_url
+        base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name

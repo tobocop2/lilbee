@@ -241,7 +241,7 @@ lilbee works out of the box with llama-cpp for local inference. These optional e
 pip install lilbee[graph]      # concept graph — topic clustering + search boosting
 pip install lilbee[reranker]   # cross-encoder reranking — precision pass on results
 pip install lilbee[crawler]    # web crawling — index websites alongside local docs
-pip install lilbee[backend]    # remote providers — connect to your favorite frontier model
+pip install lilbee[remote]    # remote providers — connect to your favorite frontier model
 ```
 
 Install multiple at once: `pip install lilbee[graph,reranker,crawler]`
@@ -358,7 +358,7 @@ Connect to remote LLM providers instead of (or alongside) local llama-cpp infere
 
 **When to use it:** When you want to use your favorite frontier model for chat while keeping embeddings local for privacy, or when you're already running Ollama and want to use its models.
 
-**Install:** `pip install lilbee[backend]`
+**Install:** `pip install lilbee[remote]`
 
 **Configuration:**
 

@@ -29,7 +29,7 @@ class ModelSource(Enum):
     """Where a model is stored."""
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    BACKEND = "backend"  # Models managed by an external SDK backend
+    REMOTE = "remote"  # Models managed by a remote SDK-backed service
 
     @classmethod
     def parse(cls, value: str | None) -> "ModelSource | None":
@@ -61,9 +61,9 @@ _INSTALLED_CACHE_TTL_SECONDS = 30.0
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path, backend_base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, models_dir: Path, remote_base_url: str = "http://localhost:11434") -> None:
         self._models_dir = models_dir
-        self._backend_base_url = backend_base_url.rstrip("/")
+        self._remote_base_url = remote_base_url.rstrip("/")
 
         from lilbee.registry import ModelRegistry
 
@@ -89,12 +89,12 @@ class ModelManager:
 
         if source is None:
             native = set(self._list_native())
-            remote = set(self._list_backend())
+            remote = set(self._list_remote())
             result = sorted(native | remote)
         elif source is ModelSource.NATIVE:
             result = self._list_native()
         else:
-            result = self._list_backend()
+            result = self._list_remote()
 
         self._installed_cache[source] = (now, result)
         return result
@@ -107,9 +107,9 @@ class ModelManager:
         """List native models from the registry only."""
         return sorted(f"{m.name}:{m.tag}" for m in self._registry.list_installed())
 
-    def _list_backend(self) -> list[str]:
+    def _list_remote(self) -> list[str]:
         """List models from the SDK backend via its HTTP API."""
-        url = f"{self._backend_base_url}/api/tags"
+        url = f"{self._remote_base_url}/api/tags"
         try:
             resp = httpx.get(url, timeout=DEFAULT_HTTP_TIMEOUT)
             resp.raise_for_status()
@@ -125,10 +125,10 @@ class ModelManager:
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         """Check if model exists in specified source."""
         if source is None:
-            return self._is_native(model) or self._is_backend(model)
+            return self._is_native(model) or self._is_remote(model)
         if source is ModelSource.NATIVE:
             return self._is_native(model)
-        return self._is_backend(model)
+        return self._is_remote(model)
 
     def _is_native(self, model: str) -> bool:
         if self._registry.is_installed(model):
@@ -139,15 +139,15 @@ class ModelManager:
             return False
         return (self._models_dir / model).is_file()
 
-    def _is_backend(self, model: str) -> bool:
-        return model in self._list_backend()
+    def _is_remote(self, model: str) -> bool:
+        return model in self._list_remote()
 
     def get_source(self, model: str) -> ModelSource | None:
         """Find which source a model lives in. Native takes precedence."""
         if self._is_native(model):
             return ModelSource.NATIVE
-        if self._is_backend(model):
-            return ModelSource.BACKEND
+        if self._is_remote(model):
+            return ModelSource.REMOTE
         return None
 
     def pull(
@@ -170,7 +170,7 @@ class ModelManager:
         try:
             if source is ModelSource.NATIVE:
                 return self._pull_native(model, on_bytes=on_bytes)
-            self._pull_backend(model, on_progress=on_progress)
+            self._pull_remote(model, on_progress=on_progress)
             return None
         finally:
             self._invalidate_installed_cache()
@@ -194,11 +194,11 @@ class ModelManager:
         log.info("Downloaded %s to %s", model, path)
         return path
 
-    def _pull_backend(
+    def _pull_remote(
         self, model: str, *, on_progress: Callable[[dict], None] | None = None
     ) -> None:
         """Pull model via the SDK backend's HTTP API with streaming progress."""
-        url = f"{self._backend_base_url}/api/pull"
+        url = f"{self._remote_base_url}/api/pull"
         try:
             with (
                 httpx.Client(timeout=None) as client,
@@ -224,11 +224,11 @@ class ModelManager:
         try:
             if source is None:
                 native_removed = self._remove_native(model)
-                backend_removed = self._remove_backend(model)
+                backend_removed = self._remove_remote(model)
                 return native_removed or backend_removed
             if source is ModelSource.NATIVE:
                 return self._remove_native(model)
-            return self._remove_backend(model)
+            return self._remove_remote(model)
         finally:
             self._invalidate_installed_cache()
 
@@ -247,8 +247,8 @@ class ModelManager:
             return True
         return False
 
-    def _remove_backend(self, model: str) -> bool:
-        url = f"{self._backend_base_url}/api/delete"
+    def _remove_remote(self, model: str) -> bool:
+        url = f"{self._remote_base_url}/api/delete"
         try:
             resp = httpx.request(
                 "DELETE",
@@ -415,7 +415,7 @@ class _ManagerHolder:
         if self._instance is None:
             from lilbee.config import cfg
 
-            self._instance = ModelManager(cfg.models_dir, cfg.backend_base_url)
+            self._instance = ModelManager(cfg.models_dir, cfg.remote_base_url)
         return self._instance
 
     def reset(self) -> None:

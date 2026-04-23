@@ -349,7 +349,7 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: str = ConfigField(default="auto", writable=True)
-    backend_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
     anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
@@ -698,10 +698,10 @@ class Config(BaseSettings):
         if data.get("models_dir") in (None, _UNSET):
             data["models_dir"] = canonical_models_dir()
 
-        if "LILBEE_BACKEND_BASE_URL" not in os.environ:
+        if "LILBEE_REMOTE_BASE_URL" not in os.environ:
             ollama_host = os.environ.get("OLLAMA_HOST")
             if ollama_host:
-                data["backend_base_url"] = ollama_host
+                data["remote_base_url"] = ollama_host
 
         return data
 

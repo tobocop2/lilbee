@@ -44,7 +44,7 @@ class TestMcpList:
     def test_invalid_source_returns_explicit_error(self):
         with patch("lilbee.cli.model.list_models_data") as fn:
             result = model_list(source="bogus")
-        assert result == {"error": "invalid source 'bogus'; expected one of: native, backend"}
+        assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
         fn.assert_not_called()
 
 
@@ -82,7 +82,7 @@ class TestMcpRemove:
     def test_invalid_source_explicit_error(self):
         with patch("lilbee.cli.model.remove_model_data") as fn:
             result = model_rm("qwen3:0.6b", source="bogus")
-        assert result == {"error": "invalid source 'bogus'; expected one of: native, backend"}
+        assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
         fn.assert_not_called()
 
 
@@ -132,15 +132,15 @@ class TestMcpPull:
     @pytest.mark.asyncio
     async def test_pull_litellm_source(self):
         captured: list[ModelSource] = []
-        final = PullResult(model="llama3:latest", source="backend", status=PullStatus.OK)
+        final = PullResult(model="llama3:latest", source="remote", status=PullStatus.OK)
 
         def fake_pull(model, source, *, on_update):
             captured.append(source)
             return final
 
         with patch("lilbee.cli.model.pull_model_data", side_effect=fake_pull):
-            await model_pull("llama3:latest", source="backend")
-        assert captured == [ModelSource.BACKEND]
+            await model_pull("llama3:latest", source="remote")
+        assert captured == [ModelSource.REMOTE]
 
     @pytest.mark.asyncio
     async def test_pull_runtime_error_returned_as_dict(self):
@@ -163,7 +163,7 @@ class TestMcpPull:
     @pytest.mark.asyncio
     async def test_pull_invalid_source(self):
         result = await model_pull("qwen3:0.6b", source="bogus")
-        assert result == {"error": "invalid source 'bogus'; expected one of: native, backend"}
+        assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
 
 
 class TestLogProgressFailure:

@@ -283,7 +283,7 @@ class CatalogScreen(Screen[None]):
     def _fetch_remote_models(self) -> list[RemoteModel]:
         from lilbee.model_manager import classify_remote_models
 
-        return classify_remote_models(cfg.backend_base_url)
+        return classify_remote_models(cfg.remote_base_url)
 
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:

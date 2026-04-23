@@ -942,11 +942,11 @@ class TestModelsInstalled:
         mock_manager.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
         from lilbee.model_manager import ModelSource
 
-        mock_manager.get_source.return_value = ModelSource.BACKEND
+        mock_manager.get_source.return_value = ModelSource.REMOTE
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert len(result.models) == 2
-        assert result.models[0].source == "backend"
+        assert result.models[0].source == "remote"
 
     async def test_unknown_source_defaults_to_litellm(self):
         mock_manager = MagicMock()
@@ -954,7 +954,7 @@ class TestModelsInstalled:
         mock_manager.get_source.return_value = None
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert result.models[0].source == "backend"
+        assert result.models[0].source == "remote"
 
 
 class TestModelsPull:
@@ -986,7 +986,7 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
-            events = [e async for e in handlers.models_pull("test", source="backend")]
+            events = [e async for e in handlers.models_pull("test", source="remote")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
         assert any("success" in e for e in non_empty)
@@ -1032,7 +1032,7 @@ class TestModelsDelete:
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
-            result = await handlers.models_delete("test", source="backend")
+            result = await handlers.models_delete("test", source="remote")
         assert result.deleted is True
         assert result.model == "test"
 
@@ -1258,7 +1258,7 @@ class TestGetConfig:
         dumped = result.model_dump()
         assert "chat_model" in dumped
         assert "system_prompt" in dumped
-        assert "backend_base_url" in dumped
+        assert "remote_base_url" in dumped
         assert "diversity_max_per_source" in dumped
         assert "mmr_lambda" in dumped
         assert "query_expansion_count" in dumped
@@ -1674,10 +1674,10 @@ class TestListExternalModels:
     @patch("lilbee.server.handlers.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
-        cfg.backend_base_url = "https://provider-a.example"
+        cfg.remote_base_url = "https://provider-a.example"
         await handlers.list_external_models()
 
-        cfg.backend_base_url = "https://provider-b.example"
+        cfg.remote_base_url = "https://provider-b.example"
         await handlers.list_external_models()
 
         assert mock_svc.return_value.provider.list_models.call_count == 2
@@ -1830,7 +1830,7 @@ class TestModelPullProgressCancel:
             patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
             patch.object(handlers.SseStream, "__init__", patched_init),
         ):
-            gen = handlers.models_pull("test", source="backend")
+            gen = handlers.models_pull("test", source="remote")
             events = []
             async for event in gen:
                 events.append(event)

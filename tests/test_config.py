@@ -878,12 +878,12 @@ class TestIgnoreDirsFallback:
 
 
 class TestOllamaHostFallback:
-    def test_ollama_host_sets_backend_base_url(self, tmp_path):
+    def test_ollama_host_sets_remote_base_url(self, tmp_path):
         env = _clean_env(tmp_path)
         env["OLLAMA_HOST"] = "http://custom:11434"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.backend_base_url == "http://custom:11434"
+        assert c.remote_base_url == "http://custom:11434"
 
 
 class TestParseEnableOcrFallback:

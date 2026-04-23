@@ -47,7 +47,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-backend = ["litellm>=1.50"]
+remote = ["litellm>=1.50"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.8.6"]
 

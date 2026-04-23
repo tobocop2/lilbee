@@ -815,7 +815,7 @@ async def models_installed() -> ModelsInstalledResponse:
     models = []
     for name in names:
         src = manager.get_source(name)
-        source_str = src.value if src is not None else ModelSource.BACKEND.value
+        source_str = src.value if src is not None else ModelSource.REMOTE.value
         models.append(InstalledModelEntry(name=name, source=source_str))
     return ModelsInstalledResponse(models=models)
 
@@ -978,7 +978,7 @@ _external_cache = _ExternalModelsCache()
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
-    key = f"{cfg.backend_base_url}:{cfg.llm_api_key or ''}"
+    key = f"{cfg.remote_base_url}:{cfg.llm_api_key or ''}"
     cached = _external_cache.get(key)
     if cached:
         return cached

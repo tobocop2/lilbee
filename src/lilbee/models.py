@@ -313,7 +313,7 @@ def list_installed_models() -> list[str]:
         for manifest in registry.list_installed():
             if manifest.task == ModelTask.CHAT:
                 names.append(f"{manifest.name}:{manifest.tag}")
-        for remote in classify_remote_models(cfg.backend_base_url):
+        for remote in classify_remote_models(cfg.remote_base_url):
             if remote.task == ModelTask.CHAT:
                 names.append(remote.name)
         return sorted(set(names))

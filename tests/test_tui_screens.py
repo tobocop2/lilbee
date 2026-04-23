@@ -4146,7 +4146,7 @@ def test_check_embedding_model_remote_available():
         assert not manager.is_installed(cfg.embedding_model)
 
         embed_base = cfg.embedding_model.split(":")[0]
-        remote_embeds = detect_remote_embedding_models(cfg.backend_base_url)
+        remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
         assert any(embed_base in name for name in remote_embeds)
 
 
@@ -4164,7 +4164,7 @@ def test_check_embedding_model_not_found():
         assert not manager.is_installed(cfg.embedding_model)
 
         embed_base = cfg.embedding_model.split(":")[0]
-        remote_embeds = detect_remote_embedding_models(cfg.backend_base_url)
+        remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
         assert not any(embed_base in name for name in remote_embeds)
         # Would call self.app.call_from_thread(self._show_setup_modal, remote_embeds)
 

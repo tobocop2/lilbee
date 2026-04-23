@@ -42,7 +42,7 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is None:
             self._sdk_provider = SdkLLMProvider(
                 LitellmSdkBackend(),
-                base_url=cfg.backend_base_url,
+                base_url=cfg.remote_base_url,
                 api_key=cfg.llm_api_key,
             )
         return self._sdk_provider
@@ -126,7 +126,7 @@ class RoutingProvider(LLMProvider):
             raise ProviderError(
                 f"Cannot rerank with {cfg.reranker_model!r}: "
                 "hosted rerank backend not available. "
-                "Install the 'backend' extra to enable hosted reranking."
+                "Install the 'remote' extra to enable hosted reranking."
             )
         return sdk.rerank(query, candidates)
 
