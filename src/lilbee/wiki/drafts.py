@@ -1,4 +1,4 @@
-"""Draft review surface — list, diff, accept, reject wiki drafts.
+"""Draft review surface. List, diff, accept, reject wiki drafts.
 
 Wiki generation routes pages to ``wiki/drafts/`` when the content
 drift against an existing page exceeds the configured threshold or
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.store import Store
+from lilbee.wiki.gen import index_wiki_page
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
@@ -188,6 +189,12 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     ``wiki_source`` are cleared, then the accepted body is chunked,
     embedded, and re-written.
 
+    Sequence is deliberate: write the published file first, re-index
+    next, delete the draft last. If the re-index raises (chunker,
+    embedder, LanceDB contention), the draft file stays on disk so
+    the user can retry ``accept`` — ``index_wiki_page`` is idempotent
+    on the same ``wiki_source`` (``clear_table`` + re-write).
+
     Raises :class:`FileNotFoundError` when the draft does not exist.
     """
     draft = _draft_path(wiki_root, slug)
@@ -208,9 +215,9 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(clean, encoding="utf-8")
-    draft.unlink()
 
     reindexed = _reindex_accepted_page(target, wiki_root, store)
+    draft.unlink()
     log.info("Accepted draft %s -> %s (%d chunks indexed)", slug, target, reindexed)
     return AcceptResult(slug=slug, moved_to=target, reindexed_chunks=reindexed)
 
@@ -232,8 +239,6 @@ def _reindex_accepted_page(target: Path, wiki_root: Path, store: Store) -> int:
     page generation, so an accepted draft is indexed identically to a
     fresh page and no bespoke accept-time code path exists.
     """
-    from lilbee.wiki.gen import index_wiki_page
-
     wiki_source = _wiki_source_for(target, wiki_root)
     content = target.read_text(encoding="utf-8")
     return index_wiki_page(content, wiki_source, store)

@@ -505,18 +505,27 @@ def _assemble_content(
 def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
-    Drafts and archive pages never enter the search pool: a
-    ``wiki_source`` whose first path component is not a content
-    subdir returns 0 without touching the store. Stale rows for the
-    same ``wiki_source`` are cleared first so regeneration replaces
-    instead of accumulating. Record shape matches the markdown-ingest
-    convention in ``ingest.py``: ``content_type="text"``, all four
-    page/line positions ``0`` (wiki pages are not paginated).
+    ``wiki_source`` must follow the ``<wiki_dir>/<subdir>/<slug>.md``
+    shape (see :attr:`PageTarget.wiki_source`). Three branches:
 
-    Returns the number of chunk rows written.
+    - subdir in :data:`WIKI_CONTENT_SUBDIRS`: clear stale rows, chunk,
+      embed, write. Returns the row count.
+    - subdir is ``drafts/`` or ``archive/``: skip without touching the
+      store. Returns 0.
+    - malformed ``wiki_source`` (no subdir component): log.warning and
+      return 0. Does not raise because the caller set is narrow (only
+      internal wiki paths reach here) and surfacing the bad input in
+      the log is sufficient triage.
+
+    Record shape matches the markdown-ingest convention in
+    ``ingest.py``: ``content_type="text"``, all four page/line
+    positions ``0`` (wiki pages are not paginated).
     """
     subdir = _subdir_from_wiki_source(wiki_source)
-    if subdir is None or subdir not in WIKI_CONTENT_SUBDIRS:
+    if subdir is None:
+        log.warning("index_wiki_page: malformed wiki_source %r (no subdir)", wiki_source)
+        return 0
+    if subdir not in WIKI_CONTENT_SUBDIRS:
         return 0
 
     body = extract_body(content).strip()

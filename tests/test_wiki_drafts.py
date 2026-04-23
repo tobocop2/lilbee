@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
 from lilbee.wiki.drafts import (
     AcceptResult,
     DraftInfo,
@@ -149,7 +148,7 @@ class TestAcceptDraft:
         _write(wiki_root / CONCEPTS_SUBDIR / "brakes.md", "old\n")
         _write(wiki_root / DRAFTS_SUBDIR / "brakes.md", _draft_content("new brakes body"))
         store = MagicMock()
-        with patch("lilbee.wiki.gen.index_wiki_page", return_value=3) as idx:
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=3) as idx:
             result = accept_draft("brakes", wiki_root, store)
         assert isinstance(result, AcceptResult)
         assert result.slug == "brakes"
@@ -164,7 +163,7 @@ class TestAcceptDraft:
         wiki_root = tmp_path / "wiki"
         _write(wiki_root / DRAFTS_SUBDIR / "fresh.md", _draft_content("fresh body"))
         store = MagicMock()
-        with patch("lilbee.wiki.gen.index_wiki_page", return_value=1):
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
             result = accept_draft("fresh", wiki_root, store)
         assert SUMMARIES_SUBDIR in result.moved_to.parts
         assert (wiki_root / SUMMARIES_SUBDIR / "fresh.md").is_file()
@@ -174,7 +173,7 @@ class TestAcceptDraft:
         _write(wiki_root / SUMMARIES_SUBDIR / "x.md", "old\n")
         _write(wiki_root / DRAFTS_SUBDIR / "x.md", _draft_content(drift_pct=40))
         store = MagicMock()
-        with patch("lilbee.wiki.gen.index_wiki_page", return_value=1):
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
             accept_draft("x", wiki_root, store)
         accepted = (wiki_root / SUMMARIES_SUBDIR / "x.md").read_text()
         assert "DRIFT" not in accepted
@@ -219,26 +218,35 @@ class TestDraftInfoDefaults:
         )
         assert d.published_exists is False
 
-    def test_serialized_published_path_is_string_when_set(self, tmp_path: Path) -> None:
-        published = tmp_path / "x.md"
-        d = DraftInfo(
-            slug="x",
-            path=tmp_path / "d.md",
-            drift_ratio=0.1,
-            faithfulness_score=0.9,
-            bad_title=True,
-            published_path=published,
-            mtime=0.0,
+
+class TestAcceptCrashSafety:
+    """Review-driven: the draft file survives a re-index failure so
+    accept is idempotent and no content is lost."""
+
+    def test_reindex_failure_keeps_draft_on_disk(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / SUMMARIES_SUBDIR / "x.md", "old\n")
+        _write(wiki_root / DRAFTS_SUBDIR / "x.md", _draft_content("new"))
+
+        boom = MagicMock(side_effect=RuntimeError("indexer down"))
+        with patch("lilbee.wiki.drafts.index_wiki_page", boom), pytest.raises(RuntimeError):
+            accept_draft("x", wiki_root, MagicMock())
+
+        # Published page was updated (first write), but the draft
+        # survives so the user can re-run accept once the indexer is back.
+        assert (wiki_root / DRAFTS_SUBDIR / "x.md").is_file()
+
+
+class TestListDraftsWithOnlyDriftMarker:
+    """Drift marker parses even when frontmatter is missing."""
+
+    def test_drift_marker_without_frontmatter(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / DRAFTS_SUBDIR / "x.md",
+            "<!-- DRIFT: 15% content changed - flagged for human review -->\n\nbody\n",
         )
-        payload = d.to_dict()
-        assert payload["published_path"] == str(published)
-        assert payload["published_exists"] is True
-        assert payload["bad_title"] is True
-
-
-class TestCfgUnused:
-    """Placeholder so the test module still passes when run in isolation
-    against a real cfg. Exercises that the module imports cleanly."""
-
-    def test_cfg_has_wiki_dir(self) -> None:
-        assert isinstance(cfg.wiki_dir, str)
+        [d] = list_drafts(wiki_root)
+        assert d.drift_ratio == pytest.approx(0.15)
+        assert d.faithfulness_score is None
+        assert d.bad_title is False

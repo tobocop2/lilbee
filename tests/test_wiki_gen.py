@@ -1034,6 +1034,19 @@ class TestWikiIndexing:
         store.clear_table.assert_not_called()
         store.add_chunks.assert_not_called()
 
+    def test_malformed_wiki_source_logs_warning_and_skips(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """A ``wiki_source`` without a subdir component is logged and
+        skipped rather than silently writing to the store or crashing.
+        """
+        store = MagicMock(spec=Store)
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        result = index_wiki_page(self._content("body"), "malformed", store)
+        assert result == 0
+        store.clear_table.assert_not_called()
+        assert any("malformed wiki_source" in r.message for r in caplog.records)
+
     def test_empty_body_clears_stale_but_adds_nothing(self):
         """A page whose body is empty after frontmatter+citation stripping invalidates
         old rows but writes none, so stale wiki rows from a prior generation are removed.
