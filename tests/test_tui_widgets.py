@@ -2413,12 +2413,57 @@ class TestModelBarAdditional:
                 await pilot.pause()
             assert cfg.embedding_model == "new-embed:latest"
 
+    async def test_populate_survives_auto_pick_race(self) -> None:
+        """bb-zvrv primary regression: ``_populate`` must not let the
+        Textual auto-pick intermediate Changed event clobber cfg.
+
+        When ``set_options`` receives a multi-option list whose first
+        entry does NOT match ``cfg.chat_model``, Textual synchronously
+        sets ``value = options[0].ref`` and posts a Changed event, then
+        the caller reassigns ``sel.value = cfg.chat_model`` and posts
+        another. If ``_populating`` is cleared synchronously, the first
+        (non-matching) event slips through and rewrites cfg to the
+        auto-picked value — next startup trips the featured-catalog
+        validator. The fix is ``call_after_refresh(_clear_populating_guard)``.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic-embed-text:v1.5"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            write_tracker = mock.Mock()
+            with (
+                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                bar._populate(
+                    [
+                        ModelOption("auto-picked-alpha", "auto-picked-alpha"),
+                        ModelOption("qwen3:8b", "qwen3:8b"),
+                    ],
+                    [
+                        ModelOption("auto-embed-alpha", "auto-embed-alpha"),
+                        ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5"),
+                    ],
+                )
+                await pilot.pause()
+            assert cfg.chat_model == "qwen3:8b"
+            assert cfg.embedding_model == "nomic-embed-text:v1.5"
+            assert bar._populating is False
+            for call in write_tracker.call_args_list:
+                assert call.args[2] not in {"auto-picked-alpha", "auto-embed-alpha"}
+
     async def test_chat_model_change_noop_when_value_matches_config(self) -> None:
-        """bb-zvrv regression: an async Changed event whose value matches
-        cfg.chat_model already must NOT rewrite cfg. Textual posts
-        Select.Changed asynchronously, so the ``_populating`` guard can
-        clear before the event is delivered; this equality short-circuit
-        is the correct defense.
+        """Secondary defense against duplicate same-value events.
+
+        The primary bb-zvrv fix is the async-drain guard exercised by
+        ``test_populate_survives_auto_pick_race``. This test covers the
+        equality short-circuit that handles duplicate-value events
+        (e.g. a user re-selecting the active model) without a round-trip
+        through settings.
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
