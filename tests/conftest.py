@@ -1,11 +1,23 @@
 """Shared test helpers."""
 
+import os
 import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+# Opt tests out of the per-role catalog-task validator at import time so
+# the many ``cfg.chat_model = "test-model"``-style fixtures don't trip
+# over the production guard. The bypass is a two-signal gate: the env
+# var alone is NOT enough. The validator also checks
+# ``sys.modules["pytest"]`` to confirm the process is actually a test
+# run -- so setting ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` in a shell
+# profile or Dockerfile cannot silently disable role validation in
+# production. Because pytest has already imported itself by the time
+# conftest runs, the sentinel half of the gate is satisfied here.
+os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 
 from lilbee.catalog import CatalogModel
 from lilbee.config import cfg

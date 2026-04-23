@@ -13,6 +13,7 @@ from lilbee.catalog import (
     FEATURED_ALL,
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
+    FEATURED_RERANK,
     FEATURED_VISION,
     QUANT_TIERS,
     CatalogModel,
@@ -141,8 +142,18 @@ class TestFeaturedModels:
         assert len(FEATURED_VISION) > 0
 
     def test_all_combined(self) -> None:
-        expected = len(FEATURED_CHAT) + len(FEATURED_EMBEDDING) + len(FEATURED_VISION)
+        expected = (
+            len(FEATURED_CHAT)
+            + len(FEATURED_EMBEDDING)
+            + len(FEATURED_VISION)
+            + len(FEATURED_RERANK)
+        )
         assert len(FEATURED_ALL) == expected
+
+    def test_featured_rerank_present(self) -> None:
+        assert len(FEATURED_RERANK) > 0
+        for m in FEATURED_RERANK:
+            assert m.task == "rerank"
 
     def test_all_featured_flag_true(self) -> None:
         for m in FEATURED_ALL:
@@ -171,6 +182,45 @@ class TestFeaturedModels:
     def test_min_ram_gb_positive(self) -> None:
         for m in FEATURED_ALL:
             assert m.min_ram_gb > 0
+
+
+class TestIsRerankRef:
+    """is_rerank_ref matches the canonical GGUF rerank catalog entries."""
+
+    def test_empty_returns_false(self) -> None:
+        from lilbee.catalog import is_rerank_ref
+
+        assert is_rerank_ref("") is False
+
+    def test_bare_hf_repo_matches(self) -> None:
+        from lilbee.catalog import FEATURED_RERANK, is_rerank_ref
+
+        assert FEATURED_RERANK, "rerank catalog must not be empty"
+        assert is_rerank_ref(FEATURED_RERANK[0].hf_repo) is True
+
+    def test_hf_repo_with_tag_suffix_matches(self) -> None:
+        from lilbee.catalog import FEATURED_RERANK, is_rerank_ref
+
+        entry = FEATURED_RERANK[0]
+        assert is_rerank_ref(f"{entry.hf_repo}:latest") is True
+
+    def test_name_tag_matches(self) -> None:
+        from lilbee.catalog import FEATURED_RERANK, is_rerank_ref
+
+        entry = FEATURED_RERANK[0]
+        assert is_rerank_ref(entry.ref) is True
+
+    def test_substring_non_match(self) -> None:
+        """``"base"`` must NOT match ``bge-reranker-base``."""
+        from lilbee.catalog import is_rerank_ref
+
+        assert is_rerank_ref("base") is False
+        assert is_rerank_ref("reranker") is False
+
+    def test_unknown_ref_returns_false(self) -> None:
+        from lilbee.catalog import is_rerank_ref
+
+        assert is_rerank_ref("bogus/not-real") is False
 
 
 class TestHasGgufSiblings:
@@ -675,6 +725,41 @@ class TestFindCatalogEntry:
         result = find_catalog_entry("")
         assert result is None
 
+    def test_provider_prefixed_ref_resolves(self) -> None:
+        """``ollama/qwen3:0.6b`` resolves to the native catalog entry."""
+        result = find_catalog_entry("ollama/qwen3:0.6b")
+        assert result is not None
+        assert result.ref == "qwen3:0.6b"
+
+    def test_hf_repo_tagged_resolves(self) -> None:
+        """``hf_repo:tag`` form (as PUT handlers produce via ensure_tag) resolves."""
+        result = find_catalog_entry("gpustack/bge-reranker-v2-m3-GGUF:latest")
+        assert result is not None
+        assert result.hf_repo == "gpustack/bge-reranker-v2-m3-GGUF"
+        assert result.ref == "bge-reranker-v2-m3:latest"
+
+    def test_hf_repo_bare_resolves(self) -> None:
+        """Bare ``hf_repo`` (no tag) still resolves via the hf_repo index."""
+        result = find_catalog_entry("gpustack/bge-reranker-v2-m3-GGUF")
+        assert result is not None
+        assert result.hf_repo == "gpustack/bge-reranker-v2-m3-GGUF"
+
+    def test_unknown_tag_does_not_silently_widen(self) -> None:
+        """``qwen3:9b`` (not a featured tag) must NOT collapse to the recommended qwen3.
+
+        Regression for round-4 review: the previous implementation appended
+        the pre-colon segment as a bare-name candidate unconditionally,
+        causing any unknown ``<family>:<tag>`` query to resolve to the
+        family's recommended variant. Strict lookup returns ``None``.
+        """
+        assert find_catalog_entry("qwen3:9b") is None
+
+    def test_provider_prefixed_hf_repo_with_tag_resolves(self) -> None:
+        """``ollama/<org>/<repo>:tag`` resolves via post-prefix hf_repo strip."""
+        result = find_catalog_entry("ollama/gpustack/bge-reranker-v2-m3-GGUF:latest")
+        assert result is not None
+        assert result.hf_repo == "gpustack/bge-reranker-v2-m3-GGUF"
+
 
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_slug_and_defaults(self) -> None:
@@ -695,6 +780,14 @@ class TestBuildAdhocEntry:
 
         entry = build_adhoc_entry("foo/bar-GGUF", task=ModelTask.EMBEDDING)
         assert entry.task == ModelTask.EMBEDDING
+
+    def test_rerank_task_accepted(self) -> None:
+        """Ad-hoc reranker entries preserve the RERANK task tag."""
+        from lilbee.models import ModelTask
+
+        entry = build_adhoc_entry("foo/bar-reranker", task=ModelTask.RERANK)
+        assert entry.task == ModelTask.RERANK
+        assert entry.gguf_filename == "*.gguf"
 
 
 class TestIsHfRepoId:
@@ -1004,6 +1097,17 @@ class TestPipelineToTask:
 
     def test_empty_defaults_to_chat(self) -> None:
         assert catalog._pipeline_to_task("") == "chat"
+
+    def test_text_ranking_maps_to_rerank(self) -> None:
+        """HF's canonical cross-encoder pipeline tag is ``text-ranking``."""
+        assert catalog._pipeline_to_task("text-ranking") == "rerank"
+
+    def test_text_classification_maps_to_rerank(self) -> None:
+        """``text-classification`` is the HF tag used by GGUF rerankers."""
+        assert catalog._pipeline_to_task("text-classification") == "rerank"
+
+    def test_sentence_similarity_maps_to_embedding(self) -> None:
+        assert catalog._pipeline_to_task("sentence-similarity") == "embedding"
 
 
 class TestFeaturedVisionModel:

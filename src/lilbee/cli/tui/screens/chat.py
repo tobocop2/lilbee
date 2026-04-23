@@ -688,6 +688,9 @@ class ChatScreen(Screen[None]):
             return
 
         defn = SETTINGS_MAP[key]
+        if not defn.writable:
+            self.notify(msg.CMD_SET_READONLY.format(key=key), severity="warning")
+            return
         try:
             if defn.type is bool:
                 parsed = value.lower() in ("true", "1", "yes", "on")

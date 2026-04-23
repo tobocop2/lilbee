@@ -298,7 +298,7 @@ class TestLlamaCppProvider:
                 return_value={"context_length": "2048"},
             ),
         ):
-            load_llama(models_dir / "test-model.gguf", embedding=True)
+            load_llama(models_dir / "test-model.gguf", mode="embed")
             call_kwargs = mock_llama_cls.call_args[1]
             assert call_kwargs["n_batch"] == 2048
             assert call_kwargs["n_ubatch"] == 2048
@@ -310,7 +310,7 @@ class TestLlamaCppProvider:
         from lilbee.providers.llama_cpp_provider import load_llama
 
         with patch("llama_cpp.Llama"):
-            load_llama(models_dir / "test-model.gguf", embedding=False)
+            load_llama(models_dir / "test-model.gguf", mode="chat")
             import llama_cpp
 
             call_kwargs = llama_cpp.Llama.call_args[1]
@@ -450,8 +450,13 @@ class TestFactory:
 
 
 class TestConfigProvider:
-    def test_default_llm_provider(self) -> None:
+    def test_default_llm_provider(self, tmp_path) -> None:
         env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("LILBEE_")}
+        # Point LILBEE_DATA at a clean tmp dir so the test doesn't pick up a
+        # user-local config.toml whose model slots predate strict catalog
+        # validation (round 4).
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
         with (
             mock.patch.dict(__import__("os").environ, env, clear=True),
             mock.patch("lilbee.settings.get", return_value=None),
@@ -612,6 +617,62 @@ class TestRoutingProvider:
             result = rp.list_models()
         assert result == ["local.gguf"]
 
+    def test_list_models_union_when_both_available(self) -> None:
+        """Native and remote listings are merged when litellm is installed."""
+        rp = self._make_provider()
+
+        mock_llama = mock.MagicMock()
+        mock_llama.list_models.return_value = ["local.gguf"]
+        rp._llama_cpp = mock_llama
+
+        mock_sdk = mock.MagicMock()
+        mock_sdk.list_models.return_value = ["ollama/qwen3:8b"]
+        rp._sdk_provider = mock_sdk
+
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=True,
+        ):
+            result = rp.list_models()
+        assert result == ["local.gguf", "ollama/qwen3:8b"]
+
+    def test_list_models_remote_error_returns_native_only(self) -> None:
+        """A failing SDK backend doesn't mask the native registry listing."""
+        rp = self._make_provider()
+
+        mock_llama = mock.MagicMock()
+        mock_llama.list_models.return_value = ["local.gguf"]
+        rp._llama_cpp = mock_llama
+
+        mock_sdk = mock.MagicMock()
+        mock_sdk.list_models.side_effect = RuntimeError("remote down")
+        rp._sdk_provider = mock_sdk
+
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=True,
+        ):
+            result = rp.list_models()
+        assert result == ["local.gguf"]
+
+    def test_get_llama_cpp_caches_instance(self) -> None:
+        """``_get_llama_cpp`` memoizes the LlamaCppProvider on first call."""
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        self._to_shutdown.append(rp)
+        first = rp._get_llama_cpp()
+        self._to_shutdown.append(first)
+        second = rp._get_llama_cpp()
+        assert first is second
+
+    def test_get_sdk_provider_caches_instance(self) -> None:
+        """``_get_sdk_provider`` memoizes the SdkLLMProvider on first call."""
+        rp = self._make_provider()
+        first = rp._get_sdk_provider()
+        second = rp._get_sdk_provider()
+        assert first is second
+
     def test_list_chat_models_empty_when_litellm_unavailable(self) -> None:
         # list_chat_models must skip the SDK backend entirely when litellm
         # is not installed; native llama-cpp never has a frontier catalog.
@@ -674,6 +735,24 @@ class TestRoutingProvider:
             pytest.raises(ProviderError, match="no pull-capable backend"),
         ):
             rp.pull_model("bad-model")
+
+    def test_pull_model_delegates_to_sdk_when_available(self) -> None:
+        """With litellm available, pull_model forwards to the SDK provider."""
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        rp._sdk_provider = mock_sdk
+        captured: dict[str, object] = {}
+
+        def _on_progress(evt: dict[str, object]) -> None:
+            captured["saw"] = evt
+
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=True,
+        ):
+            rp.pull_model("ollama/llama3:8b", on_progress=_on_progress)
+
+        mock_sdk.pull_model.assert_called_once_with("ollama/llama3:8b", on_progress=_on_progress)
 
     def test_chat_with_explicit_api_model_override(self) -> None:
         rp = self._make_provider()
@@ -1364,13 +1443,14 @@ class TestFilterOptions:
 
 
 def _make_provider_no_thread() -> object:
-    """Create a LlamaCppProvider without starting the embed thread."""
+    """Create a LlamaCppProvider without starting the embed/rerank thread."""
     from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
     with mock.patch("threading.Thread.start"):
         provider = LlamaCppProvider()
     provider._cache = mock.MagicMock()
     provider._embed_thread = mock.MagicMock()
+    provider._rerank_thread = mock.MagicMock()
     return provider
 
 
@@ -1383,61 +1463,51 @@ class TestLlamaCppProviderMethods:
         mock_cache_model = mock.MagicMock()
         provider._cache.load_model.return_value = mock_cache_model
 
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
-                return_value=Path("/models/test.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider._is_vision_model",
-                return_value=False,
-            ),
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            return_value=Path("/models/test.gguf"),
         ):
             result = provider._get_chat_llm()
 
         assert result == mock_cache_model
-        provider._cache.load_model.assert_called_once_with(
-            Path("/models/test.gguf"), embedding=False
-        )
+        provider._cache.load_model.assert_called_once_with(Path("/models/test.gguf"), mode="chat")
 
-    def test_get_chat_llm_vision(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_get_chat_llm delegates to _get_vision_llm for vision models."""
+    def test_get_chat_llm_does_not_route_vision_models(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """_get_chat_llm loads the chat model directly; vision path is separate."""
         provider = _make_provider_no_thread()
         cfg.chat_model = "vision-model"
 
+        mock_cache_model = mock.MagicMock()
+        provider._cache.load_model.return_value = mock_cache_model
+
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._is_vision_model",
-                return_value=True,
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/vision.gguf"),
             ),
-            mock.patch.object(
-                provider, "_get_vision_llm", return_value=mock.MagicMock()
-            ) as mock_vis,
+            mock.patch.object(provider, "_get_vision_llm") as mock_vis,
         ):
             result = provider._get_chat_llm()
 
-        mock_vis.assert_called_once_with("vision-model:latest")
-        assert result == mock_vis.return_value
+        mock_vis.assert_not_called()
+        assert result == mock_cache_model
+        provider._cache.load_model.assert_called_once_with(Path("/models/vision.gguf"), mode="chat")
 
     def test_get_chat_llm_with_override_model(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_get_chat_llm uses the override model when provided."""
         provider = _make_provider_no_thread()
         cfg.chat_model = "default-model"
 
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
-                return_value=Path("/models/override.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider._is_vision_model",
-                return_value=False,
-            ),
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            return_value=Path("/models/override.gguf"),
         ):
             provider._get_chat_llm(model="override-model")
 
         provider._cache.load_model.assert_called_once_with(
-            Path("/models/override.gguf"), embedding=False
+            Path("/models/override.gguf"), mode="chat"
         )
 
     def test_get_vision_llm_caches(self, mock_llama_cpp: mock.MagicMock) -> None:
@@ -1489,9 +1559,7 @@ class TestLlamaCppProviderMethods:
         ):
             provider._get_embed_llm()
 
-        provider._cache.load_model.assert_called_once_with(
-            Path("/models/embed.gguf"), embedding=True
-        )
+        provider._cache.load_model.assert_called_once_with(Path("/models/embed.gguf"), mode="embed")
 
     def test_get_subprocess_worker(self) -> None:
         """_get_subprocess_worker lazy-creates a WorkerProcess."""
@@ -1635,6 +1703,22 @@ class TestLlamaCppProviderMethods:
 
         assert "completion" in caps
         assert "vision" in caps
+
+    def test_get_capabilities_rerank_model_short_circuits(self) -> None:
+        """A rerank catalog ref returns ``["rerank"]`` without reaching resolve_model_path."""
+        from lilbee.catalog import FEATURED_RERANK
+
+        provider = _make_provider_no_thread()
+        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
+        ref = FEATURED_RERANK[0].name
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            side_effect=AssertionError("resolve_model_path must not be called for a rerank ref"),
+        ):
+            caps = provider.get_capabilities(ref)
+
+        assert caps == ["rerank"]
 
     def test_get_capabilities_no_mmproj(self) -> None:
         """get_capabilities returns ['completion'] when no mmproj found."""
@@ -1976,7 +2060,7 @@ class TestLoadLlama:
             "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
             return_value={"context_length": "2048"},
         ):
-            load_llama(Path("/test.gguf"), embedding=True)
+            load_llama(Path("/test.gguf"), mode="embed")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_batch"] == 2048
@@ -1994,7 +2078,7 @@ class TestLoadLlama:
             "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
             return_value=None,
         ):
-            load_llama(Path("/test.gguf"), embedding=True)
+            load_llama(Path("/test.gguf"), mode="embed")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_batch"] == 2048
@@ -2005,7 +2089,7 @@ class TestLoadLlama:
 
         cfg.num_ctx = 4096
 
-        load_llama(Path("/test.gguf"), embedding=True)
+        load_llama(Path("/test.gguf"), mode="embed")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 4096
@@ -2017,34 +2101,11 @@ class TestLoadLlama:
 
         cfg.num_ctx = None
 
-        load_llama(Path("/test.gguf"), embedding=False)
+        load_llama(Path("/test.gguf"), mode="chat")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
         assert "n_batch" not in call_kwargs
-
-
-class TestIsVisionModel:
-    def test_no_match_for_unknown_model(self) -> None:
-        """_is_vision_model returns False for models not in the catalog."""
-        from lilbee.providers.llama_cpp_provider import _is_vision_model
-
-        assert _is_vision_model("random-model") is False
-
-    def test_matches_featured_vision(self) -> None:
-        """_is_vision_model matches FEATURED_VISION entries."""
-        from lilbee.providers.llama_cpp_provider import _is_vision_model
-
-        mock_entry = mock.MagicMock()
-        mock_entry.name = "LightOnOCR"
-        mock_entry.hf_repo = "noctrex/LightOnOCR-2-1B-GGUF"
-
-        with mock.patch(
-            "lilbee.catalog.FEATURED_VISION",
-            [mock_entry],
-        ):
-            assert _is_vision_model("lightonocr") is True
-            assert _is_vision_model("no-match-here") is False
 
 
 class TestFindMmprojForModel:
@@ -2502,3 +2563,342 @@ class TestEmbedApiBaseRouting:
 
         call_kwargs = fake.embedding.call_args[1]
         assert "api_base" not in call_kwargs
+
+
+class TestSdkRerank:
+    """Coverage for SdkLLMProvider.rerank + LitellmSdkBackend.rerank."""
+
+    def _make_sdk_provider(self):
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        return SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
+
+    def test_rerank_returns_scores_in_candidate_order(self) -> None:
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        provider = self._make_sdk_provider()
+        fake_response = {
+            "results": [
+                {"index": 2, "relevance_score": 0.9},
+                {"index": 0, "relevance_score": 0.3},
+                {"index": 1, "relevance_score": 0.7},
+            ]
+        }
+        fake_litellm = mock.MagicMock()
+        fake_litellm.rerank.return_value = fake_response
+        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+            scores = provider.rerank("q", ["a", "b", "c"])
+        assert scores == [0.3, 0.7, 0.9]
+        kwargs = fake_litellm.rerank.call_args.kwargs
+        assert kwargs["query"] == "q"
+        assert kwargs["documents"] == ["a", "b", "c"]
+        assert "cohere" in kwargs["model"]
+
+    def test_rerank_empty_candidates_short_circuits(self) -> None:
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        provider = self._make_sdk_provider()
+        assert provider.rerank("q", []) == []
+
+    def test_supports_rerank_matches_backend_available(self) -> None:
+        provider = self._make_sdk_provider()
+        with mock.patch(
+            "lilbee.providers.litellm_sdk.litellm_available",
+            return_value=True,
+        ):
+            assert provider.supports_rerank() is True
+        with mock.patch(
+            "lilbee.providers.litellm_sdk.litellm_available",
+            return_value=False,
+        ):
+            assert provider.supports_rerank() is False
+
+    def test_rerank_maps_backend_error_to_provider_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        provider = self._make_sdk_provider()
+        fake_litellm = mock.MagicMock()
+        fake_litellm.rerank.side_effect = RuntimeError("boom")
+        with (
+            mock.patch.dict(sys.modules, {"litellm": fake_litellm}),
+            pytest.raises(ProviderError, match="Rerank failed"),
+        ):
+            provider.rerank("q", ["a"])
+
+    def test_rerank_accepts_object_style_response(self) -> None:
+        """Pydantic-style responses with attribute access also parse."""
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        provider = self._make_sdk_provider()
+        item = mock.MagicMock(index=0, relevance_score=0.42)
+        response = mock.MagicMock(results=[item], model="cohere/rerank-english-v3.0")
+        fake_litellm = mock.MagicMock()
+        fake_litellm.rerank.return_value = response
+        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+            scores = provider.rerank("q", ["a"])
+        assert scores == [0.42]
+
+    def test_backend_empty_candidates_skip_sdk(self) -> None:
+        """Backend-level empty-candidates guard avoids importing litellm."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_backend import RerankRequest
+
+        backend = LitellmSdkBackend()
+        request = RerankRequest(
+            ref=parse_model_ref("cohere/rerank-english-v3.0"),
+            query="q",
+            candidates=[],
+        )
+        result = backend.rerank(request)
+        assert result.scores == []
+
+    def test_backend_forwards_api_key(self) -> None:
+        """``api_key`` on the request is forwarded to litellm.rerank kwargs."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_backend import RerankRequest
+
+        backend = LitellmSdkBackend()
+        request = RerankRequest(
+            ref=parse_model_ref("cohere/rerank-english-v3.0"),
+            query="q",
+            candidates=["a"],
+            api_base="http://localhost:11434",
+            api_key="sk-test",
+        )
+        fake_litellm = mock.MagicMock()
+        fake_litellm.rerank.return_value = {"results": [{"index": 0, "relevance_score": 0.5}]}
+        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+            backend.rerank(request)
+        assert fake_litellm.rerank.call_args.kwargs["api_key"] == "sk-test"
+
+    def test_provider_wraps_non_provider_error(self) -> None:
+        """A non-``ProviderError`` raised inside the backend is re-wrapped."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider as _SdkLLMProvider
+
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        provider = _SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
+        with (
+            mock.patch.object(provider._backend, "rerank", side_effect=RuntimeError("wire error")),
+            pytest.raises(ProviderError, match="Rerank failed: wire error"),
+        ):
+            provider.rerank("q", ["a"])
+
+
+class TestIsRerankModel:
+    def test_empty_model_returns_false(self) -> None:
+        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+
+        assert _is_rerank_model("") is False
+
+    def test_matches_featured_rerank_entry(self) -> None:
+        from lilbee.catalog import FEATURED_RERANK
+        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+
+        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
+        assert _is_rerank_model(FEATURED_RERANK[0].name) is True
+
+    def test_non_rerank_model_returns_false(self) -> None:
+        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+
+        assert _is_rerank_model("definitely-not-a-rerank-model") is False
+
+    def test_substring_of_catalog_name_does_not_match(self) -> None:
+        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+
+        assert _is_rerank_model("base") is False
+        assert _is_rerank_model("reranker") is False
+
+    def test_hf_repo_with_tag_suffix_matches(self) -> None:
+        from lilbee.catalog import FEATURED_RERANK
+        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+
+        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
+        entry = FEATURED_RERANK[0]
+        assert _is_rerank_model(f"{entry.hf_repo}:latest") is True
+        assert _is_rerank_model(entry.hf_repo) is True
+
+
+class TestExtractRerankScore:
+    def test_raises_when_data_empty(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        with pytest.raises(ProviderError, match="no data"):
+            _extract_rerank_score({"data": []})
+
+    def test_scalar_embedding_returned_as_float(self) -> None:
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        assert _extract_rerank_score({"data": [{"embedding": 0.73}]}) == 0.73
+
+    def test_nested_list_embedding_returns_inner_scalar(self) -> None:
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        assert _extract_rerank_score({"data": [{"embedding": [[0.42]]}]}) == 0.42
+
+    def test_unrecognized_shape_raises(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        with pytest.raises(ProviderError, match="unrecognized"):
+            _extract_rerank_score({"data": [{"embedding": "not-a-number"}]})
+
+
+class TestRoutingProviderRerank:
+    """Routing-level rerank dispatch between native llama-cpp and hosted SDK."""
+
+    def _make_provider(self):
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        return RoutingProvider()
+
+    def test_rerank_routes_hosted_ref_to_sdk(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.rerank.return_value = [0.9, 0.1]
+        rp._llama_cpp = mock_llama
+        rp._sdk_provider = mock_sdk
+
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=True,
+        ):
+            scores = rp.rerank("q", ["a", "b"])
+        assert scores == [0.9, 0.1]
+        mock_sdk.rerank.assert_called_once_with("q", ["a", "b"])
+        mock_llama.rerank.assert_not_called()
+
+    def test_rerank_raises_when_hosted_ref_and_litellm_missing(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
+        rp._llama_cpp = mock_llama
+        rp._sdk_provider = mock_sdk
+
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        with (
+            mock.patch(
+                "lilbee.providers.routing_provider.litellm_available",
+                return_value=False,
+            ),
+            pytest.raises(ProviderError, match="litellm extra not installed"),
+        ):
+            rp.rerank("q", ["a", "b"])
+
+    def test_supports_rerank_disabled_model_always_true(self) -> None:
+        rp = self._make_provider()
+        cfg.reranker_model = ""
+        assert rp.supports_rerank() is True
+
+    def test_supports_rerank_native_delegates_to_llama(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.supports_rerank.return_value = True
+        rp._llama_cpp = mock_llama
+
+        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        assert rp.supports_rerank() is True
+        mock_llama.supports_rerank.assert_called_once()
+
+    def test_supports_rerank_hosted_requires_litellm(self) -> None:
+        rp = self._make_provider()
+        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=False,
+        ):
+            assert rp.supports_rerank() is False
+        with mock.patch(
+            "lilbee.providers.routing_provider.litellm_available",
+            return_value=True,
+        ):
+            assert rp.supports_rerank() is True
+
+    def test_rerank_routes_bare_gguf_to_llama_cpp(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
+        mock_llama.rerank.return_value = [0.5, 0.5]
+        rp._llama_cpp = mock_llama
+        rp._sdk_provider = mock_sdk
+
+        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        scores = rp.rerank("q", ["a", "b"])
+        assert scores == [0.5, 0.5]
+        mock_llama.rerank.assert_called_once_with("q", ["a", "b"])
+        mock_sdk.rerank.assert_not_called()
+
+    def test_empty_reranker_model_routes_to_litellm(self) -> None:
+        """An empty ``cfg.reranker_model`` is treated as non-native (hosted)."""
+        from lilbee.providers.routing_provider import _is_native_rerank_ref
+
+        assert _is_native_rerank_ref("") is False
+
+    def test_rerank_with_empty_model_raises_provider_error(self) -> None:
+        """rerank() raises ProviderError when cfg.reranker_model is empty."""
+        from lilbee.providers.base import ProviderError
+
+        rp = self._make_provider()
+        cfg.reranker_model = ""
+        with pytest.raises(ProviderError, match="No reranker configured"):
+            rp.rerank("q", ["a", "b"])
+
+
+class TestLlamaCppRerankDispatchError:
+    def test_scoring_error_is_propagated_to_future(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """A failure inside ``compute_rerank_scores`` resolves the future with the error."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        cfg.reranker_model = "test-model"
+        instance = mock.MagicMock()
+        instance.create_embedding.side_effect = RuntimeError("boom")
+        mock_llama_cpp.Llama.return_value = instance
+
+        provider = LlamaCppProvider()
+        try:
+            with pytest.raises(RuntimeError, match="boom"):
+                provider.rerank("q", ["candidate"])
+        finally:
+            provider.shutdown()
+
+
+class TestLlamaCppHasRankPooling:
+    def test_has_rank_pooling_reports_import_status(self) -> None:
+        from lilbee.providers.llama_cpp_provider import _llama_cpp_has_rank_pooling
+
+        fake_mod = mock.MagicMock()
+        fake_mod.LLAMA_POOLING_TYPE_RANK = 4
+        with mock.patch.dict(sys.modules, {"llama_cpp": fake_mod}):
+            assert _llama_cpp_has_rank_pooling() is True
+        with mock.patch.dict("sys.modules", {"llama_cpp": None}):
+            assert _llama_cpp_has_rank_pooling() is False
+
+    def test_supports_rerank_requires_rank_pooling(self) -> None:
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        with mock.patch("threading.Thread.start"):
+            provider = LlamaCppProvider()
+        try:
+            with mock.patch(
+                "lilbee.providers.llama_cpp_provider._llama_cpp_has_rank_pooling",
+                return_value=True,
+            ):
+                assert provider.supports_rerank() is True
+            with mock.patch(
+                "lilbee.providers.llama_cpp_provider._llama_cpp_has_rank_pooling",
+                return_value=False,
+            ):
+                assert provider.supports_rerank() is False
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()

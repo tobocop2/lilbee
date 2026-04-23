@@ -26,6 +26,7 @@ from lilbee.providers.sdk_backend import (
     CompletionRequest,
     EmbeddingRequest,
     LlmSdkBackend,
+    RerankRequest,
 )
 
 log = logging.getLogger(__name__)
@@ -217,6 +218,33 @@ class SdkLLMProvider(LLMProvider):
             return []
         caps = info.get("capabilities", [])
         return caps if isinstance(caps, list) else []
+
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Rerank candidates via the SDK backend using ``cfg.reranker_model``."""
+        if not candidates:
+            return []
+        self._ensure_initialized()
+        ref = parse_model_ref(cfg.reranker_model)
+        request = RerankRequest(
+            ref=ref,
+            query=query,
+            candidates=candidates,
+            api_base=self._base_url if ref.needs_api_base else None,
+            api_key=self._api_key or None,
+        )
+        try:
+            result = self._backend.rerank(request)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                f"Rerank failed: {exc}", provider=self._backend.provider_name
+            ) from exc
+        return result.scores
+
+    def supports_rerank(self) -> bool:
+        """SDK-backed rerank is available when the underlying SDK is importable."""
+        return self._backend.available()
 
     def shutdown(self) -> None:
         """SDK-backed providers hold no lilbee-side resources."""

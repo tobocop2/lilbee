@@ -47,13 +47,20 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         writable=False,
         group="Models",
-        help_text="LLM used for chat and generation",
+        help_text="LLM used for chat generation (vision and reranking are separate slots)",
+    ),
+    "vision_model": SettingDef(
+        str,
+        nullable=True,
+        writable=False,
+        group="Models",
+        help_text="Vision model for scanned PDF OCR (empty = disabled; Tesseract only)",
     ),
     "enable_ocr": SettingDef(
         bool,
         nullable=True,
         group="Ingest",
-        help_text="Vision OCR for scanned PDFs (empty = auto-detect from chat model)",
+        help_text="Vision OCR for scanned PDFs (empty = auto-detect from vision_model)",
     ),
     "ocr_timeout": SettingDef(
         float,
@@ -83,6 +90,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "reranker_model": SettingDef(
         str,
         nullable=True,
+        writable=False,
         group="Models",
         help_text="Cross-encoder model for result reranking",
     ),

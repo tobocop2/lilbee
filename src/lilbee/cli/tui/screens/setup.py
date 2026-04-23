@@ -6,6 +6,10 @@ immediately via ``TaskBarController.start_download``. No separate
 Install & Go button, no Browse, no Skip — pick what you want, press
 Esc when done. Downloads continue under the app-level controller, so
 dismissing the wizard while they're in flight is fine.
+
+Scope: chat and embedding only. Vision and reranker roles are optional,
+so they are configured post-setup via the catalog screen rather than
+gating the first-run path on them.
 """
 
 from __future__ import annotations

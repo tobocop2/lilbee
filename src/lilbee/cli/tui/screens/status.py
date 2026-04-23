@@ -84,8 +84,12 @@ def _build_config_content() -> Content:
     """Build the configuration section content."""
     lines = [
         _kv_line("Data dir", _collapse_home(cfg.data_dir), _data_dir_pill()),
-        _kv_line("Chat model", cfg.chat_model or "—", _model_pill(cfg.chat_model)),
-        _kv_line("Embed model", cfg.embedding_model or "—", _model_pill(cfg.embedding_model)),
+        _kv_line("Chat model", cfg.chat_model or "(disabled)", _model_pill(cfg.chat_model)),
+        _kv_line(
+            "Embed model", cfg.embedding_model or "(disabled)", _model_pill(cfg.embedding_model)
+        ),
+        _kv_line("Vision model", cfg.vision_model or "(disabled)", _model_pill(cfg.vision_model)),
+        _kv_line("Reranker", cfg.reranker_model or "(disabled)", _model_pill(cfg.reranker_model)),
         _kv_line("OCR", _ocr_label(), _ocr_pill()),
     ]
     return Content("\n").join(lines)

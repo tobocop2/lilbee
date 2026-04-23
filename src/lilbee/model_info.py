@@ -68,10 +68,15 @@ def _read_embed_arch(info: ModelArchInfo) -> ModelArchInfo:
 
 
 def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
-    """Read vision projector type from GGUF metadata for the chat model."""
-    from lilbee.model_manager import is_vision_capable
+    """Read vision projector type from GGUF metadata for ``cfg.vision_model``.
 
-    if not is_vision_capable(cfg.chat_model):
+    Reads the vision model name from the global ``cfg`` singleton (same
+    pattern as :func:`_read_chat_arch` / :func:`_read_embed_arch`) rather
+    than taking it as a parameter. The chat model is never inspected for
+    vision capability here: role separation is explicit. Returns the
+    input unchanged when no vision model is configured.
+    """
+    if not cfg.vision_model:
         return info
     try:
         from lilbee.providers.llama_cpp_provider import (
@@ -80,7 +85,7 @@ def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
             resolve_model_path,
         )
 
-        path = resolve_model_path(cfg.chat_model)
+        path = resolve_model_path(cfg.vision_model)
         mmproj = find_mmproj_for_model(path)
         proj_type = read_mmproj_projector_type(mmproj)
         info.vision_projector = proj_type or "unknown"

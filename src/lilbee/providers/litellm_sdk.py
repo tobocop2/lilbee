@@ -27,6 +27,8 @@ from lilbee.providers.sdk_backend import (
     CompletionResult,
     EmbeddingRequest,
     EmbeddingResult,
+    RerankRequest,
+    RerankResult,
     StreamChunk,
 )
 
@@ -210,6 +212,42 @@ class LitellmSdkBackend:
         else:
             model = getattr(response, "model", None)
         return EmbeddingResult(vectors=vectors, model=model)
+
+    def rerank(self, request: RerankRequest) -> RerankResult:
+        """Rerank documents via ``litellm.rerank`` (Cohere, Voyage, Jina, Together, HF TEI).
+
+        The SDK returns results sorted by relevance; we restore input
+        order via each result's ``index`` so scores line up with the
+        caller's ``candidates`` list.
+        """
+        if not request.candidates:
+            return RerankResult(scores=[])
+        import litellm
+
+        kwargs: dict[str, Any] = {
+            "model": _route_model(request.ref, request.api_base),
+            "query": request.query,
+            "documents": request.candidates,
+        }
+        if request.api_base:
+            kwargs["api_base"] = request.api_base
+        if request.api_key:
+            kwargs["api_key"] = request.api_key
+        try:
+            response = litellm.rerank(**kwargs)
+        except Exception as exc:
+            raise ProviderError(f"Rerank failed: {exc}", provider=_PROVIDER_NAME) from exc
+        results = response["results"] if isinstance(response, dict) else response.results
+        scores = [0.0] * len(request.candidates)
+        for item in results:
+            idx = item["index"] if isinstance(item, dict) else item.index
+            score = item["relevance_score"] if isinstance(item, dict) else item.relevance_score
+            scores[idx] = float(score)
+        if isinstance(response, dict):
+            model = response.get("model")
+        else:
+            model = getattr(response, "model", None)
+        return RerankResult(scores=scores, model=model)
 
     def list_models(self, *, base_url: str, api_key: str) -> list[str]:
         """List models from Ollama or an OpenAI-compatible server."""

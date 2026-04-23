@@ -9,6 +9,7 @@ to a persistent child process to avoid GIL contention.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -20,8 +21,10 @@ from typing import TYPE_CHECKING, Any
 
 from gguf import GGUFReader, GGUFValueType
 
+from lilbee.catalog import is_rerank_ref
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
 from lilbee.services import get_services
 
 if TYPE_CHECKING:
@@ -31,6 +34,7 @@ log = logging.getLogger(__name__)
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
+_RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
 
 @dataclass
@@ -39,6 +43,15 @@ class _EmbedRequest:
 
     texts: list[str]
     future: Future[list[list[float]]]
+
+
+@dataclass
+class _RerankRequest:
+    """A single rerank request submitted to the batch queue."""
+
+    query: str
+    candidates: list[str]
+    future: Future[list[float]]
 
 
 class LlamaCppProvider(LLMProvider):
@@ -60,9 +73,12 @@ class LlamaCppProvider(LLMProvider):
         self._vision_llm: Any | None = None
         self._vision_model_path: str | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
+        self._rerank_queue: queue.Queue[_RerankRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
         self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
         self._embed_thread.start()
+        self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
+        self._rerank_thread.start()
         self._subprocess_worker: WorkerProcess | None = None
         self._subprocess_enabled = cfg.subprocess_embed
 
@@ -114,15 +130,42 @@ class LlamaCppProvider(LLMProvider):
                 if not req.future.done():
                     req.future.set_exception(exc)
 
+    def _rerank_worker(self) -> None:
+        """Background thread: drain rerank queue, serialize through the model.
+
+        The queue is unbounded; back-pressure comes from callers awaiting
+        their futures synchronously.
+        """
+        while True:
+            req = self._rerank_queue.get()
+            if req is None:
+                break
+            self._dispatch_rerank(req)
+
+    def _dispatch_rerank(self, req: _RerankRequest) -> None:
+        """Run a single rerank request and resolve its future."""
+        try:
+            llm = self._get_rerank_llm()
+        except Exception as exc:
+            if not req.future.done():
+                req.future.set_exception(exc)
+            return
+        try:
+            scores = compute_rerank_scores(llm, req.query, req.candidates)
+            req.future.set_result(scores)
+        except Exception as exc:
+            if not req.future.done():
+                req.future.set_exception(exc)
+
     def _get_chat_llm(self, model: str | None = None) -> Any:
-        """Load or return a cached Llama instance for chat."""
+        """Load or return a cached Llama instance for chat.
+
+        Vision OCR has its own entry point (``vision_ocr``); the chat path
+        never substitutes a vision model, even if the chat pick is multimodal.
+        """
         resolved_model = model or cfg.chat_model
-
-        if _is_vision_model(resolved_model):
-            return self._get_vision_llm(resolved_model)
-
         model_path = resolve_model_path(resolved_model)
-        return self._cache.load_model(model_path, embedding=False)
+        return self._cache.load_model(model_path, mode=MODE_CHAT)
 
     def _get_vision_llm(self, model: str) -> Any:
         """Lazy-load a Llama instance with a vision chat handler."""
@@ -136,7 +179,18 @@ class LlamaCppProvider(LLMProvider):
     def _get_embed_llm(self) -> Any:
         """Load or return a cached Llama instance for embeddings."""
         model_path = resolve_model_path(cfg.embedding_model)
-        return self._cache.load_model(model_path, embedding=True)
+        return self._cache.load_model(model_path, mode=MODE_EMBED)
+
+    def _get_rerank_llm(self) -> Any:
+        """Load or return a cached Llama instance for reranking."""
+        model_name = cfg.reranker_model
+        if not model_name:
+            raise ProviderError(
+                "No reranker model configured. Set cfg.reranker_model first.",
+                provider="llama-cpp",
+            )
+        model_path = resolve_model_path(model_name)
+        return self._cache.load_model(model_path, mode=MODE_RERANK)
 
     def _get_subprocess_worker(self) -> WorkerProcess:
         """Lazy-create and return the subprocess worker."""
@@ -157,6 +211,18 @@ class LlamaCppProvider(LLMProvider):
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
         return fut.result(timeout=_EMBED_FUTURE_TIMEOUT_S)
+
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Score *candidates* by relevance to *query*, queued through a single worker."""
+        if not candidates:
+            return []
+        fut: Future[list[float]] = Future()
+        self._rerank_queue.put(_RerankRequest(query=query, candidates=candidates, future=fut))
+        return fut.result(timeout=_RERANK_FUTURE_TIMEOUT_S)
+
+    def supports_rerank(self) -> bool:
+        """llama-cpp can rerank iff llama-cpp-python exposes the rank pooling type."""
+        return _llama_cpp_has_rank_pooling()
 
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
         """Run vision OCR via the subprocess worker."""
@@ -217,22 +283,31 @@ class LlamaCppProvider(LLMProvider):
     def get_capabilities(self, model: str) -> list[str]:
         """Detect capabilities from local GGUF files.
 
-        Vision is detected by the presence of an mmproj file alongside
-        the model.
+        Rerank models return ``["rerank"]``; cross-encoder GGUFs cannot
+        generate text. Other models report ``"completion"``, plus
+        ``"vision"`` when an mmproj sidecar is present.
         """
+        if _is_rerank_model(model):
+            return ["rerank"]
         caps: list[str] = ["completion"]
         try:
             path = resolve_model_path(model)
+        except ProviderError:
+            log.debug("resolve_model_path failed for %s", model, exc_info=True)
+            return caps
+        try:
             find_mmproj_for_model(path)
             caps.append("vision")
-        except (ProviderError, Exception):
-            pass
+        except ProviderError:
+            log.debug("no mmproj for %s", model, exc_info=True)
         return caps
 
     def shutdown(self) -> None:
         """Stop workers and unload all cached models."""
         self._embed_queue.put(None)
         self._embed_thread.join(timeout=2)
+        self._rerank_queue.put(None)
+        self._rerank_thread.join(timeout=2)
         if self._subprocess_worker is not None:
             self._subprocess_worker.stop()
             self._subprocess_worker = None
@@ -306,8 +381,6 @@ def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     duration of the call. A lock serializes access to fd 2 so concurrent
     threads don't corrupt each other's file descriptors.
     """
-    import os
-
     with _STDERR_LOCK:
         devnull = os.open(os.devnull, os.O_WRONLY)
         old_stderr = os.dup(2)
@@ -386,10 +459,24 @@ def resolve_model_path(model: str) -> Path:
     )
 
 
-def load_llama(model_path: Path, *, embedding: bool) -> Any:
-    """Load a llama_cpp.Llama instance."""
+def _llama_cpp_has_rank_pooling() -> bool:
+    """Return True iff the installed llama-cpp-python exposes ``LLAMA_POOLING_TYPE_RANK``."""
+    try:
+        from llama_cpp import LLAMA_POOLING_TYPE_RANK  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
+    """Load a llama_cpp.Llama instance in chat, embed, or rerank mode.
+
+    Rerank mode sets ``embedding=True`` and ``pooling_type=LLAMA_POOLING_TYPE_RANK``
+    so llama.cpp emits cross-encoder scores instead of token embeddings.
+    """
     from llama_cpp import Llama
 
+    embedding = mode in (MODE_EMBED, MODE_RERANK)
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
         "embedding": embedding,
@@ -416,18 +503,55 @@ def load_llama(model_path: Path, *, embedding: bool) -> Any:
         kwargs["n_batch"] = ctx_len
         kwargs["n_ubatch"] = ctx_len
 
+    if mode == MODE_RERANK:
+        from llama_cpp import LLAMA_POOLING_TYPE_RANK
+
+        kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
+
     return _suppress_stderr(Llama, **kwargs)
 
 
-def _is_vision_model(model: str) -> bool:
-    """Check if a model name corresponds to a vision model in the catalog."""
-    from lilbee.catalog import FEATURED_VISION
+def _is_rerank_model(model: str) -> bool:
+    """Check if *model* is an exact rerank catalog entry by ref or hf_repo."""
+    if not model:
+        return False
+    return is_rerank_ref(model)
 
-    model_lower = model.lower()
-    return any(
-        model_lower in entry.name.lower() or model_lower in entry.hf_repo.lower()
-        for entry in FEATURED_VISION
-    )
+
+_RERANK_PAIR_SEPARATOR = "</s></s>"
+
+
+def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[float]:
+    """Score *candidates* against *query* via llama.cpp reranker embeddings.
+
+    ``pooling_type=LLAMA_POOLING_TYPE_RANK`` requires the pair pre-joined
+    as ``query</s></s>candidate``; passing them as two inputs makes
+    ``llama_decode`` fail with ``-1``.
+    """
+    scores: list[float] = []
+    for candidate in candidates:
+        pair = f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}"
+        response = _suppress_stderr(llm.create_embedding, input=pair)
+        score = _extract_rerank_score(response)
+        scores.append(score)
+    return scores
+
+
+def _extract_rerank_score(response: dict[str, Any]) -> float:
+    """Extract a single relevance score from a pooling_type=RANK response."""
+    data = response.get("data") or []
+    if not data:
+        raise ProviderError("Reranker returned no data", provider="llama-cpp")
+    embedding = data[-1].get("embedding")
+    if isinstance(embedding, (int, float)):
+        return float(embedding)
+    if isinstance(embedding, list) and embedding:
+        first = embedding[0]
+        if isinstance(first, (int, float)):
+            return float(first)
+        if isinstance(first, list) and first:
+            return float(first[0])
+    raise ProviderError("Reranker returned unrecognized score shape", provider="llama-cpp")
 
 
 _HF_BLOBS_DIR_NAME = "blobs"

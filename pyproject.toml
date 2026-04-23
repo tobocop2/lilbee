@@ -48,7 +48,6 @@ dependencies = [
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.50"]
-reranker = ["sentence-transformers"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.8.6"]
 

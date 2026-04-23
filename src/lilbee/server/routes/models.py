@@ -32,7 +32,7 @@ class PullRequest(BaseModel):
 @get("/api/models")
 @read_only
 async def models_list_route() -> ModelsResponse:
-    """Available chat and vision models."""
+    """Available chat, embedding, vision, and reranker models."""
     return await handlers.list_models()
 
 
@@ -57,6 +57,24 @@ async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active embedding model."""
     try:
         return await handlers.set_embedding_model(model=data.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@put("/api/models/vision")
+async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
+    """Switch the active vision model for scanned PDF OCR. Empty disables OCR."""
+    try:
+        return await handlers.set_vision_model(model=data.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@put("/api/models/reranker")
+async def models_set_reranker_route(data: SetModelRequest) -> SetModelResponse:
+    """Switch the active reranker model. Empty disables reranking."""
+    try:
+        return await handlers.set_reranker_model(model=data.model)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

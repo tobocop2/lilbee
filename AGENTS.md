@@ -205,6 +205,36 @@ Other rules:
 - Use tmux send-keys for automated QA of TUI features
 - Always ask before creating issues, PRs, or anything externally visible
 
+### Cross-Cutting Changes
+Changes that add an enum variant, a new role/task slot, or anything else whose
+correctness depends on updating multiple parallel dispatch / validation sites.
+
+- **Write-boundary canonicalization beats read-path fallbacks.** When the same
+  ref, identifier, or config field can be set through multiple entry points
+  (HTTP, CLI, TUI, env vars, TOML, direct `cfg.X = ...`), canonicalize it
+  ONCE at the write boundary (pydantic `field_validator(mode="after")`, a
+  setter, whatever is the single narrow gate) and return the canonical form.
+  Alias fallbacks in resolvers are a code smell: they mean canonicalization
+  landed in some places but not others. A non-canonical value works until it
+  shows up in a log, UI, or diff and confuses the next reader.
+- **Front-load the match-arm and entry-point audit.** Before writing the
+  first line, grep every dispatch site for the existing variants (`grep -rn
+  "ModelTask\.\|ModelRole\.\|SomeEnum\." src/ tests/`). List every
+  switch/if-chain/dict. Decide per-site whether it needs the new variant.
+  Update every site in the SAME commit that introduces the variant. Leaving
+  dispatch sites for reviewers to catch in round N means round N+1 is
+  cleaning up regressions from round N's partial fix.
+- **Capability / supports_X functions must be role-aware from commit 1.** A
+  `get_capabilities(model)` that returns the same default for every input
+  (`["completion"]`, `True`) leaks cross-role models into the wrong surfaces.
+  Start with role-specific output derived from the catalog entry's task.
+  Don't ship the non-role-aware version and wait for a reviewer to flag it.
+- **Defaults must round-trip through the tightened validator.** When a
+  validator rejects previously-accepted inputs, update the config defaults
+  to values that pass under the new rules in the same commit. Otherwise the
+  first `Config()` construction raises. Test: `assert Config().X == expected`
+  under the new validator.
+
 ### Code Review Standards
 - **Low complexity** — max ~3 branches per function, extract helpers when exceeded
 - **DRY** — reusable shared logic, no copy-paste
@@ -214,13 +244,18 @@ Other rules:
 - **Minimal changes** — make smallest possible edit, don't rewrite large blocks for small fixes
 - **Exhaustive review** — multiple review passes until no new findings emerge
 - **Compile before test** — verify code compiles before running tests
+- **Separate architecture changes from hygiene sweeps.** Mixing a docstring /
+  comment cleanup with a semantic refactor makes review hard: reviewers can't
+  tell "trimmed docstring" from "removed important rationale." Keep hygiene
+  sweeps to their own commit at the end of a series, after architecture is
+  frozen.
 
 ### Self-Review Checklist (before every push)
 Run this mentally or explicitly before claiming work is done:
 1. **Trace consumers** — for every changed file, grep for who imports it. Go 2-3 levels deep for shared modules (types, constants, config).
 2. **Constants vs raw strings** — grep globally for the raw value of any new constant. Every occurrence must use the constant.
 3. **CSS sync** — every class/ID in `.tcss` has a matching widget in `.py` and vice versa.
-4. **Mock signatures** — after any refactor, verify test patches target the correct module path (patch where imported, not where defined).
+4. **Mock signatures** — after any refactor, verify test patches target the correct module path (patch where imported, not where defined). When hoisting an import between module-top and function-local, grep `@patch("...{Symbol}")` decorators for that symbol and update them in the same commit. Stale patch targets mean the mock never fires and tests pass without exercising the path — the single worst review-cycle-burner in a refactor.
 5. **Dead code** — removed/renamed functions have no remaining references. No orphaned imports.
 6. **Test coverage** — every new code path has a test with meaningful assertions. No untested branches.
 7. **Type changes** — field added/removed? All constructors, factories, serializers updated?

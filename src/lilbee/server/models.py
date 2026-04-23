@@ -80,12 +80,18 @@ class StatusSourceInfo(BaseModel):
 
 
 class StatusConfigInfo(BaseModel):
-    """Configuration section of a status response."""
+    """Configuration section of a status response.
+
+    Exposes all four role-bound model fields so plugins/TUI can show
+    what's active per role without a second round trip.
+    """
 
     documents_dir: str
     data_dir: str
     chat_model: str
     embedding_model: str
+    vision_model: str = ""
+    reranker_model: str = ""
     enable_ocr: bool | None = None
 
 
@@ -113,7 +119,7 @@ class AskResponse(BaseModel):
 
 
 class SetModelResponse(BaseModel):
-    """Response for /api/models/chat and /api/models/vision."""
+    """Response for PUT /api/models/{chat|embedding|vision|reranker}."""
 
     model: str
 

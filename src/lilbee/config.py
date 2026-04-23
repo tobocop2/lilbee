@@ -6,11 +6,12 @@ Uses pydantic-settings for automatic env var loading with TOML config file suppo
 
 import logging
 import os
+import sys
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +46,52 @@ def ConfigField(
 
 
 log = logging.getLogger(__name__)
+
+# Skips the per-role catalog-task check when set AND pytest is imported.
+# The two-signal gate prevents a leaked env var from disabling role
+# validation in production.
+_SKIP_MODEL_TASK_VALIDATION_ENV = "LILBEE_SKIP_MODEL_TASK_VALIDATION"
+
+
+def _model_task_validation_bypassed() -> bool:
+    """True iff the task-validator should be skipped (test fixtures only)."""
+    if not os.environ.get(_SKIP_MODEL_TASK_VALIDATION_ENV):
+        return False
+    return sys.modules.get("pytest") is not None
+
+
+_MODEL_FIELD_TO_TASK: dict[str, str] = {
+    "chat_model": "chat",
+    "embedding_model": "embedding",
+    "vision_model": "vision",
+    "reranker_model": "rerank",
+}
+
+
+def _find_model_catalog_entry(ref: str) -> Any:
+    """Look up *ref* in the featured catalog.
+
+    ``find_catalog_entry`` handles the ref variants the validator sees
+    (``name``, ``name:tag``, ``display_name``, ``hf_repo``, ``hf_repo:tag``,
+    provider-prefixed), so the caller doesn't need a fallback chain.
+    """
+    # circular: catalog -> config -> catalog (catalog imports ``cfg``).
+    from lilbee.catalog import find_catalog_entry
+
+    return find_catalog_entry(ref)
+
+
+def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
+    """Raise ValueError if *entry*'s task doesn't match *field_name*'s role."""
+    from lilbee.models import ModelTask
+
+    want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
+    if entry.task == want:
+        return
+    from lilbee.server.handlers import format_task_mismatch
+
+    raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
+
 
 _BOOL_TRUE = frozenset({"true", "1", "yes"})
 _BOOL_FALSE = frozenset({"false", "0", "no"})
@@ -263,8 +310,11 @@ class Config(BaseSettings):
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
 
-    chat_model: str = Field(default="qwen3:latest", min_length=1)
-    embedding_model: str = Field(default="nomic-embed-text:latest", min_length=1)
+    chat_model: str = Field(default="qwen3:0.6b", min_length=1)
+    embedding_model: str = Field(default="nomic-embed-text:v1.5", min_length=1)
+    # Vision OCR model for scanned PDFs and image-only pages. Empty = disabled;
+    # there is no cross-role fallback onto the chat model even if multimodal.
+    vision_model: str = ConfigField(default="", public=True)
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
@@ -372,12 +422,13 @@ class Config(BaseSettings):
         "just write the passage.\n\nQuestion: {question}"
     )
 
-    # Cross-encoder model for reranking. Empty = disabled.
-    # Requires sentence-transformers installed.
-    reranker_model: str = ConfigField(default="", writable=True, public=False)
+    # Reranker model for search results. Empty = disabled. Native GGUF refs
+    # run via llama-cpp-python's pooling_type=LLAMA_POOLING_TYPE_RANK; hosted
+    # refs (cohere/voyage/jina/together/hf-tei) require the litellm extra.
+    reranker_model: str = ConfigField(default="", public=True)
 
     # Number of candidates to rerank with cross-encoder.
-    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=False)
+    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=True)
 
     # Enable temporal filtering (date-based result filtering).
     # Only activates when temporal keywords detected in query.
@@ -615,15 +666,53 @@ class Config(BaseSettings):
                 return False
         return bool(v)
 
-    @field_validator("chat_model", "embedding_model", mode="after")
+    @field_validator(
+        "chat_model", "embedding_model", "vision_model", "reranker_model", mode="after"
+    )
     @classmethod
-    def _normalize_model_tag(cls, v: str) -> str:
-        """Ensure model names always have an explicit tag and canonical prefix."""
-        if not v:
-            return v
+    def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
+        """Ensure model names always have an explicit tag and canonical prefix.
+
+        Whitespace-only values are coerced to "" for roles that allow empty
+        (vision, reranker), and rejected for required roles (chat, embedding)
+        to prevent bypassing ``min_length=1``.
+        """
+        if not v or not v.strip():
+            if info.field_name in {"chat_model", "embedding_model"}:
+                raise ValueError(f"{info.field_name} must not be blank")
+            return ""
         from lilbee.providers.model_ref import parse_model_ref
 
         return parse_model_ref(v).for_openai_prefix()
+
+    @field_validator(
+        "chat_model", "embedding_model", "vision_model", "reranker_model", mode="after"
+    )
+    @classmethod
+    def _validate_model_task(cls, v: str, info: ValidationInfo) -> str:
+        """Reject model refs whose catalog task doesn't match the role slot.
+
+        Runs at every write path (PATCH /api/config, direct assignment, env
+        loading) via ``validate_assignment=True``. Returns the catalog's
+        canonical ``name:tag`` so every stored ref matches the registry
+        key regardless of the input variant (hf_repo, provider-prefixed,
+        display name). Skipped only when both
+        ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` is set and pytest is imported.
+        """
+        if not v or not v.strip() or _model_task_validation_bypassed():
+            return v
+        # info.field_name is always set when pydantic dispatches field_validator.
+        assert info.field_name is not None
+        entry = _find_model_catalog_entry(v)
+        if entry is None:
+            raise ValueError(
+                f"Model '{v}' is not in the featured catalog. "
+                "Pick a featured model for this role, or install one via "
+                "POST /api/models/pull with a known catalog ref."
+            )
+        _enforce_role_match(v, entry, info.field_name)
+        canonical: str = entry.ref
+        return canonical
 
     @field_validator("cors_origins", mode="before")
     @classmethod

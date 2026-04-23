@@ -237,6 +237,14 @@ class TestStatus:
         result = status()
         assert result["config"]["enable_ocr"] is None
 
+    def test_status_exposes_all_four_model_roles(self):
+        """MCP status must expose vision + reranker slots so plugin clients see them."""
+        result = status()
+        assert "chat_model" in result["config"]
+        assert "embedding_model" in result["config"]
+        assert "vision_model" in result["config"]
+        assert "reranker_model" in result["config"]
+
 
 class TestSync:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)

@@ -403,6 +403,66 @@ class TestBackendField:
         assert matches_search(row, "mistral") is False
 
 
+class TestGroupRowsForGrid:
+    """Grid view sections include one bucket per ModelTask, including RERANK.
+
+    Rerankers are opt-in tuning (not setup-critical) but they live in
+    the catalog and must be visible in the catalog grid so users can
+    install them via the settings-adjacent browse surface.
+    """
+
+    def _row(self, task: str, *, featured: bool = False, installed: bool = False):
+        from lilbee.catalog import CatalogModel
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
+
+        model = CatalogModel(
+            name=f"{task}-model",
+            tag="v1",
+            display_name=f"{task.capitalize()} Model",
+            hf_repo=f"org/{task}-model",
+            gguf_filename="m.gguf",
+            size_gb=1.0,
+            min_ram_gb=1.0,
+            description="",
+            featured=featured,
+            downloads=0,
+            task=task,
+        )
+        return catalog_to_row(model, installed=installed)
+
+    def test_grid_contains_rerank_bucket(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.models import ModelTask
+
+        rows = [
+            self._row(ModelTask.CHAT),
+            self._row(ModelTask.EMBEDDING),
+            self._row(ModelTask.VISION),
+            self._row(ModelTask.RERANK),
+        ]
+        sections = _group_rows_for_grid(rows)
+        headings = [s.heading for s in sections]
+        assert ModelTask.RERANK.capitalize() in headings
+
+        rerank_section = next(s for s in sections if s.heading == ModelTask.RERANK.capitalize())
+        assert len(rerank_section.rows) == 1
+        assert rerank_section.rows[0].task == ModelTask.RERANK
+
+    def test_featured_and_installed_excluded_from_task_buckets(self) -> None:
+        """A featured rerank row appears only in Our Picks, not the RERANK bucket."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.models import ModelTask
+
+        rows = [
+            self._row(ModelTask.RERANK, featured=True),
+            self._row(ModelTask.RERANK),
+        ]
+        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        assert len(sections[msg.HEADING_OUR_PICKS]) == 1
+        assert len(sections[ModelTask.RERANK.capitalize()]) == 1
+
+
 class SettingsTestApp(App[None]):
     CSS = ""
 
@@ -580,7 +640,12 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
 
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
-        for _ in range(30):
+        # Enough presses to cross every focusable setting row in the
+        # current settings map (Models/Ingest/Generation groups +
+        # Retrieval). Bumped from 30 when vision_model was added as a
+        # new writable Models-group entry (each row adds a reset
+        # button + editor field to the tab order).
+        for _ in range(60):
             await pilot.press("tab")
             await pilot.pause()
             if app.focused is cb:
@@ -1740,13 +1805,9 @@ def test_status_read_embed_arch_success():
 def test_status_read_vision_arch_success():
     from lilbee.model_info import ModelArchInfo, _read_vision_arch
 
-    cfg.chat_model = "test-vision:latest"
+    cfg.vision_model = "test-vision:latest"
     info = ModelArchInfo()
     with (
-        patch(
-            "lilbee.model_manager.is_vision_capable",
-            return_value=True,
-        ),
         patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value="/fake/path",
@@ -1767,9 +1828,22 @@ def test_status_read_vision_arch_success():
 def test_status_read_vision_arch_skips_when_no_model():
     from lilbee.model_info import ModelArchInfo, _read_vision_arch
 
-    cfg.chat_model = "test-chat:latest"
+    cfg.vision_model = ""
     info = ModelArchInfo()
-    with patch("lilbee.model_manager.is_vision_capable", return_value=False):
+    result = _read_vision_arch(info)
+    assert result.vision_projector == "unknown"
+
+
+def test_status_read_vision_arch_swallows_errors():
+    """When GGUF probing fails, _read_vision_arch logs and leaves info unchanged."""
+    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+
+    cfg.vision_model = "test-vision:latest"
+    info = ModelArchInfo()
+    with patch(
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        side_effect=RuntimeError("boom"),
+    ):
         result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
 
@@ -2164,10 +2238,22 @@ async def test_chat_slash_set_no_value():
     """Cover the branch where /set key has no value (empty string)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # chat_model has a min_length=1 validator, so empty string is rejected;
-        # test that the code path runs without crashing.
-        app.screen._cmd_set("chat_model")
-        # Value remains unchanged because pydantic rejects ""
+        # top_k is writable but int-typed; empty string fails int() conversion
+        # and surfaces as CMD_SET_INVALID, covering the no-value branch.
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("top_k")
+            mock_notify.assert_called_once()
+            assert "Invalid value" in mock_notify.call_args[0][0]
+
+
+async def test_chat_slash_set_readonly_key():
+    """Read-only keys (chat_model, vision_model, ...) must be rejected."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("chat_model some-model:latest")
+            mock_notify.assert_called_once()
+            assert "read-only" in mock_notify.call_args[0][0]
         assert cfg.chat_model == "test-model:latest"
 
 

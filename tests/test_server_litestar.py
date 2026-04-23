@@ -8,6 +8,8 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.config import cfg
+from lilbee.models import ModelTask
+from lilbee.server.handlers import format_task_mismatch
 
 
 @pytest.fixture(autouse=True)
@@ -205,12 +207,24 @@ class TestModelsListRoute:
     @mock.patch(
         "lilbee.server.handlers.list_models",
         new_callable=AsyncMock,
-        return_value={"chat": {}, "vision": {}},
     )
     def test_returns_json(self, mock_patched, client):
+        from lilbee.server.handlers import ModelCatalogSection, ModelsResponse
+
+        empty_section = ModelCatalogSection(active="", catalog=[], installed=[])
+        mock_patched.return_value = ModelsResponse(
+            chat=empty_section,
+            embedding=empty_section,
+            vision=empty_section,
+            reranker=empty_section,
+        )
         resp = client.get("/api/models")
         assert resp.status_code == 200
-        assert "chat" in resp.json()
+        body = resp.json()
+        assert "chat" in body
+        assert "embedding" in body
+        assert "vision" in body
+        assert "reranker" in body
 
 
 class TestModelsExternalRoute:
@@ -257,6 +271,96 @@ class TestSetEmbeddingModelRoute:
         resp = client.put("/api/models/embedding", json={"model": "bogus"})
         assert resp.status_code == 422
         assert "not available" in resp.json()["detail"]
+
+
+class TestSetVisionModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_vision_model",
+        new_callable=AsyncMock,
+        return_value={"model": "lightonocr:2-1b"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/vision", json={"model": "lightonocr:2-1b"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "lightonocr:2-1b"
+
+    @mock.patch(
+        "lilbee.server.handlers.set_vision_model",
+        new_callable=AsyncMock,
+        return_value={"model": ""},
+    )
+    def test_accepts_empty_string_to_unset(self, mock_set, client):
+        resp = client.put("/api/models/vision", json={"model": ""})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == ""
+
+    @mock.patch(
+        "lilbee.server.handlers.set_vision_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError(
+            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.VISION)
+        ),
+    )
+    def test_returns_422_for_task_mismatch(self, mock_set, client):
+        resp = client.put("/api/models/vision", json={"model": "qwen3:0.6b"})
+        assert resp.status_code == 422
+        assert "not vision" in resp.json()["detail"]
+        assert "/api/models/chat" in resp.json()["detail"]
+
+
+class TestSetRerankerModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        return_value={"model": "bge-reranker-v2-m3:latest"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": "bge-reranker-v2-m3:latest"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "bge-reranker-v2-m3:latest"
+
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        return_value={"model": ""},
+    )
+    def test_accepts_empty_string_to_unset(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": ""})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == ""
+
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError(
+            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.RERANK)
+        ),
+    )
+    def test_returns_422_for_task_mismatch(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": "qwen3:0.6b"})
+        assert resp.status_code == 422
+        assert "not rerank" in resp.json()["detail"]
+
+    @mock.patch("lilbee.server.handlers._require_model_available")
+    @mock.patch("lilbee.server.handlers._set_model", new_callable=AsyncMock)
+    def test_route_canonicalizes_hf_repo_form(self, mock_set, mock_available, client):
+        """POSTing hf_repo form returns the catalog's canonical ``name:tag``.
+
+        Locks the full Litestar pipeline (route serialization + handler
+        + ``_require_model_for_task`` canonicalization) so the response
+        body carries the registry key rather than the user-supplied
+        hf_repo ref.
+        """
+        mock_available.return_value = "gpustack/bge-reranker-v2-m3-GGUF:latest"
+        mock_set.return_value = {"model": "bge-reranker-v2-m3:latest"}
+        resp = client.put(
+            "/api/models/reranker",
+            json={"model": "gpustack/bge-reranker-v2-m3-GGUF"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "bge-reranker-v2-m3:latest"
+        # _set_model was called with the canonical ref, not the hf_repo ref.
+        assert mock_set.call_args.args[1] == "bge-reranker-v2-m3:latest"
 
 
 class TestModelsCatalogRoute:
@@ -343,8 +447,10 @@ class TestConfigDefaultsRoute:
         assert data["crawl_max_pages"] is None
         # default_factory fields come through as their evaluated list.
         assert data["crawl_exclude_patterns"] == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-        # Non-writable/non-public fields are not exposed.
-        assert "chat_model" not in data
+        # Model role defaults surface so UI reset affordances can restore
+        # them via PUT /api/models/<role>, even though the fields are
+        # non-writable on PATCH /api/config.
+        assert data["chat_model"] == "qwen3:0.6b"
         # Wiki cfg fields are writable and appear with their declared defaults.
         assert data["wiki_prune_raw"] is False
         assert data["wiki_faithfulness_threshold"] == 0.7

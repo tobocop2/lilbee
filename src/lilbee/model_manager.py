@@ -10,10 +10,12 @@ from pathlib import Path
 
 import httpx
 
-from lilbee.config import DEFAULT_HTTP_TIMEOUT, cfg
+from lilbee.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.models import ModelTask
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.security import validate_path_within
+
+# lilbee.config imported lazily; see lilbee/catalog.py for the rationale.
 
 log = logging.getLogger(__name__)
 
@@ -232,58 +234,11 @@ class ModelManager:
 
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
 _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
-
-_vision_cache: dict[str, bool] = {}
-
-
-def is_vision_capable(model: str) -> bool:
-    """Check whether *model* supports vision/image input.
-
-    Resolution order (first match wins):
-    1. Provider ``get_capabilities`` (mmproj for llama-cpp, /api/show for Ollama).
-    2. Featured catalog: model task is ``vision``.
-    3. Name-pattern fallback: model name contains a known vision keyword.
-
-    Results are cached per model name for the lifetime of the process.
-    """
-    if not model:
-        return False
-
-    if model in _vision_cache:
-        return _vision_cache[model]
-
-    result = _check_vision_capable(model)
-    _vision_cache[model] = result
-    return result
-
-
-def _check_vision_capable(model: str) -> bool:
-    """Uncached implementation of vision capability detection."""
-    from lilbee.services import get_services
-
-    try:
-        provider = get_services().provider
-        caps = provider.get_capabilities(model)
-        if "vision" in caps:
-            return True
-    except Exception:
-        log.debug("Provider capability check failed for %s", model, exc_info=True)
-
-    from lilbee.catalog import FEATURED_VISION
-
-    model_lower = model.lower()
-    if any(
-        model_lower in entry.name.lower() or model_lower in entry.hf_repo.lower()
-        for entry in FEATURED_VISION
-    ):
-        return True
-
-    return any(vp in model_lower for vp in _VISION_NAME_PATTERNS)
-
-
-def reset_vision_cache() -> None:
-    """Clear the vision capability cache (for testing)."""
-    _vision_cache.clear()
+# Reranker detection runs BEFORE embedding detection so ``bge-reranker-*``
+# (family "bge" but clearly a reranker) does not get misclassified as
+# EMBEDDING. ``cross-encoder`` covers the sentence-transformers SBERT
+# naming convention for cross-encoder rerankers.
+_RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 
 
 OLLAMA_PROVIDER_NAME = "Ollama"
@@ -297,7 +252,7 @@ class RemoteModel:
     """A model from the litellm backend with inferred task classification."""
 
     name: str
-    task: str  # "chat", "embedding", "vision"
+    task: str  # "chat", "embedding", "vision", "rerank"
     family: str
     parameter_size: str
     provider: str = REMOTE_PROVIDER_NAME
@@ -321,11 +276,19 @@ def detect_provider(base_url: str) -> str:
 
 
 def _classify_remote_task(name: str, family: str) -> str:
-    """Classify a remote model as chat, embedding, or vision."""
+    """Classify a remote model as chat, embedding, vision, or rerank.
+
+    Reranker detection runs first so ``bge-reranker-base`` (family
+    ``bge``) does not get dragged into the embedding bucket by the
+    family check. After reranker: embedding by family tag, vision by
+    name pattern, else chat.
+    """
+    name_lower = name.lower()
+    if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
+        return ModelTask.RERANK
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
         return ModelTask.EMBEDDING
-    name_lower = name.lower()
     if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
         return ModelTask.VISION
     return ModelTask.CHAT
@@ -342,9 +305,9 @@ def classify_remote_models(
     """Discover and classify all models from the litellm backend by task.
 
     Uses /api/tags family metadata for embedding detection and name
-    patterns for vision detection. Returns an empty list on any error
-    (including timeout) so callers in read-only code paths can stay
-    responsive when the backend is down.
+    patterns for reranker and vision detection. Returns an empty list
+    on any error (including timeout) so callers in read-only code paths
+    can stay responsive when the backend is down.
     """
     try:
         resp = httpx.get(f"{base_url}/api/tags", timeout=timeout)
@@ -374,6 +337,11 @@ def _has_provider_key(cfg_field: str, env_var: str) -> bool:
     """Return True if a usable API key exists via env var or lilbee config."""
     if os.environ.get(env_var):
         return True
+    # circular: model_manager -> config via cfg; config.py's catalog
+    # imports pull model_manager in transitively, so we defer cfg access
+    # to call time to avoid a module-init cycle.
+    from lilbee.config import cfg
+
     return bool(getattr(cfg, cfg_field, ""))
 
 
@@ -430,6 +398,8 @@ class _ManagerHolder:
 
     def get(self) -> ModelManager:
         if self._instance is None:
+            from lilbee.config import cfg
+
             self._instance = ModelManager(cfg.models_dir, cfg.litellm_base_url)
         return self._instance
 
