@@ -114,19 +114,20 @@ async def run_crawl(task: CrawlTask) -> None:
 
 
 def _evict_completed() -> None:
-    """Remove oldest completed tasks when the limit is exceeded.
+    """Remove completed tasks with the earliest ``finished_at`` when over cap.
 
-    Python 3.7+ dicts preserve insertion order, and tasks are inserted
-    in chronological order, so iterating in dict order visits completed
-    tasks oldest-first without a sort.
+    Finish order diverges from start order whenever short tasks complete
+    while a long one is still running, so sort on ``finished_at``
+    rather than dict insertion order.
     """
     done_statuses = (TaskStatus.DONE, TaskStatus.FAILED)
     tasks = _registry.tasks
-    completed_ids = [tid for tid, t in tasks.items() if t.status in done_statuses]
-    excess = len(completed_ids) - _MAX_COMPLETED_TASKS
+    completed = [(tid, t) for tid, t in tasks.items() if t.status in done_statuses]
+    excess = len(completed) - _MAX_COMPLETED_TASKS
     if excess <= 0:
         return
-    for tid in completed_ids[:excess]:
+    completed.sort(key=lambda pair: pair[1].finished_at)
+    for tid, _ in completed[:excess]:
         del tasks[tid]
 
 

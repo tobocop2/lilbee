@@ -86,7 +86,7 @@ flowchart TD
     APP -->|explicit config| LCPP_P[LlamaCpp Provider]
 ```
 
-- **auto** (default): `RoutingProvider` checks if litellm is installed and the model is available via its API. If so, uses it; otherwise falls back to local GGUF via llama-cpp.
+- **auto** (default): `RoutingProvider` checks if the SDK backend is installed and the model is available via its API. If so, uses it; otherwise falls back to local GGUF via llama-cpp.
 - **litellm**: force all calls through LiteLLM (Ollama, OpenAI, Azure, etc.). Requires `pip install lilbee[litellm]`.
 - **ollama**: deprecated alias for `litellm`
 - **llama-cpp**: force local GGUF inference via llama-cpp-python (always available)
@@ -337,6 +337,6 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, litellm | auto = use litellm if installed and reachable, otherwise llama-cpp |
+| `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, remote | auto = use the SDK backend if installed and reachable, otherwise llama-cpp |
 | `LILBEE_REMOTE_BASE_URL` | `http://localhost:11434` | SDK backend endpoint | Also reads `OLLAMA_HOST` for backwards compatibility (deprecated). |
 

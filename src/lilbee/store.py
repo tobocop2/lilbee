@@ -107,6 +107,10 @@ def mmr_rerank(
     Complexity: O(top_k · N · D) time, O(N · D) space for N candidates
     of dimension D. Each outer iteration updates a running max-redundancy
     vector via one matmul rather than recomputing pairs pairwise.
+    Candidate vectors run through numpy in ``float32``, which can pick a
+    different candidate than the pure-Python ``float64`` loop on
+    ties within ~1e-7; distinct in principle, unobservable in practice
+    since sub-float32 differences are below retrieval signal.
     """
     if mmr_lambda is None:
         mmr_lambda = cfg.mmr_lambda

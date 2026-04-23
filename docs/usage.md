@@ -369,4 +369,4 @@ export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any litellm-supported model name
 ```
 
-Provider options: `auto` (default, routes intelligently), `llama-cpp` (local only), `litellm` (remote only).
+Provider options: `auto` (default, routes intelligently), `llama-cpp` (local only), `remote` (hosted only).

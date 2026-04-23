@@ -723,6 +723,13 @@ class TestDetectProvider:
     def test_anthropic_url(self) -> None:
         assert detect_backend_name("https://api.anthropic.com") == "Anthropic"
 
+    def test_gemini_url(self) -> None:
+        assert detect_backend_name("https://generativelanguage.googleapis.com") == "Gemini"
+
+    def test_gemini_substring_fallback(self) -> None:
+        """Non-canonical URLs with 'gemini' in the path also match."""
+        assert detect_backend_name("https://proxy.example.com/gemini/v1") == "Gemini"
+
     def test_unknown_url(self) -> None:
         assert detect_backend_name("http://192.168.1.100:8080") == "Remote"
 

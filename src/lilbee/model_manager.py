@@ -140,7 +140,7 @@ class ModelManager:
         return (self._models_dir / model).is_file()
 
     def _is_remote(self, model: str) -> bool:
-        return model in self._list_remote()
+        return model in self.list_installed(ModelSource.REMOTE)
 
     def get_source(self, model: str) -> ModelSource | None:
         """Find which source a model lives in. Native takes precedence."""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import functools
 import json
 import logging
@@ -551,12 +552,14 @@ def _require_model_available(model: str) -> str:
     return normalized
 
 
-_TASK_TO_FIELD: dict[ModelTask, str] = {
-    ModelTask.CHAT: "chat_model",
-    ModelTask.EMBEDDING: "embedding_model",
-    ModelTask.VISION: "vision_model",
-    ModelTask.RERANK: "reranker_model",
-}
+def _build_task_to_field() -> dict[ModelTask, str]:
+    """Invert config's ``_MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
+    from lilbee.config import _MODEL_FIELD_TO_TASK
+
+    return {ModelTask(task): field for field, task in _MODEL_FIELD_TO_TASK.items()}
+
+
+_TASK_TO_FIELD: dict[ModelTask, str] = _build_task_to_field()
 
 
 def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: bool = False) -> str:
@@ -701,7 +704,7 @@ async def list_documents(
         total=total,
         limit=limit,
         offset=offset,
-        has_more=(offset + len(page)) < total,
+        has_more=len(page) > 0 and (offset + len(page)) < total,
     )
 
 
@@ -732,12 +735,11 @@ async def get_config_defaults() -> ConfigResponse:
 
     Covers writable fields (resettable via PATCH /api/config) and the
     model-role fields (resettable via PUT /api/models/<role>).
-    """
-    import copy
 
-    # deepcopy so callers that mutate the response (pydantic_core or
-    # application code handling lists like crawl_exclude_patterns) can't
-    # poison the cached defaults dict.
+    Deepcopies the cached dict so callers that mutate the response
+    (list-valued fields like ``crawl_exclude_patterns``) cannot poison
+    subsequent calls.
+    """
     return ConfigResponse(**copy.deepcopy(_compute_config_defaults()))
 
 
