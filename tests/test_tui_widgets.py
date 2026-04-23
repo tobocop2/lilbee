@@ -369,9 +369,10 @@ class TestModelBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             selects = list(app.query(Select))
-            assert len(selects) == 2
+            # Chat + Embed + Scope
+            assert len(selects) == 3
 
-    async def test_widget_exists_with_2_selects(self) -> None:
+    async def test_widget_exists_with_3_selects(self) -> None:
         from textual.widgets import Select
 
         cfg.chat_model = "qwen3:8b"
@@ -381,11 +382,13 @@ class TestModelBar:
             await pilot.pause()
             chat_sel = app.query_one("#chat-model-select", Select)
             embed_sel = app.query_one("#embed-model-select", Select)
+            scope_sel = app.query_one("#scope-select", Select)
             assert chat_sel is not None
             assert embed_sel is not None
+            assert scope_sel is not None
 
     async def test_labels_rendered(self) -> None:
-        """bb-ec3q: Chat/Embed labels render as pills, not plain text.
+        """Chat/Embed/Scope labels render as pills, not plain text.
 
         Each pill is a Static carrying a pill() Content with half-block
         ends around the label text. Assert the text survives, wrapped
@@ -401,6 +404,57 @@ class TestModelBar:
             pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
             assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
             assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
+            assert any("Scope" in p and "▌" in p and "▐" in p for p in pills)
+
+    async def test_scope_defaults_to_both(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+        from lilbee.store import SearchScope
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            assert bar.scope is SearchScope.BOTH
+
+    async def test_scope_change_updates_bar_state(self) -> None:
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+        from lilbee.store import SearchScope
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scope_sel = app.query_one("#scope-select", Select)
+            scope_sel.value = SearchScope.WIKI.value
+            await pilot.pause()
+            assert app.query_one(ModelBar).scope is SearchScope.WIKI
+
+    async def test_scope_hidden_when_wiki_disabled(self) -> None:
+        """With ``cfg.wiki=False`` the scope pill+select are omitted entirely.
+
+        With wiki off the chunks table has only raw rows, so the choice
+        would imply a capability the user hasn't opted into.
+        """
+        from textual.css.query import NoMatches
+        from textual.widgets import Select
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        cfg.wiki = False
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Still shows chat + embed selects
+            assert app.query_one("#chat-model-select", Select) is not None
+            assert app.query_one("#embed-model-select", Select) is not None
+            # But no scope select
+            with pytest.raises(NoMatches):
+                app.query_one("#scope-select", Select)
 
 
 class TestIsMmproj:
