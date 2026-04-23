@@ -113,6 +113,14 @@ class AcceptResult:
     moved_to: Path
     reindexed_chunks: int
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-friendly dict for HTTP/MCP/CLI responses."""
+        return {
+            "slug": self.slug,
+            "moved_to": str(self.moved_to),
+            "reindexed_chunks": self.reindexed_chunks,
+        }
+
 
 def _draft_path(wiki_root: Path, slug: str) -> Path:
     return wiki_root / DRAFTS_SUBDIR / f"{slug}.md"

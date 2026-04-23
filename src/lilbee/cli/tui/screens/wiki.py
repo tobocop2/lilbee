@@ -83,6 +83,7 @@ class WikiScreen(Screen[None]):
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "dismiss_or_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
+        Binding("D", "open_drafts", "Drafts", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("h", "cursor_left", "Collapse", show=False),
@@ -302,6 +303,12 @@ class WikiScreen(Screen[None]):
     def action_focus_search(self) -> None:
         """Focus the search input -- bound to / key."""
         self.query_one("#wiki-search", Input).focus()
+
+    def action_open_drafts(self) -> None:
+        """Open the drafts review screen -- bound to capital D."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        self.app.push_screen(WikiDraftsScreen())
 
     def action_dismiss_or_back(self) -> None:
         """Clear search if active, otherwise go back."""

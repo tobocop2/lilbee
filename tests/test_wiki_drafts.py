@@ -222,6 +222,22 @@ class TestDraftInfoDefaults:
         assert d.published_exists is False
 
 
+class TestAcceptResultToDict:
+    """``AcceptResult.to_dict`` is the JSON shape returned over HTTP/MCP/CLI."""
+
+    def test_to_dict_serialises_all_fields(self) -> None:
+        result = AcceptResult(
+            slug="cv-manual",
+            moved_to=Path("/wiki/summaries/cv-manual.md"),
+            reindexed_chunks=7,
+        )
+        assert result.to_dict() == {
+            "slug": "cv-manual",
+            "moved_to": "/wiki/summaries/cv-manual.md",
+            "reindexed_chunks": 7,
+        }
+
+
 class TestAcceptCrashSafety:
     """Review-driven: the draft file survives a re-index failure so
     accept is idempotent and no content is lost."""

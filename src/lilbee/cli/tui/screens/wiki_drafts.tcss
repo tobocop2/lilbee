@@ -1,0 +1,31 @@
+#wiki-drafts-layout {
+    height: 1fr;
+}
+
+#wiki-drafts-sidebar {
+    width: 45%;
+    min-width: 30;
+    border-right: solid $surface-lighten-2;
+}
+
+#wiki-drafts-search {
+    dock: top;
+    margin: 0 1;
+}
+
+#wiki-drafts-table {
+    height: 1fr;
+}
+
+#wiki-drafts-main {
+    width: 1fr;
+}
+
+#wiki-drafts-diff-scroll {
+    height: 1fr;
+    padding: 0 2;
+}
+
+#wiki-drafts-diff {
+    height: auto;
+}
