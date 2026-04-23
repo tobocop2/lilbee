@@ -596,6 +596,58 @@ class TestSourceTypeField:
         assert sources[0]["source_type"] == "wiki"
 
 
+class TestGetSourcesPagination:
+    """LanceDB-side limit/offset/search for /api/documents scalability."""
+
+    def _seed(self, store, n: int = 10) -> None:
+        for i in range(n):
+            store.upsert_source(f"doc{i:02d}.md", f"hash{i}", i + 1)
+
+    def test_no_args_returns_all(self, store):
+        self._seed(store, 5)
+        assert len(store.get_sources()) == 5
+
+    def test_limit_caps_returned_rows(self, store):
+        self._seed(store, 10)
+        assert len(store.get_sources(limit=3)) == 3
+
+    def test_offset_skips_leading_rows(self, store):
+        self._seed(store, 10)
+        filenames = {s["filename"] for s in store.get_sources(offset=5, limit=5)}
+        # Offset runs in LanceDB, so exactly 5 of the 10 come back.
+        assert len(filenames) == 5
+
+    def test_search_filters_by_filename_case_insensitive(self, store):
+        store.upsert_source("README.md", "h1", 1)
+        store.upsert_source("setup.py", "h2", 1)
+        store.upsert_source("readme_dev.md", "h3", 1)
+        matches = {s["filename"] for s in store.get_sources(search="readme")}
+        assert matches == {"README.md", "readme_dev.md"}
+
+    def test_search_and_limit_compose(self, store):
+        for i in range(20):
+            store.upsert_source(f"readme_{i}.md", f"h{i}", 1)
+        store.upsert_source("other.py", "h99", 1)
+        result = store.get_sources(search="readme", limit=5)
+        assert len(result) == 5
+
+
+class TestCountSources:
+    def test_count_matches_row_count(self, store):
+        for i in range(7):
+            store.upsert_source(f"doc{i}.md", f"h{i}", 1)
+        assert store.count_sources() == 7
+
+    def test_count_with_search_filter(self, store):
+        store.upsert_source("readme.md", "h1", 1)
+        store.upsert_source("setup.py", "h2", 1)
+        store.upsert_source("README_2.md", "h3", 1)
+        assert store.count_sources(search="readme") == 2
+
+    def test_count_empty_table_returns_zero(self, store):
+        assert store.count_sources() == 0
+
+
 def _make_citation(**overrides) -> CitationRecord:
     defaults: CitationRecord = {
         "wiki_source": "wiki/summaries/doc.md",

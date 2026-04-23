@@ -280,6 +280,18 @@ def _has_fts_index(table: lancedb.table.Table) -> bool:
     return False
 
 
+def _sources_search_filter(search: str | None) -> str | None:
+    """Build a LanceDB WHERE clause for case-insensitive filename match.
+
+    Returns ``None`` for an empty search so callers can skip the
+    ``.where`` chain entirely and hit the unfiltered fast path.
+    """
+    if not search:
+        return None
+    escaped = escape_sql_string(search.lower())
+    return f"LOWER(filename) LIKE '%{escaped}%'"
+
+
 class Store:
     """LanceDB vector store — wraps all DB operations with config-driven defaults."""
 
@@ -514,13 +526,40 @@ class Store:
             if table is not None:
                 _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
 
-    def get_sources(self) -> list[SourceRecord]:
-        """Get all tracked source file records."""
+    def get_sources(
+        self,
+        *,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[SourceRecord]:
+        """Get tracked source file records, optionally filtered and paginated.
+
+        Filter and pagination run in LanceDB so large corpora don't
+        materialize the full SOURCES table per request. The previous
+        signature (no args, returns all) is preserved as the default.
+        """
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
-        result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
+        query = table.search()
+        where = _sources_search_filter(search)
+        if where is not None:
+            query = query.where(where)
+        if offset:
+            query = query.offset(offset)
+        query = query.limit(limit)
+        result: list[SourceRecord] = query.to_list()  # type: ignore[assignment]
         return result
+
+    def count_sources(self, *, search: str | None = None) -> int:
+        """Count tracked sources matching *search* without materializing rows."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return 0
+        where = _sources_search_filter(search)
+        count: int = table.count_rows() if where is None else table.count_rows(filter=where)
+        return count
 
     def upsert_source(
         self,

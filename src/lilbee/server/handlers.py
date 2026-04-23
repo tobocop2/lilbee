@@ -682,13 +682,17 @@ async def list_documents(
     limit: int = 50,
     offset: int = 0,
 ) -> DocumentListResponse:
-    """Return indexed documents with metadata, paginated and filterable."""
-    sources = get_services().store.get_sources()
-    if search:
-        search_lower = search.lower()
-        sources = [s for s in sources if search_lower in s["filename"].lower()]
-    total = len(sources)
-    page = sources[offset : offset + limit]
+    """Return indexed documents with metadata, paginated and filterable.
+
+    Pagination and the filename filter are pushed into LanceDB via
+    ``Store.get_sources(search=..., limit=..., offset=...)`` and the
+    total comes from ``Store.count_sources(search=...)`` so neither
+    call materializes the full SOURCES table per request.
+    """
+    store = get_services().store
+    search_term = search or None
+    page = store.get_sources(search=search_term, limit=limit, offset=offset)
+    total = store.count_sources(search=search_term)
     return DocumentListResponse(
         documents=[
             DocumentInfo(
@@ -701,6 +705,7 @@ async def list_documents(
         total=total,
         limit=limit,
         offset=offset,
+        has_more=(offset + len(page)) < total,
     )
 
 

@@ -1276,42 +1276,86 @@ class TestGetConfig:
         assert "llm_api_key" not in dumped
 
 
+def _fake_source_store(mock_svc, all_sources: list[dict]) -> None:
+    """Wire mock_svc.store.get_sources + count_sources to simulate DB-side
+    pagination: filter by ``search`` against filename, then slice by
+    offset/limit. Mirrors the real LanceDB behavior so list_documents
+    tests don't have to special-case the mock call shape."""
+
+    def _filter(search):
+        if not search:
+            return list(all_sources)
+        search_lower = search.lower()
+        return [s for s in all_sources if search_lower in s["filename"].lower()]
+
+    def _get(*, search=None, limit=None, offset=0):
+        matches = _filter(search)
+        if limit is None:
+            return matches[offset:]
+        return matches[offset : offset + limit]
+
+    def _count(*, search=None):
+        return len(_filter(search))
+
+    mock_svc.store.get_sources.side_effect = _get
+    mock_svc.store.count_sources.side_effect = _count
+
+
 class TestListDocuments:
     async def test_returns_documents(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
-        ]
+        _fake_source_store(
+            mock_svc,
+            [{"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"}],
+        )
         result = await handlers.list_documents()
         assert result.total == 1
         assert result.documents[0].filename == "a.md"
         assert result.documents[0].chunk_count == 5
+        assert result.has_more is False
 
     async def test_empty(self, mock_svc):
-        mock_svc.store.get_sources.return_value = []
+        _fake_source_store(mock_svc, [])
         result = await handlers.list_documents()
         assert result.total == 0
         assert result.documents == []
+        assert result.has_more is False
 
     async def test_pagination(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
-        ]
+        _fake_source_store(
+            mock_svc,
+            [{"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)],
+        )
         result = await handlers.list_documents(limit=3, offset=2)
         assert result.total == 10
         assert len(result.documents) == 3
         assert result.documents[0].filename == "doc2.md"
         assert result.limit == 3
         assert result.offset == 2
+        # offset + returned (2 + 3) == 5 < total 10 → more pages remain
+        assert result.has_more is True
+
+    async def test_pagination_final_page_clears_has_more(self, mock_svc):
+        _fake_source_store(
+            mock_svc,
+            [{"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)],
+        )
+        result = await handlers.list_documents(limit=5, offset=5)
+        assert result.total == 10
+        assert result.has_more is False
 
     async def test_search_filter(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "readme.md", "chunk_count": 3},
-            {"filename": "setup.py", "chunk_count": 1},
-            {"filename": "readme_dev.md", "chunk_count": 2},
-        ]
+        _fake_source_store(
+            mock_svc,
+            [
+                {"filename": "readme.md", "chunk_count": 3},
+                {"filename": "setup.py", "chunk_count": 1},
+                {"filename": "readme_dev.md", "chunk_count": 2},
+            ],
+        )
         result = await handlers.list_documents(search="readme")
         assert result.total == 2
         assert all("readme" in d.filename for d in result.documents)
+        assert result.has_more is False
 
 
 class TestGetConfigReranker:
