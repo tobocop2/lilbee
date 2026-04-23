@@ -32,6 +32,16 @@ class CrawlerBrowserMissing(RuntimeError):
     """
 
 
+class CrawlerBackendMissing(RuntimeError):
+    """The ``crawler`` extra (crawl4ai) was never installed.
+
+    Raised by the crawl entry points before any work happens so callers
+    see an actionable error SSE event (``event: error``) instead of a
+    crawl that silently completes with ``files_written=0``. Message
+    names the fix so the user doesn't have to grep for it.
+    """
+
+
 _CHROMIUM_COMPONENT = "chromium"
 # Rough size estimate for the Chromium download; Playwright bundles vary
 # slightly per platform but this gives the UI a decent denominator before

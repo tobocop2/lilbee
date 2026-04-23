@@ -259,6 +259,20 @@ async def crawl_recursive(
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
     pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
 
+    # Fail fast when the ``crawler`` extra wasn't installed. Without this
+    # the BFS silently drops out and the crawl returns ``files_written=0``
+    # because every lazy ``import crawl4ai`` inside the fetcher swallows
+    # the ImportError locally. Surfacing a clean ``CrawlerBackendMissing``
+    # here lets the server's SSE layer emit ``event: error`` with a
+    # fix-it message instead of a zero-results crawl_done.
+    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
+            "(or 'pip install crawl4ai') to enable recursive web crawling."
+        )
+
     # Fail fast before pulling in crawl4ai submodules so callers get a clean
     # CrawlerBrowserMissing instead of a Playwright install banner.
     if not bootstrap.chromium_installed():
