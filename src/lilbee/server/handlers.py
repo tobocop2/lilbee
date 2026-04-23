@@ -358,10 +358,13 @@ async def chat(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources."""
     opts = _resolve_generation_options(options)
-    result = get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=opts)
+    result = get_services().searcher.ask_raw(
+        question, top_k=top_k, history=history, options=opts, chunk_type=chunk_type
+    )
     return AskResponse(
         answer=result.answer,
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
@@ -373,9 +376,12 @@ def chat_stream(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
+    chunk_type: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events with chat history support."""
-    return _stream_rag_response(question, history=history, top_k=top_k, options=options)
+    return _stream_rag_response(
+        question, history=history, top_k=top_k, options=options, chunk_type=chunk_type
+    )
 
 
 async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:

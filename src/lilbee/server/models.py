@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
     top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
+    chunk_type: str | None = None
 
 
 class SyncRequest(BaseModel):

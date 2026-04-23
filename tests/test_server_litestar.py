@@ -182,7 +182,9 @@ class TestChatRoute:
         history = [{"role": "user", "content": "hi"}]
         resp = client.post("/api/chat", json={"question": "q", "history": history})
         assert resp.status_code == 201
-        mock_chat.assert_awaited_once_with(question="q", history=history, top_k=0, options=None)
+        mock_chat.assert_awaited_once_with(
+            question="q", history=history, top_k=0, options=None, chunk_type=None
+        )
 
     @mock.patch(
         "lilbee.server.handlers.chat",
@@ -191,7 +193,9 @@ class TestChatRoute:
     )
     def test_default_empty_history(self, mock_chat, client):
         client.post("/api/chat", json={"question": "q"})
-        mock_chat.assert_awaited_once_with(question="q", history=[], top_k=0, options=None)
+        mock_chat.assert_awaited_once_with(
+            question="q", history=[], top_k=0, options=None, chunk_type=None
+        )
 
 
 class TestChatStreamRoute:
@@ -204,6 +208,16 @@ class TestChatStreamRoute:
         )
         assert resp.status_code == 201
         assert b"event: done" in resp.content
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_forwards_chunk_type(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("")
+        resp = client.post(
+            "/api/chat/stream",
+            json={"question": "hi", "history": [], "chunk_type": "raw"},
+        )
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
 
 
 class TestSyncRoute:

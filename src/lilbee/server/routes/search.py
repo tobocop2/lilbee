@@ -75,6 +75,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         history=history,
         top_k=data.top_k,
         options=data.options,
+        chunk_type=data.chunk_type,
     )
 
 
@@ -90,6 +91,7 @@ async def chat_stream_route(data: ChatRequest) -> Stream:
             history=history,
             top_k=data.top_k,
             options=data.options,
+            chunk_type=data.chunk_type,
         ),
         media_type="text/event-stream",
     )

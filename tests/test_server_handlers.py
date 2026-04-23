@@ -303,7 +303,7 @@ class TestChat:
         result = await handlers.chat("follow up", history)
         assert result.answer == "ok"
         mock_svc.searcher.ask_raw.assert_called_once_with(
-            "follow up", top_k=0, history=history, options=None
+            "follow up", top_k=0, history=history, options=None, chunk_type=None
         )
 
 
