@@ -20,9 +20,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_ALLOWED_NER_LABELS: frozenset[str] = frozenset(
-    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT"}
-)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 # Pre-spaCy markdown-noise strippers. Compiled once at module scope so
@@ -84,16 +81,31 @@ class NerConceptsExtractor:
 
         entity_records: dict[str, _Aggregate] = {}
         concept_records: dict[str, _Aggregate] = {}
+        allowed_ent_types = self._config.concept_allowed_ent_types
 
         debug_enabled = log.isEnabledFor(logging.DEBUG)
+        # Per-pass funnel counters; emitted once after the loop so the
+        # DEBUG trace captures the whole corpus in one line instead of
+        # one per chunk.
+        funnel = {
+            "raw_ents": 0,
+            "raw_noun_chunks": 0,
+            "type_filter_dropped": 0,
+            "label_sanity_dropped": 0,
+            "kept_entity_surfaces": 0,
+            "kept_concept_surfaces": 0,
+        }
         cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
         for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
             ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
             for ent in doc.ents:
-                if ent.label_ not in _ALLOWED_NER_LABELS:
+                funnel["raw_ents"] += 1
+                if ent.label_ not in allowed_ent_types:
+                    funnel["type_filter_dropped"] += 1
                     continue
                 surface = ent.text.strip()
                 if not is_valid_label(surface):
+                    funnel["label_sanity_dropped"] += 1
                     if debug_enabled:
                         log.debug("label-sanity: rejected entity %r", surface)
                     continue
@@ -102,9 +114,12 @@ class NerConceptsExtractor:
                     key, _Aggregate(label=surface, type_hint=ent.label_)
                 )
                 rec.refs.add(ref)
+                funnel["kept_entity_surfaces"] += 1
             for noun_chunk in doc.noun_chunks:
+                funnel["raw_noun_chunks"] += 1
                 surface = noun_chunk.text.strip()
                 if not is_valid_label(surface):
+                    funnel["label_sanity_dropped"] += 1
                     if debug_enabled:
                         log.debug("label-sanity: rejected noun-chunk %r", surface)
                     continue
@@ -113,6 +128,17 @@ class NerConceptsExtractor:
                     key, _Aggregate(label=key, type_hint="noun_phrase")
                 )
                 rec.refs.add(ref)
+                funnel["kept_concept_surfaces"] += 1
+
+        if debug_enabled:
+            log.debug(
+                "ner funnel: raw_ents=%(raw_ents)d raw_noun_chunks=%(raw_noun_chunks)d "
+                "type_filter_dropped=%(type_filter_dropped)d "
+                "label_sanity_dropped=%(label_sanity_dropped)d "
+                "kept_entity_surfaces=%(kept_entity_surfaces)d "
+                "kept_concept_surfaces=%(kept_concept_surfaces)d",
+                funnel,
+            )
 
         for key, entity_agg in entity_records.items():
             if key in concept_records:

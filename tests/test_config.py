@@ -760,6 +760,40 @@ class TestIgnoreDirs:
             assert "bar" in c.ignore_dirs
 
 
+class TestConceptAllowedEntTypes:
+    """A3 entity-type filter: spaCy NER labels kept by the wiki extractor."""
+
+    def test_default_includes_core_wiki_types(self):
+        c = Config()
+        for label in ("PERSON", "ORG", "GPE", "PRODUCT", "FAC", "NORP"):
+            assert label in c.concept_allowed_ent_types
+
+    def test_default_excludes_quantitative_types(self):
+        c = Config()
+        for label in ("QUANTITY", "CARDINAL", "DATE", "TIME", "MONEY", "PERCENT"):
+            assert label not in c.concept_allowed_ent_types
+
+    def test_env_override_replaces_defaults(self):
+        # Replace-semantics: narrowing the set should NOT re-union with
+        # the defaults the way ``ignore_dirs`` does.
+        with mock.patch.dict(os.environ, {"LILBEE_CONCEPT_ALLOWED_ENT_TYPES": "PERSON,ORG"}):
+            c = Config()
+            assert c.concept_allowed_ent_types == frozenset({"PERSON", "ORG"})
+
+    def test_env_override_is_case_insensitive(self):
+        with mock.patch.dict(os.environ, {"LILBEE_CONCEPT_ALLOWED_ENT_TYPES": "person,Org"}):
+            c = Config()
+            assert c.concept_allowed_ent_types == frozenset({"PERSON", "ORG"})
+
+    def test_empty_env_falls_back_to_default(self):
+        # Empty override should not silently deactivate the gate.
+        env = _clean_env()
+        env["LILBEE_CONCEPT_ALLOWED_ENT_TYPES"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert "PERSON" in c.concept_allowed_ent_types
+
+
 class TestEmptyStringValidation:
     def test_empty_chat_model_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
