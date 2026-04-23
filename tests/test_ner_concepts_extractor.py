@@ -169,8 +169,12 @@ class TestNerExtraction:
         labels = {e.label for e in result}
         assert labels == {"Berlin"}
 
-    def test_all_seven_allowed_labels_accepted(self) -> None:
-        allowed = ["PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT"]
+    def test_all_default_allowed_labels_accepted(self) -> None:
+        """All nine labels in ``DEFAULT_ALLOWED_NER_LABELS`` round-trip to
+        ``ExtractedEntity`` records. Uses the live default set from config
+        so the test doesn't drift when types are added or removed there.
+        """
+        allowed = sorted(cfg.concept_allowed_ent_types)
         doc = _FakeDoc(ents=[_FakeSpan(f"Thing{i}", lbl) for i, lbl in enumerate(allowed)])
         extractor = NerConceptsExtractor(MagicMock(), cfg)
         with _patch_pipeline({"text": doc}):
@@ -438,3 +442,94 @@ class TestExtractorAppliesPreClean:
             extractor.extract([_chunk("s.txt", 0, noisy)])
         assert seen_texts, "extractor should have called the pipeline"
         assert all("| Designer" not in t for t in seen_texts)
+
+
+class TestEntityTypeFilter:
+    """A3: spaCy NER labels outside ``concept_allowed_ent_types`` are dropped."""
+
+    def test_quantity_and_date_entities_are_dropped(self) -> None:
+        doc = _FakeDoc(
+            ents=[
+                _FakeSpan("42 miles", "QUANTITY"),
+                _FakeSpan("1965", "DATE"),
+                _FakeSpan("Chevrolet", "ORG"),
+            ]
+        )
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"Chevrolet"}
+
+    def test_fac_and_norp_are_included_by_default(self) -> None:
+        """FAC (facilities) and NORP (nationalities/political/religious groups)
+        were missing from the pre-A3 hardcoded set but are useful wiki topics.
+        """
+        doc = _FakeDoc(
+            ents=[
+                _FakeSpan("Pentagon", "FAC"),
+                _FakeSpan("Americans", "NORP"),
+            ]
+        )
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            result = extractor.extract([_chunk("s.txt", 0, "t")])
+        labels = {e.label for e in result}
+        assert labels == {"Pentagon", "Americans"}
+
+    def test_config_override_narrows_allowed_types(self) -> None:
+        """Setting a narrower override via config keeps only those types."""
+        from dataclasses import replace  # noqa: F401  (pattern documentation)
+
+        doc = _FakeDoc(
+            ents=[
+                _FakeSpan("Chevrolet", "ORG"),
+                _FakeSpan("Irv Rybicki", "PERSON"),
+                _FakeSpan("Americans", "NORP"),
+            ]
+        )
+        prev = cfg.concept_allowed_ent_types
+        cfg.concept_allowed_ent_types = frozenset({"PERSON"})
+        try:
+            extractor = NerConceptsExtractor(MagicMock(), cfg)
+            with _patch_pipeline({"t": doc}):
+                result = extractor.extract([_chunk("s.txt", 0, "t")])
+        finally:
+            cfg.concept_allowed_ent_types = prev
+        labels = {e.label for e in result}
+        assert labels == {"Irv Rybicki"}
+
+
+class TestFunnelLogging:
+    """A3: per-extraction funnel counters emitted at DEBUG once per pass."""
+
+    def test_funnel_logged_once_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("DEBUG", logger="lilbee.wiki.entity_extractor.ner_concepts")
+        doc = _FakeDoc(
+            ents=[
+                _FakeSpan("Chevrolet", "ORG"),
+                _FakeSpan("42", "QUANTITY"),
+                _FakeSpan("| bad", "PERSON"),
+            ],
+            noun_chunks=[_FakeSpan("the car"), _FakeSpan("ab")],
+        )
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            extractor.extract([_chunk("s.txt", 0, "t")])
+        funnel_messages = [r.message for r in caplog.records if "ner funnel" in r.message]
+        assert len(funnel_messages) == 1, "funnel should log exactly once per extraction"
+        message = funnel_messages[0]
+        assert "raw_ents=3" in message
+        assert "raw_noun_chunks=2" in message
+        assert "type_filter_dropped=1" in message  # the QUANTITY
+        assert "label_sanity_dropped=2" in message  # "| bad" and "ab"
+        assert "kept_entity_surfaces=1" in message  # Chevrolet
+        assert "kept_concept_surfaces=1" in message  # the car
+
+    def test_funnel_not_emitted_when_debug_off(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("INFO", logger="lilbee.wiki.entity_extractor.ner_concepts")
+        doc = _FakeDoc(ents=[_FakeSpan("Chevrolet", "ORG")])
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with _patch_pipeline({"t": doc}):
+            extractor.extract([_chunk("s.txt", 0, "t")])
+        assert not any("ner funnel" in r.message for r in caplog.records)

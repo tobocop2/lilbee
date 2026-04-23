@@ -130,6 +130,16 @@ DEFAULT_IGNORE_DIRS = frozenset(
     }
 )
 
+# spaCy NER labels that map onto something wiki-shaped. Excludes
+# QUANTITY / ORDINAL / CARDINAL / DATE / TIME / MONEY / PERCENT /
+# LANGUAGE / LAW because pages for "42" or "2021" are never useful.
+# FAC (buildings / airports) and NORP (nationalities / political /
+# religious groups) are included because corpora routinely surface
+# them as wiki-worthy topics.
+DEFAULT_ALLOWED_NER_LABELS = frozenset(
+    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT", "FAC", "NORP"}
+)
+
 # Shared HTTP timeout (seconds) for backend catalog / management calls
 # (Ollama /api/tags, /api/show, /v1/models, OpenAI-compatible endpoints).
 # Not exposed as a user config field because changing it is a debugging
@@ -650,6 +660,12 @@ class Config(BaseSettings):
     # Caps extraction to avoid noise from very long chunks.
     concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
 
+    # spaCy NER labels kept by the wiki entity extractor. Anything not
+    # in this set (QUANTITY, CARDINAL, DATE, TIME, MONEY, PERCENT,
+    # ORDINAL, ...) is dropped before aggregation. Override via
+    # LILBEE_CONCEPT_ALLOWED_ENT_TYPES as a comma-separated list.
+    concept_allowed_ent_types: frozenset[str] = Field(default=DEFAULT_ALLOWED_NER_LABELS)
+
     # Strategy used to extract concepts and entities for the concept/entity
     # wiki. NER_CONCEPTS (default) combines spaCy NER with noun-phrase
     # clusters. NER_CONCEPTS_PLUS_LLM_TYPES layers an LLM-proposed domain
@@ -860,6 +876,24 @@ class Config(BaseSettings):
         if isinstance(v, (set, frozenset, list)):
             return DEFAULT_IGNORE_DIRS | frozenset(v)
         return DEFAULT_IGNORE_DIRS
+
+    @field_validator("concept_allowed_ent_types", mode="before")
+    @classmethod
+    def _parse_ent_types(cls, v: Any) -> frozenset[str]:
+        """Replace-semantics override, unlike ``ignore_dirs``.
+
+        A user narrowing the NER type set (e.g. ``PERSON,ORG`` only)
+        wants exactly those kinds, not the project defaults unioned
+        with the override. Accepts comma-separated strings from env
+        and list / set / frozenset from code.
+        """
+        if isinstance(v, str):
+            parts = frozenset(name.strip().upper() for name in v.split(",") if name.strip())
+            return parts or DEFAULT_ALLOWED_NER_LABELS
+        if isinstance(v, (set, frozenset, list)):
+            parts = frozenset(str(x).upper() for x in v)
+            return parts or DEFAULT_ALLOWED_NER_LABELS
+        return DEFAULT_ALLOWED_NER_LABELS
 
     @model_validator(mode="before")
     @classmethod
