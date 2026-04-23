@@ -592,7 +592,7 @@ async def test_settings_exposes_wiki_fields():
             "wiki",
             "wiki_dir",
             "wiki_prune_raw",
-            "wiki_faithfulness_threshold",
+            "wiki_embedding_faithfulness_threshold",
             "wiki_stale_citation_threshold",
             "wiki_drift_threshold",
             "wiki_clusterer",

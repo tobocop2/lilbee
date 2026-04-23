@@ -504,7 +504,7 @@ class TestConfigDefaultsRoute:
         assert data["chat_model"] == "qwen3:0.6b"
         # Wiki cfg fields are writable and appear with their declared defaults.
         assert data["wiki_prune_raw"] is False
-        assert data["wiki_faithfulness_threshold"] == 0.7
+        assert data["wiki_embedding_faithfulness_threshold"] == 0.5
 
 
 class TestConfigUpdateRoute:
