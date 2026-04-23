@@ -813,3 +813,21 @@ class TestScopeResolution:
     def test_invalid_scope_raises(self):
         with pytest.raises(ValueError):
             scope_to_chunk_type("bogus")
+
+
+class TestChunkTypePredicate:
+    """The SQL predicate for scope filtering tolerates NULL for raw."""
+
+    def test_raw_matches_null_for_legacy_rows(self):
+        from lilbee.store import _chunk_type_predicate
+
+        pred = _chunk_type_predicate("raw")
+        assert "IS NULL" in pred
+        assert "'raw'" in pred
+
+    def test_wiki_does_not_match_null(self):
+        from lilbee.store import _chunk_type_predicate
+
+        pred = _chunk_type_predicate("wiki")
+        assert "IS NULL" not in pred
+        assert pred == "chunk_type = 'wiki'"

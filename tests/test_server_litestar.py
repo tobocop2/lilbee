@@ -91,6 +91,10 @@ class TestSearchRoute:
         client.get("/api/search", params={"q": "x"})
         mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
 
+    def test_invalid_chunk_type_rejected_with_400(self, client):
+        resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
+        assert resp.status_code == 400
+
 
 class TestAskRoute:
     @mock.patch(
