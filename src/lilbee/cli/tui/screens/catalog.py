@@ -847,21 +847,26 @@ class GridSection:
     rows: list[TableRow]
 
 
+_TASK_BUCKET_ORDER = (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
+
+
 def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
     """Group rows into sections for the grid view."""
-    recommended = [r for r in rows if r.featured]
-    installed = [r for r in rows if r.installed and not r.featured]
-    chat = [r for r in rows if r.task == ModelTask.CHAT and not r.featured and not r.installed]
-    embedding = [
-        r for r in rows if r.task == ModelTask.EMBEDDING and not r.featured and not r.installed
-    ]
-    vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
-    rerank = [r for r in rows if r.task == ModelTask.RERANK and not r.featured and not r.installed]
+    recommended: list[TableRow] = []
+    installed: list[TableRow] = []
+    by_task: dict[str, list[TableRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
+    for row in rows:
+        if row.featured:
+            recommended.append(row)
+            continue
+        if row.installed:
+            installed.append(row)
+            continue
+        bucket = by_task.get(row.task)
+        if bucket is not None:
+            bucket.append(row)
     return [
         GridSection(msg.HEADING_OUR_PICKS, recommended),
         GridSection(msg.HEADING_INSTALLED, installed),
-        GridSection(ModelTask.CHAT.capitalize(), chat),
-        GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
-        GridSection(ModelTask.VISION.capitalize(), vision),
-        GridSection(ModelTask.RERANK.capitalize(), rerank),
+        *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
     ]
