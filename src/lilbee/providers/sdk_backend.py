@@ -30,6 +30,35 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
 # Derived set of config field names (for checking which updates touch API keys).
 API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 
+# Display names for the server that the SDK is currently talking to. These
+# are what users see ("connected to Ollama", not "connected via litellm").
+# The adapter's own identity (e.g. "litellm") lives under provider_name.
+OLLAMA_BACKEND_NAME = "Ollama"
+OPENAI_BACKEND_NAME = "OpenAI"
+ANTHROPIC_BACKEND_NAME = "Anthropic"
+REMOTE_BACKEND_NAME = "Remote"
+
+_BACKEND_URL_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("localhost:11434", OLLAMA_BACKEND_NAME),
+    ("ollama", OLLAMA_BACKEND_NAME),
+    ("openai", OPENAI_BACKEND_NAME),
+    ("anthropic", ANTHROPIC_BACKEND_NAME),
+)
+
+
+def detect_backend_name(base_url: str) -> str:
+    """Return the display name of the backend behind ``base_url``.
+
+    Adapter-agnostic; any SDK implementation can delegate to this helper.
+    Falls back to ``REMOTE_BACKEND_NAME`` when the URL matches none of
+    the known patterns.
+    """
+    url_lower = base_url.lower()
+    for pattern, name in _BACKEND_URL_PATTERNS:
+        if pattern in url_lower:
+            return name
+    return REMOTE_BACKEND_NAME
+
 
 @dataclass(frozen=True)
 class CompletionResult:
@@ -127,6 +156,16 @@ class LlmSdkBackend(Protocol):
     @property
     def provider_name(self) -> str:
         """Stable identifier used when wrapping errors in ``ProviderError``."""
+        ...
+
+    def active_backend_name(self, base_url: str) -> str:
+        """Return the display name of the backend the adapter is talking to.
+
+        For a Ollama-compatible URL this is ``"Ollama"``; for an OpenAI
+        URL it is ``"OpenAI"``; unknown URLs fall back to ``"Remote"``.
+        The adapter's own identity (e.g. ``"litellm"``) is separately
+        exposed through ``provider_name``.
+        """
         ...
 
     def available(self) -> bool:

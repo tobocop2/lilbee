@@ -12,22 +12,22 @@ from lilbee.model_manager import (
     ModelTask,
     RemoteModel,
     _has_provider_key,
-    detect_provider,
     discover_api_models,
     get_model_manager,
     reset_model_manager,
 )
+from lilbee.providers.sdk_backend import detect_backend_name
 
 
 class TestModelSource:
     def test_native_value(self) -> None:
         assert ModelSource.NATIVE.value == "native"
 
-    def test_litellm_value(self) -> None:
-        assert ModelSource.LITELLM.value == "litellm"
+    def test_backend_value(self) -> None:
+        assert ModelSource.BACKEND.value == "backend"
 
     def test_members(self) -> None:
-        assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.LITELLM}
+        assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.BACKEND}
 
     def test_parse_none_and_empty_return_none(self) -> None:
         assert ModelSource.parse(None) is None
@@ -35,7 +35,7 @@ class TestModelSource:
 
     def test_parse_valid_values(self) -> None:
         assert ModelSource.parse("native") is ModelSource.NATIVE
-        assert ModelSource.parse("litellm") is ModelSource.LITELLM
+        assert ModelSource.parse("backend") is ModelSource.BACKEND
 
     def test_parse_invalid_raises_value_error(self) -> None:
         import pytest
@@ -116,7 +116,7 @@ class TestModelManagerListInstalled:
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.list_installed(ModelSource.LITELLM)
+            result = mgr.list_installed(ModelSource.BACKEND)
 
         mock_get.assert_called_once_with("http://localhost:11434/api/tags", timeout=30.0)
         assert set(result) == {"llama3:latest", "nomic-embed-text:latest"}
@@ -124,7 +124,7 @@ class TestModelManagerListInstalled:
     def test_litellm_connection_error(self) -> None:
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("Connection refused")):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.list_installed(ModelSource.LITELLM)
+            result = mgr.list_installed(ModelSource.BACKEND)
 
         assert result == []
 
@@ -135,7 +135,7 @@ class TestModelManagerListInstalled:
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.list_installed(ModelSource.LITELLM)
+            result = mgr.list_installed(ModelSource.BACKEND)
 
         assert result == []
 
@@ -178,8 +178,8 @@ class TestModelManagerListInstalled:
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            mgr.list_installed(ModelSource.LITELLM)
-            mgr.list_installed(ModelSource.LITELLM)
+            mgr.list_installed(ModelSource.BACKEND)
+            mgr.list_installed(ModelSource.BACKEND)
 
         assert mock_get.call_count == 1
 
@@ -198,8 +198,8 @@ class TestModelManagerListInstalled:
             # One clock tick per list_installed call — second tick is past TTL.
             mock_clock.side_effect = [0.0, 100.0]
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            mgr.list_installed(ModelSource.LITELLM)
-            mgr.list_installed(ModelSource.LITELLM)
+            mgr.list_installed(ModelSource.BACKEND)
+            mgr.list_installed(ModelSource.BACKEND)
 
         assert mock_get.call_count == 2
 
@@ -266,7 +266,7 @@ class TestModelManagerIsInstalled:
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.is_installed("llama3:latest", ModelSource.LITELLM)
+            result = mgr.is_installed("llama3:latest", ModelSource.BACKEND)
 
         assert result is True
 
@@ -277,7 +277,7 @@ class TestModelManagerIsInstalled:
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.is_installed("missing:latest", ModelSource.LITELLM)
+            result = mgr.is_installed("missing:latest", ModelSource.BACKEND)
 
         assert result is False
 
@@ -314,7 +314,7 @@ class TestModelManagerGetSource:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
             result = mgr.get_source("llama3:latest")
 
-        assert result == ModelSource.LITELLM
+        assert result == ModelSource.BACKEND
 
     def test_native_takes_precedence(self, tmp_path: Path) -> None:
         """When model exists in both sources, NATIVE takes precedence."""
@@ -437,7 +437,7 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.LITELLM, on_progress=on_progress)
+            result = mgr.pull("llama3:latest", ModelSource.BACKEND, on_progress=on_progress)
 
         mock_client.stream.assert_called_once()
         call_args = mock_client.stream.call_args
@@ -467,7 +467,7 @@ class TestModelManagerPull:
             mock.patch("httpx.Client", return_value=mock_client),
             pytest.raises(RuntimeError, match="model not found"),
         ):
-            mgr.pull("nonexistent:model", ModelSource.LITELLM)
+            mgr.pull("nonexistent:model", ModelSource.BACKEND)
 
     def test_litellm_connection_error_during_pull(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
@@ -483,7 +483,7 @@ class TestModelManagerPull:
             mock.patch("httpx.Client", return_value=mock_client),
             pytest.raises(RuntimeError, match="Cannot connect to SDK backend"),
         ):
-            mgr.pull("llama3:latest", ModelSource.LITELLM)
+            mgr.pull("llama3:latest", ModelSource.BACKEND)
 
     def test_litellm_pull_without_progress_callback(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
@@ -507,7 +507,7 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.LITELLM)
+            result = mgr.pull("llama3:latest", ModelSource.BACKEND)
 
         assert result is None
 
@@ -529,7 +529,7 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.LITELLM)
+            result = mgr.pull("llama3:latest", ModelSource.BACKEND)
 
         assert result is None
 
@@ -565,7 +565,7 @@ class TestModelManagerRemove:
 
         with mock.patch("httpx.request", return_value=mock_response) as mock_req:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("llama3:latest", ModelSource.LITELLM)
+            result = mgr.remove("llama3:latest", ModelSource.BACKEND)
 
         mock_req.assert_called_once()
         call_kwargs = mock_req.call_args[1]
@@ -579,7 +579,7 @@ class TestModelManagerRemove:
 
         with mock.patch("httpx.request", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("nonexistent:latest", ModelSource.LITELLM)
+            result = mgr.remove("nonexistent:latest", ModelSource.BACKEND)
 
         assert result is False
 
@@ -587,7 +587,7 @@ class TestModelManagerRemove:
         with mock.patch("httpx.request", side_effect=httpx.ConnectError("Connection refused")):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
             with pytest.raises(RuntimeError, match="Cannot connect to SDK backend"):
-                mgr.remove("llama3:latest", ModelSource.LITELLM)
+                mgr.remove("llama3:latest", ModelSource.BACKEND)
 
     def test_litellm_remove_unexpected_status(self) -> None:
         mock_response = mock.Mock()
@@ -595,7 +595,7 @@ class TestModelManagerRemove:
 
         with mock.patch("httpx.request", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("llama3:latest", ModelSource.LITELLM)
+            result = mgr.remove("llama3:latest", ModelSource.BACKEND)
 
         assert result is False
 
@@ -628,7 +628,7 @@ class TestSingleton:
         from lilbee.config import cfg
 
         cfg.models_dir = tmp_path / "models"
-        cfg.litellm_base_url = "http://localhost:11434"
+        cfg.backend_base_url = "http://localhost:11434"
         mgr = get_model_manager()
         assert isinstance(mgr, ModelManager)
         assert mgr._models_dir == tmp_path / "models"
@@ -638,7 +638,7 @@ class TestSingleton:
         from lilbee.config import cfg
 
         cfg.models_dir = tmp_path / "models"
-        cfg.litellm_base_url = "http://localhost:11434"
+        cfg.backend_base_url = "http://localhost:11434"
         mgr1 = get_model_manager()
         mgr2 = get_model_manager()
         assert mgr1 is mgr2
@@ -647,7 +647,7 @@ class TestSingleton:
         from lilbee.config import cfg
 
         cfg.models_dir = tmp_path / "models"
-        cfg.litellm_base_url = "http://localhost:11434"
+        cfg.backend_base_url = "http://localhost:11434"
         mgr1 = get_model_manager()
         reset_model_manager()
         mgr2 = get_model_manager()
@@ -665,14 +665,14 @@ class TestLitellmEdgeCases:
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(models_dir=tmp_path, backend_base_url="http://localhost:11434")
-            result = mgr.list_installed(ModelSource.LITELLM)
+            result = mgr.list_installed(ModelSource.BACKEND)
 
         assert result == []
 
     def test_litellm_timeout(self, tmp_path: Path) -> None:
         with mock.patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
             mgr = ModelManager(models_dir=tmp_path, backend_base_url="http://localhost:11434")
-            result = mgr.list_installed(ModelSource.LITELLM)
+            result = mgr.list_installed(ModelSource.BACKEND)
 
         assert result == []
 
@@ -712,22 +712,22 @@ class TestRemoveNativeRegistry:
 
 class TestDetectProvider:
     def test_localhost_ollama(self) -> None:
-        assert detect_provider("http://localhost:11434") == "Ollama"
+        assert detect_backend_name("http://localhost:11434") == "Ollama"
 
     def test_ollama_in_url(self) -> None:
-        assert detect_provider("http://ollama.local:11434") == "Ollama"
+        assert detect_backend_name("http://ollama.local:11434") == "Ollama"
 
     def test_openai_url(self) -> None:
-        assert detect_provider("https://api.openai.com/v1") == "OpenAI"
+        assert detect_backend_name("https://api.openai.com/v1") == "OpenAI"
 
     def test_anthropic_url(self) -> None:
-        assert detect_provider("https://api.anthropic.com") == "Anthropic"
+        assert detect_backend_name("https://api.anthropic.com") == "Anthropic"
 
     def test_unknown_url(self) -> None:
-        assert detect_provider("http://192.168.1.100:8080") == "Remote"
+        assert detect_backend_name("http://192.168.1.100:8080") == "Remote"
 
     def test_case_insensitive(self) -> None:
-        assert detect_provider("http://LOCALHOST:11434") == "Ollama"
+        assert detect_backend_name("http://LOCALHOST:11434") == "Ollama"
 
 
 class TestClassifyRemoteTask:

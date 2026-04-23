@@ -465,7 +465,7 @@ class TestConfigProvider:
 
             c = Config()
             assert c.llm_provider == "auto"
-            assert c.litellm_base_url == "http://localhost:11434"
+            assert c.backend_base_url == "http://localhost:11434"
             assert c.llm_api_key == ""
 
     def test_provider_env_override(self) -> None:
@@ -474,16 +474,16 @@ class TestConfigProvider:
         with mock.patch.dict(
             os.environ,
             {
-                "LILBEE_LLM_PROVIDER": "litellm",
-                "LILBEE_LITELLM_BASE_URL": "http://myhost:11434",
+                "LILBEE_LLM_PROVIDER": "backend",
+                "LILBEE_BACKEND_BASE_URL": "http://myhost:11434",
                 "LILBEE_LLM_API_KEY": "sk-key",
             },
         ):
             from lilbee.config import Config
 
             c = Config()
-            assert c.llm_provider == "litellm"
-            assert c.litellm_base_url == "http://myhost:11434"
+            assert c.llm_provider == "backend"
+            assert c.backend_base_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
 
     def test_models_dir_uses_canonical_location(self, tmp_path: Path) -> None:
@@ -784,10 +784,10 @@ class TestLitellmAvailable:
         from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_sdk import LitellmSdkBackend
 
-        cfg.llm_provider = "litellm"
+        cfg.llm_provider = "backend"
         with (
             mock.patch.object(LitellmSdkBackend, "available", return_value=False),
-            pytest.raises(ProviderError, match="litellm is not installed"),
+            pytest.raises(ProviderError, match="SDK backend adapter is not installed"),
         ):
             create_provider(cfg)
 

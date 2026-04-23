@@ -17,9 +17,9 @@ from lilbee import settings
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
-from lilbee.model_manager import OLLAMA_PROVIDER_NAME
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
+from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME, detect_backend_name
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -104,12 +104,12 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm/Ollama) models to buckets, prefixed for routing."""
+    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing."""
     try:
-        from lilbee.model_manager import classify_remote_models, detect_provider
+        from lilbee.model_manager import classify_remote_models
 
-        base_url = cfg.litellm_base_url
-        is_ollama = detect_provider(base_url) == OLLAMA_PROVIDER_NAME
+        base_url = cfg.backend_base_url
+        is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):

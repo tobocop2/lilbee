@@ -42,7 +42,7 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is None:
             self._sdk_provider = SdkLLMProvider(
                 LitellmSdkBackend(),
-                base_url=cfg.litellm_base_url,
+                base_url=cfg.backend_base_url,
                 api_key=cfg.llm_api_key,
             )
         return self._sdk_provider

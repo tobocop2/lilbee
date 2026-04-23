@@ -96,7 +96,7 @@ class _FakeManager:
         if model in self._native:
             return ModelSource.NATIVE
         if model in self._litellm:
-            return ModelSource.LITELLM
+            return ModelSource.BACKEND
         return None
 
     def pull(self, model, source, *, on_progress=None, on_bytes=None):
@@ -110,7 +110,7 @@ class _FakeManager:
         if (source is ModelSource.NATIVE or source is None) and model in self._native:
             self._native.remove(model)
             return True
-        if (source is ModelSource.LITELLM or source is None) and model in self._litellm:
+        if (source is ModelSource.BACKEND or source is None) and model in self._litellm:
             self._litellm.remove(model)
             return True
         return False
@@ -171,7 +171,7 @@ class TestModelEntryFactories:
     def test_from_litellm_with_remote(self):
         remote = _remote("llama3:latest", task="chat", parameter_size="8B")
         entry = ModelEntry.from_litellm("llama3:latest", remote)
-        assert entry.source == "litellm"
+        assert entry.source == "backend"
         assert entry.task == "chat"
         assert entry.display_name == "8B"
 
@@ -187,7 +187,7 @@ class TestListModelsData:
         assert isinstance(data, ListModelsResult)
         assert data.total == 2
         sources = {e.source for e in data.models}
-        assert sources == {"native", "litellm"}
+        assert sources == {"native", "backend"}
 
     def test_filter_source_native_skips_litellm_http(self, fake_manager, native_manifests):
         with patch("lilbee.model_manager.classify_remote_models") as classify:
@@ -197,9 +197,9 @@ class TestListModelsData:
         assert data.models[0].name == "qwen3:0.6b"
 
     def test_filter_source_litellm(self, fake_manager, native_manifests, with_remote_classify):
-        data = model_mod.list_models_data(source=ModelSource.LITELLM)
+        data = model_mod.list_models_data(source=ModelSource.BACKEND)
         assert data.total == 1
-        assert data.models[0].source == "litellm"
+        assert data.models[0].source == "backend"
 
     def test_task_filter_drops_entries_without_matching_task(
         self, fake_manager, native_manifests, with_remote_classify
@@ -395,7 +395,7 @@ class TestPullModelData:
         manager = _Litellm()
         with patch("lilbee.model_manager.get_model_manager", return_value=manager):
             result = model_mod.pull_model_data(
-                "llama3:latest", ModelSource.LITELLM, on_update=events.append
+                "llama3:latest", ModelSource.BACKEND, on_update=events.append
             )
         assert result.status == PullStatus.OK
         assert result.path is None

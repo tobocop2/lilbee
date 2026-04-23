@@ -30,6 +30,7 @@ from lilbee.providers.sdk_backend import (
     RerankRequest,
     RerankResult,
     StreamChunk,
+    detect_backend_name,
 )
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,10 @@ class LitellmSdkBackend:
     def provider_name(self) -> str:
         """Stable identifier used when wrapping errors in ``ProviderError``."""
         return _PROVIDER_NAME
+
+    def active_backend_name(self, base_url: str) -> str:
+        """Return the display name of the backend ``base_url`` points at."""
+        return detect_backend_name(base_url)
 
     def available(self) -> bool:
         """Return True if the underlying SDK is installed."""

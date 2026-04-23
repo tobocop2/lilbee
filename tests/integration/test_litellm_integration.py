@@ -130,11 +130,11 @@ class TestSdkModelManagement:
 
 class TestSdkFactory:
     def test_create_sdk_provider_for_litellm_config(self) -> None:
-        """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == 'litellm'."""
+        """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == 'backend'."""
         from lilbee.providers.factory import create_provider
 
-        cfg.llm_provider = "litellm"
-        cfg.litellm_base_url = OLLAMA_HOST
+        cfg.llm_provider = "backend"
+        cfg.backend_base_url = OLLAMA_HOST
         provider = create_provider(cfg)
 
         assert isinstance(provider, SdkLLMProvider)
@@ -144,7 +144,7 @@ class TestSdkFactory:
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "ollama"
-        cfg.litellm_base_url = OLLAMA_HOST
+        cfg.backend_base_url = OLLAMA_HOST
         provider = create_provider(cfg)
 
         assert isinstance(provider, SdkLLMProvider)

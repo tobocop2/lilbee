@@ -13,7 +13,11 @@ import httpx
 
 from lilbee.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.models import ModelTask
-from lilbee.providers.sdk_backend import PROVIDER_KEYS
+from lilbee.providers.sdk_backend import (
+    PROVIDER_KEYS,
+    REMOTE_BACKEND_NAME,
+    detect_backend_name,
+)
 from lilbee.security import validate_path_within
 
 # lilbee.config imported lazily; see lilbee/catalog.py for the rationale.
@@ -25,7 +29,7 @@ class ModelSource(Enum):
     """Where a model is stored."""
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    LITELLM = "litellm"  # Models managed by an external backend
+    BACKEND = "backend"  # Models managed by an external SDK backend
 
     @classmethod
     def parse(cls, value: str | None) -> "ModelSource | None":
@@ -145,7 +149,7 @@ class ModelManager:
         if self._is_native(model):
             return ModelSource.NATIVE
         if self._is_backend(model):
-            return ModelSource.LITELLM
+            return ModelSource.BACKEND
         return None
 
     def pull(
@@ -277,12 +281,6 @@ _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minic
 _RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 
 
-OLLAMA_PROVIDER_NAME = "Ollama"
-OPENAI_PROVIDER_NAME = "OpenAI"
-ANTHROPIC_PROVIDER_NAME = "Anthropic"
-REMOTE_PROVIDER_NAME = "Remote"
-
-
 @dataclass
 class RemoteModel:
     """A model from the SDK backend with inferred task classification."""
@@ -291,24 +289,7 @@ class RemoteModel:
     task: str  # "chat", "embedding", "vision", "rerank"
     family: str
     parameter_size: str
-    provider: str = REMOTE_PROVIDER_NAME
-
-
-_PROVIDER_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("localhost:11434", OLLAMA_PROVIDER_NAME),
-    ("ollama", OLLAMA_PROVIDER_NAME),
-    ("openai", OPENAI_PROVIDER_NAME),
-    ("anthropic", ANTHROPIC_PROVIDER_NAME),
-)
-
-
-def detect_provider(base_url: str) -> str:
-    """Detect the remote provider name from the SDK backend URL."""
-    url_lower = base_url.lower()
-    for pattern, provider in _PROVIDER_PATTERNS:
-        if pattern in url_lower:
-            return provider
-    return REMOTE_PROVIDER_NAME
+    provider: str = REMOTE_BACKEND_NAME
 
 
 def _classify_remote_task(name: str, family: str) -> str:
@@ -353,7 +334,7 @@ def classify_remote_models(
         log.debug("Failed to classify remote models", exc_info=True)
         return []
 
-    provider = detect_provider(base_url)
+    provider = detect_backend_name(base_url)
     result: list[RemoteModel] = []
     for model in raw_models:
         name = model.get("name", "")
@@ -436,7 +417,7 @@ class _ManagerHolder:
         if self._instance is None:
             from lilbee.config import cfg
 
-            self._instance = ModelManager(cfg.models_dir, cfg.litellm_base_url)
+            self._instance = ModelManager(cfg.models_dir, cfg.backend_base_url)
         return self._instance
 
     def reset(self) -> None:

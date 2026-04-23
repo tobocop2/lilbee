@@ -38,9 +38,10 @@ from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.config import cfg
-from lilbee.model_manager import OLLAMA_PROVIDER_NAME, RemoteModel, get_model_manager
+from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX
+from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
 log = logging.getLogger(__name__)
 
@@ -282,7 +283,7 @@ class CatalogScreen(Screen[None]):
     def _fetch_remote_models(self) -> list[RemoteModel]:
         from lilbee.model_manager import classify_remote_models
 
-        return classify_remote_models(cfg.litellm_base_url)
+        return classify_remote_models(cfg.backend_base_url)
 
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:
@@ -579,7 +580,7 @@ class CatalogScreen(Screen[None]):
         elif row.remote_model:
             ref = (
                 f"{OLLAMA_PREFIX}{row.remote_model.name}"
-                if row.remote_model.provider == OLLAMA_PROVIDER_NAME
+                if row.remote_model.provider == OLLAMA_BACKEND_NAME
                 else row.remote_model.name
             )
             cfg.chat_model = ref
