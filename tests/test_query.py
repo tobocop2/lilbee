@@ -367,6 +367,34 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = iter(["stream"])
         assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
 
+    def test_batches_llm_variants_in_one_call(self, mock_svc):
+        """LLM variants should embed via a single embed_batch call, not N embed calls."""
+        mock_svc.provider.chat.return_value = "variant one\nvariant two\nvariant three"
+        get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        assert mock_svc.embedder.embed_batch.call_count >= 1
+        batch_call_args = mock_svc.embedder.embed_batch.call_args_list[0].args[0]
+        assert len(batch_call_args) == 3
+        # Single-shot embed must not be used for the variant loop.
+        mock_svc.embedder.embed.assert_not_called()
+
+    def test_batches_concept_expansion_separately(self, mock_svc):
+        """Concept-graph variants embed through embed_batch too (separate call
+        because they bypass guardrails and must come through after guardrails
+        apply to LLM variants)."""
+        old_concept = cfg.concept_graph
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.expand_query.return_value = ["kubernetes", "scheduling"]
+        mock_svc.provider.chat.return_value = "restate one\nrestate two"
+        try:
+            get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        finally:
+            cfg.concept_graph = old_concept
+        # Two sources (LLM + concepts) => exactly 2 batch calls.
+        assert mock_svc.embedder.embed_batch.call_count == 2
+        concept_batch = mock_svc.embedder.embed_batch.call_args_list[1].args[0]
+        assert concept_batch == ["kubernetes", "scheduling"]
+
 
 class TestAskRaw:
     def test_returns_structured_result(self, mock_svc):

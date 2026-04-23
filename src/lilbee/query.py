@@ -438,6 +438,8 @@ class Searcher:
 
         LLM variants run through ``_apply_guardrails``; concept-graph
         variants bypass it since they come from deterministic traversal.
+        Embeddings are batched per source so expansion costs one provider
+        round-trip per source, not one per variant.
         """
         count = self._config.query_expansion_count
         if count <= 0 and not self._config.concept_graph:
@@ -445,11 +447,17 @@ class Searcher:
         try:
             llm_variants: list[tuple[str, list[float]]] = []
             if count > 0:
-                for text in self._llm_expand(question, count):
-                    llm_variants.append((text, self._embedder.embed(text)))
+                llm_texts = list(self._llm_expand(question, count))
+                if llm_texts:
+                    llm_vectors = self._embedder.embed_batch(llm_texts)
+                    llm_variants = list(zip(llm_texts, llm_vectors, strict=True))
             llm_variants = self._apply_guardrails(llm_variants, question_vec)
-            for concept in self._concept_query_expansion(question):
-                llm_variants.append((concept, self._embedder.embed(concept)))
+
+            concept_texts = list(self._concept_query_expansion(question))
+            if concept_texts:
+                concept_vectors = self._embedder.embed_batch(concept_texts)
+                llm_variants.extend(zip(concept_texts, concept_vectors, strict=True))
+
             return llm_variants
         except Exception as exc:
             log.warning("Query expansion disabled for this call: %s", exc, exc_info=True)
