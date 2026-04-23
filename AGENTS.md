@@ -324,12 +324,15 @@ entity pages that compound across sources rather than one page per
 document. The layout under `$data_root/$wiki_dir/` is:
 
 ```
-concepts/    one page per noun-phrase topic (e.g. braking-systems.md)
+concepts/    one page per LLM-curated concept from the source (e.g. braking-systems.md)
 entities/    one page per proper-noun entity (e.g. henry-ford.md)
 summaries/   legacy per-source pages (still supported, not the default)
 synthesis/   cross-source pages produced by `wiki synthesize`
-drafts/      low-faithfulness drafts that missed the threshold
-archive/     pages retired by `wiki prune`
+drafts/      low-faithfulness drafts, drift drafts, and PENDING markers
+             (parse-failure or slug-collision) surfaced via `wiki drafts list`
+archive/     pages retired by `wiki prune` (plus the one-time Phase D
+             migration archive at `archive/concepts/` from the pre-Phase-D
+             noun-chunk generator)
 index.md     auto-generated table of contents, grouped by page type
 log.md       append-only audit trail (## [YYYY-MM-DD HH:MM] op | details)
 ```
@@ -338,15 +341,21 @@ log.md       append-only audit trail (## [YYYY-MM-DD HH:MM] op | details)
 the `[[link]]` target (`braking-systems`, not `Braking Systems`). The
 slug generator lives at `wiki/shared.py:make_slug`.
 
-**Page lifecycle**. `lilbee wiki build` extracts entities from the
-chunk store using `cfg.wiki_entity_mode` (default `ner_concepts`:
-spaCy NER + noun phrases), generates a page per record via
-`wiki/gen.py:build_wiki`, refreshes `index.md`, and appends a `build`
-entry to `log.md`. `lilbee sync` runs `_incremental_wiki_update` after
-a successful sync: pages whose chunk trail cites a changed source, or
-pages that don't exist yet, are regenerated. The cap is
-`cfg.wiki_ingest_update_cap` (default 20); above that the hook logs a
-manual-update hint and exits.
+**Page lifecycle**. `lilbee wiki build` runs the Phase D migration once
+(archives pre-Phase-D noun-chunk concept pages and unwraps stale
+`[[concept-slug]]` links), extracts NER entities from the chunk store
+via `cfg.wiki_entity_mode` (default `ner_entities`: spaCy NER only),
+and then per source issues one batched LLM call that both identifies
+3–5 concepts worth a wiki page AND writes a section for each identified
+concept plus each extracted entity. Sections are split, citation-verified
+per section against the shared chunk pool, embedding-faithfulness scored
+(`wiki/gen.py:_check_faithfulness`, cosine of body vs mean chunk vector,
+threshold `cfg.wiki_embedding_faithfulness_threshold`), and written to
+`concepts/` or `entities/`. Sections that fail to parse become PENDING
+markers in `drafts/` that the user resolves via `wiki drafts accept/reject`.
+`lilbee sync` runs `_incremental_wiki_update` afterward with
+`extract_concepts=False` so incremental re-ingest never churns concept
+slugs; the cap is `cfg.wiki_ingest_update_cap` (default 20).
 
 **Retrieval inside wiki/gen.py**. Each page is grounded in the top
 `cfg.wiki_concept_max_chunks_per_page` chunks returned by the store's
