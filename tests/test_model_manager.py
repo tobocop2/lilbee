@@ -170,6 +170,78 @@ class TestModelManagerListInstalled:
 
         assert result.count("llama3:latest") == 1
 
+    def test_second_call_within_ttl_uses_cache(self) -> None:
+        """Two back-to-back calls should hit the HTTP endpoint only once."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr.list_installed(ModelSource.LITELLM)
+            mgr.list_installed(ModelSource.LITELLM)
+
+        assert mock_get.call_count == 1
+
+    def test_cache_expires_after_ttl(self) -> None:
+        """After the TTL window elapses, list_installed refetches."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
+        mock_response.raise_for_status = mock.Mock()
+
+        import lilbee.model_manager as mm_mod
+
+        with (
+            mock.patch("httpx.get", return_value=mock_response) as mock_get,
+            mock.patch.object(mm_mod.time, "monotonic") as mock_clock,
+        ):
+            # One clock tick per list_installed call — second tick is past TTL.
+            mock_clock.side_effect = [0.0, 100.0]
+            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr.list_installed(ModelSource.LITELLM)
+            mgr.list_installed(ModelSource.LITELLM)
+
+        assert mock_get.call_count == 2
+
+    def test_pull_invalidates_cache(self, tmp_path: Path) -> None:
+        """After pull(), the next list_installed must refetch."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        _install_registry_model(models_dir, tmp_path, "before", b"before-data")
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": []}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr.list_installed(ModelSource.NATIVE)  # populate cache
+            assert mgr._installed_cache
+
+            # Swap the pull implementation so we don't actually fetch.
+            with mock.patch.object(mgr, "_pull_native", return_value=Path("/tmp/x")):
+                mgr.pull("new-model", ModelSource.NATIVE)
+
+            assert mgr._installed_cache == {}
+
+    def test_remove_invalidates_cache(self, tmp_path: Path) -> None:
+        """After remove(), the next list_installed must refetch."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        _install_registry_model(models_dir, tmp_path, "doomed", b"doomed-data")
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": []}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr.list_installed(None)  # populate cache
+            assert mgr._installed_cache
+
+            mgr.remove("doomed:latest", ModelSource.NATIVE)
+            assert mgr._installed_cache == {}
+
 
 class TestModelManagerIsInstalled:
     def test_native_installed(self, tmp_path: Path) -> None:
@@ -409,7 +481,7 @@ class TestModelManagerPull:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with (
             mock.patch("httpx.Client", return_value=mock_client),
-            pytest.raises(RuntimeError, match="Cannot connect to litellm backend"),
+            pytest.raises(RuntimeError, match="Cannot connect to SDK backend"),
         ):
             mgr.pull("llama3:latest", ModelSource.LITELLM)
 
@@ -514,7 +586,7 @@ class TestModelManagerRemove:
     def test_litellm_connection_error_during_remove(self) -> None:
         with mock.patch("httpx.request", side_effect=httpx.ConnectError("Connection refused")):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            with pytest.raises(RuntimeError, match="Cannot connect to litellm backend"):
+            with pytest.raises(RuntimeError, match="Cannot connect to SDK backend"):
                 mgr.remove("llama3:latest", ModelSource.LITELLM)
 
     def test_litellm_remove_unexpected_status(self) -> None:
@@ -560,7 +632,7 @@ class TestSingleton:
         mgr = get_model_manager()
         assert isinstance(mgr, ModelManager)
         assert mgr._models_dir == tmp_path / "models"
-        assert mgr._litellm_base_url == "http://localhost:11434"
+        assert mgr._backend_base_url == "http://localhost:11434"
 
     def test_returns_same_instance(self, tmp_path: Path) -> None:
         from lilbee.config import cfg
@@ -592,14 +664,14 @@ class TestLitellmEdgeCases:
         )
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+            mgr = ModelManager(models_dir=tmp_path, backend_base_url="http://localhost:11434")
             result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
 
     def test_litellm_timeout(self, tmp_path: Path) -> None:
         with mock.patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
-            mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+            mgr = ModelManager(models_dir=tmp_path, backend_base_url="http://localhost:11434")
             result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
@@ -608,7 +680,7 @@ class TestLitellmEdgeCases:
 class TestIsNativePathTraversal:
     def test_path_traversal_returns_false(self, tmp_path: Path) -> None:
         """_is_native returns False for path traversal attempts."""
-        mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+        mgr = ModelManager(models_dir=tmp_path, backend_base_url="http://localhost:11434")
         assert not mgr._is_native("../../etc/passwd")
 
 
