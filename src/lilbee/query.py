@@ -477,12 +477,14 @@ class Searcher:
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
-        if not self._config.concept_graph:
+        if not self._config.concept_graph or not results:
             return results
         try:
             if not self._concepts.get_graph():
                 return results
             query_concepts = self._concepts.extract_concepts(question)
+            if not query_concepts:
+                return results
             return self._concepts.boost_results(results, query_concepts)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
