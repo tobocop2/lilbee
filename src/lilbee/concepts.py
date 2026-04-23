@@ -92,6 +92,11 @@ def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
     delimiters, page-number-prefixed tokens, sub-three-char fragments)
     never enter the co-occurrence graph and therefore never become a
     synthesis-page cluster label.
+
+    The gate runs on the lowercased form here while the NER extractor
+    gates on the original-cased surface; the two decisions match
+    because ``is_valid_label`` is case-agnostic today. Any future
+    case-sensitive rule must land in both call sites together.
     """
     seen: set[str] = set()
     concepts: list[str] = []
