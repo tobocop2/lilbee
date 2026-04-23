@@ -14,9 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from lilbee.wiki.shared import CITATION_BLOCK_COMMENT
-
-_CODE_FENCE_PREFIX = "```"
+from lilbee.wiki.grammar import CITATION_BLOCK_COMMENT, CODE_FENCE_PREFIX
 
 
 @dataclass(frozen=True)
@@ -160,7 +158,7 @@ def _classify_lines(lines: list[str]) -> list[tuple[str, bool]]:
             tagged.append((line, False))
             continue
 
-        if stripped.startswith(_CODE_FENCE_PREFIX):
+        if stripped.startswith(CODE_FENCE_PREFIX):
             tagged.append((line, False))
             in_code_fence = not in_code_fence
             continue

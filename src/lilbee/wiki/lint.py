@@ -8,7 +8,6 @@ Two modes:
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -22,6 +21,7 @@ from lilbee.wiki.citation import (
     find_unmarked_claims,
     verify_citation,
 )
+from lilbee.wiki.grammar import WIKI_LINK_RE
 from lilbee.wiki.index import append_wiki_log
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
@@ -30,8 +30,6 @@ from lilbee.wiki.shared import (
     WIKI_LOG_ACTION_LINT,
     parse_frontmatter,
 )
-
-_WIKI_LINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 _ORPHAN_CANDIDATE_SUBDIRS: tuple[str, ...] = (CONCEPTS_SUBDIR, ENTITIES_SUBDIR)
 
@@ -282,7 +280,7 @@ def _lint_orphans(wiki_root: Path, config: Config) -> list[LintIssue]:
     candidate_roots = {wiki_root / sub for sub in _ORPHAN_CANDIDATE_SUBDIRS}
     for md_path in wiki_root.rglob("*.md"):
         text = md_path.read_text(encoding="utf-8", errors="replace")
-        for match in _WIKI_LINK_RE.finditer(text):
+        for match in WIKI_LINK_RE.finditer(text):
             slug = match.group(1).split("|", 1)[0].strip().lower()
             if slug:
                 referenced.add(slug)

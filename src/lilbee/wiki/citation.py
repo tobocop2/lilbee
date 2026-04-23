@@ -3,22 +3,17 @@
 Pure functions — no LLM dependency. Operates on markdown text and citation records.
 """
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 
 from lilbee.store import CitationRecord
-from lilbee.wiki.shared import CITATION_BLOCK_COMMENT, CITATION_BLOCK_SEP
-
-# Pattern for inline citation anchors: [^src1], [^src2], etc.
-_CITE_RE = re.compile(r"\[\^(src\d+)\]")
-
-# Pattern for footnote definitions in the citation block:
-#   [^src1]: python-docs/typing.md, lines 12-45
-_FOOTNOTE_RE = re.compile(r"^\[\^(src\d+)\]:\s*(.+)$", re.MULTILINE)
-
-# Pattern for inference markers: [*inference*]
-_INFERENCE_RE = re.compile(r"\[\*inference\*\]")
+from lilbee.wiki.grammar import (
+    CITATION_BLOCK_COMMENT,
+    CITATION_BLOCK_SEP,
+    CITE_RE,
+    FOOTNOTE_RE,
+    INFERENCE_RE,
+)
 
 
 class CitationStatus(Enum):
@@ -54,7 +49,7 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
     lines = markdown.splitlines()
     citations: list[ParsedCitation] = []
     for line_idx in range(start, len(lines)):
-        match = _FOOTNOTE_RE.match(lines[line_idx])
+        match = FOOTNOTE_RE.match(lines[line_idx])
         if match:
             citations.append(
                 ParsedCitation(
@@ -104,7 +99,7 @@ def find_unmarked_claims(markdown: str) -> list[str]:
         stripped = line.strip()
         if not _is_content_line(stripped):
             continue
-        if _CITE_RE.search(stripped) or _INFERENCE_RE.search(stripped):
+        if CITE_RE.search(stripped) or INFERENCE_RE.search(stripped):
             continue
         unmarked.append(stripped)
     return unmarked

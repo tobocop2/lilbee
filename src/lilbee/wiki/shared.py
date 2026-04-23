@@ -48,13 +48,6 @@ WIKI_LOG_ACTION_BUILD = "build"
 WIKI_LOG_ACTION_INGEST = "ingest"
 WIKI_LOG_ACTION_LINT = "lint"
 
-# Auto-generated citation block markers, shared across the wiki layer.
-# The writers in ``wiki.citation`` emit these exact strings; the
-# ``wiki.links`` rewriter treats anything after the comment as citation
-# content and leaves it untouched.
-CITATION_BLOCK_SEP = "---"
-CITATION_BLOCK_COMMENT = "<!-- citations (auto-generated from _citations table -- do not edit) -->"
-
 SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
     SUMMARIES_SUBDIR: WikiPageType.SUMMARY,
     SYNTHESIS_SUBDIR: WikiPageType.SYNTHESIS,

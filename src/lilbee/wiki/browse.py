@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from lilbee.security import validate_path_within
+from lilbee.wiki.grammar import CODE_FENCE_RE, H1_RE
 from lilbee.wiki.index import parse_source_count
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
@@ -16,9 +16,6 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     parse_frontmatter,
 )
-
-_H1_PATTERN = re.compile(r"^#\s+(.+?)\s*#*\s*$")
-_CODE_FENCE_PATTERN = re.compile(r"^(```|~~~)")
 
 
 @dataclass
@@ -81,12 +78,12 @@ def _extract_h1_title(text: str) -> str | None:
     """Return the first top-level heading from markdown body, ignoring fenced code blocks."""
     in_fence = False
     for line in text.splitlines():
-        if _CODE_FENCE_PATTERN.match(line):
+        if CODE_FENCE_RE.match(line):
             in_fence = not in_fence
             continue
         if in_fence:
             continue
-        if m := _H1_PATTERN.match(line):
+        if m := H1_RE.match(line):
             return m.group(1).strip()
     return None
 

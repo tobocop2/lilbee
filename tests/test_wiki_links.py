@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.wiki.links import rewrite_wiki_links
+from lilbee.wiki.links import apply_rewriter, compile_rewriter, rewrite_wiki_links
 
 
 class TestEmptyAndNoop:
@@ -15,6 +15,14 @@ class TestEmptyAndNoop:
     def test_no_matches_leaves_content_unchanged(self) -> None:
         content = "The quick brown fox jumps over the lazy dog.\n"
         assert rewrite_wiki_links(content, {"tire pressure": "tire-pressure"}) == content
+
+    def test_apply_rewriter_short_circuits_on_empty_content(self) -> None:
+        """Batch callers that reuse a compiled rewriter across many pages
+        can still pass through empty content without index errors.
+        """
+        rewriter = compile_rewriter({"tire pressure": "tire-pressure"})
+        assert rewriter is not None
+        assert apply_rewriter("", rewriter) == ""
 
 
 class TestBasicRewriting:
