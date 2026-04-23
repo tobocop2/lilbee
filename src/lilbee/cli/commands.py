@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 
@@ -1279,7 +1279,7 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
     user who expected concepts in the output knows why they are
     missing.
     """
-    rows = [
+    rows: list[dict[str, Any]] = [
         {
             "slug": e.slug,
             "label": e.label,
@@ -1315,12 +1315,13 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
     table.add_column("Mentions")
     table.add_column("Sources")
     for row in rows:
+        sources_list: list[str] = row["sources"]
         table.add_row(
-            row["slug"],
-            row["kind"],
-            row["type_hint"],
+            str(row["slug"]),
+            str(row["kind"]),
+            str(row["type_hint"]),
             str(row["mentions"]),
-            ", ".join(row["sources"][:3]) + (", ..." if len(row["sources"]) > 3 else ""),
+            ", ".join(sources_list[:3]) + (", ..." if len(sources_list) > 3 else ""),
         )
     console.print(table)
     console.print(
