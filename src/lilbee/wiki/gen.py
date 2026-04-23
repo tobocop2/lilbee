@@ -473,11 +473,24 @@ def _embedding_faithfulness_score(
     clamped at zero because a negative cosine means the body vector
     points the other way from the mean of the sources — treat that
     the same as uncorrelated for threshold purposes.
+
+    Returns 0.0 on a dimension mismatch between the body vector and
+    the source-vector mean. That is not expected in production (the
+    embedder and the chunk vectors come from the same model), but a
+    stub-driven test may hand in off-shape vectors and crashing the
+    whole pipeline on the shape-check hides the real assertion.
     """
     from lilbee.store import cosine_sim
 
     mean_vec = _mean_vector(source_vectors)
     if not mean_vec or not body_vec:
+        return 0.0
+    if len(mean_vec) != len(body_vec):
+        log.warning(
+            "Body vector dim %d does not match source vector dim %d; scoring 0.0",
+            len(body_vec),
+            len(mean_vec),
+        )
         return 0.0
     return max(0.0, cosine_sim(body_vec, mean_vec))
 
@@ -1324,6 +1337,13 @@ def _generate_source_batch(
     source_hashes = _hash_existing_sources(source_names, config.documents_dir)
     chunks_by_source = {source: budgeted}
 
+    # Citation definitions live in the trailing block of the WHOLE
+    # response, not inside any one section body. Parse once over the
+    # full text and replay the same list for every section, so each
+    # page sees its own citations even when only the last section
+    # carries the definition trailer.
+    shared_parsed_citations = parse_wiki_citations(text)
+
     pages: list[Path] = []
     seen_labels: set[str] = set()
     for header_label, (kind, body) in parsed.items():
@@ -1346,6 +1366,7 @@ def _generate_source_batch(
             source=source,
             written_concept_slugs=written_concept_slugs,
             drafts_dir=drafts_dir,
+            shared_parsed_citations=shared_parsed_citations,
         )
         if page is not None:
             pages.append(page)
@@ -1383,21 +1404,33 @@ def _finalize_section(
     source: str,
     written_concept_slugs: dict[str, str],
     drafts_dir: Path,
+    shared_parsed_citations: list[ParsedCitation],
 ) -> Path | None:
     """Citation-check, faithfulness-check, write one batched section.
 
     Shared by entity and concept sections from the per-source batched
     call. Returns the written page path, or ``None`` if the section
     failed any gate (no citations, empty body, slug collision marker
-    handled via side channel).
+    handled via side channel). ``shared_parsed_citations`` is the
+    definition list parsed once over the whole response — every
+    section replays it so pages other than the last one still have
+    their footnotes resolved.
     """
     slug = make_slug(header_label)
     if not slug:
         log.info("Empty slug for batched section %r; skipping", header_label)
         return None
 
-    parsed_citations = parse_wiki_citations(body)
-    verified = _verify_citations(citation_resolver(parsed_citations), chunks, header_label, config)
+    # Only replay citation keys that this section actually references
+    # in the body; otherwise every section would claim every citation.
+    section_keys = {ref.citation_key for ref in parse_wiki_citations(body)}
+    # Fall back to in-body ``[^keyN]`` references when no definitions
+    # live inside the section: count occurrences of the footnote
+    # marker against the shared definition set.
+    body_marker_re = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
+    section_keys.update(body_marker_re.findall(body))
+    relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
+    verified = _verify_citations(citation_resolver(relevant), chunks, header_label, config)
     if not verified:
         log.info("No valid citations for batched section %s, skipping", header_label)
         return None

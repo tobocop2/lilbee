@@ -180,6 +180,40 @@ class TestTomlConfigFile:
             c = Config()
             assert c.chat_model == "qwen3:0.6b"
 
+    def test_deprecated_config_keys_log_warning_on_load(
+        self, tmp_path, caplog
+    ):
+        """Phase D dropped four wiki config keys; each should log a
+        warning when present in config.toml, and neither survive as
+        a Config attribute.
+        """
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'wiki_faithfulness_threshold = 0.7\n'
+            'wiki_faithfulness_prompt = "old"\n'
+            'wiki_faithfulness_max_tokens = 256\n'
+            'wiki_concept_prompt = "old"\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level("WARNING", logger="lilbee.config"),
+        ):
+            c = Config()
+        assert not hasattr(c, "wiki_faithfulness_threshold")
+        assert not hasattr(c, "wiki_faithfulness_prompt")
+        assert not hasattr(c, "wiki_faithfulness_max_tokens")
+        assert not hasattr(c, "wiki_concept_prompt")
+        warning_text = " ".join(r.message for r in caplog.records)
+        for key in (
+            "wiki_faithfulness_threshold",
+            "wiki_faithfulness_prompt",
+            "wiki_faithfulness_max_tokens",
+            "wiki_concept_prompt",
+        ):
+            assert key in warning_text
+
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('embedding_model = "my-embed"\n')

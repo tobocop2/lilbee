@@ -55,14 +55,14 @@ class TestFactoryDispatch:
 
     def test_implemented_mode_returns_its_class(self) -> None:
         provider = MagicMock()
-        extractor = get_entity_extractor(WikiEntityMode.NER_CONCEPTS, provider, cfg)
+        extractor = get_entity_extractor(WikiEntityMode.NER_ENTITIES, provider, cfg)
         assert isinstance(extractor, NerConceptsExtractor)
         # Implementations must satisfy the runtime-checkable protocol.
         assert isinstance(extractor, EntityExtractor)
 
 
 class TestUnimplementedModesFallBack:
-    """Unimplemented strategies fall back to NER_CONCEPTS via the factory.
+    """Unimplemented strategies fall back to NER_ENTITIES via the factory.
 
     The stub classes themselves still raise on direct use, so future
     implementation work has a clear TODO site, but routing through
@@ -74,7 +74,7 @@ class TestUnimplementedModesFallBack:
         "mode",
         [WikiEntityMode.NER_CONCEPTS_PLUS_LLM_TYPES, WikiEntityMode.LLM_TAGGED],
     )
-    def test_unimplemented_mode_returns_ner_concepts(
+    def test_unimplemented_mode_returns_ner_entities(
         self, mode: WikiEntityMode, caplog: pytest.LogCaptureFixture
     ) -> None:
         provider = MagicMock()
@@ -94,10 +94,10 @@ class TestUnimplementedModesFallBack:
 
 
 class TestConfigPlumbing:
-    def test_default_mode_is_ner_concepts(self) -> None:
+    def test_default_mode_is_ner_entities(self) -> None:
         # Late-bound: read from cfg so a test that mutates the field restores
         # visibility via the fixture snapshot.
-        assert cfg.wiki_entity_mode is WikiEntityMode.NER_CONCEPTS
+        assert cfg.wiki_entity_mode is WikiEntityMode.NER_ENTITIES
 
     def test_settings_map_entry_lists_all_modes(self) -> None:
         entry = SETTINGS_MAP["wiki_entity_mode"]
@@ -105,3 +105,13 @@ class TestConfigPlumbing:
         assert entry.group == "Wiki"
         assert entry.choices is not None
         assert set(entry.choices) == {m.value for m in WikiEntityMode}
+
+    def test_wiki_entity_mode_renamed_to_ner_entities(self) -> None:
+        """Phase D hard rename: NER_CONCEPTS is gone, NER_ENTITIES is the default.
+
+        No alias shim: an old env var value `ner_concepts` raises a
+        ValidationError at assignment. Acceptable because the enum
+        value never shipped on main.
+        """
+        assert "NER_ENTITIES" in WikiEntityMode.__members__
+        assert "NER_CONCEPTS" not in WikiEntityMode.__members__
