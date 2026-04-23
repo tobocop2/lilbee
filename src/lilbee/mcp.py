@@ -518,6 +518,40 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
     return remove_model_data(model, source=src).model_dump()
 
 
+@mcp.tool()
+def wiki_drafts_list() -> dict[str, Any]:
+    """List pending wiki drafts with drift, faithfulness, and pairing info.
+
+    Read-only. Accept and reject are CLI-only (destructive, explicit).
+    """
+    from lilbee.wiki.drafts import list_drafts
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    drafts = list_drafts(wiki_root)
+    return {
+        "command": "wiki_drafts_list",
+        "drafts": [d.to_dict() for d in drafts],
+        "total": len(drafts),
+    }
+
+
+@mcp.tool()
+def wiki_drafts_diff(slug: str) -> dict[str, Any]:
+    """Return a unified diff of the draft against its published counterpart.
+
+    Args:
+        slug: Draft slug (e.g. ``"chevrolet"``).
+    """
+    from lilbee.wiki.drafts import diff_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        diff = diff_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        return {"error": str(exc)}
+    return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
+
+
 def clean(result: SearchChunk) -> dict[str, object]:
     """Convert SearchChunk to a JSON-friendly dict."""
     return result.model_dump(exclude={"vector"}, exclude_none=True)
