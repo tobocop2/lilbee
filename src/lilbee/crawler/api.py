@@ -355,16 +355,16 @@ def _make_flush_page(
     """
 
     def flush_page(result: CrawlResult) -> Path | None:
-        path = save._save_single_result(result, meta)
-        if path is None:
+        outcome = save._save_single_result(result, meta)
+        if outcome is None:
             return None
-        save._update_single_metadata(meta, result, datetime.now(UTC).isoformat())
+        save._update_single_metadata(meta, result.url, outcome, datetime.now(UTC).isoformat())
         counter["pending"] += 1
         if counter["pending"] >= METADATA_FLUSH_INTERVAL:
             save.save_crawl_metadata(meta)
             counter["pending"] = 0
-        written_paths.append(path)
-        return path
+        written_paths.append(outcome.path)
+        return outcome.path
 
     return flush_page
 
