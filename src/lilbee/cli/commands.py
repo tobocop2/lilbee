@@ -1201,6 +1201,11 @@ def _fail_wiki_disabled() -> None:
 def wiki_build(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Run extraction only; skip every LLM call. Prints the candidate entities.",
+    ),
 ) -> None:
     """Build the concept and entity wiki across all ingested sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -1219,6 +1224,11 @@ def wiki_build(
 
     extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
     entities = extractor.extract(chunks)
+
+    if dry_run:
+        _wiki_build_dry_run_output(entities)
+        return
+
     pages = build_wiki(entities, svc.provider, svc.store, cfg)
     update_wiki_index()
     append_wiki_log(
@@ -1249,6 +1259,56 @@ def wiki_build(
         console.print(f"  {path}")
 
 
+def _wiki_build_dry_run_output(entities: list) -> None:
+    """Render the extraction result as JSON or table without calling any LLM."""
+    rows = [
+        {
+            "slug": e.slug,
+            "label": e.label,
+            "kind": e.kind.value,
+            "type_hint": e.type_hint,
+            "mentions": len(e.chunk_refs),
+            "sources": sorted({r.source for r in e.chunk_refs}),
+        }
+        for e in entities
+    ]
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_build",
+                "dry_run": True,
+                "entities": rows,
+                "count": len(rows),
+            }
+        )
+        return
+
+    if not rows:
+        console.print("No candidate entities extracted. Run sync first.")
+        return
+
+    table = Table(title=f"Wiki build dry-run ({len(rows)} candidates)")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Kind", style=theme.MUTED)
+    table.add_column("Type")
+    table.add_column("Mentions")
+    table.add_column("Sources")
+    for row in rows:
+        table.add_row(
+            row["slug"],
+            row["kind"],
+            row["type_hint"],
+            str(row["mentions"]),
+            ", ".join(row["sources"][:3]) + (", ..." if len(row["sources"]) > 3 else ""),
+        )
+    console.print(table)
+    console.print(
+        f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
+        "No LLM calls were made."
+    )
+
+
 @wiki_app.command(name="update")
 def wiki_update(
     data_dir: Path | None = data_dir_option,
@@ -1259,7 +1319,7 @@ def wiki_update(
     Currently a full rebuild. The incremental touched-slug regeneration
     lands in the ingest-hook task and will re-route this command then.
     """
-    wiki_build(data_dir=data_dir, use_global=use_global)
+    wiki_build(data_dir=data_dir, use_global=use_global, dry_run=False)
 
 
 drafts_app = typer.Typer(help="Review wiki drafts: list, diff, accept, reject.")

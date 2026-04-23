@@ -444,14 +444,20 @@ def _build_frontmatter(
     source_names: list[str],
     score: float,
     leaf_hash: str = "",
+    chunks: list[SearchChunk] | None = None,
 ) -> str:
     """Build YAML frontmatter for a wiki page.
 
-    When ``leaf_hash`` is non-empty it is written so incremental rebuild can
-    skip regeneration on a subsequent sync whose chunks produce the same hash.
+    When ``leaf_hash`` is non-empty it is written so incremental rebuild
+    can skip regeneration on a subsequent sync whose chunks produce the
+    same hash. When ``chunks`` is provided the frontmatter carries a
+    ``provenance`` block naming the source/chunk-index pairs that fed
+    the generator and the extraction method from config, so a bad page
+    is auditable without re-running the pipeline.
     """
     sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
     hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
+    provenance_block = _render_provenance(config, chunks) if chunks is not None else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
@@ -459,8 +465,23 @@ def _build_frontmatter(
         f"sources: [{sources_yaml}]\n"
         f"faithfulness_score: {score:.2f}\n"
         f"{hash_line}"
+        f"{provenance_block}"
         f"---\n\n"
     )
+
+
+def _render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
+    """Render the provenance block: chunk references + extraction method.
+
+    Chunk refs stay as block-style YAML entries for readability; a page
+    backed by a handful of chunks keeps the frontmatter scannable.
+    """
+    lines = ["provenance:"]
+    lines.append(f"  extraction_method: {config.wiki_entity_mode.value}")
+    lines.append("  chunks:")
+    for chunk in chunks:
+        lines.append(f'    - {{source: "{chunk.source}", chunk_index: {chunk.chunk_index}}}')
+    return "\n".join(lines) + "\n"
 
 
 def _write_page(
@@ -660,7 +681,7 @@ def _generate_page(
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)
-    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash)
+    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash, chunks=chunks)
     citation_block = render_citation_block(verified)
     full_content = _assemble_content(frontmatter, wiki_text, citation_block)
 
