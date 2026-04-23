@@ -86,29 +86,13 @@ class NerConceptsExtractor:
         min_mentions = self._config.wiki_entity_min_mentions
         results: list[ExtractedEntity] = []
         for agg in entity_records.values():
-            if len(agg.refs) < min_mentions:
-                continue
-            results.append(
-                ExtractedEntity(
-                    slug=make_slug(agg.label),
-                    kind=EntityKind.ENTITY,
-                    label=agg.label,
-                    type_hint=agg.type_hint,
-                    chunk_refs=_sorted_refs(agg.refs),
-                )
-            )
+            record = _make_record(agg, EntityKind.ENTITY, min_mentions)
+            if record is not None:
+                results.append(record)
         for agg in concept_records.values():
-            if len(agg.refs) < min_mentions:
-                continue
-            results.append(
-                ExtractedEntity(
-                    slug=make_slug(agg.label),
-                    kind=EntityKind.CONCEPT,
-                    label=agg.label,
-                    type_hint=agg.type_hint,
-                    chunk_refs=_sorted_refs(agg.refs),
-                )
-            )
+            record = _make_record(agg, EntityKind.CONCEPT, min_mentions)
+            if record is not None:
+                results.append(record)
         results.sort(key=lambda e: (e.kind.value, e.slug))
         return results
 
@@ -126,6 +110,28 @@ class _Aggregate:
 
 def _sorted_refs(refs: set[ChunkRef]) -> tuple[ChunkRef, ...]:
     return tuple(sorted(refs, key=lambda r: (r.source, r.chunk_index)))
+
+
+def _make_record(agg: _Aggregate, kind: EntityKind, min_mentions: int) -> ExtractedEntity | None:
+    """Turn an aggregate into an ``ExtractedEntity`` or drop it.
+
+    Filters records below the mention threshold and records whose label
+    slug-cleans to an empty string (e.g. labels of only punctuation);
+    without the empty-slug guard those would try to write files named
+    just ``.md`` on disk.
+    """
+    if len(agg.refs) < min_mentions:
+        return None
+    slug = make_slug(agg.label)
+    if not slug:
+        return None
+    return ExtractedEntity(
+        slug=slug,
+        kind=kind,
+        label=agg.label,
+        type_hint=agg.type_hint,
+        chunk_refs=_sorted_refs(agg.refs),
+    )
 
 
 def _load_spacy() -> Any | None:

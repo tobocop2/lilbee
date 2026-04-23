@@ -267,16 +267,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Must keep {topic}, {source_list}, and {chunks_text}."
         ),
     ),
-    "wiki_reduce_prompt": SettingDef(
-        str,
-        nullable=False,
-        render=RenderStyle.FULL,
-        group="Wiki",
-        help_text=(
-            "Prompt that merges child summaries into a section summary. "
-            "Must keep {source_name}, {section_title}, and {children_text}."
-        ),
-    ),
     "wiki_concept_prompt": SettingDef(
         str,
         nullable=False,

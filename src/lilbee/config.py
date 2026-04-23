@@ -554,7 +554,7 @@ class Config(BaseSettings):
     # LLM prompt templates for wiki page generation. Writable so advanced
     # users can override them from /settings, config.toml, or
     # ``LILBEE_WIKI_*_PROMPT`` env vars. Templates must keep the expected
-    # ``{placeholders}`` — if you remove one the generator will crash on
+    # ``{placeholders}``. If you remove one the generator will crash on
     # first use. The defaults below are the only reason the pipeline
     # works out of the box.
     wiki_summary_prompt: str = ConfigField(
@@ -615,30 +615,6 @@ class Config(BaseSettings):
             "Sources:\n{source_list}\n\n"
             "Chunks:\n{chunks_text}\n\n"
             "Write the synthesis page now. Start with a heading."
-        ),
-    )
-    wiki_reduce_prompt: str = ConfigField(
-        writable=True,
-        default=(
-            "You are a knowledge compiler. Given a section of a source document and the "
-            "summaries of its subsections (and/or pages), write a concise section-level "
-            "wiki summary in markdown.\n\n"
-            "Rules:\n"
-            "1. Preserve factual claims from the child summaries verbatim where they "
-            "carry citations; do not introduce new facts that aren't in the inputs.\n"
-            "2. Every factual claim MUST retain its inline citation [^src1], [^src2], etc. "
-            "from the child summary it came from.\n"
-            "3. For observations about how the subsections relate, use [*inference*].\n"
-            "4. Use blockquotes (>) for directly cited facts.\n"
-            "5. End with a citation block in this format:\n\n"
-            "---\n"
-            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-            '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
-            '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
-            "Source document: {source_name}\n"
-            "Section title: {section_title}\n\n"
-            "Child summaries:\n{children_text}\n\n"
-            "Write the section-level summary now. Start with a heading."
         ),
     )
 

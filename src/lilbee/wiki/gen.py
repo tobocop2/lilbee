@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from operator import itemgetter
 from pathlib import Path
 from typing import cast
 
@@ -40,6 +41,7 @@ from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
+    WIKI_CONTENT_SUBDIRS,
     WIKI_LOG_ACTION_GENERATED,
     PageTarget,
     make_slug,
@@ -826,7 +828,7 @@ def _gather_chunks_for_label(
                     chunk
                     for _, chunk in sorted(
                         zip(scores, candidates, strict=True),
-                        key=lambda pair: pair[0],
+                        key=itemgetter(0),
                         reverse=True,
                     )
                 ]
@@ -983,22 +985,17 @@ def _entity_surface_map(entities: list[ExtractedEntity]) -> dict[str, str]:
 
 
 _ENTITY_LIKE_SUBDIRS: tuple[str, ...] = (CONCEPTS_SUBDIR, ENTITIES_SUBDIR)
-_LINK_REWRITE_SUBDIRS: tuple[str, ...] = (
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
-)
 
 
 def _augment_surface_map_with_existing_pages(
     surface_to_slug: dict[str, str], wiki_root: Path
 ) -> None:
-    """Mutate *surface_to_slug* in place, adding slugs for pages already
-    on disk so an incremental rebuild of one concept still links to its
-    unchanged neighbors. Only enriches the map with the hyphen-to-space
-    surface form because frontmatter labels aren't read here; body prose
-    typically uses the spaced form so this covers the common case.
+    """Add slugs for pages already on disk so an incremental rebuild of
+    one concept still links to its unchanged neighbors. **Mutates
+    surface_to_slug in place.** Only enriches the map with the
+    hyphen-to-space surface form because frontmatter labels aren't
+    read here; body prose typically uses the spaced form so this
+    covers the common case.
     """
     for subdir in _ENTITY_LIKE_SUBDIRS:
         subdir_path = wiki_root / subdir
@@ -1013,11 +1010,12 @@ def _augment_surface_map_with_existing_pages(
 def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) -> None:
     """Rewrite ``[[slug]]`` links on every page under ``wiki/`` content subdirs.
 
-    A page never receives a link to itself: the rewriter drops the
-    owning page's slug from its local surface map before writing.
-    Callers pass whichever entities they just (re-)generated; the map
-    is augmented with slugs from the existing on-disk corpus so a
-    touched page still links to untouched neighbors.
+    A page never receives a link to itself: ``rewrite_wiki_links``
+    takes the owning slug and drops it inside its match callback, so
+    the surface map is shared unmodified across every page in the
+    walk (no O(M) dict rebuild per file). The map is augmented with
+    slugs from the existing on-disk corpus so a touched page still
+    links to untouched neighbors.
     """
     surface_to_slug = _entity_surface_map(entities)
     wiki_root = config.data_root / config.wiki_dir
@@ -1025,21 +1023,14 @@ def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) 
     if not surface_to_slug:
         return
 
-    for subdir in _LINK_REWRITE_SUBDIRS:
+    for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = wiki_root / subdir
         if not subdir_path.is_dir():
             continue
         is_entity_subdir = subdir in _ENTITY_LIKE_SUBDIRS
         for md_path in subdir_path.rglob("*.md"):
             owning_slug = md_path.stem if is_entity_subdir else None
-            page_map = (
-                {s: slug for s, slug in surface_to_slug.items() if slug != owning_slug}
-                if owning_slug
-                else surface_to_slug
-            )
-            if not page_map:
-                continue
             original = md_path.read_text(encoding="utf-8")
-            rewritten = rewrite_wiki_links(original, page_map)
+            rewritten = rewrite_wiki_links(original, surface_to_slug, skip_slug=owning_slug)
             if rewritten != original:
                 md_path.write_text(rewritten, encoding="utf-8")

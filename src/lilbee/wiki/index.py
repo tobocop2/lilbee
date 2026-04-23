@@ -42,7 +42,11 @@ def _wiki_root(config: Config) -> Path:
 
 def _parse_title(text: str) -> str:
     """Extract title from frontmatter or first heading."""
-    fm = parse_frontmatter(text)
+    return _title_from_frontmatter(parse_frontmatter(text), text)
+
+
+def _title_from_frontmatter(fm: dict[str, object], text: str) -> str:
+    """Return ``fm['title']`` when present, else the first H1 heading, else ``""``."""
     if "title" in fm:
         return str(fm["title"])
     for line in text.splitlines():
@@ -54,7 +58,12 @@ def _parse_title(text: str) -> str:
 
 def parse_source_count(text: str) -> int:
     """Count sources from frontmatter sources field."""
-    sources = parse_frontmatter(text).get("sources")
+    return _source_count_from_frontmatter(parse_frontmatter(text))
+
+
+def _source_count_from_frontmatter(fm: dict[str, object]) -> int:
+    """Count entries in the ``sources`` frontmatter field."""
+    sources = fm.get("sources")
     if isinstance(sources, list):  # yaml.safe_load may return str or list
         return len(sources)
     if isinstance(sources, str):  # yaml.safe_load may return str or list
@@ -95,7 +104,12 @@ def update_wiki_index(config: Config | None = None) -> Path:
 
 
 def _render_section(root: Path, subdir: str) -> list[str]:
-    """Return formatted index lines for one subdir (empty if the subdir has no pages)."""
+    """Return formatted index lines for one subdir (empty if the subdir has no pages).
+
+    Parses each file's frontmatter once and reuses it for title and
+    source-count, halving file-read / YAML-parse work on a wiki with
+    hundreds of pages.
+    """
     subdir_path = root / subdir
     if not subdir_path.is_dir():
         return []
@@ -103,8 +117,9 @@ def _render_section(root: Path, subdir: str) -> list[str]:
     lines: list[str] = []
     for md_path in sorted(subdir_path.rglob("*.md")):
         text = md_path.read_text(encoding="utf-8")
-        title = _parse_title(text) or md_path.stem.replace("-", " ").title()
-        source_count = parse_source_count(text)
+        fm = parse_frontmatter(text)
+        title = _title_from_frontmatter(fm, text) or md_path.stem.replace("-", " ").title()
+        source_count = _source_count_from_frontmatter(fm)
         rel = md_path.relative_to(root).with_suffix("").as_posix()
         lines.append(f"- [{title}]({rel}.md) | {page_type} | {source_count} sources")
     return lines

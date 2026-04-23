@@ -16,7 +16,11 @@ from lilbee.wiki.shared import CITATION_BLOCK_COMMENT
 _CODE_FENCE_PREFIX = "```"
 
 
-def rewrite_wiki_links(content: str, surface_to_slug: dict[str, str]) -> str:
+def rewrite_wiki_links(
+    content: str,
+    surface_to_slug: dict[str, str],
+    skip_slug: str | None = None,
+) -> str:
     """Return *content* with slug surface forms rewritten to ``[[slug]]``.
 
     *surface_to_slug* maps the human-readable surface form (e.g.
@@ -25,6 +29,12 @@ def rewrite_wiki_links(content: str, surface_to_slug: dict[str, str]) -> str:
     already wrapped in ``[[...]]``. When two surface forms overlap
     (e.g. ``"ford"`` and ``"ford motor company"``) the longer form
     wins, since the alternation regex is ordered longest-first.
+
+    *skip_slug* suppresses self-links: a match that resolves to this
+    slug is left as raw text. Callers pass the owning page's slug so
+    ``braking.md`` does not gain a ``[[braking]]`` reference to itself.
+    Filtering in the replace callback is O(1) per match; pre-filtering
+    the dict would be O(M) per page.
     """
     if not surface_to_slug or not content:
         return content
@@ -35,7 +45,7 @@ def rewrite_wiki_links(content: str, surface_to_slug: dict[str, str]) -> str:
     ending_newline = content.endswith("\n")
     lines = content.splitlines()
     rewritten = [
-        _rewrite_line(line, pattern, lookup) if writable else line
+        _rewrite_line(line, pattern, lookup, skip_slug) if writable else line
         for line, writable in _classify_lines(lines)
     ]
     result = "\n".join(rewritten)
@@ -64,9 +74,13 @@ def _rewrite_line(
     line: str,
     pattern: re.Pattern[str],
     lookup: dict[str, str],
+    skip_slug: str | None = None,
 ) -> str:
     def replace(match: re.Match[str]) -> str:
-        return f"[[{lookup[match.group(0).lower()]}]]"
+        slug = lookup[match.group(0).lower()]
+        if slug == skip_slug:
+            return match.group(0)
+        return f"[[{slug}]]"
 
     return pattern.sub(replace, line)
 

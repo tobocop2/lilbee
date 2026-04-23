@@ -567,6 +567,8 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
     """
     if not cfg.wiki or not changed_sources:
         return
+    # circular: the wiki layer imports lilbee.ingest.file_hash, so these
+    # stay function-local to break the cycle at the hook-entry boundary.
     from lilbee.store import SearchChunk
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
     from lilbee.wiki.entity_extractor import EntityKind, get_entity_extractor

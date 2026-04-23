@@ -1102,6 +1102,9 @@ def wiki_synthesize(
 ) -> None:
     """Generate synthesis pages for concept clusters spanning 3+ sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+        return
     from lilbee.wiki.gen import generate_synthesis_pages
 
     svc = get_services()
@@ -1170,6 +1173,14 @@ def _count_md_files(directory: Path) -> int:
     return len(list(directory.rglob("*.md")))
 
 
+def _fail_wiki_disabled() -> None:
+    """Emit the standard wiki-disabled message in the caller's output mode."""
+    if cfg.json_mode:
+        json_output({"error": msg.CMD_WIKI_DISABLED})
+        return
+    console.print(msg.CMD_WIKI_DISABLED)
+
+
 @wiki_app.command(name="build")
 def wiki_build(
     data_dir: Path | None = data_dir_option,
@@ -1177,6 +1188,9 @@ def wiki_build(
 ) -> None:
     """Build the concept and entity wiki across all ingested sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+        return
     from lilbee.store import SearchChunk
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
     from lilbee.wiki.entity_extractor import get_entity_extractor
