@@ -1343,6 +1343,21 @@ class TestListDocuments:
         assert result.total == 10
         assert result.has_more is False
 
+    async def test_empty_page_with_positive_total_is_not_has_more(self, mock_svc):
+        """Race guard: empty page alongside a non-zero total must not loop.
+
+        Happens when a concurrent writer mutates the SOURCES table
+        between count_sources() and get_sources(). Without the
+        ``len(page) > 0`` guard, a naive client reading has_more to
+        decide whether to keep fetching would spin past the end.
+        """
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.count_sources.return_value = 42
+        result = await handlers.list_documents(limit=10, offset=0)
+        assert result.total == 42
+        assert result.documents == []
+        assert result.has_more is False
+
     async def test_search_filter(self, mock_svc):
         _fake_source_store(
             mock_svc,

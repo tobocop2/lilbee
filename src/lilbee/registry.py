@@ -127,9 +127,10 @@ class ModelRegistry:
         self._root = models_dir
         self._manifests_dir = models_dir / "manifests"
         # Lazy alias -> manifest cache for _find_by_alias. Built on first
-        # alias miss, dropped on install()/remove(). Avoids walking the
-        # entire manifests tree and JSON-parsing every tag file on every
-        # uncanonical ref that lands here.
+        # alias miss, dropped on install()/remove(). Best-effort: a
+        # reader racing a concurrent invalidation can store a
+        # pre-mutation snapshot. Worst case is a single alias lookup
+        # miss until the next install/remove.
         self._alias_cache: dict[str, ModelManifest] | None = None
 
     def _invalidate_alias_cache(self) -> None:
@@ -248,6 +249,7 @@ class ModelRegistry:
             aliases=manifest.aliases,
         )
         self._write_manifest(ModelRef(name=ref.name, tag=DEFAULT_TAG), latest)
+        self._invalidate_alias_cache()
 
     def remove(self, ref: str | ModelRef) -> bool:
         """Remove a model manifest. Does NOT delete cache files (managed by HF)."""
@@ -324,6 +326,8 @@ class ModelRegistry:
                 self.write_latest_alias(ref)
             log.info("Migrated legacy model %s -> %s", path.name, ref)
             count += 1
+        if count:
+            self._invalidate_alias_cache()
         return count
 
     def _manifest_path(self, ref: ModelRef) -> Path:

@@ -323,7 +323,13 @@ class Store:
         self._source_ingested_cache = None
 
     def source_ingested_at_map(self) -> dict[str, str]:
-        """Return {filename: ingested_at} for every source, cached until mutation."""
+        """Return {filename: ingested_at} for every source, cached until mutation.
+
+        Best-effort: a reader racing a concurrent invalidation can store a
+        pre-mutation snapshot. The only consumer (temporal query filter)
+        treats a missing/stale entry as "do not filter," so staleness
+        degrades ranking precision, never correctness.
+        """
         if self._source_ingested_cache is not None:
             return self._source_ingested_cache
         mapping = {s["filename"]: s.get("ingested_at", "") for s in self.get_sources()}
