@@ -6071,6 +6071,8 @@ class TestWikiDraftsScreen:
         """/ focuses the input; j/k/g/G navigate the table without crashing."""
         from textual.widgets import Input as TextualInput
 
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -6079,15 +6081,121 @@ class TestWikiDraftsScreen:
 
         app = WikiDraftsTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
             await pilot.press("slash")
             await pilot.pause()
-            assert app.screen.query_one("#wiki-drafts-search", TextualInput).has_focus
-            # Escape back out of the input so table-bound keys reach the DataTable.
-            await pilot.press("escape")
+            assert screen.query_one("#wiki-drafts-search", TextualInput).has_focus
+            # Drive the cursor actions directly: with the Input focused,
+            # ``_table_or_none`` returns None and the action bodies skip the
+            # table call. We then swap to the table to exercise the other
+            # branch.
+            screen.action_cursor_down()
+            screen.action_cursor_up()
+            screen.action_jump_top()
+            screen.action_jump_bottom()
+            screen.query_one("#wiki-drafts-table", DataTable).focus()
             await pilot.pause()
-            for key in ("j", "k", "G", "g"):
-                await pilot.press(key)
-                await pilot.pause()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
+            screen.action_jump_bottom()
+            screen.action_jump_top()
+            await pilot.pause()
+
+    async def test_highlighted_slug_handles_coordinate_error(self, tmp_path, monkeypatch):
+        """``_highlighted_slug`` swallows ``coordinate_to_cell_key`` errors."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            table = screen.query_one("#wiki-drafts-table", DataTable)
+
+            def _boom(_coord):
+                raise RuntimeError("no coord")
+
+            monkeypatch.setattr(table, "coordinate_to_cell_key", _boom)
+            await pilot.pause()
+            assert screen._highlighted_slug() is None
+
+    async def test_highlighted_slug_handles_null_row_key(self, tmp_path, monkeypatch):
+        """``_highlighted_slug`` returns ``None`` when the row key value is null."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            table = screen.query_one("#wiki-drafts-table", DataTable)
+            # Return a row-key whose .value is None — matches the defensive
+            # branch protecting against DataTable giving us a sentinel key.
+            monkeypatch.setattr(
+                table,
+                "coordinate_to_cell_key",
+                lambda _coord: (SimpleNamespace(value=None), None),
+            )
+            await pilot.pause()
+            assert screen._highlighted_slug() is None
+
+    async def test_on_row_highlighted_ignores_null_key(self, tmp_path):
+        """``_on_row_highlighted`` returns early when the event has no row key."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            # Build a fake event whose row_key carries a null value; must not
+            # crash and must not attempt to load a diff.
+            event = SimpleNamespace(row_key=SimpleNamespace(value=None))
+            screen._on_row_highlighted(event)  # type: ignore[arg-type]
+            await pilot.pause()
+
+    async def test_reject_cancel_does_nothing(self, tmp_path, monkeypatch):
+        """Dismissing the reject confirm dialog with ``n`` does not call reject_draft."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "keep-me")
+
+        called = {"reject": False}
+
+        def _fake_reject(_slug, _root):
+            called["reject"] = True
+            raise AssertionError("reject_draft should not be invoked on cancel")
+
+        monkeypatch.setattr(drafts_screen_mod, "reject_draft", _fake_reject)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+        assert called["reject"] is False
 
 
 class TestWikiDraftsFormatters:

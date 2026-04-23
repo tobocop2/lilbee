@@ -1440,7 +1440,7 @@ def wiki_drafts_accept(
             {
                 "command": "wiki_drafts_accept",
                 "slug": result.slug,
-                "moved_to": str(result.moved_to),
+                "moved_to": result.moved_to.as_posix(),
                 "reindexed_chunks": result.reindexed_chunks,
             }
         )

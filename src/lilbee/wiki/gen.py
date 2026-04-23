@@ -456,7 +456,8 @@ def _mean_vector(vectors: list[list[float]]) -> list[float]:
     """
     if not vectors:
         return []
-    return np.asarray(vectors, dtype=np.float32).mean(axis=0).tolist()
+    result: list[float] = np.asarray(vectors, dtype=np.float32).mean(axis=0).tolist()
+    return result
 
 
 def _embedding_faithfulness_score(

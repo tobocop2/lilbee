@@ -127,7 +127,7 @@ class AcceptResult:
         return {
             "slug": self.slug,
             "requested_slug": self.requested_slug,
-            "moved_to": str(self.moved_to),
+            "moved_to": self.moved_to.as_posix(),
             "reindexed_chunks": self.reindexed_chunks,
         }
 
