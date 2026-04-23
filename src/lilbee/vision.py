@@ -4,6 +4,7 @@ Rasterizes PDF pages to PNG, sends each to a local vision model
 via the configured LLM provider, and concatenates the extracted text.
 """
 
+import concurrent.futures
 import contextlib
 import logging
 import sys
@@ -12,6 +13,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
+from lilbee.config import cfg
 from lilbee.progress import (
     DetailedProgressCallback,
     EventType,
@@ -185,24 +187,34 @@ def extract_pdf_vision(
     if total == 0:
         return []
 
-    result: list[PageText] = []
-    failed = 0
+    concurrency = max(1, cfg.vision_concurrency)
+    extracted: dict[int, str | None] = {}
     progress_ctx, progress_task = _make_progress(path.name, total, quiet)
 
-    with progress_ctx:
-        for i, png in rasterize_pdf(path):
+    def _extract(i: int, png: bytes) -> tuple[int, str | None]:
+        log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)
+        return i, extract_page_text(png, model, timeout=timeout)
+
+    with progress_ctx, concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = [pool.submit(_extract, i, png) for i, png in rasterize_pdf(path)]
+        for fut in concurrent.futures.as_completed(futures):
+            i, text = fut.result()
+            extracted[i] = text
             on_progress(
                 EventType.EXTRACT,
                 ExtractEvent(file=path.name, page=i + 1, total_pages=total),
             )
-            log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)
-            text = extract_page_text(png, model, timeout=timeout)
-            if text is None:
-                failed += 1
-            elif text.strip():
-                result.append(PageText(i + 1, text))
             if progress_task is not None:
                 progress_ctx.advance(progress_task)  # type: ignore[attr-defined]
+
+    result: list[PageText] = []
+    failed = 0
+    for i in sorted(extracted):
+        text = extracted[i]
+        if text is None:
+            failed += 1
+        elif text.strip():
+            result.append(PageText(i + 1, text))
 
     if failed:
         log.warning("Vision OCR: %d/%d pages failed", failed, total)

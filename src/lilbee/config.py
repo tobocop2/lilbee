@@ -361,6 +361,10 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+    # Max concurrent vision-OCR requests per PDF. 1 preserves strict
+    # serial behavior; higher values overlap network-bound calls on
+    # backends that tolerate concurrency (Ollama, hosted OpenAI-compat).
+    vision_concurrency: int = ConfigField(default=4, ge=1, writable=True)
 
     # Wall-clock timeout in seconds for the Tesseract OCR fallback per
     # file. Large scanned PDFs can otherwise block an ingest worker for
