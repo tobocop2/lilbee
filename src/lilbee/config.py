@@ -880,12 +880,12 @@ class Config(BaseSettings):
     @field_validator("concept_allowed_ent_types", mode="before")
     @classmethod
     def _parse_ent_types(cls, v: Any) -> frozenset[str]:
-        """Replace-semantics override, unlike ``ignore_dirs``.
-
-        A user narrowing the NER type set (e.g. ``PERSON,ORG`` only)
-        wants exactly those kinds, not the project defaults unioned
-        with the override. Accepts comma-separated strings from env
-        and list / set / frozenset from code.
+        """Replace-semantics override: a narrowed set is used as-is,
+        not unioned with defaults. A user asking for ``PERSON,ORG``
+        wants exactly those kinds. Accepts comma-separated strings
+        from env and list / set / frozenset from code. Empty input
+        falls back to :data:`DEFAULT_ALLOWED_NER_LABELS` so an empty
+        env var does not silently disable the gate.
         """
         if isinstance(v, str):
             parts = frozenset(name.strip().upper() for name in v.split(",") if name.strip())

@@ -91,7 +91,8 @@ class NerConceptsExtractor:
             "raw_ents": 0,
             "raw_noun_chunks": 0,
             "type_filter_dropped": 0,
-            "label_sanity_dropped": 0,
+            "label_sanity_dropped_entities": 0,
+            "label_sanity_dropped_concepts": 0,
             "kept_entity_surfaces": 0,
             "kept_concept_surfaces": 0,
         }
@@ -105,7 +106,7 @@ class NerConceptsExtractor:
                     continue
                 surface = ent.text.strip()
                 if not is_valid_label(surface):
-                    funnel["label_sanity_dropped"] += 1
+                    funnel["label_sanity_dropped_entities"] += 1
                     if debug_enabled:
                         log.debug("label-sanity: rejected entity %r", surface)
                     continue
@@ -119,7 +120,7 @@ class NerConceptsExtractor:
                 funnel["raw_noun_chunks"] += 1
                 surface = noun_chunk.text.strip()
                 if not is_valid_label(surface):
-                    funnel["label_sanity_dropped"] += 1
+                    funnel["label_sanity_dropped_concepts"] += 1
                     if debug_enabled:
                         log.debug("label-sanity: rejected noun-chunk %r", surface)
                     continue
@@ -134,7 +135,8 @@ class NerConceptsExtractor:
             log.debug(
                 "ner funnel: raw_ents=%(raw_ents)d raw_noun_chunks=%(raw_noun_chunks)d "
                 "type_filter_dropped=%(type_filter_dropped)d "
-                "label_sanity_dropped=%(label_sanity_dropped)d "
+                "label_sanity_dropped_entities=%(label_sanity_dropped_entities)d "
+                "label_sanity_dropped_concepts=%(label_sanity_dropped_concepts)d "
                 "kept_entity_surfaces=%(kept_entity_surfaces)d "
                 "kept_concept_surfaces=%(kept_concept_surfaces)d",
                 funnel,
