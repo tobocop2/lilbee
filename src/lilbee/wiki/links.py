@@ -10,7 +10,9 @@ either the provenance trail or illustrative code blocks.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from lilbee.wiki.shared import CITATION_BLOCK_COMMENT
 
@@ -24,11 +26,13 @@ class CompiledRewriter:
     The regex compile + longest-first sort are O(M log M) in the
     surface-map size. When a build rewrites P pages, computing these
     once and reusing them across iterations cuts the per-page cost
-    to a single ``pattern.sub`` pass.
+    to a single ``pattern.sub`` pass. The ``lookup`` is wrapped in a
+    read-only view so callers can't accidentally poison a shared
+    rewriter mid-loop.
     """
 
     pattern: re.Pattern[str]
-    lookup: dict[str, str]
+    lookup: Mapping[str, str]
 
 
 def compile_rewriter(surface_to_slug: dict[str, str]) -> CompiledRewriter | None:
@@ -40,7 +44,9 @@ def compile_rewriter(surface_to_slug: dict[str, str]) -> CompiledRewriter | None
         return None
     return CompiledRewriter(
         pattern=_compile_surface_pattern(surface_to_slug),
-        lookup={surface.lower(): slug for surface, slug in surface_to_slug.items()},
+        lookup=MappingProxyType(
+            {surface.lower(): slug for surface, slug in surface_to_slug.items()}
+        ),
     )
 
 
@@ -114,7 +120,7 @@ def _compile_surface_pattern(surface_to_slug: dict[str, str]) -> re.Pattern[str]
 def _rewrite_line(
     line: str,
     pattern: re.Pattern[str],
-    lookup: dict[str, str],
+    lookup: Mapping[str, str],
     skip_slug: str | None = None,
 ) -> str:
     def replace(match: re.Match[str]) -> str:
