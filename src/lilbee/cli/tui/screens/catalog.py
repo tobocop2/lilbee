@@ -877,6 +877,10 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
     recommended: list[TableRow] = []
     installed: list[TableRow] = []
     by_task: dict[str, list[TableRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
+    # Display order is fixed by _TASK_BUCKET_ORDER, but any ModelTask value
+    # not in that tuple still renders in its own section after the known
+    # ones, so adding a new task variant never silently drops rows.
+    extras: dict[str, list[TableRow]] = {}
     for row in rows:
         if row.featured:
             recommended.append(row)
@@ -887,8 +891,11 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
         bucket = by_task.get(row.task)
         if bucket is not None:
             bucket.append(row)
+        else:
+            extras.setdefault(row.task, []).append(row)
     return [
         GridSection(msg.HEADING_OUR_PICKS, recommended),
         GridSection(msg.HEADING_INSTALLED, installed),
         *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
+        *[GridSection(task.capitalize(), extras[task]) for task in extras],
     ]
