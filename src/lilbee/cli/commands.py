@@ -12,6 +12,8 @@ import typer
 
 if TYPE_CHECKING:
     import uvicorn
+
+    from lilbee.wiki.entity_extractor import ExtractedEntity
 from rich.table import Table
 
 from lilbee.cli import theme
@@ -1259,7 +1261,7 @@ def wiki_build(
         console.print(f"  {path}")
 
 
-def _wiki_build_dry_run_output(entities: list) -> None:
+def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
     """Render the extraction result as JSON or table without calling any LLM."""
     rows = [
         {
