@@ -92,7 +92,7 @@ def find_unmarked_claims(markdown: str) -> list[str]:
     Scans non-empty, non-metadata lines in the body (before the citation block).
     Returns the text of each unmarked line.
     """
-    body = _extract_body(markdown)
+    body = extract_body(markdown)
     lines = body.splitlines()
     unmarked: list[str] = []
     for line in lines:
@@ -132,7 +132,7 @@ def _body_end_before_citations(lines: list[str], block_start: int) -> int:
     return body_end
 
 
-def _extract_body(markdown: str) -> str:
+def extract_body(markdown: str) -> str:
     """Return markdown body: strip YAML frontmatter and citation block."""
     text = _strip_frontmatter(markdown)
     block_start = _find_citation_block_start(text)

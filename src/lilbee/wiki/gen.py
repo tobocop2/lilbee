@@ -19,14 +19,24 @@ from operator import itemgetter
 from pathlib import Path
 from typing import cast
 
+from lilbee.chunk import chunk_text
 from lilbee.clustering import SourceClusterer
-from lilbee.config import Config, cfg
+from lilbee.config import CHUNKS_TABLE, Config, cfg
 from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
-from lilbee.store import CitationRecord, SearchChunk, Store
+from lilbee.services import get_services
+from lilbee.store import (
+    CHUNK_TYPE_RAW,
+    CHUNK_TYPE_WIKI,
+    CitationRecord,
+    SearchChunk,
+    Store,
+    escape_sql_string,
+)
 from lilbee.wiki.citation import (
     ParsedCitation,
+    extract_body,
     parse_wiki_citations,
     render_citation_block,
     strip_citation_block,
@@ -491,6 +501,52 @@ def _assemble_content(
     return full
 
 
+def _index_wiki_page(
+    content: str,
+    target: PageTarget,
+    store: Store,
+    config: Config,
+) -> None:
+    """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
+
+    Drafts and archive pages never enter the search pool. Stale rows for
+    the same ``wiki_source`` are cleared first so regeneration replaces
+    instead of accumulating.
+    """
+    if target.subdir not in WIKI_CONTENT_SUBDIRS:
+        return
+
+    body = extract_body(content).strip()
+    store.clear_table(
+        CHUNKS_TABLE,
+        f"source = '{escape_sql_string(target.wiki_source)}' AND chunk_type = '{CHUNK_TYPE_WIKI}'",
+    )
+    if not body:
+        return
+
+    chunks = chunk_text(body, mime_type="text/markdown", use_semantic=True)
+    if not chunks:
+        return
+
+    vectors = get_services().embedder.embed_batch(chunks)
+    records = [
+        {
+            "source": target.wiki_source,
+            "content_type": "text/markdown",
+            "chunk_type": CHUNK_TYPE_WIKI,
+            "page_start": 1,
+            "page_end": 1,
+            "line_start": 1,
+            "line_end": 1,
+            "chunk": text,
+            "chunk_index": idx,
+            "vector": vector,
+        }
+        for idx, (text, vector) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+    store.add_chunks(records)
+
+
 def _persist_and_finalize(
     content: str,
     target: PageTarget,
@@ -499,7 +555,7 @@ def _persist_and_finalize(
     store: Store,
     config: Config,
 ) -> Path:
-    """Write page to disk, persist citations, update index and log."""
+    """Write page to disk, persist citations, index body chunks, update index and log."""
     page_path = _write_page(
         target.wiki_root, target.subdir, target.slug, content, config.wiki_drift_threshold
     )
@@ -507,6 +563,8 @@ def _persist_and_finalize(
         rec["wiki_source"] = target.wiki_source
     store.delete_citations_for_wiki(target.wiki_source)
     store.add_citations(verified)
+
+    _index_wiki_page(content, target, store, config)
 
     if config.wiki_prune_raw:
         for name in source_names:
@@ -812,7 +870,7 @@ def _gather_chunks_for_label(
         query_vector=vectors[0],
         top_k=pool_size,
         query_text=label,
-        chunk_type="raw",
+        chunk_type=CHUNK_TYPE_RAW,
     )
     if not candidates:
         return []

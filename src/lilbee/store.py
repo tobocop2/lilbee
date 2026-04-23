@@ -53,6 +53,11 @@ def install_lancedb_thread_error_suppressor() -> None:
 # on slow media (HDD) at the cost of serving slightly stale data.
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
+# Values for the ``chunk_type`` column. Everything goes in as raw except wiki
+# pages written by the wiki producer; callers filter with ``Store.search(chunk_type=...)``.
+CHUNK_TYPE_RAW = "raw"
+CHUNK_TYPE_WIKI = "wiki"
+
 
 class SearchChunk(BaseModel):
     """A search result from LanceDB.
@@ -64,13 +69,13 @@ class SearchChunk(BaseModel):
 
     source: str
     content_type: str
-    chunk_type: str = "raw"
+    chunk_type: str = CHUNK_TYPE_RAW
 
     @field_validator("chunk_type", mode="before")
     @classmethod
     def _coerce_none_chunk_type(cls, v: str | None) -> str:
         """LanceDB rows from before the chunk_type column was added return None."""
-        return v if v is not None else "raw"
+        return v if v is not None else CHUNK_TYPE_RAW
 
     page_start: int
     page_end: int
