@@ -1034,9 +1034,7 @@ class TestWikiIndexing:
         store.clear_table.assert_not_called()
         store.add_chunks.assert_not_called()
 
-    def test_malformed_wiki_source_logs_warning_and_skips(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+    def test_malformed_wiki_source_logs_warning_and_skips(self, caplog: pytest.LogCaptureFixture):
         """A ``wiki_source`` without a subdir component is logged and
         skipped rather than silently writing to the store or crashing.
         """
@@ -1102,3 +1100,55 @@ class TestWikiIndexing:
             index_wiki_page(self._content("second body"), target.wiki_source, store)
 
         assert call_order == ["clear", "add", "clear", "add"]
+
+
+class TestBuildFrontmatter:
+    """B2: frontmatter carries a provenance block when chunks are provided."""
+
+    def test_no_chunks_omits_provenance(self):
+        from lilbee.wiki.gen import _build_frontmatter
+
+        fm = _build_frontmatter(cfg, ["doc.md"], 0.9)
+        assert "provenance:" not in fm
+
+    def test_with_chunks_renders_provenance_block(self):
+        from lilbee.wiki.gen import _build_frontmatter
+
+        chunks = [
+            _make_chunk("body a", source="doc.md", chunk_index=0),
+            _make_chunk("body b", source="doc.md", chunk_index=1),
+        ]
+        fm = _build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
+        assert "provenance:" in fm
+        assert f"extraction_method: {cfg.wiki_entity_mode.value}" in fm
+        assert 'source: "doc.md"' in fm
+        assert "chunk_index: 0" in fm
+        assert "chunk_index: 1" in fm
+
+    def test_provenance_round_trips_through_parse_frontmatter(self):
+        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
+
+        chunks = [_make_chunk("a", source="foo.pdf", chunk_index=5)]
+        fm = _build_frontmatter(cfg, ["foo.pdf"], 0.7, chunks=chunks)
+        parsed = parse_frontmatter(fm + "body\n")
+        assert parsed["provenance"]["extraction_method"] == cfg.wiki_entity_mode.value
+        assert parsed["provenance"]["chunks"] == [{"source": "foo.pdf", "chunk_index": 5}]
+
+    def test_existing_frontmatter_without_provenance_still_parses(self):
+        """Pages generated before B2 have no provenance block; the
+        parser must still return a dict (backwards-compat)."""
+        from lilbee.wiki.shared import parse_frontmatter
+
+        fm = (
+            "---\n"
+            "generated_by: qwen3:0.6b\n"
+            "generated_at: 2026-01-01T00:00:00\n"
+            'sources: ["doc.md"]\n'
+            "faithfulness_score: 0.90\n"
+            "---\n\n"
+            "body\n"
+        )
+        parsed = parse_frontmatter(fm)
+        assert parsed["faithfulness_score"] == 0.90
+        assert "provenance" not in parsed
