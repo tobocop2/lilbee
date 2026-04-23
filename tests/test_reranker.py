@@ -164,3 +164,42 @@ class TestRerankerBlendPositions:
         with _patch_provider(lambda query, cands: [0.1, 0.9]):
             reranked = r.rerank("test", results)
         assert reranked[0].chunk == "high rerank"
+
+
+class TestMixedPoolBias:
+    """A mixed wiki+raw pool shouldn't drop one side entirely when the
+    reranker returns ambiguous scores. Regression guard against a future
+    reranker model that happened to score markdown differently from
+    plain text.
+    """
+
+    def _wiki_chunk(self, source: str, text: str, relevance: float) -> SearchChunk:
+        return SearchChunk(
+            source=source,
+            content_type="text/markdown",
+            chunk_type="wiki",
+            page_start=1,
+            page_end=1,
+            line_start=1,
+            line_end=1,
+            chunk=text,
+            chunk_index=0,
+            vector=[0.1],
+            relevance_score=relevance,
+        )
+
+    def test_ambiguous_scores_keep_both_sides(self, reranker):
+        cfg.reranker_model = "test"
+        results = [
+            self._wiki_chunk("wiki/summaries/a.md", "wiki a", relevance=0.5),
+            _chunk("a.md", "raw a", relevance=0.5),
+            self._wiki_chunk("wiki/summaries/b.md", "wiki b", relevance=0.5),
+            _chunk("b.md", "raw b", relevance=0.5),
+        ]
+        # Identical provider scores — tie-break falls to blended fusion
+        # weighting; no systematic wiki or raw bias should drop either.
+        with _patch_provider(lambda query, cands: [0.5] * len(cands)):
+            reranked = reranker.rerank("query", results)
+        assert len(reranked) == 4
+        chunk_types = {r.chunk_type for r in reranked}
+        assert chunk_types == {"wiki", "raw"}

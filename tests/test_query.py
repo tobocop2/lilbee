@@ -248,6 +248,26 @@ class TestDiversifySources:
         diverse = diversify_sources(results)
         assert len(diverse) == 3
 
+    def test_wiki_and_raw_with_same_stem_are_independent_sources(self):
+        """``wiki/summaries/doc.md`` and ``doc.md`` keep separate caps.
+
+        Per-source cap keys on the exact ``source`` string. A wiki page
+        paraphrasing ``doc.md`` becomes ``wiki/summaries/doc.md`` in the
+        store, which is a distinct source — so the cap applies to each
+        side independently. With ``max_per_source=1`` both sides still
+        surface together.
+        """
+        from lilbee.query import diversify_sources
+
+        results = [
+            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki", distance=0.1),
+            _make_result(source="doc.md", chunk_type="raw", distance=0.2),
+            _make_result(source="doc.md", chunk_type="raw", distance=0.3),
+        ]
+        diverse = diversify_sources(results, max_per_source=1)
+        assert len(diverse) == 2
+        assert {r.chunk_type for r in diverse} == {"wiki", "raw"}
+
 
 class TestBuildContext:
     def test_numbers_chunks(self):

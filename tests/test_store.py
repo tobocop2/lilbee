@@ -260,6 +260,66 @@ class TestMMRRerank:
         selected = mmr_rerank(query, results, top_k=5)
         assert len(selected) == 1
 
+    def test_wiki_paraphrase_near_duplicate_diversified_out(self):
+        """Wiki paraphrase lands near its raw source in vector space; MMR
+        drops one of them at ``top_k=2`` in favour of a clearly different
+        candidate. Whichever side wins is acceptable — "always a choice"
+        means neither is preferred by default; diversity should simply
+        do its job on near-duplicates regardless of ``chunk_type``.
+
+        The query is at ``[1, 1]/√2`` so both the near-dup cluster on
+        the x-axis and the orthogonal y-axis chunk are equally relevant;
+        the diversity penalty is the only tiebreaker, which is what
+        MMR is supposed to give.
+        """
+        query = [0.707, 0.707]
+        wiki_chunk = SearchChunk(
+            source="wiki/summaries/doc.md",
+            content_type="text/markdown",
+            chunk_type="wiki",
+            page_start=1,
+            page_end=1,
+            line_start=1,
+            line_end=1,
+            chunk="Wiki paraphrase of doc content.",
+            chunk_index=0,
+            vector=[1.0, 0.0],
+            distance=0.30,
+        )
+        raw_duplicate = SearchChunk(
+            source="doc.md",
+            content_type="text",
+            chunk_type="raw",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="Raw doc content the wiki paraphrased.",
+            chunk_index=0,
+            vector=[1.0, 0.01],
+            distance=0.30,
+        )
+        distinct = SearchChunk(
+            source="other.md",
+            content_type="text",
+            chunk_type="raw",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="Orthogonal topic.",
+            chunk_index=0,
+            vector=[0.0, 1.0],
+            distance=0.30,
+        )
+        selected = mmr_rerank(query, [wiki_chunk, raw_duplicate, distinct], top_k=2, mmr_lambda=0.5)
+        sources = {r.source for r in selected}
+        # The orthogonal chunk must appear — it's the diversity win.
+        assert "other.md" in sources
+        # Only one of the two near-duplicates survives.
+        dup_count = sum(1 for r in selected if r.source in ("wiki/summaries/doc.md", "doc.md"))
+        assert dup_count == 1
+
     def testcosine_sim_zero_vectors(self):
         assert cosine_sim([0.0, 0.0], [1.0, 0.0]) == 0.0
 
