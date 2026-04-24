@@ -2,11 +2,11 @@
 
 ## What is lilbee?
 
-lilbee is a local knowledge base that lets you ask questions about your documents and get accurate, sourced answers. It runs entirely on your machine — no cloud, no API keys, no data leaving your computer.
+lilbee is a local search engine for your own documents. It runs entirely on your machine: no cloud, no API keys, no data leaving your computer.
 
-You point it at a folder of documents (markdown, code, PDFs, anything), it indexes them, and then you can search or chat with an AI that actually reads your files instead of making things up. Every answer comes with citations showing which documents it used.
+You point it at a folder (markdown, code, PDFs, Office docs, ebooks, images, anything), it indexes them, and then you can search them, chat with a model grounded in them, or let lilbee auto-build a wiki of the concepts and entities they contain. Every answer comes with citations linked back to the source chunk.
 
-It works from the command line, as an API server, as an MCP tool for AI coding assistants, and via the REST API for any client integration.
+lilbee is a single executable: the same process drives the CLI, the Textual TUI, the REST API server, the MCP server for AI agents, and a Python library (`from lilbee import Lilbee`). No sidecar services to run alongside it.
 
 ---
 
@@ -15,43 +15,55 @@ It works from the command line, as an API server, as an MCP tool for AI coding a
 ```mermaid
 flowchart LR
     subgraph Input
-        CLI[CLI / Chat REPL]
+        TUI[Textual TUI]
+        CLI[CLI / JSON CLI]
         API[REST API / Litestar]
         MCP[MCP Server]
+        LIB[Python library]
     end
 
     subgraph Core
         INGEST[Ingestion Engine]
+        VISION[Vision OCR]
         CONCEPT[Concept Graph]
         SEARCH[Search Pipeline]
+        WIKI[Wiki Layer]
         GEN[LLM Generation]
         PROV[Provider Abstraction]
     end
 
     subgraph Storage
-        LANCE[(LanceDB Vectors)]
+        LANCE[(LanceDB: chunks + wiki + concepts)]
         DOCS[documents/]
+        WIKIDIR[wiki/]
         CONF[config.toml]
     end
 
-    subgraph External
-        SDK[SDK backends]
-        LLAMA[llama-cpp]
-        HF[HuggingFace]
+    subgraph Providers
+        LLAMA[llama-cpp-python]
+        MTMD[mtmd vision backend]
+        SDK[SDK backend litellm]
+        HF[HuggingFace Hub]
     end
 
-    CLI --> SEARCH & INGEST
-    API --> SEARCH & INGEST
-    MCP --> SEARCH & INGEST
+    TUI --> SEARCH & INGEST & WIKI
+    CLI --> SEARCH & INGEST & WIKI
+    API --> SEARCH & INGEST & WIKI
+    MCP --> SEARCH & INGEST & WIKI
+    LIB --> SEARCH & INGEST
 
     INGEST --> LANCE & DOCS
+    INGEST --> VISION
     INGEST --> CONCEPT
     CONCEPT --> LANCE
+    VISION --> MTMD
     SEARCH --> LANCE
     SEARCH --> CONCEPT
     SEARCH --> GEN
+    WIKI --> LANCE & WIKIDIR
+    WIKI --> GEN
     GEN --> PROV
-    PROV --> SDK & LLAMA
+    PROV --> LLAMA & SDK
     INGEST --> HF
 ```
 
@@ -61,41 +73,58 @@ flowchart LR
 
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
-- **File discovery**: recursive walk of `documents/`, SHA-256 hash-based change detection — only re-indexes modified files
-- **Markdown**: heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., "# Setup > ## Install") so the LLM knows each chunk's section context. Inspired by Anthropic's Contextual Retrieval (2024) which showed adding context to chunks reduces retrieval failures by 49%.
-- **Code**: tree-sitter AST splitting via tree-sitter-language-pack 1.3+ for 170+ languages (55 file extensions), with symbol name, type, and line range in chunk headers
-- **PDF**: kreuzberg 4.6 extraction with OCR fallback chain (text extraction → Tesseract OCR → vision model). PDF page rasterization delegated to kreuzberg's `PdfPageIterator`.
-- **Structured files**: kreuzberg handles XML, JSON, JSONL, YAML, CSV extraction natively. Language detection delegated to tree-sitter-language-pack's `detect_language()`.
-- **Web pages**: crawl4ai fetches HTML (with JavaScript rendering via Playwright), converts to markdown, saves to `documents/_web/` for indexing
-- **Embedding**: provider-agnostic — works with llama-cpp-python (default) or any SDK-compatible backend (Ollama, OpenAI, etc.)
-- **Concept extraction**: spaCy noun phrases extracted per chunk, co-occurrence graph built with PPMI weights, Leiden clustering assigns concepts to communities
-- **Storage**: LanceDB with full-text search (FTS) index for hybrid retrieval + concept graph tables (nodes, edges, chunk mappings)
+- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed.
+- **Markdown.** Heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., `# Setup > ## Install`) so each chunk's section context travels with it. Inspired by Anthropic's Contextual Retrieval (2024), which showed adding context to chunks reduces retrieval failures by 49%.
+- **Code.** tree-sitter AST splitting via tree-sitter-language-pack for 150+ languages, with symbol name, type, and line range in chunk headers.
+- **PDF.** kreuzberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model via mtmd). PDF page rasterization is delegated to kreuzberg's `PdfPageIterator`.
+- **Vision OCR.** When `LILBEE_VISION_MODEL` is set, scanned PDFs and images are transcribed by a GGUF vision model through llama-cpp's native mtmd backend. The pipeline streams an SSE heartbeat during long scans and preserves tables, headings, and multi-column layout as structured markdown. Falls back to Tesseract when no vision model is configured.
+- **Structured files.** kreuzberg handles XML, JSON, JSONL, YAML, and CSV natively. Language detection for code-shaped content is delegated to tree-sitter-language-pack's `detect_language()`.
+- **Web pages.** crawl4ai fetches HTML with JavaScript rendering via Playwright, converts to markdown, and saves to `documents/_web/` for indexing. Recursive crawls emit live progress, respect per-domain rate limits, and retry on HTTP 429/503 with jitter. SSRF protection blocks internal networks by default.
+- **Chunking strategy.** Fixed-size chunking (default, token-aware) for reliability on procedural and reference docs. Opt-in semantic chunking (`LILBEE_SEMANTIC_CHUNKING=true`) splits at topic boundaries via kreuzberg's ONNX embedding model; better on prose-heavy corpora at the cost of roughly 9x more downstream embedding calls.
+- **Embedding.** Provider-agnostic: native GGUF via llama-cpp-python by default, or any backend reachable via the SDK protocol (Ollama, OpenAI, Gemini, etc.) when `pip install lilbee[litellm]` is available.
+- **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
+- **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
+- **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
 
 ---
 
 ## Provider Abstraction
 
+lilbee treats chat, embedding, vision (OCR), and reranking as independent **model roles**. Each role resolves to a provider at call time, so you can mix local and remote freely (e.g., a local GGUF chat model with a remote embedding model, or the reverse).
+
 ```mermaid
 flowchart TD
     APP[Application Code] --> ROUTE[RoutingProvider]
     ROUTE --> CHECK{SDK backend installed & model available?}
-    CHECK -->|Yes| SDK_BACK[SDK → External Backend]
-    CHECK -->|No| LCPP[llama-cpp-python → GGUF]
+    CHECK -->|Yes| SDK_BACK[SDK backend via litellm]
+    CHECK -->|No| LCPP[llama-cpp-python GGUF]
 
-    APP -->|explicit config| SDK_P[SDK Provider]
-    APP -->|explicit config| LCPP_P[LlamaCpp Provider]
+    APP -->|explicit config| SDK_P[SDKLLMProvider]
+    APP -->|explicit config| LCPP_P[LlamaCppProvider]
 ```
 
-- **auto** (default): `RoutingProvider` checks if the SDK backend is installed and the model is available via its API. If so, uses it; otherwise falls back to local GGUF via llama-cpp.
-- **remote**: force all calls through the SDK backend (Ollama, OpenAI, Anthropic, Gemini, etc.). Requires `pip install lilbee[litellm]`.
-- **llama-cpp**: force local GGUF inference via llama-cpp-python (always available)
-- Model downloads come from HuggingFace. lilbee manages its own GGUF files. External models (e.g. Ollama) are used for inference when available but not managed by lilbee.
+- **auto** (default). `RoutingProvider` checks if the SDK backend is installed and the requested model is available via its API. If so, routes through the SDK; otherwise falls back to local GGUF via llama-cpp.
+- **remote**. Force all calls through the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and anything else litellm reaches). Requires `pip install lilbee[litellm]`.
+- **llama-cpp**. Force local GGUF inference via llama-cpp-python (always available).
+
+**Model roles** (`lilbee model list --task <role>`):
+
+| Role | Config field | Used for |
+|------|--------------|----------|
+| chat | `LILBEE_CHAT_MODEL` | `ask`, `chat`, wiki generation |
+| embedding | `LILBEE_EMBEDDING_MODEL` | ingest, search, faithfulness scoring |
+| vision | `LILBEE_VISION_MODEL` | OCR for scanned PDFs and images |
+| reranker | `LILBEE_RERANKER_MODEL` | cross-encoder precision pass |
+
+`validate_model_task_assignment` (invoked at config write time) rejects assignments where the model's capability declaration doesn't match the role, so you can't accidentally wire a pure-chat model into the vision slot.
+
+**Model management.** Native GGUF pulls come from HuggingFace via the catalog (`lilbee model pull`, `/models` in the TUI). Featured picks per role live in `src/lilbee/featured_models.toml`; the catalog view additionally exposes the full HuggingFace GGUF search. External models managed by the SDK backend (e.g., Ollama's own registry) are used for inference when available but are not managed by lilbee.
 
 ---
 
 ## Search Pipeline
 
-This is the core of lilbee's retrieval quality. The pipeline applies techniques progressively — expensive operations are skipped when simpler ones produce confident results.
+This is the core of lilbee's retrieval quality. The pipeline applies techniques progressively: expensive operations are skipped when simpler ones produce confident results.
 
 ```mermaid
 flowchart TD
@@ -178,8 +207,8 @@ flowchart TD
 #### Expansion Guardrails
 **On by default.** Validates LLM-generated query variants to prevent drift.
 
-- **Technique**: cosine similarity between the question's embedding and each variant's embedding. Language-agnostic — works for any corpus the embedding model supports — and reuses the variant vectors that the multi-query search would have embedded anyway, so there are zero extra embed calls.
-- **Threshold**: 0.5 by default via `LILBEE_EXPANSION_SIMILARITY_THRESHOLD`. Raise it to reject more variants (stricter); lower it to keep more (looser). Calibrate per embedding model — dense 768-dim models cluster higher by default than contrastively-trained ones.
+- **Technique**: cosine similarity between the question's embedding and each variant's embedding. Language-agnostic (works for any corpus the embedding model supports) and reuses the variant vectors that the multi-query search would have embedded anyway, so there are zero extra embed calls.
+- **Threshold**: 0.5 by default via `LILBEE_EXPANSION_SIMILARITY_THRESHOLD`. Raise it to reject more variants (stricter); lower it to keep more (looser). Calibrate per embedding model. Dense 768-dim models cluster higher by default than contrastively-trained ones.
 - **Concept-graph variants bypass this check**: they come from deterministic graph traversal and are expected to be partial phrases with lower similarity to the full question.
 - **Tradeoff**: guardrails may filter out creative but valid variants. Disable via `LILBEE_EXPANSION_GUARDRAILS=false` if recall is more important than precision.
 
@@ -188,7 +217,7 @@ flowchart TD
 
 - **Paper**: Gao et al. 2022, "[Precise Zero-Shot Dense Retrieval without Relevance Labels](https://arxiv.org/abs/2212.10496)"
 - **Cost**: 1 additional LLM call + 1 embedding (~500ms total)
-- **Default weight**: 0.7x (hypothetical results are discounted because they're fabricated — they approximate the answer space but aren't grounded in real content)
+- **Default weight**: 0.7x (hypothetical results are discounted because they're fabricated: they approximate the answer space but aren't grounded in real content)
 - **When it helps**: vague or short queries where the user's terminology doesn't match the indexed documents. E.g. "how does the thing work" where the "thing" is described with specific technical vocabulary in the docs.
 - **When to skip**: factual lookups, keyword-heavy queries, or when latency matters.
 
@@ -196,15 +225,15 @@ flowchart TD
 **On by default.** At index time, extracts noun phrases from each chunk via spaCy, builds a co-occurrence graph weighted by Positive Pointwise Mutual Information (PPMI), and clusters concepts with the Leiden algorithm. Zero LLM calls at index or query time.
 
 Two query-time effects:
-- **Concept boost**: for each search result, counts concept overlap between the query's noun phrases and the chunk's concepts. Score adjusted by `overlap_ratio × concept_boost_weight` (default 0.3). Only promotes — never demotes.
+- **Concept boost**: for each search result, counts concept overlap between the query's noun phrases and the chunk's concepts. Score adjusted by `overlap_ratio × concept_boost_weight` (default 0.3). Only promotes, never demotes.
 - **Graph expansion**: traverses the co-occurrence graph (1 hop BFS) to find concepts related to the query. These supplement LLM-generated expansion variants and go through the same drift guardrails.
 
-- **Inspiration**: Microsoft Research 2024-2025, "[LazyGraphRAG](https://www.microsoft.com/en-us/research/blog/lazygraphrag-setting-a-new-standard-for-quality-and-cost/)" — NLP concept extraction at index time, defer reasoning to query time
-- **Clustering**: Traag et al. 2019, "[From Louvain to Leiden](https://www.nature.com/articles/s41598-019-41695-z)" via graspologic-native (Rust)
-- **Weighting**: Church & Hanks 1990, PPMI — `max(0, log2(P(a,b) / P(a)P(b)))`. Negative values clamped to zero to discard anti-correlated concept pairs.
+- **Inspiration**: Microsoft Research 2024-2025, "[LazyGraphRAG](https://www.microsoft.com/en-us/research/blog/lazygraphrag-setting-a-new-standard-for-quality-and-cost/)". NLP concept extraction at index time, defer reasoning to query time.
+- **Clustering**: Traag et al. 2019, "[From Louvain to Leiden](https://www.nature.com/articles/s41598-019-41695-z)" via graspologic-native (Rust).
+- **Weighting**: Church & Hanks 1990, PPMI: `max(0, log2(P(a,b) / P(a)P(b)))`. Negative values clamped to zero to discard anti-correlated concept pairs.
 - **Cost**: ~10ms per chunk at index time (spaCy NLP). Zero additional cost at query time (table lookups only).
 - **When it helps**: queries where related but not identical concepts appear across documents. E.g. "connection pooling" finding both database and API performance docs because both mention it alongside related concepts.
-- **Browse**: `lilbee topics` shows concept communities — a map of what's in the knowledge base.
+- **Browse**: `lilbee topics` shows concept communities, a map of what's in the index.
 
 #### Cross-Encoder Reranking
 **Off by default.** Requires a reranker model to be configured. After hybrid search returns candidates, a cross-encoder model scores each (query, chunk) pair for more precise relevance ranking.
@@ -214,7 +243,7 @@ Two query-time effects:
   - Top 3 results: 70% fusion / 30% rerank (these were already ranked high by fusion for good reason)
   - Positions 4-10: 50% / 50% (equal influence)
   - Positions 11+: 30% fusion / 70% rerank (reranker has more opportunity to rescue misranked items)
-- **Blending rationale**: derived from learning-to-rank literature (Burges et al. 2005, "[Learning to Rank using Gradient Descent](https://icml.cc/imls/conferences/2005/proceedings/papers/012_Learning_BurgesEtAl.pdf)"). Top positions already have strong signal — reranker provides diminishing returns there.
+- **Blending rationale**: derived from learning-to-rank literature (Burges et al. 2005, "[Learning to Rank using Gradient Descent](https://icml.cc/imls/conferences/2005/proceedings/papers/012_Learning_BurgesEtAl.pdf)"). Top positions already have strong signal, so the reranker provides diminishing returns there.
 - **BM25 protection**: if the rank-1 result has a BM25 score above the expansion skip threshold, it is protected from demotion. This prevents the neural reranker from pushing down obvious exact keyword matches.
 - **Cost**: depends on model and candidate count. ~200-500ms for 20 candidates with a small cross-encoder.
 
@@ -222,10 +251,9 @@ Two query-time effects:
 **Off by default.** When enabled, if the initial cosine distance filter returns too few results, the threshold is widened step by step until enough results are found or a safety cap is reached.
 
 - **Controlled by**: `LILBEE_ADAPTIVE_THRESHOLD` (default: `false`)
-- **Inspired by**: grantflow ([grantflow-ai/grantflow](https://github.com/grantflow-ai/grantflow)) — adaptive retrieval with recursive threshold retry
 - **Default step**: 0.2 (widens from initial `max_distance` in increments, configurable via `LILBEE_ADAPTIVE_THRESHOLD_STEP`)
 - **Safety cap**: 20 iterations maximum to prevent runaway loops
-- **When it helps**: novel queries or small knowledge bases where strict distance thresholds would return empty results.
+- **When it helps**: novel queries or small indexes where strict distance thresholds would return empty results.
 
 #### Adaptive Context Selection
 **On by default.** After search results are ranked, selects which chunks to include as LLM context based on query term coverage rather than just taking the top-k.
@@ -246,36 +274,98 @@ Two query-time effects:
 #### Structured Query Modes
 **Always available.** Power-user feature for direct control over the retrieval pipeline.
 
-- `term: kubernetes pod scheduling` — BM25 keyword search only (no vector, no expansion)
-- `vec: how does container orchestration work` — vector search only (no BM25)
-- `hyde: explain the scheduling algorithm` — generate hypothetical document, embed, search
+- `term: kubernetes pod scheduling`: BM25 keyword search only (no vector, no expansion)
+- `vec: how does container orchestration work`: vector search only (no BM25)
+- `hyde: explain the scheduling algorithm`: generate hypothetical document, embed, search
 - No prefix → standard hybrid pipeline with all features
 
 Useful for benchmarking (compare BM25 vs vector on the same question), debugging (why isn't this document in keyword results?), and precision (when you know exactly what you want).
 
 ---
 
+## Wiki Layer
+
+> **Experimental.** Generation quality depends on your corpus and the chat model. Expect some pages to land in `drafts/` for human review rather than publish direct.
+
+The wiki layer is lilbee's second-order index: a set of linked markdown pages auto-generated from your document corpus so that concepts and entities which show up across many sources get their own page with citations from every source that mentions them.
+
+### Layout
+
+Under `$LILBEE_DATA/$wiki_dir/` (default `wiki/`):
+
+| Directory | Contents |
+|-----------|----------|
+| `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
+| `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
+| `drafts/` | Low-faithfulness output and PENDING markers for parse failures or slug collisions. Reviewed via `lilbee wiki drafts accept / reject`. |
+| `archive/` | Pages retired by `lilbee wiki prune` |
+| `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
+| `index.md` | Auto-generated table of contents, grouped by page type |
+| `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
+
+Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` target. `make_slug` lives at `src/lilbee/wiki/shared.py`.
+
+### Build
+
+`lilbee wiki build` runs a one-time Phase D migration (archives pre-Phase-D noun-chunk concept pages, unwraps stale `[[concept-slug]]` links), then extracts NER entities from the chunk store via `cfg.wiki_entity_mode` (default `ner_entities`, spaCy NER only). Per source, a single batched LLM call identifies 3-5 concepts worth their own page and drafts a section for each concept plus each extracted entity. Sections are split, citation-verified against the source chunk pool, embedding-faithfulness-scored (`wiki/gen.py::_check_faithfulness`, cosine of body vs mean source-chunk vector), and written to `concepts/` or `entities/`. Sections that fail to parse become PENDING markers in `drafts/`.
+
+### Incremental update
+
+`lilbee sync` runs `_incremental_wiki_update` after ingest with `extract_concepts=False` so re-ingest never churns concept slugs. The cap is `LILBEE_WIKI_INGEST_UPDATE_CAP` (default 20 changed sources per sync). Full rebuild is always available via `lilbee wiki build`.
+
+### Retrieval inside wiki generation
+
+Each page is grounded in the top `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` chunks returned by the same hybrid search the main pipeline uses, optionally reordered by the reranker when `LILBEE_RERANKER_MODEL` is set. Every path respects `LILBEE_DIVERSITY_MAX_PER_SOURCE` so one loud document can't monopolize a topic page.
+
+### `[[wiki links]]`
+
+After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug surface forms to `[[slug]]` form in page bodies, skipping YAML frontmatter, code fences, and the auto-generated citation block. `lilbee wiki lint` flags concept or entity pages with zero inbound links.
+
+### Search scope
+
+`search()` accepts a `scope` argument (`raw`, `wiki`, `both`) that filters the hybrid search pool to source chunks, wiki chunks, or the union. Used by the TUI scope toggle and the MCP tool.
+
+---
+
 ## Interfaces
 
 ### CLI
-- `lilbee ask "question"` — one-shot RAG answer with sources
-- `lilbee chat` — interactive REPL with `/commands`, history, tab completion
-- `lilbee search "query"` — vector search without LLM generation
-- `lilbee sync` / `lilbee add` / `lilbee remove` — document management
-- `--json` flag on all commands for structured output
+- `lilbee ask "question"`: one-shot RAG answer with sources
+- `lilbee chat`: launches the full Textual TUI (also `lilbee` with no args)
+- `lilbee search "query"`: vector search, no LLM generation
+- `lilbee sync` / `lilbee add` / `lilbee remove`: document management
+- `lilbee model pull <name>` / `model list` / `model rm`: native GGUF model management
+- `lilbee wiki build` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
+- `lilbee serve`: start the REST API server
+- `lilbee mcp`: launch the MCP server
+- `--json` / `-j` on any command for structured output
+
+### TUI (Textual)
+Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog, settings, setup wizard, wiki, wiki-drafts review, status. Slash commands route through `src/lilbee/cli/tui/command_registry.py` (single source of truth). Every background job (sync, crawl, wiki build, model pull) runs in the app-level `TaskBarController` and is cancellable with `/cancel`.
 
 ### REST API (Litestar)
-- `GET /api/search`, `POST /api/ask`, `POST /api/chat/stream` — queries
-- `GET /api/documents`, `POST /api/documents/remove` — document management
-- `GET /api/models/catalog`, `POST /api/models/pull` — model management
-- `GET /api/config` — all settings with descriptions and caveats
-- SSE streaming for chat, sync, and model pull progress
-- OpenAPI docs at `/schema`
+- Search: `GET /api/search`, `POST /api/ask`, `POST /api/chat`, `POST /api/ask/stream`, `POST /api/chat/stream` (SSE)
+- Documents: `GET /api/documents`, `POST /api/documents/remove`, `POST /api/add`, `POST /api/sync`, `GET /api/source` (vault-aware source retrieval)
+- Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`
+- Crawl: `POST /api/crawl` (SSE progress)
+- Config: `GET /api/config`, `GET /api/config/defaults`, `PATCH /api/config`
+- Status/health: `GET /api/status`, `GET /api/health`
+- Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`
 
-### MCP Server
-- `search`, `status`, `sync`, `add`
-- `remove`, `list_documents`, `reset`
-- JSON responses (MCP does not support streaming)
+### MCP Server (`lilbee mcp`)
+- Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
+- Models: `model_list`, `model_show`, `model_pull`, `model_rm`
+- Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`
+
+### Python library
+```python
+from lilbee import Lilbee
+
+bee = Lilbee("./docs")
+bee.sync()
+results = bee.search("authentication")
+```
+`Lilbee` composes the same `Store`, `Embedder`, `Searcher`, `Reranker`, and `ConceptGraph` the CLI and server use.
 
 ---
 
@@ -287,10 +377,11 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_CHAT_MODEL` | `qwen3:8b` | LLM used for chat and ask | Must be installed locally or available via the SDK backend |
-| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
+| `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[litellm]`, any remote name the SDK backend understands |
+| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text:v1.5` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
+| `LILBEE_VISION_MODEL` | *(none)* | GGUF vision model for OCR (via mtmd backend) | When set, takes precedence over Tesseract for scanned PDFs and images |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |
-| `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff for vector results | Lower values are stricter — may return fewer results but higher precision. Set to 1.0 to disable filtering. |
+| `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff for vector results | Lower values are stricter (fewer but more precise results). Set to 1.0 to disable filtering. |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Enable adaptive threshold widening | When true, automatically widens distance threshold if too few results found. Useful for ensuring minimum result count. |
 | `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk | Changing requires `lilbee rebuild`. Smaller = more precise retrieval, larger = more context per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks | Changing requires `lilbee rebuild`. Prevents information loss at chunk boundaries |
@@ -312,7 +403,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_MAX_CONTEXT_SOURCES` | `5` | Max chunks included in LLM context | More = more complete answers but higher latency and token cost |
 | `LILBEE_HYDE` | `false` | Enable hypothetical document embeddings | Adds ~500ms per query. Best for vague queries where terminology doesn't match docs. |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | Weight for HyDE results relative to original | Lower = less trust in hypothetical documents. 0.7 prevents fabricated vectors from dominating. |
-| `LILBEE_RERANKER_MODEL` | `""` | Cross-encoder model for reranking (empty=disabled) | Requires `sentence-transformers` installed. Only loaded when configured. |
+| `LILBEE_RERANKER_MODEL` | `""` | Cross-encoder model for reranking (empty = disabled) | Native GGUF (e.g. `bge-reranker-v2-m3`) or a remote name via the SDK backend. Only loaded when configured. |
 | `LILBEE_RERANK_CANDIDATES` | `20` | Number of candidates to rerank | More = better precision but slower. 20 is a good balance. |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | Enable date-based result filtering | Only activates when temporal keywords are detected in the query |
 | `LILBEE_SHOW_REASONING` | `false` | Show reasoning model thinking process | For Qwen3/DeepSeek-R1 models that emit `<think>` tags |

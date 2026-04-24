@@ -1,15 +1,6 @@
 # [lilbee](https://tobocop2.github.io/lilbee/)
-> This is in active development. Cool things coming, bear with me please: https://github.com/tobocop2/lilbee/pull/15
-> Feel free to use latest published versions but the entire project is actively being rebuilt and will be much more useful soon
-> My motivation is a single executable that I can use for q&a, programming, and just having a locally curated encyclopedia like I used to have with Encarta 99, but this time I can talk to it instead and get responses without any need for reaching the Internet. Having a local search engine is awesome and being in full control of the inputs and outputs is even better. 
->
-> Gain back some privacy while still having the awesome power of AI. Frontier AI's are awesome and local LLM's are no replacement but they certainly should be used much more than they currently are. Graphics cards not just for gamers and crypto miners, but now they have become very useful to my friends and I on a daily basis thanks to lilbee. 
->
-> It's time the masses have something simple to use, fully local, and all in one process / install. Computers can be more than frontends for agents and web browsers and it's time to take advantage of our hardware. This is my attempt at a solution to this problem. I think existing solutions have too many moving pieces and require too many heavy dependencies and often use sidecar style solutions. 
->
-> There's no simple way to make local AI immediately useful right in the terminal. That was also a big motivation for me. I needed something terminal first. A single executable that anyone can run is much more ideal and shareable and democratic. It's easier to install and use that way for everyone. 
->
-> Local AI at this time is for nerds but it doesn't have to be and this approach I think is the right direction towards that goal. There's a lot to this project so check out the description below for what to expect For the GUI option, I'm releasing an obsidian plugin on top of lilbee with feature parity to the terminal UI here [https://github.com/tobocop2/obsidian-lilbee](https://github.com/tobocop2/obsidian-lilbee)
+
+A terminal-first local search engine for your own files, websites, and scanned documents. One install, no sidecar services, fully offline by default.
 
 <p align="center">
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee" alt="PyPI"></a>
@@ -19,159 +10,219 @@
   <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-blue.svg" alt="Typed"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-blue.svg" alt="License: Elastic License 2.0"></a>
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/dm/lilbee" alt="Downloads"></a>
 </p>
 
-> Interactively or programmatically chat with a database of documents using strictly your own hardware, completely offline. Augment any AI agent via MCP or shell — take a free model or even a frontier model and make it better. Talks to an incredible amount of data formats ([see supported formats](#supported-formats)). Integrate document search into your favorite GUI using the built-in REST API — no need for a separate web app when you already have a preferred GUI ([see Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)).
+> **In active development.** Moving fast toward a 0.6.66 final release. Interfaces may shift between beta versions. Feedback and issues are welcome.
 
 ---
 
 - [Why lilbee](#why-lilbee)
-- [Demos](#demos)
+- [Previews](#previews)
+- [What you can do with it](#what-you-can-do-with-it)
+- [TUI](#tui)
+- [Hardware requirements](#hardware-requirements)
 - [Install](#install)
-- [Quick start](#quick-start) · [Full usage guide](docs/usage.md)
 - [Agent integration](#agent-integration)
 - [HTTP Server](#http-server) · [API reference](https://tobocop2.github.io/lilbee/api/)
 - [Interactive chat](#interactive-chat)
 - [Supported formats](#supported-formats)
-
+- [Experimental](#experimental)
 
 ---
 
 ## Why lilbee
 
-- **Your hardware, your data** — chat with your documents completely offline. No cloud, no telemetry, no API keys required
-- **Make any model better** — augment any AI agent via MCP or shell with hybrid RAG search. Take a free model or even a frontier model and make it leagues better at your data
-- **Talks to everything** — PDFs, Office docs, spreadsheets, images (OCR), ebooks, and [150+ code languages](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter
-- **Bring your own GUI** — built-in REST API means you can integrate document search into whatever tool you already use. No extra app needed ([see Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee))
-- **Per-project databases** — `lilbee init` creates a `.lilbee/` directory (like `.git/`) so each project gets its own isolated index
+Local AI tools have gotten great at getting you to a chat window fast. The first evening with a local model is genuinely fun. What makes it stick past the novelty is grounding: the model has to actually know your files, your notes, your codebase. Without that, the conversation runs out of places to go.
 
-Add files (`lilbee add`), then search or ask questions. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
+The interesting part of local AI isn't the chatbot alone. It's pairing a chatbot with a real search engine over your own documents. Index your stuff, retrieve what matters, let a local model reason over it, get answers with citations you can click back to the source. Now the model knows your world.
 
-## Demos
+Historically that meant juggling a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal, including a browsable GGUF model catalog.
 
-> Click the &#9654; arrows below to expand each demo.
+The same executable ships a Textual TUI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Focused project vaults search better than one giant catch-all index.
 
-<details>
-<summary><b>AI agent</b> — lilbee search vs web search (<a href="docs/benchmarks/godot-level-generator.md">detailed analysis</a>)</summary>
+An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
-[opencode] + [minimax-m2.5-free][opencode], single prompt, no follow-ups. The [Godot 4.4 XML class reference][godot-docs] (917 files) is indexed in lilbee. The baseline uses [Exa AI][exa] code search instead.
+## Previews
 
-**⚠️ Caution:** minimax-m2.5-free is a cloud model — retrieved chunks are sent to an external API. Use a local model if your documents are private.
+> Real terminal recordings coming soon. Previews below give the shape of each screen. Written walkthroughs are under [`docs/benchmarks/`](docs/benchmarks/): [Godot level generator](docs/benchmarks/godot-level-generator.md) and [vision OCR model comparison](docs/benchmarks/vision-ocr.md).
 
-| | API hallucinations | Lines |
-|---|---|---|
-| **With lilbee** ([code](demos/godot-with-lilbee/level_generator.gd) · [config](demos/godot-with-lilbee/)) | 0 | 261 |
-| **Without lilbee** ([code](demos/godot-without-lilbee/level_generator.gd) · [config](demos/godot-without-lilbee/)) | 4 (~22% error rate) | 213 |
+**Chat.** The default screen. Streaming replies with clickable citations.
 
-<details>
-<summary><b>With lilbee</b> — all Godot API calls match the class reference</summary>
+```
+ ┌─ lilbee ──────────────────────────────────────────────────────┐
+ │ [💬 qwen3:0.6b ▾] [🗄 nomic-embed ▾] [OCR] [All|Wiki|Raw]     │
+ │───────────────────────────────────────────────────────────────│
+ │                                                               │
+ │ You:    what does the oil pressure warning mean?              │
+ │                                                               │
+ │ lilbee: The oil pressure warning indicates low oil            │
+ │         pressure.[¹] When the light stays on, stop the        │
+ │         engine immediately.[²]                                │
+ │         ─────────────────────                                 │
+ │         Sources                                               │
+ │         [¹ owners-manual.pdf:42]   ← click to open            │
+ │         [² owners-manual.pdf:43]                              │
+ │                                                               │
+ │───────────────────────────────────────────────────────────────│
+ │ Ask anything...                                       [Send]  │
+ │ SYNC vault   ████████░░░░░░  42%                              │
+ └───────────────────────────────────────────────────────────────┘
+```
 
-![With lilbee MCP](demos/godot-with-lilbee.gif)
-</details>
+**Task Center.** Every background job (sync, crawl, wiki build, model pull) in one place. Global concurrency cap; new tasks queue when full.
 
-<details>
-<summary><b>Without lilbee</b> — 4 hallucinated APIs (<a href="docs/benchmarks/godot-level-generator.md#without-lilbee-213-lines--4-bugs">details</a>)</summary>
+```
+ ┌─ Task Center ─────────────── [cap 3/3] [Clear]┐
+ │ ACTIVE (2)                                    │
+ │   ████████████░░░░░░░░░  42%  PULL  qwen3:8b  │
+ │   ██████░░░░░░░░░░░░░░░  18%  SYNC  vault     │
+ │ QUEUED (1)                                    │
+ │   CRAWL  https://docs.example.com             │
+ │ COMPLETED                                     │
+ │   ✓ SYNC  vault                      2 min ago│
+ │   ✗ PULL  mistral                    5 min ago│
+ │   ✓ ADD   cv-manual.pdf             12 min ago│
+ └───────────────────────────────────────────────┘
+```
 
-![Without lilbee](demos/godot-without-lilbee.gif)
-</details>
+**Wiki.** Auto-generated concept and entity pages, with drafts awaiting review.
 
-If you spot issues with these benchmarks, please [open an issue](https://github.com/tobocop2/lilbee/issues).
+```
+ ┌─ Wiki ────────────────────────────────────────┐
+ │ 🔍 Filter pages...                            │
+ │                                               │
+ │ Concepts (8)                                  │
+ │   Braking Systems               5 src         │
+ │   Cooling System                2 src         │
+ │ Entities (12)                                 │
+ │   Henry Ford                    3 src         │
+ │ Drafts (2)                                    │
+ │   Tire Pressure                 1 src         │
+ │───────────────────────────────────────────────│
+ │ ┌─ Braking Systems ────────────────────────┐  │
+ │ │ 5 sources · faithfulness 0.92            │  │
+ │ │                                          │  │
+ │ │ Modern braking systems combine hydraulic │  │
+ │ │ actuation with ABS to prevent wheel      │  │
+ │ │ lockup under heavy deceleration.[¹]      │  │
+ │ │                                          │  │
+ │ │ [¹ brake-primer.pdf:8]  ← click          │  │
+ │ └──────────────────────────────────────────┘  │
+ └───────────────────────────────────────────────┘
+```
 
-</details>
+**Model catalog.** Browse, install, and switch roles without leaving the terminal. `★` marks the featured pick for each role.
 
-### Vision OCR
+```
+ ┌─ Model Catalog ───────────────────────────────┐
+ │ [All tasks ▾] [All sizes ▾] [Featured ▾]      │
+ │ 🔍 search...                  [Grid | List]   │
+ │                                               │
+ │ Our picks                                     │
+ │ ┌────────────┐ ┌────────────┐ ┌────────────┐  │
+ │ │ Qwen3 0.6B★│ │ Nomic      │ │ BGE Rerank │  │
+ │ │ ▌chat ▐    │ │ ▌embed▐    │ │ ▌rerank▐   │  │
+ │ │ [GGUF]     │ │ [GGUF]     │ │ [GGUF]     │  │
+ │ │ 450 MB ✓   │ │ 274 MB ✓   │ │ 1.2 GB     │  │
+ │ │ [Use]      │ │ [Use]      │ │ [Pull]     │  │
+ │ └────────────┘ └────────────┘ └────────────┘  │
+ │                                               │
+ │ Chat                                          │
+ │ ┌────────────┐ ┌────────────┐                 │
+ │ │ Qwen3 8B   │ │ Phi-4 14B  │                 │
+ │ │ [GGUF]     │ │ [GGUF]     │                 │
+ │ │ 4.9 GB     │ │ 9.1 GB     │                 │
+ │ │ [Pull]     │ │ [Pull]     │                 │
+ │ └────────────┘ └────────────┘                 │
+ │               [Load more]                     │
+ └───────────────────────────────────────────────┘
+```
 
-<details>
-<summary><b>Scanned PDF → searchable knowledge base</b></summary>
+## What you can do with it
 
-A scanned 1998 Star Wars: X-Wing Collector's Edition manual indexed with vision OCR ([LightOnOCR-2][lightonocr]), then queried in lilbee's interactive chat (`qwen3-coder:30b`, fully local). Three questions about dev team credits, energy management, and starfighter speeds — all answered from the OCR'd content.
+### A personal encyclopedia of what you've collected
 
-![Vision OCR demo](demos/vision-ocr.gif)
+Point lilbee at a folder of PDFs, notes, ebooks, or code and it indexes them into a searchable archive with citations that click back to the source line. The same pattern works for anything you have a lot of text about: a medical textbook collection, a guitar theory library, a field's research papers, a car's service manuals, your company's internal wiki. Whatever corpus you give it becomes a searchable, talkable version of exactly what you have.
 
-See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.md) for model comparisons.
-</details>
+### Grounding for AI agents
 
-<details>
-<summary><b>One-shot question from OCR'd content</b></summary>
+For programmers, lilbee plugs into whatever AI agent you already use (via MCP). Feed it your project's docs, your dependency source, the vendor SDK reference, your design notes, and the agent stops making up function names. It reads the actual code it's about to call, cites the file and line, and tells you when the answer isn't in the corpus instead of guessing. That matters: a lot of AI today produces confident-sounding guesses and charges per token for them. lilbee is built the other way. Answers should come from sources you can check, and the system should be willing to say it doesn't know.
 
-The scanned Star Wars: X-Wing Collector's Edition guide, queried with a single `lilbee ask` command — no interactive chat needed.
+### Offline copies of websites
 
-![Top speed question](demos/top-speed.gif)
+Web crawling paired with local search and chat takes one command. Install the crawler extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and indexed. From then on you can search or chat with that site completely offline, even if it changes or goes down.
 
-</details>
+### How it's built
 
-### Standalone
+Under the hood lilbee stands on established open-source projects: [Kreuzberg] handles document parsing, [LanceDB] is the embedded search layer, [llama-cpp][llama-cpp-python] runs models locally, [crawl4ai] and [Playwright] crawl the web, and [Textual] draws the terminal. The architectural bet is that everything stays embedded in one process. Most systems in this shape deploy a vector database and a model server separately, usually reaching for a cloud-hosted search service (Pinecone, managed Qdrant, managed Weaviate) to avoid operating them, which moves your data onto someone else's servers. lilbee skips that layer entirely. Copy the executable onto a laptop and you have a complete local search-and-chat stack with nothing to deploy.
 
-<details>
-<summary><b>Interactive local offline chat</b></summary>
+### Documents, code, and scanned images
 
-> [!NOTE]
-> Entirely local on a 2021 M1 Pro with 32 GB RAM.
+Document and code processing get treated as a first-class problem. Most retrieval libraries throw your files at a PDF extractor and call it done. lilbee splits the work along the grain of what's being indexed: prose and structured documents (90+ formats across PDFs, Office files, ebooks, HTML, and more) go through [Kreuzberg]'s Rust-based extraction pipeline with heading-aware chunking, so each chunk keeps its section context. Code goes through [tree-sitter]'s AST-aware splitter across [150+ languages](https://github.com/Goldziher/tree-sitter-language-pack), so chunks map to real functions, classes, and modules instead of arbitrary line ranges. Retrieval returns things that make sense on their own, not fragments that cut through an argument or a function signature.
 
-Model switching via tab completion, then a Q&A grounded in an indexed PDF.
+Scanned PDFs and photographed notes go through an OCR pipeline with a choice of backends: Tesseract, a local GGUF vision model via llama-cpp's mtmd backend (which preserves tables and layout as markdown), or a remote vision model through the SDK backend.
 
-![Interactive local offline chat](demos/chat.gif)
+### Pick and tune your models
 
-</details>
+Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a GGUF, pick a role. Retrieval and generation are deeply tunable. You can make chunks smaller for finer-grained matches, make search stricter to filter out loose results, skip automatic query rewriting for faster responses, turn on a second-pass re-scorer for precision over the top results, or lean more on topic relationships when your corpus has lots of interconnected ideas. All editable from the TUI, environment variables, or a project-local config file, with sensible defaults out of the box.
 
-<details>
-<summary><b>Code index and search</b></summary>
+### Local-first, frontier-capable
 
-![Code search](demos/code-search.gif)
+lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install --pre lilbee[litellm]` away when a local model isn't enough, so the power is there when you need it.
 
-Add a codebase and search with natural language. Tree-sitter provides AST-aware chunking.
-</details>
+## TUI
 
-<details>
-<summary><b>JSON output</b></summary>
+`lilbee` with no args (or `lilbee chat`) launches a full Textual terminal app. Chat streams replies with clickable citations. A Task Center tracks every background job (sync, crawl, wiki build, model pull) and lets you cancel them with `/cancel`. Other screens cover the model catalog (`/models`), settings (`/settings`), first-time setup wizard (`/setup`), and the auto-built wiki (`/wiki`). Tab completion works for slash commands, file paths, model names, setting keys, and themes.
 
-![JSON output](demos/json.gif)
-
-Structured JSON output for agents and scripts.
-</details>
+See [Previews](#previews) for a visual and the [slash-command reference](docs/usage.md#slash-commands) for the full list.
 
 ## Hardware requirements
 
-When used standalone, lilbee runs entirely on your machine — chat with your documents privately, no cloud required.
+Standalone mode runs entirely on your machine. No cloud required.
 
 | Resource | Minimum | Recommended |
 |----------|---------|-------------|
-| **RAM** | 8 GB | 16–32 GB |
-| **GPU / Accelerator** | — | Apple Metal (M-series), NVIDIA GPU (6+ GB VRAM) |
+| **RAM** | 8 GB | 16 to 32 GB |
+| **GPU / Accelerator** | none required | Apple Metal (M-series), NVIDIA GPU (6+ GB VRAM) |
 | **Disk** | 2 GB (models + data) | 10+ GB if using multiple models |
-| **CPU** | Any modern x86_64 / ARM64 | — |
+| **CPU** | Any modern x86_64 / ARM64 | same as minimum |
 
-Ollama handles inference and uses Metal on macOS or CUDA on Linux/Windows. Without a GPU, models fall back to CPU — usable for embedding but slow for chat.
+lilbee uses llama-cpp-python for inference locally: Metal on macOS, CUDA on Linux/Windows when available, CPU otherwise (usable for embedding, slow for chat). Popular frontier models are optional; install with `pip install --pre lilbee[litellm]`.
 
 ## Install
 
 ### Prerequisites
 
 - Python 3.11+
-- **Optional** (for scanned PDF/image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a vision model (see [vision OCR](docs/usage.md#vision-models))
+- **Optional** (for scanned PDF / image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a GGUF vision model (see [vision OCR](docs/usage.md#vision-models))
 
 No external services needed. lilbee downloads and runs GGUF models locally via llama-cpp.
 
 ### Install
 
 ```bash
-pip install lilbee        # or: uv tool install lilbee
+pip install --pre lilbee                              # base install
+pip install --pre lilbee[crawler]                     # + web crawling
+pip install --pre lilbee[litellm]                     # + Ollama and frontier model support
+pip install --pre lilbee[graph]                       # + concept-graph search boost
+pip install --pre lilbee[graph,crawler,litellm]       # everything
 ```
+
+> While 0.6.66 is in beta, the `--pre` flag is required. Once a stable release is cut, plain `pip install lilbee` will work.
 
 ### Optional extras
 
-lilbee works out of the box. These extras unlock additional capabilities:
+lilbee works out of the box. Extras unlock additional capabilities:
 
 | Extra | Install | What it adds |
 |-------|---------|-------------|
-| **Concept graph** | `pip install lilbee[graph]` | Topic clustering + search boosting. Extracts concepts from your documents and uses their relationships to find results that pure text matching misses. Zero extra LLM calls. |
-| **Cross-encoder reranking** | `pip install lilbee[reranker]` | Precision pass on search results. Re-scores every (query, chunk) pair with a cross-encoder model. Catches ranking errors the initial search missed. |
-| **Web crawling** | `pip install lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, hash-based change detection, SSRF protection. |
-| **Remote providers** | `pip install lilbee[litellm]` | Connect to your favorite frontier model or any provider reachable via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, etc.). Use remote models for chat while keeping embeddings local. |
+| **Web crawling** | `pip install --pre lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. |
+| **Ollama and frontier models** | `pip install --pre lilbee[litellm]` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
+| **Concept graph** | `pip install --pre lilbee[graph]` | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls. |
 
-Install multiple: `pip install lilbee[graph,reranker,crawler]`
+Install multiple: `pip install --pre lilbee[graph,crawler,litellm]`
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration and details.
 
@@ -183,76 +234,67 @@ uv sync
 uv run lilbee
 ```
 
-## Quick start
-
-See the [usage guide](docs/usage.md).
-
-
 ## Agent integration
 
-lilbee can serve as a local retrieval backend for AI coding agents via MCP or JSON CLI. See [docs/agent-integration.md](docs/agent-integration.md) for setup and usage.
+lilbee serves as a retrieval backend for AI coding agents via two entry points: an MCP server (`lilbee mcp`) and a JSON CLI (`lilbee --json ...`). MCP exposes search, document lifecycle, crawling, model management, and the full wiki surface as tools; `search` takes a `scope` argument so agents can target documents, wiki pages, or both.
+
+See [docs/agent-integration.md](docs/agent-integration.md) for MCP client configuration, the full tool reference, and JSON CLI examples.
 
 ## HTTP Server
 
-lilbee includes a REST API server so you can integrate document search into any GUI or tool:
+`lilbee serve` starts a REST API that any tool or GUI can hit. It covers search (with SSE streaming), document lifecycle, crawling, model management, configuration, and vault-aware source retrieval for GUI clients. Interactive API docs live at `/schema/redoc` when the server is running.
 
-```bash
-lilbee serve                          # start on a random port (written to <data_dir>/server.port)
-lilbee serve --port 8080              # or pick a fixed port
-```
+See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema and the [usage guide](docs/usage.md) for `serve` options.
 
-Endpoints include `/api/search`, `/api/ask`, `/api/chat` (with streaming SSE variants), `/api/sync`, `/api/add`, and `/api/models`. When the server is running, interactive API docs are available at `/schema/redoc`. See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema.
+An Obsidian plugin that pairs with lilbee is coming soon. It has full feature parity with the TUI but is aimed at GUI users, especially for workflows where seeing the source matters: index a stack of PDFs, ask a question, and preview the exact page the citation points to without leaving the editor. The plugin runs `lilbee serve` as a managed sidecar (starting it, stopping it, and talking to it over the REST API), so there's no separate service for you to babysit. Track progress in [this PR](https://github.com/tobocop2/obsidian-lilbee/pull/7).
 
 ## Interactive chat
 
-Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation history, streaming responses, and slash commands:
-
-| Command | Description |
-|---------|-------------|
-| `/status` | Show indexed documents and config |
-| `/add [path]` | Add a file or directory (tab-completes paths) |
-| `/model [name]` | Switch chat model — no args opens a curated picker; with a name, switches directly or prompts to download if not installed (tab-completes installed models) |
-| `/vision [name\|off]` | Switch vision OCR model — no args opens a curated picker; with a name, prompts to download if not installed; `off` disables (tab-completes catalog models) |
-| `/settings` | Show all current configuration values |
-| `/set <key> <value>` | Change a setting (e.g. `/set temperature 0.7`) |
-| `/version` | Show lilbee version |
-| `/reset` | Delete all documents and data (asks for confirmation) |
-| `/help` | Show available commands |
-| `/quit` | Exit chat |
-
-Slash commands and paths tab-complete. A spinner shows while waiting for the first token from the LLM. Background sync progress appears in the toolbar without interrupting the conversation.
+Running `lilbee` or `lilbee chat` enters the TUI. Type `/` to see the full slash-command list inline, or check the [slash-command reference in the usage guide](docs/usage.md#slash-commands). Slash commands and paths tab-complete; background jobs appear in the Task Center and are cancellable with `/cancel`.
 
 ## Supported formats
 
-Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structured formats (XML, JSON, CSV) get embedding-friendly preprocessing. This list is not exhaustive — Kreuzberg supports additional formats beyond what's listed here.
+Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structured formats (XML, JSON, CSV) get embedding-friendly preprocessing. This list is not exhaustive; Kreuzberg supports additional formats beyond what's listed here.
 
 | Format | Extensions | Requires |
 |--------|-----------|----------|
-| PDF | `.pdf` | — |
-| Scanned PDF | `.pdf` (no extractable text) | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text) or [Ollama] vision model (recommended — preserves tables, headings, and layout as markdown) |
-| Office | `.docx`, `.xlsx`, `.pptx` | — |
-| eBook | `.epub` | — |
+| PDF | `.pdf` | none |
+| Scanned PDF | `.pdf` (no extractable text) | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text), or a GGUF vision model via the native mtmd backend (recommended, preserves tables, headings, and layout as markdown) |
+| Office | `.docx`, `.xlsx`, `.pptx` | none |
+| eBook | `.epub` | none |
 | Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp` | [Tesseract](https://github.com/tesseract-ocr/tesseract) |
-| Data | `.csv`, `.tsv` | — |
-| Structured | `.xml`, `.json`, `.jsonl`, `.yaml`, `.yml` | — |
-| Text | `.md`, `.txt`, `.html`, `.rst` | — |
-| Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | — |
+| Data | `.csv`, `.tsv` | none |
+| Structured | `.xml`, `.json`, `.jsonl`, `.yaml`, `.yml` | none |
+| Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | none |
 
 See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
 
+## Experimental
+
+Two opt-in features that work but are still finding their final shape. Generation quality and retrieval behavior depend on corpus, models, and knobs; expect to iterate. Feedback is welcome.
+
+### Wiki
+
+lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources instead of being one-per-document, so concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Pages live under `$LILBEE_DATA/wiki/`, grouped into `concepts/`, `entities/`, and a `drafts/` queue when confidence is low. An `index.md` tracks them all and `log.md` records every build, ingest, and prune.
+
+Every section is citation-verified against the source chunks and scored for embedding faithfulness before publish. Plain-text concept slugs inside page bodies are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Some pages will land in `drafts/` for human review rather than publish direct.
+
+See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full command list and configuration.
+
+### Semantic chunking
+
+A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy corpora like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
+
+See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
+
 ## License
 
-MIT
+Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 
-[Ollama]: https://ollama.com
-[opencode]: https://opencode.ai
 [Kreuzberg]: https://github.com/Goldziher/kreuzberg
-[tree-sitter]: https://tree-sitter.github.io/tree-sitter/
 [LanceDB]: https://lancedb.com
-[godot-docs]: https://github.com/godotengine/godot/tree/4.4-stable/doc/classes
-[tml]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/TileMapLayer.xml
-[asg2d]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/AStarGrid2D.xml
-[nr2d]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/NavigationRegion2D.xml
-[ns2d]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/NavigationServer2D.xml
-[exa]: https://exa.ai
-[lightonocr]: https://ollama.com/maternion/LightOnOCR-2
+[llama-cpp-python]: https://github.com/abetlen/llama-cpp-python
+[crawl4ai]: https://github.com/unclecode/crawl4ai
+[Playwright]: https://playwright.dev
+[Textual]: https://textual.textualize.io
+[tree-sitter]: https://tree-sitter.github.io/tree-sitter/
