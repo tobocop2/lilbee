@@ -423,33 +423,29 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 
 
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
-    """Process a single vision OCR request, capped at ``cfg.vision_max_tokens``."""
+    """Process a single vision OCR request.
+
+    Generation is bounded by the model's ``n_ctx`` (llama.cpp stops when
+    the remaining context is exhausted) and by EOT, which the GGUF's own
+    chat template now fires correctly. No extra per-request cap.
+    """
     try:
         from lilbee.vision import OCR_PROMPT, build_vision_messages
 
         prompt = request.prompt or OCR_PROMPT
         messages = build_vision_messages(prompt, request.png_bytes)
         start = time.monotonic()
-        response = llm.create_chat_completion(
-            messages=messages, stream=False, max_tokens=cfg.vision_max_tokens
-        )
+        response = llm.create_chat_completion(messages=messages, stream=False)
         text: str = response["choices"][0]["message"]["content"] or ""
         usage = response.get("usage", {}) or {}
-        completion_tokens = usage.get("completion_tokens")
         log.info(
             "vision_ocr request_id=%s wall=%.1fs prompt_tokens=%s completion_tokens=%s chars=%d",
             request.request_id,
             time.monotonic() - start,
             usage.get("prompt_tokens"),
-            completion_tokens,
+            usage.get("completion_tokens"),
             len(text),
         )
-        if completion_tokens is not None and completion_tokens >= cfg.vision_max_tokens:
-            log.warning(
-                "vision_ocr request_id=%s hit vision_max_tokens cap (%d); output may be truncated",
-                request.request_id,
-                cfg.vision_max_tokens,
-            )
         return VisionResponse(text=text, request_id=request.request_id)
     except Exception as exc:
         return VisionResponse(error=str(exc), request_id=request.request_id)
