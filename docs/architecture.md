@@ -337,5 +337,5 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, remote | auto = use the SDK backend if installed and reachable, otherwise llama-cpp |
-| `LILBEE_REMOTE_BASE_URL` | `http://localhost:11434` | SDK backend endpoint | Also reads `OLLAMA_HOST` for backwards compatibility (deprecated). |
+| `LILBEE_REMOTE_BASE_URL` | `http://localhost:11434` | SDK backend endpoint | |
 

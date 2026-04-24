@@ -18,16 +18,14 @@ from lilbee.config import (
 
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
-    """Return os.environ with all LILBEE_* and OLLAMA_HOST vars removed.
+    """Return os.environ with all LILBEE_* vars removed.
 
     If tmp_path is given, sets LILBEE_DATA to it so no existing config.toml
     is accidentally picked up. Sets ``LILBEE_SKIP_MODEL_TASK_VALIDATION=1``
     so tests using placeholder model names don't trip the per-role
     catalog-task validator; pop it explicitly to exercise that validator.
     """
-    env = {
-        k: v for k, v in os.environ.items() if not k.startswith("LILBEE_") and k != "OLLAMA_HOST"
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
     env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
     if tmp_path is not None:
         env["LILBEE_DATA"] = str(tmp_path)
@@ -188,77 +186,6 @@ class TestTomlConfigFile:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.chat_model == "qwen3:0.6b"
-
-    def test_deprecated_config_keys_log_warning_on_load(self, tmp_path, caplog):
-        """Phase D dropped four wiki config keys; each should log a
-        warning when present in config.toml, and neither survive as
-        a Config attribute.
-        """
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(
-            "wiki_faithfulness_threshold = 0.7\n"
-            'wiki_faithfulness_prompt = "old"\n'
-            "wiki_faithfulness_max_tokens = 256\n"
-            'wiki_concept_prompt = "old"\n'
-        )
-        env = _clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            caplog.at_level("WARNING", logger="lilbee.config"),
-        ):
-            c = Config()
-        assert not hasattr(c, "wiki_faithfulness_threshold")
-        assert not hasattr(c, "wiki_faithfulness_prompt")
-        assert not hasattr(c, "wiki_faithfulness_max_tokens")
-        assert not hasattr(c, "wiki_concept_prompt")
-        warning_text = " ".join(r.message for r in caplog.records)
-        for key in (
-            "wiki_faithfulness_threshold",
-            "wiki_faithfulness_prompt",
-            "wiki_faithfulness_max_tokens",
-            "wiki_concept_prompt",
-        ):
-            assert key in warning_text
-
-    def test_deprecated_env_vars_log_warning_on_load(self, tmp_path, caplog):
-        """Environment-variable override path mirrors the TOML deprecation
-        warning so users on env configs also see the migration hint."""
-        from lilbee import config as config_module
-
-        config_module._deprecated_env_warned.clear()
-        env = _clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        env["LILBEE_WIKI_FAITHFULNESS_THRESHOLD"] = "0.7"
-        env["LILBEE_WIKI_CONCEPT_PROMPT"] = "old-prompt"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            caplog.at_level("WARNING", logger="lilbee.config"),
-        ):
-            c = Config()
-        assert not hasattr(c, "wiki_faithfulness_threshold")
-        assert not hasattr(c, "wiki_concept_prompt")
-        warning_text = " ".join(r.message for r in caplog.records)
-        assert "LILBEE_WIKI_FAITHFULNESS_THRESHOLD" in warning_text
-        assert "LILBEE_WIKI_CONCEPT_PROMPT" in warning_text
-
-    def test_deprecated_env_vars_warn_once(self, tmp_path, caplog):
-        """Repeated Config constructions with the same deprecated env var
-        don't spam the log — the per-key set caches the first emission."""
-        from lilbee import config as config_module
-
-        config_module._deprecated_env_warned.clear()
-        env = _clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        env["LILBEE_WIKI_FAITHFULNESS_THRESHOLD"] = "0.7"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            caplog.at_level("WARNING", logger="lilbee.config"),
-        ):
-            Config()
-            Config()
-        hits = [r for r in caplog.records if "LILBEE_WIKI_FAITHFULNESS_THRESHOLD" in r.message]
-        assert len(hits) == 1
 
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -989,15 +916,6 @@ class TestIgnoreDirsFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config(ignore_dirs=42)  # type: ignore[arg-type]
         assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
-
-
-class TestOllamaHostFallback:
-    def test_ollama_host_sets_remote_base_url(self, tmp_path):
-        env = _clean_env(tmp_path)
-        env["OLLAMA_HOST"] = "http://custom:11434"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.remote_base_url == "http://custom:11434"
 
 
 class TestParseEnableOcrFallback:
