@@ -36,6 +36,7 @@ from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
 from lilbee.services import set_services
+from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -5720,7 +5721,7 @@ class TestWikiDraftsScreen:
             wiki_root,
             "collide",
             drift_pct=None,
-            pending_marker="<!-- PENDING: concept slug collision for slot foo -->\n\n",
+            pending_marker=f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} for slot foo -->\n\n",
         )
         app = WikiDraftsTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:

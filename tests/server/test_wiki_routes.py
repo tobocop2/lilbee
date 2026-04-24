@@ -9,6 +9,7 @@ from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
 from lilbee.server import auth as _auth_mod
+from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
 
 def _h() -> dict[str, str]:
@@ -329,7 +330,7 @@ class TestWikiDraftsEndpoints:
             wiki_root,
             "parse-fail",
             drift_pct=None,
-            pending_marker=("<!-- PENDING: batch parse failed for section foo -->\n\n"),
+            pending_marker=(f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for section foo -->\n\n"),
         )
         _make_draft(wiki_root, "drifted", drift_pct=55, faithfulness=0.8)
         async with AsyncTestClient(_create_app()) as client:

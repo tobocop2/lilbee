@@ -21,6 +21,8 @@ from lilbee.wiki.drafts import (
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
     SUMMARIES_SUBDIR,
 )
 
@@ -192,7 +194,7 @@ class TestAcceptDraft:
         wiki_root = tmp_path / "wiki"
         collision_slug = "brakes-collision-a1b2c3d4"
         collision_marker = (
-            "<!-- PENDING: concept slug collision with source first.md, "
+            f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source first.md, "
             "content from second.md held for review -->\n\n"
         )
         _write(
@@ -207,7 +209,7 @@ class TestAcceptDraft:
         assert result.moved_to.name == "brakes.md"
         # Collision marker stripped from the landed content.
         landed = result.moved_to.read_text(encoding="utf-8")
-        assert "PENDING: concept slug collision" not in landed
+        assert PENDING_MARKER_KEYWORD_COLLISION not in landed
         # Draft file gone.
         assert not (wiki_root / DRAFTS_SUBDIR / f"{collision_slug}.md").exists()
 
@@ -320,7 +322,7 @@ class TestPendingKindDetection:
         wiki_root = tmp_path / "wiki"
         _write(
             wiki_root / DRAFTS_SUBDIR / "henry-ford.md",
-            "<!-- PENDING: batch parse failed for source s.txt, "
+            f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt, "
             "entity/concept Henry Ford - retry -->\n",
         )
         [d] = list_drafts(wiki_root)
@@ -331,7 +333,7 @@ class TestPendingKindDetection:
         wiki_root = tmp_path / "wiki"
         _write(
             wiki_root / DRAFTS_SUBDIR / "brakes-collision-deadbeef.md",
-            "<!-- PENDING: concept slug collision with source s1.txt, "
+            f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source s1.txt, "
             "content from s2.txt held for review -->\n\nbody\n",
         )
         [d] = list_drafts(wiki_root)
@@ -362,7 +364,7 @@ class TestAcceptPendingParse:
         marker = wiki_root / DRAFTS_SUBDIR / "henry-ford.md"
         _write(
             marker,
-            "<!-- PENDING: batch parse failed for source s.txt, "
+            f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt, "
             "entity/concept Henry Ford - retry -->\n",
         )
         store = MagicMock()
@@ -387,7 +389,7 @@ class TestAcceptPendingParse:
         draft = wiki_root / DRAFTS_SUBDIR / "brakes-collision-deadbeef.md"
         _write(
             draft,
-            "<!-- PENDING: concept slug collision with source s1.txt, "
+            f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source s1.txt, "
             "content from s2.txt held for review -->\n\n"
             "---\nfaithfulness_score: 0.9\n---\n\n"
             "# Brakes\n\nlosing body that won curation\n",

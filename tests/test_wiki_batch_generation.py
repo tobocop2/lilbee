@@ -29,7 +29,12 @@ from lilbee.wiki.gen import (
     _split_batched_output,
     build_wiki,
 )
-from lilbee.wiki.shared import DRAFTS_SUBDIR, ENTITIES_SUBDIR
+from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
+    ENTITIES_SUBDIR,
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
+)
 
 
 def _chunk(source: str, idx: int, text: str) -> SearchChunk:
@@ -522,7 +527,7 @@ class TestBatchGeneration:
         marker = cfg.data_root / cfg.wiki_dir / DRAFTS_SUBDIR / "ford-motor.md"
         assert marker.exists()
         body = marker.read_text()
-        assert "PENDING: batch parse failed" in body
+        assert PENDING_MARKER_KEYWORD_PARSE in body
         assert "ford motor" in body.lower()
 
     def test_batch_generation_slug_collision_writes_collision_marker(self, stub_embedder):
@@ -564,7 +569,7 @@ class TestBatchGeneration:
         drafts_dir = cfg.data_root / cfg.wiki_dir / DRAFTS_SUBDIR
         collision_files = list(drafts_dir.glob("brake-system-collision-*.md"))
         assert len(collision_files) == 1
-        assert "PENDING: concept slug collision" in collision_files[0].read_text()
+        assert PENDING_MARKER_KEYWORD_COLLISION in collision_files[0].read_text()
 
     def test_batch_generation_skips_sources_below_min_chunks(self, stub_embedder):
         """Source with <min_chunks AND no entities → no call at all."""
@@ -604,7 +609,7 @@ class TestBatchGeneration:
         # Simulate the previous failed build's marker.
         marker = drafts_dir / "henry-ford.md"
         marker.write_text(
-            "<!-- PENDING: batch parse failed for source s.txt, "
+            f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt, "
             "entity/concept Henry Ford - retry -->\n"
         )
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
