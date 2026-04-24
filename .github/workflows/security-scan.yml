@@ -64,6 +64,6 @@ jobs:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
 
       - name: Run pip-audit
-        uses: pypa/gh-action-pip-audit@v1
+        uses: pypa/gh-action-pip-audit@v1.1.0
         with:
           inputs: .
