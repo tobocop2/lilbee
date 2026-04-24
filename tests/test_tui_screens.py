@@ -652,7 +652,13 @@ async def test_settings_checkbox_persist():
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
         cb.toggle()
-        await pilot.pause()
+        # Windows CI runners tick the textual event loop slower than one
+        # pilot.pause() can drain. Poll for the setattr from the event
+        # handler rather than asserting after a single pause.
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.show_reasoning != original:
+                break
         assert cfg.show_reasoning != original
 
 
@@ -676,7 +682,10 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
                 break
         assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
         await pilot.press("space")
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if cfg.show_reasoning != original:
+                break
         assert cfg.show_reasoning != original
 
 
