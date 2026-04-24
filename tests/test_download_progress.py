@@ -282,9 +282,14 @@ class TestInitDefensiveBranches:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         _install_thread_only_tqdm_lock()  # must not raise
 
-    def test_prestart_resource_tracker_swallows_runtime_error(self) -> None:
+    def test_prestart_resource_tracker_swallows_runtime_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+
         from lilbee import _prestart_mp_resource_tracker
 
+        monkeypatch.setattr(sys, "platform", "linux")
         with mock.patch(
             "multiprocessing.resource_tracker.ensure_running",
             side_effect=RuntimeError("simulated crash"),
