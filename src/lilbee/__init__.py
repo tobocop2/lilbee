@@ -44,11 +44,15 @@ def _prestart_mp_resource_tracker() -> None:
 
     Later ``Process.start()`` calls reuse the cached tracker fd and
     never hit the fork_exec with a bad fd. No-op on Windows, which
-    doesn't use ``_posixsubprocess``.
+    doesn't use ``_posixsubprocess``, and no-op under PyInstaller frozen
+    bundles, where ``sys.executable`` is the lilbee exe itself and the
+    tracker's spawn would re-enter typer with ``-B -s -E`` as CLI args.
     """
     import sys as _sys
 
     if _sys.platform == "win32":
+        return
+    if getattr(_sys, "frozen", False):
         return
     try:
         from multiprocessing import resource_tracker
