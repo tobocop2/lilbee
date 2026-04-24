@@ -40,8 +40,12 @@ def _wiki_root(config: Config) -> Path:
     return config.data_root / config.wiki_dir
 
 
-def _parse_title(text: str) -> str:
-    """Extract title from frontmatter or first heading."""
+def parse_title(text: str) -> str:
+    """Extract title from YAML frontmatter ``title`` field or first H1 heading.
+
+    Assumes wiki/Obsidian markdown conventions. Returns the empty string
+    when neither is present.
+    """
     return _title_from_frontmatter(parse_frontmatter(text), text)
 
 
@@ -54,6 +58,10 @@ def _title_from_frontmatter(fm: dict[str, object], text: str) -> str:
         if stripped.startswith("# "):
             return stripped.removeprefix("# ").strip()
     return ""
+
+
+# Backwards-compat alias for the former private name.
+_parse_title = parse_title
 
 
 def parse_source_count(text: str) -> int:

@@ -465,7 +465,7 @@ class TestConfigProvider:
 
             c = Config()
             assert c.llm_provider == "auto"
-            assert c.litellm_base_url == "http://localhost:11434"
+            assert c.remote_base_url == "http://localhost:11434"
             assert c.llm_api_key == ""
 
     def test_provider_env_override(self) -> None:
@@ -474,16 +474,16 @@ class TestConfigProvider:
         with mock.patch.dict(
             os.environ,
             {
-                "LILBEE_LLM_PROVIDER": "litellm",
-                "LILBEE_LITELLM_BASE_URL": "http://myhost:11434",
+                "LILBEE_LLM_PROVIDER": "remote",
+                "LILBEE_REMOTE_BASE_URL": "http://myhost:11434",
                 "LILBEE_LLM_API_KEY": "sk-key",
             },
         ):
             from lilbee.config import Config
 
             c = Config()
-            assert c.llm_provider == "litellm"
-            assert c.litellm_base_url == "http://myhost:11434"
+            assert c.llm_provider == "remote"
+            assert c.remote_base_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
 
     def test_models_dir_uses_canonical_location(self, tmp_path: Path) -> None:
@@ -603,22 +603,7 @@ class TestRoutingProvider:
         mock_llama.embed.assert_called_once()
         mock_litellm.embed.assert_not_called()
 
-    def test_list_models_native_only_when_litellm_unavailable(self) -> None:
-        rp = self._make_provider()
-
-        mock_llama = mock.MagicMock()
-        mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
-
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=False,
-        ):
-            result = rp.list_models()
-        assert result == ["local.gguf"]
-
-    def test_list_models_union_when_both_available(self) -> None:
-        """Native and remote listings are merged when litellm is installed."""
+    def test_list_models_native_only_when_sdk_unavailable(self) -> None:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
@@ -626,14 +611,27 @@ class TestRoutingProvider:
         rp._llama_cpp = mock_llama
 
         mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = False
+        rp._sdk_provider = mock_sdk
+
+        result = rp.list_models()
+        assert result == ["local.gguf"]
+        mock_sdk.list_models.assert_not_called()
+
+    def test_list_models_union_when_both_available(self) -> None:
+        """Native and remote listings are merged when the SDK backend is installed."""
+        rp = self._make_provider()
+
+        mock_llama = mock.MagicMock()
+        mock_llama.list_models.return_value = ["local.gguf"]
+        rp._llama_cpp = mock_llama
+
+        mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = True
         mock_sdk.list_models.return_value = ["ollama/qwen3:8b"]
         rp._sdk_provider = mock_sdk
 
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=True,
-        ):
-            result = rp.list_models()
+        result = rp.list_models()
         assert result == ["local.gguf", "ollama/qwen3:8b"]
 
     def test_list_models_remote_error_returns_native_only(self) -> None:
@@ -645,14 +643,11 @@ class TestRoutingProvider:
         rp._llama_cpp = mock_llama
 
         mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = True
         mock_sdk.list_models.side_effect = RuntimeError("remote down")
         rp._sdk_provider = mock_sdk
 
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=True,
-        ):
-            result = rp.list_models()
+        result = rp.list_models()
         assert result == ["local.gguf"]
 
     def test_get_llama_cpp_caches_instance(self) -> None:
@@ -673,15 +668,16 @@ class TestRoutingProvider:
         second = rp._get_sdk_provider()
         assert first is second
 
-    def test_list_chat_models_empty_when_litellm_unavailable(self) -> None:
-        # list_chat_models must skip the SDK backend entirely when litellm
+    def test_list_chat_models_empty_when_sdk_unavailable(self) -> None:
+        # list_chat_models must skip the SDK backend entirely when the SDK
         # is not installed; native llama-cpp never has a frontier catalog.
         rp = self._make_provider()
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=False,
-        ):
-            assert rp.list_chat_models("openai") == []
+        mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = False
+        rp._sdk_provider = mock_sdk
+
+        assert rp.list_chat_models("openai") == []
+        mock_sdk.list_chat_models.assert_not_called()
 
     def test_list_chat_models_delegates_through_sdk_provider(self) -> None:
         # Pins the suppression chain: list_chat_models must reach the SDK
@@ -689,14 +685,11 @@ class TestRoutingProvider:
         # can apply cfg.json_mode before any SDK import inside the backend.
         rp = self._make_provider()
         mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = True
         mock_sdk.list_chat_models.return_value = ["openai/gpt-4o", "openai/gpt-4o-mini"]
         rp._sdk_provider = mock_sdk
 
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=True,
-        ):
-            result = rp.list_chat_models("openai")
+        result = rp.list_chat_models("openai")
 
         assert result == ["openai/gpt-4o", "openai/gpt-4o-mini"]
         mock_sdk.list_chat_models.assert_called_once_with("openai")
@@ -722,35 +715,30 @@ class TestRoutingProvider:
         assert result is None
         mock_llama.show_model.assert_called_once_with("local.gguf")
 
-    def test_pull_model_raises_when_litellm_unavailable(self) -> None:
+    def test_pull_model_raises_when_sdk_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
 
         rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = False
+        rp._sdk_provider = mock_sdk
 
-        with (
-            mock.patch(
-                "lilbee.providers.routing_provider.litellm_available",
-                return_value=False,
-            ),
-            pytest.raises(ProviderError, match="no pull-capable backend"),
-        ):
+        with pytest.raises(ProviderError, match="no pull-capable backend"):
             rp.pull_model("bad-model")
+        mock_sdk.pull_model.assert_not_called()
 
     def test_pull_model_delegates_to_sdk_when_available(self) -> None:
-        """With litellm available, pull_model forwards to the SDK provider."""
+        """With the SDK backend available, pull_model forwards to the SDK provider."""
         rp = self._make_provider()
         mock_sdk = mock.MagicMock()
+        mock_sdk.available.return_value = True
         rp._sdk_provider = mock_sdk
         captured: dict[str, object] = {}
 
         def _on_progress(evt: dict[str, object]) -> None:
             captured["saw"] = evt
 
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=True,
-        ):
-            rp.pull_model("ollama/llama3:8b", on_progress=_on_progress)
+        rp.pull_model("ollama/llama3:8b", on_progress=_on_progress)
 
         mock_sdk.pull_model.assert_called_once_with("ollama/llama3:8b", on_progress=_on_progress)
 
@@ -796,10 +784,10 @@ class TestLitellmAvailable:
         from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_sdk import LitellmSdkBackend
 
-        cfg.llm_provider = "litellm"
+        cfg.llm_provider = "remote"
         with (
             mock.patch.object(LitellmSdkBackend, "available", return_value=False),
-            pytest.raises(ProviderError, match="litellm is not installed"),
+            pytest.raises(ProviderError, match="SDK backend adapter is not installed"),
         ):
             create_provider(cfg)
 
@@ -2729,21 +2717,38 @@ class TestExtractRerankScore:
         with pytest.raises(ProviderError, match="no data"):
             _extract_rerank_score({"data": []})
 
-    def test_scalar_embedding_returned_as_float(self) -> None:
+    def test_flat_list_embedding_returns_first_element(self) -> None:
+        """llama-cpp-python 0.3.x returns ``list[float]`` with length n_embd=1."""
         from lilbee.providers.llama_cpp_provider import _extract_rerank_score
 
-        assert _extract_rerank_score({"data": [{"embedding": 0.73}]}) == 0.73
+        assert _extract_rerank_score({"data": [{"embedding": [0.73]}]}) == 0.73
 
-    def test_nested_list_embedding_returns_inner_scalar(self) -> None:
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
-
-        assert _extract_rerank_score({"data": [{"embedding": [[0.42]]}]}) == 0.42
-
-    def test_unrecognized_shape_raises(self) -> None:
+    def test_scalar_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp_provider import _extract_rerank_score
 
-        with pytest.raises(ProviderError, match="unrecognized"):
+        with pytest.raises(ProviderError, match=r"unexpected score shape.*float"):
+            _extract_rerank_score({"data": [{"embedding": 0.73}]})
+
+    def test_nested_list_embedding_is_unexpected(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        with pytest.raises(ProviderError, match=r"unexpected score shape.*list"):
+            _extract_rerank_score({"data": [{"embedding": [[0.42]]}]})
+
+    def test_empty_embedding_list_is_unexpected(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        with pytest.raises(ProviderError, match=r"unexpected score shape.*list: \[\]"):
+            _extract_rerank_score({"data": [{"embedding": []}]})
+
+    def test_non_numeric_embedding_is_unexpected(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+
+        with pytest.raises(ProviderError, match="unexpected score shape"):
             _extract_rerank_score({"data": [{"embedding": "not-a-number"}]})
 
 
@@ -2759,38 +2764,31 @@ class TestRoutingProviderRerank:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
+        mock_sdk.supports_rerank.return_value = True
         mock_sdk.rerank.return_value = [0.9, 0.1]
         rp._llama_cpp = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=True,
-        ):
-            scores = rp.rerank("q", ["a", "b"])
+        scores = rp.rerank("q", ["a", "b"])
         assert scores == [0.9, 0.1]
         mock_sdk.rerank.assert_called_once_with("q", ["a", "b"])
         mock_llama.rerank.assert_not_called()
 
-    def test_rerank_raises_when_hosted_ref_and_litellm_missing(self) -> None:
+    def test_rerank_raises_when_hosted_ref_and_sdk_backend_missing(self) -> None:
         from lilbee.providers.base import ProviderError
 
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
+        mock_sdk.supports_rerank.return_value = False
         rp._llama_cpp = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
-        with (
-            mock.patch(
-                "lilbee.providers.routing_provider.litellm_available",
-                return_value=False,
-            ),
-            pytest.raises(ProviderError, match="litellm extra not installed"),
-        ):
+        with pytest.raises(ProviderError, match="hosted rerank backend not available"):
             rp.rerank("q", ["a", "b"])
+        mock_sdk.rerank.assert_not_called()
 
     def test_supports_rerank_disabled_model_always_true(self) -> None:
         rp = self._make_provider()
@@ -2807,19 +2805,16 @@ class TestRoutingProviderRerank:
         assert rp.supports_rerank() is True
         mock_llama.supports_rerank.assert_called_once()
 
-    def test_supports_rerank_hosted_requires_litellm(self) -> None:
+    def test_supports_rerank_hosted_delegates_to_sdk(self) -> None:
         rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        rp._sdk_provider = mock_sdk
         cfg.reranker_model = "cohere/rerank-english-v3.0"
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=False,
-        ):
-            assert rp.supports_rerank() is False
-        with mock.patch(
-            "lilbee.providers.routing_provider.litellm_available",
-            return_value=True,
-        ):
-            assert rp.supports_rerank() is True
+
+        mock_sdk.supports_rerank.return_value = False
+        assert rp.supports_rerank() is False
+        mock_sdk.supports_rerank.return_value = True
+        assert rp.supports_rerank() is True
 
     def test_rerank_routes_bare_gguf_to_llama_cpp(self) -> None:
         rp = self._make_provider()

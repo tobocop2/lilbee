@@ -11,7 +11,6 @@ from lilbee.crawl_task import clear_tasks
 from lilbee.ingest import SyncResult
 from lilbee.mcp import (
     add,
-    clean,
     crawl,
     crawl_status,
     init,
@@ -75,41 +74,6 @@ def _no_dns():
 
 
 _SYNC_NOOP = SyncResult()
-
-
-class TestClean:
-    def test_strips_vector(self):
-        chunk = SearchChunk(
-            source="a.pdf",
-            content_type="text",
-            page_start=0,
-            page_end=0,
-            line_start=0,
-            line_end=0,
-            chunk="hi",
-            chunk_index=0,
-            vector=[0.1],
-            distance=0.5,
-        )
-        result = clean(chunk)
-        assert "vector" not in result
-        assert result["source"] == "a.pdf"
-
-    def test_has_distance(self):
-        chunk = SearchChunk(
-            source="a.pdf",
-            content_type="text",
-            page_start=0,
-            page_end=0,
-            line_start=0,
-            line_end=0,
-            chunk="hi",
-            chunk_index=0,
-            vector=[0.1],
-            distance=0.42,
-        )
-        result = clean(chunk)
-        assert result["distance"] == 0.42
 
 
 class TestSearch:
@@ -533,6 +497,13 @@ class TestAdd:
 class TestMain:
     @mock.patch("lilbee.mcp.mcp")
     def test_main_calls_run(self, mock_mcp):
+        main()
+        mock_mcp.run.assert_called_once()
+
+    @mock.patch("lilbee.mcp.mcp")
+    @mock.patch("lilbee.mcp.get_services", side_effect=RuntimeError("boom"))
+    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_mcp):
+        """A crash in the pre-warm path falls through to mcp.run() instead of aborting."""
         main()
         mock_mcp.run.assert_called_once()
 

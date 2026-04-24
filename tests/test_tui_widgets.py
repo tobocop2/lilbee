@@ -593,7 +593,7 @@ class TestClassifyInstalledModels:
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        cfg.litellm_base_url = "http://localhost:11434"
+        cfg.remote_base_url = "http://localhost:11434"
 
         with (
             mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
@@ -641,7 +641,7 @@ class TestClassifyInstalledModels:
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        cfg.litellm_base_url = "http://localhost:11434"
+        cfg.remote_base_url = "http://localhost:11434"
 
         with (
             mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,

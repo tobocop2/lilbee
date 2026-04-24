@@ -6,10 +6,11 @@ import asyncio
 import concurrent.futures
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from lilbee.cli.helpers import clean_result
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
@@ -20,9 +21,6 @@ from lilbee.wiki.shared import (
     SUMMARIES_SUBDIR,
     WIKI_DISABLED_ERROR,
 )
-
-if TYPE_CHECKING:
-    from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +46,7 @@ def search(
     try:
         results = get_services().searcher.search(query, top_k=top_k, chunk_type=chunk_type)
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
-        return [clean(r) for r in results]
+        return [clean_result(r) for r in results]
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -421,10 +419,10 @@ def wiki_prune() -> dict[str, Any]:
 
 @mcp.tool()
 def model_list(source: str = "", task: str = "") -> dict[str, Any]:
-    """List installed models across native and litellm sources.
+    """List installed models across native and SDK-backend sources.
 
     Args:
-        source: Filter by source: "native", "litellm", or "" for all.
+        source: Filter by source: "native", "remote", or "" for all.
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.cli.model import list_models_data
@@ -471,7 +469,7 @@ async def model_pull(
 
     Args:
         model: Model ref to pull (e.g. "qwen3:0.6b").
-        source: "native" (HuggingFace GGUF) or "litellm" (remote backend).
+        source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
     """
     from lilbee.catalog import DownloadProgress
     from lilbee.cli.model import pull_model_data
@@ -506,7 +504,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
 
     Args:
         model: Model ref to remove.
-        source: Restrict to "native" or "litellm"; empty = both.
+        source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.cli.model import remove_model_data
     from lilbee.model_manager import ModelSource
@@ -552,11 +550,14 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
 
 
-def clean(result: SearchChunk) -> dict[str, object]:
-    """Convert SearchChunk to a JSON-friendly dict."""
-    return result.model_dump(exclude={"vector"}, exclude_none=True)
-
-
 def main() -> None:
     """Entry point for the MCP server."""
+    # Preload so the first tool call doesn't pay the cold-start cost
+    # of provider/embedder/store init. Failures (missing model, bad
+    # config) still surface on the first tool call rather than crashing
+    # the server before it attaches to stdio.
+    try:
+        get_services()
+    except Exception:
+        log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
     mcp.run()

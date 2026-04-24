@@ -11,6 +11,7 @@ HTTP, TUI) import these functions via the package façade in
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import math
 import threading
@@ -130,8 +131,15 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
-    """Fetch a single URL and return its markdown content."""
+    """Fetch a single URL. Raises :class:`CrawlerBackendMissing` if crawl4ai isn't installed."""
     validate_crawl_url(url)
+    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
+            "(or 'pip install crawl4ai') to enable web crawling."
+        )
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
@@ -185,7 +193,9 @@ async def _drain_page_stream(
         results.append(new_result)
         if on_result is not None:
             try:
-                on_result(new_result)
+                rv = on_result(new_result)
+                if inspect.isawaitable(rv):
+                    await rv
             except OSError:
                 # A disk-side flush failure must not masquerade as a crawl
                 # failure. Log and keep streaming; the caller still sees the
@@ -255,6 +265,16 @@ async def crawl_recursive(
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
     pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+
+    # Fail fast when the ``crawler`` extra wasn't installed so SSE
+    # callers see ``event: error`` instead of a silent zero-results run.
+    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
+            "(or 'pip install crawl4ai') to enable recursive web crawling."
+        )
 
     # Fail fast before pulling in crawl4ai submodules so callers get a clean
     # CrawlerBrowserMissing instead of a Playwright install banner.
@@ -347,23 +367,31 @@ def _make_flush_page(
     meta: dict[str, CrawlMeta],
     written_paths: list[Path],
     counter: dict[str, int],
-) -> Callable[[CrawlResult], Path | None]:
+) -> Callable[[CrawlResult], Any]:
     """Build a per-result flush closure that batches metadata writes.
+
+    Filesystem work runs through ``asyncio.to_thread`` so the streaming
+    event loop isn't blocked by per-page writes on slow filesystems.
 
     ``counter`` is a single-entry dict used as a mutable int so the closure
     can share counter state with the caller without nonlocal gymnastics.
     """
 
-    def flush_page(result: CrawlResult) -> Path | None:
-        path = save._save_single_result(result, meta)
-        if path is None:
+    def _sync_flush(result: CrawlResult) -> Path | None:
+        outcome = save._save_single_result(result, meta)
+        if outcome is None:
             return None
-        save._update_single_metadata(meta, result, datetime.now(UTC).isoformat())
+        save._update_single_metadata(meta, result.url, outcome, datetime.now(UTC).isoformat())
         counter["pending"] += 1
         if counter["pending"] >= METADATA_FLUSH_INTERVAL:
             save.save_crawl_metadata(meta)
             counter["pending"] = 0
-        written_paths.append(path)
+        return outcome.path
+
+    async def flush_page(result: CrawlResult) -> Path | None:
+        path = await asyncio.to_thread(_sync_flush, result)
+        if path is not None:
+            written_paths.append(path)
         return path
 
     return flush_page
@@ -422,7 +450,7 @@ async def crawl_and_save(
             result = await crawl_single(url, quiet=quiet)
             pages_seen = 1
             try:
-                flush_page(result)
+                await flush_page(result)
             except OSError:
                 log.exception("Flush failed for %s", result.url)
             if on_progress:

@@ -968,11 +968,11 @@ class TestModelsInstalled:
         mock_manager.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
         from lilbee.model_manager import ModelSource
 
-        mock_manager.get_source.return_value = ModelSource.LITELLM
+        mock_manager.get_source.return_value = ModelSource.REMOTE
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert len(result.models) == 2
-        assert result.models[0].source == "litellm"
+        assert result.models[0].source == "remote"
 
     async def test_unknown_source_defaults_to_litellm(self):
         mock_manager = MagicMock()
@@ -980,7 +980,7 @@ class TestModelsInstalled:
         mock_manager.get_source.return_value = None
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert result.models[0].source == "litellm"
+        assert result.models[0].source == "remote"
 
 
 class TestModelsPull:
@@ -1012,7 +1012,7 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
-            events = [e async for e in handlers.models_pull("test", source="litellm")]
+            events = [e async for e in handlers.models_pull("test", source="remote")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
         assert any("success" in e for e in non_empty)
@@ -1058,7 +1058,7 @@ class TestModelsDelete:
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
-            result = await handlers.models_delete("test", source="litellm")
+            result = await handlers.models_delete("test", source="remote")
         assert result.deleted is True
         assert result.model == "test"
 
@@ -1300,7 +1300,7 @@ class TestGetConfig:
         dumped = result.model_dump()
         assert "chat_model" in dumped
         assert "system_prompt" in dumped
-        assert "litellm_base_url" in dumped
+        assert "remote_base_url" in dumped
         assert "diversity_max_per_source" in dumped
         assert "mmr_lambda" in dumped
         assert "query_expansion_count" in dumped
@@ -1318,42 +1318,101 @@ class TestGetConfig:
         assert "llm_api_key" not in dumped
 
 
+def _fake_source_store(mock_svc, all_sources: list[dict]) -> None:
+    """Wire mock_svc.store.get_sources + count_sources to simulate DB-side
+    pagination: filter by ``search`` against filename, then slice by
+    offset/limit. Mirrors the real LanceDB behavior so list_documents
+    tests don't have to special-case the mock call shape."""
+
+    def _filter(search):
+        if not search:
+            return list(all_sources)
+        search_lower = search.lower()
+        return [s for s in all_sources if search_lower in s["filename"].lower()]
+
+    def _get(*, search=None, limit=None, offset=0):
+        matches = _filter(search)
+        if limit is None:
+            return matches[offset:]
+        return matches[offset : offset + limit]
+
+    def _count(*, search=None):
+        return len(_filter(search))
+
+    mock_svc.store.get_sources.side_effect = _get
+    mock_svc.store.count_sources.side_effect = _count
+
+
 class TestListDocuments:
     async def test_returns_documents(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
-        ]
+        _fake_source_store(
+            mock_svc,
+            [{"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"}],
+        )
         result = await handlers.list_documents()
         assert result.total == 1
         assert result.documents[0].filename == "a.md"
         assert result.documents[0].chunk_count == 5
+        assert result.has_more is False
 
     async def test_empty(self, mock_svc):
-        mock_svc.store.get_sources.return_value = []
+        _fake_source_store(mock_svc, [])
         result = await handlers.list_documents()
         assert result.total == 0
         assert result.documents == []
+        assert result.has_more is False
 
     async def test_pagination(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
-        ]
+        _fake_source_store(
+            mock_svc,
+            [{"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)],
+        )
         result = await handlers.list_documents(limit=3, offset=2)
         assert result.total == 10
         assert len(result.documents) == 3
         assert result.documents[0].filename == "doc2.md"
         assert result.limit == 3
         assert result.offset == 2
+        # offset + returned (2 + 3) == 5 < total 10 → more pages remain
+        assert result.has_more is True
+
+    async def test_pagination_final_page_clears_has_more(self, mock_svc):
+        _fake_source_store(
+            mock_svc,
+            [{"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)],
+        )
+        result = await handlers.list_documents(limit=5, offset=5)
+        assert result.total == 10
+        assert result.has_more is False
+
+    async def test_empty_page_with_positive_total_is_not_has_more(self, mock_svc):
+        """Race guard: empty page alongside a non-zero total must not loop.
+
+        Happens when a concurrent writer mutates the SOURCES table
+        between count_sources() and get_sources(). Without the
+        ``len(page) > 0`` guard, a naive client reading has_more to
+        decide whether to keep fetching would spin past the end.
+        """
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.count_sources.return_value = 42
+        result = await handlers.list_documents(limit=10, offset=0)
+        assert result.total == 42
+        assert result.documents == []
+        assert result.has_more is False
 
     async def test_search_filter(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "readme.md", "chunk_count": 3},
-            {"filename": "setup.py", "chunk_count": 1},
-            {"filename": "readme_dev.md", "chunk_count": 2},
-        ]
+        _fake_source_store(
+            mock_svc,
+            [
+                {"filename": "readme.md", "chunk_count": 3},
+                {"filename": "setup.py", "chunk_count": 1},
+                {"filename": "readme_dev.md", "chunk_count": 2},
+            ],
+        )
         result = await handlers.list_documents(search="readme")
         assert result.total == 2
         assert all("readme" in d.filename for d in result.documents)
+        assert result.has_more is False
 
 
 class TestGetConfigReranker:
@@ -1672,10 +1731,10 @@ class TestListExternalModels:
     @patch("lilbee.server.handlers.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
-        cfg.litellm_base_url = "https://provider-a.example"
+        cfg.remote_base_url = "https://provider-a.example"
         await handlers.list_external_models()
 
-        cfg.litellm_base_url = "https://provider-b.example"
+        cfg.remote_base_url = "https://provider-b.example"
         await handlers.list_external_models()
 
         assert mock_svc.return_value.provider.list_models.call_count == 2
@@ -1828,7 +1887,7 @@ class TestModelPullProgressCancel:
             patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
             patch.object(handlers.SseStream, "__init__", patched_init),
         ):
-            gen = handlers.models_pull("test", source="litellm")
+            gen = handlers.models_pull("test", source="remote")
             events = []
             async for event in gen:
                 events.append(event)
@@ -1892,3 +1951,126 @@ class TestSearchRouteErrors:
                     "/api/ask", json={"question": "test"}, headers=self._auth_headers()
                 )
         assert resp.status_code == 503
+
+
+class TestSourceContentRoute:
+    """GET /api/source routing: JSON shape, raw streaming, and error paths.
+
+    ``get_source_content`` is covered through the route so we exercise the
+    ``isinstance(result, tuple)`` branch in ``source_content_route`` at the
+    same time; separate handler-level tests would double the surface
+    without adding signal.
+    """
+
+    @staticmethod
+    def _auth_headers() -> dict[str, str]:
+        from lilbee.server import auth as _auth_mod
+
+        return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
+
+    async def test_empty_source_returns_400(self, isolated_env):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "   "}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 400
+
+    async def test_missing_file_returns_404(self, isolated_env):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "nope.md"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 404
+
+    async def test_path_traversal_returns_400(self, isolated_env):
+        """``..`` traversal escapes ``documents_dir`` → ValueError → 400.
+
+        ``validate_path_within`` resolves the path and checks
+        ``is_relative_to``; the resulting ``ValueError`` is translated to
+        ValidationException by the route wrapper.
+        """
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "../../etc/passwd"},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 400
+
+    async def test_text_file_returns_markdown_json(self, isolated_env):
+        """A markdown source returns JSON with markdown, title, content_type."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "doc.md").write_text("# Hello\n\nbody\n", encoding="utf-8")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "doc.md"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["markdown"].startswith("# Hello")
+        assert payload["title"] == "Hello"
+        assert payload["content_type"].startswith("text/")
+
+    async def test_binary_file_returns_empty_markdown(self, isolated_env):
+        """Non-text types return empty markdown; client should re-request raw=1."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "doc.pdf").write_bytes(b"%PDF-1.4\nbinarydata")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "doc.pdf"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["markdown"] == ""
+        assert payload["content_type"] == "application/pdf"
+        assert payload["title"] is None
+
+    async def test_unknown_extension_falls_back_to_octet_stream(self, isolated_env):
+        """A file without an extension maps to application/octet-stream."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "mystery").write_bytes(b"\x00\x01\x02")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "mystery"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        assert resp.json()["content_type"] == "application/octet-stream"
+
+    async def test_raw_returns_bytes_with_content_type(self, isolated_env):
+        """raw=1 streams the file bytes with a real Content-Type header."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        payload = b"%PDF-1.4\nbinarydata\n"
+        (cfg.documents_dir / "doc.pdf").write_bytes(payload)
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "doc.pdf", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.content == payload
+        assert resp.headers["content-type"].startswith("application/pdf")

@@ -80,6 +80,14 @@ class SetModelRequest(BaseModel):
     model: str
 
 
+class SourceContentResponse(BaseModel):
+    """JSON body for ``GET /api/source`` (``raw=0``); empty ``markdown`` for binary types."""
+
+    markdown: str
+    content_type: str
+    title: str | None = None
+
+
 class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
@@ -100,6 +108,11 @@ class CleanedChunk(BaseModel):
     line_start: int = 0
     line_end: int = 0
     chunk_index: int = 0
+    # Vault-relative path when ``cfg.vault_base`` is set and the source file
+    # lives inside the vault. Absent when the server is running headless or
+    # the source isn't resolvable as a vault file. Clients use this to open
+    # the source in a native editor instead of fetching ``/api/source``.
+    vault_path: str | None = None
 
 
 class StatusSourceInfo(BaseModel):
@@ -191,6 +204,7 @@ class DocumentListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    has_more: bool = False
 
 
 class DocumentRemoveResponse(BaseModel):

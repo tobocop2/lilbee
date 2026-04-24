@@ -27,7 +27,7 @@ def create_provider(config: Config) -> LLMProvider:
 
         return LlamaCppProvider()
 
-    if provider_name in ("litellm", "ollama"):
+    if provider_name == "remote":
         # THIS is the swap line: the single import that changes when
         # migrating to a different SDK. Replace LitellmSdkBackend here
         # with the new adapter and the rest of lilbee is untouched.
@@ -38,11 +38,11 @@ def create_provider(config: Config) -> LLMProvider:
         backend = LitellmSdkBackend()
         if not backend.available():
             raise ProviderError(
-                "litellm is not installed. Install with: pip install 'lilbee[litellm]'"
+                "SDK backend adapter is not installed. Install with: pip install 'lilbee[litellm]'"
             )
         return SdkLLMProvider(
             backend,
-            base_url=config.litellm_base_url,
+            base_url=config.remote_base_url,
             api_key=config.llm_api_key,
         )  # pragma: no cover
 

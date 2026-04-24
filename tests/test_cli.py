@@ -745,6 +745,75 @@ class TestCleanResult:
         assert "distance" not in result
 
 
+class TestResolveVaultPath:
+    """``resolve_vault_path`` returns a vault-relative string, or None.
+
+    Covers the four short-circuit conditions the Obsidian plugin relies
+    on for its deep-link vs preview-modal fallback.
+    """
+
+    def test_returns_none_when_vault_base_unset(self, tmp_path, monkeypatch):
+        from lilbee.cli.helpers import resolve_vault_path
+
+        monkeypatch.setattr(cfg, "vault_base", None)
+        monkeypatch.setattr(cfg, "documents_dir", tmp_path)
+        assert resolve_vault_path("anything.md") is None
+
+    def test_returns_none_when_documents_dir_outside_vault(self, tmp_path, monkeypatch):
+        """documents_dir not nested under vault_base → None, no stamping."""
+        from lilbee.cli.helpers import resolve_vault_path
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(cfg, "vault_base", vault)
+        monkeypatch.setattr(cfg, "documents_dir", elsewhere)
+        assert resolve_vault_path("doc.md") is None
+
+    def test_returns_none_when_file_does_not_exist(self, tmp_path, monkeypatch):
+        """Stale source name (file deleted after indexing) → None."""
+        from lilbee.cli.helpers import resolve_vault_path
+
+        vault = tmp_path / "vault"
+        docs = vault / "lilbee" / "documents"
+        docs.mkdir(parents=True)
+        monkeypatch.setattr(cfg, "vault_base", vault)
+        monkeypatch.setattr(cfg, "documents_dir", docs)
+        assert resolve_vault_path("missing.md") is None
+
+    def test_returns_vault_relative_path_when_file_exists(self, tmp_path, monkeypatch):
+        """documents_dir inside vault + file on disk → vault-relative posix path."""
+        from lilbee.cli.helpers import resolve_vault_path
+
+        vault = tmp_path / "vault"
+        docs = vault / "lilbee" / "documents"
+        docs.mkdir(parents=True)
+        (docs / "doc.md").write_text("hello")
+        monkeypatch.setattr(cfg, "vault_base", vault)
+        monkeypatch.setattr(cfg, "documents_dir", docs)
+        result = resolve_vault_path("doc.md")
+        assert result is not None
+        # Path separator is platform-native but both components must be present.
+        assert "doc.md" in result
+        assert "documents" in result
+
+
+class TestCleanResultVaultPath:
+    """clean_result stamps ``vault_path`` when resolve_vault_path returns a value."""
+
+    def test_stamps_vault_path_when_resolvable(self, tmp_path, monkeypatch):
+        vault = tmp_path / "vault"
+        docs = vault / "lilbee" / "documents"
+        docs.mkdir(parents=True)
+        (docs / "a.pdf").write_text("stub")
+        monkeypatch.setattr(cfg, "vault_base", vault)
+        monkeypatch.setattr(cfg, "documents_dir", docs)
+        result = clean_result(_search_chunk(distance=0.5))
+        assert "vault_path" in result
+        assert "a.pdf" in result["vault_path"]
+
+
 class TestJsonFlag:
     def test_json_no_subcommand_returns_error(self):
         result = runner.invoke(app, ["--json"])

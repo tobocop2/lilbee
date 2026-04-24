@@ -408,6 +408,24 @@ class TestCrawlSingle:
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_single("https://example.com")
 
+    async def test_missing_crawler_extra_raises_backend_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the ``crawler`` extra installed, crawl_single fails fast.
+
+        Without this guard the lazy ``import crawl4ai`` inside the fetcher
+        would be swallowed by the broad ``except Exception`` at the bottom
+        of crawl_single, turning a missing-extra install into a silent
+        ``CrawlResult(success=False)`` and a ``crawl_done`` with
+        ``files_written=0`` — same silent failure the recursive path
+        already guards against.
+        """
+        from lilbee.crawler import CrawlerBackendMissing
+
+        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        with pytest.raises(CrawlerBackendMissing, match="crawl4ai is not installed"):
+            await crawl_single("https://example.com")
+
 
 class TestBootstrapChromium:
     """bb-wq8g: the subprocess wrapper that installs Playwright's Chromium."""
@@ -847,6 +865,23 @@ class TestCrawlRecursive:
         with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
             await crawl_recursive("https://example.com", max_depth=1)
 
+    async def test_missing_crawler_extra_raises_backend_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the ``crawler`` extra, crawl_recursive fails fast.
+
+        Without this guard the BFS silently drops out and the crawl returns
+        ``files_written=0`` because every lazy backend import inside the
+        fetcher swallows the ImportError locally. The explicit raise lets
+        the server's SSE layer surface ``event: error`` with a fix-it
+        message instead of a zero-results ``crawl_done``.
+        """
+        from lilbee.crawler import CrawlerBackendMissing
+
+        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        with pytest.raises(CrawlerBackendMissing, match="crawl4ai is not installed"):
+            await crawl_recursive("https://example.com", max_depth=1)
+
 
 class _StubURLFilter:
     def __init__(self) -> None:
@@ -1043,8 +1078,12 @@ class TestCrawlAndSave:
             # Mimic the real streaming contract: invoke the flush callback
             # per-page before returning the full list.
             if on_result is not None:
+                import inspect
+
                 for r in streamed:
-                    on_result(r)
+                    rv = on_result(r)
+                    if inspect.isawaitable(rv):
+                        await rv
             return streamed
 
         mock_crawl_recursive.side_effect = _fake_recursive
@@ -1706,10 +1745,12 @@ class TestSaveSingleResult:
 
         meta: dict = {}
         result = CrawlResult(url="https://example.com/new", markdown="# New")
-        path = _save_single_result(result, meta)
-        assert path is not None
-        assert path.exists()
-        assert path.read_text(encoding="utf-8") == "# New"
+        outcome = _save_single_result(result, meta)
+        assert outcome is not None
+        assert outcome.path.exists()
+        assert outcome.path.read_text(encoding="utf-8") == "# New"
+        assert outcome.filename.endswith("index.md")
+        assert outcome.content_hash == content_hash("# New")
 
     def test_returns_none_on_failure(self, isolated_env):
         from lilbee.crawler.save import _save_single_result
@@ -1732,10 +1773,10 @@ class TestSaveSingleResult:
         # Write the file and seed metadata
         initial = CrawlResult(url=url, markdown=markdown)
         meta: dict = {}
-        first_path = _save_single_result(initial, meta)
-        assert first_path is not None
+        first = _save_single_result(initial, meta)
+        assert first is not None
         meta[url] = CrawlMeta(
-            file=str(first_path.relative_to(cfg.documents_dir / "_web")),
+            file=str(first.path.relative_to(cfg.documents_dir / "_web")),
             content_hash=content_hash(markdown),
             crawled_at="2026-01-01T00:00:00+00:00",
         )
@@ -1758,9 +1799,9 @@ class TestSaveSingleResult:
         }
         # File does not exist yet
         result = CrawlResult(url=url, markdown=markdown)
-        path = _save_single_result(result, meta)
-        assert path is not None
-        assert path.exists()
+        outcome = _save_single_result(result, meta)
+        assert outcome is not None
+        assert outcome.path.exists()
 
     def test_path_traversal_blocked(self, isolated_env):
         """A crafted filename escaping _web/ is skipped with a warning."""
@@ -1768,19 +1809,21 @@ class TestSaveSingleResult:
 
         result = CrawlResult(url="https://evil.com/ok", markdown="# Evil")
         with patch("lilbee.crawler.save.url_to_filename", return_value="../../etc/passwd"):
-            path = _save_single_result(result, {})
-        assert path is None
+            outcome = _save_single_result(result, {})
+        assert outcome is None
 
 
 class TestUpdateSingleMetadata:
-    def test_updates_in_place(self):
+    def test_updates_in_place(self, isolated_env):
         """Helper mutates the dict in place with the expected shape."""
-        from lilbee.crawler.save import _update_single_metadata
+        from lilbee.crawler.save import _save_single_result, _update_single_metadata
 
         meta: dict = {}
         result = CrawlResult(url="https://example.com/p", markdown="# P")
+        outcome = _save_single_result(result, meta)
+        assert outcome is not None
         now = "2026-04-20T00:00:00+00:00"
-        _update_single_metadata(meta, result, now)
+        _update_single_metadata(meta, result.url, outcome, now)
         assert "https://example.com/p" in meta
         entry = meta["https://example.com/p"]
         assert entry.crawled_at == now
@@ -1898,8 +1941,9 @@ class TestStreamingFlush:
 
         seed = CrawlResult(url="https://example.com/p1", markdown="# Same")
         seed_meta: dict[str, CrawlMeta] = {}
-        _save_single_result(seed, seed_meta)
-        _update_single_metadata(seed_meta, seed, _datetime.now(_UTC).isoformat())
+        outcome = _save_single_result(seed, seed_meta)
+        assert outcome is not None
+        _update_single_metadata(seed_meta, seed.url, outcome, _datetime.now(_UTC).isoformat())
         save_crawl_metadata(seed_meta)
 
         async def _gen():

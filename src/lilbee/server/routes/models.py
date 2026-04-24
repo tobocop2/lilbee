@@ -105,7 +105,7 @@ async def models_catalog_route(
 @get("/api/models/installed")
 @read_only
 async def models_installed_route() -> ModelsInstalledResponse:
-    """List installed models with their source (native or litellm)."""
+    """List installed models with their source (native or remote)."""
     return await handlers.models_installed()
 
 

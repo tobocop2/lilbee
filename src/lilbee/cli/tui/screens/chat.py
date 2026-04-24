@@ -196,7 +196,7 @@ class ChatScreen(Screen[None]):
         """True when the setup wizard should run: fresh data dir or unresolved models.
 
         Remote-prefixed refs skip the native probe since they resolve
-        through litellm at call time.
+        through the SDK backend at call time.
         """
         if not cfg.lancedb_dir.is_dir():
             log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)

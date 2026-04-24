@@ -732,8 +732,9 @@ async def sync(
         if content_type is None:
             raise ValueError(f"Unsupported file slipped through discovery: {name}")
 
-        current_hash = file_hash(path)
         old_hash = existing_sources.get(name)
+
+        current_hash = file_hash(path)
 
         if old_hash == current_hash:
             unchanged += 1

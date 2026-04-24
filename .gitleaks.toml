@@ -1,0 +1,16 @@
+title = "lilbee gitleaks config"
+
+[extend]
+useDefault = true
+
+# unittest.mock patch / patch.object calls pass a quoted symbol name as the
+# target, for example: `patch.object(api_mod, "Crawl4aiFetcher", ...)`. The
+# default generic-api-key rule can match these CamelCase identifiers on
+# entropy alone. Suppress the pattern globally because it is a language
+# idiom, not a secret.
+[allowlist]
+description = "Python mock.patch target identifiers"
+regexTarget = "line"
+regexes = [
+  '''patch(?:\.object)?\s*\([^,)]+,\s*"[A-Za-z_][A-Za-z0-9_]*"''',
+]

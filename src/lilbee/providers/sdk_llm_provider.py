@@ -246,5 +246,9 @@ class SdkLLMProvider(LLMProvider):
         """SDK-backed rerank is available when the underlying SDK is importable."""
         return self._backend.available()
 
+    def available(self) -> bool:
+        """Return True when the configured SDK backend can service catalog calls."""
+        return self._backend.available()
+
     def shutdown(self) -> None:
         """SDK-backed providers hold no lilbee-side resources."""

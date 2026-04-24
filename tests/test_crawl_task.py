@@ -128,6 +128,22 @@ class TestRunCrawl:
         assert "network error" in task.error
         assert task.finished_at != ""
 
+    @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    async def test_crawler_backend_missing_surfaces_actionable_error(self, mock_crawl):
+        """When the crawler extra isn't installed, the task.error reaches the
+        client with the ``uv sync --extra crawler`` hint, not a raw stack trace."""
+        from lilbee.crawler import CrawlerBackendMissing
+
+        mock_crawl.side_effect = CrawlerBackendMissing(
+            "crawl4ai is not installed. Run `uv sync --extra crawler` to enable crawling."
+        )
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
+
+        await run_crawl(task)
+        assert task.status == TaskStatus.FAILED
+        assert "uv sync --extra crawler" in task.error
+        assert task.finished_at != ""
+
     @patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
     @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
     async def test_sync_called_after_crawl(self, mock_crawl, mock_sync):

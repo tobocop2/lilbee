@@ -299,7 +299,7 @@ def list_installed_models() -> list[str]:
     """Return installed chat-task model names.
 
     Sources both the native registry (manifest ``task`` field) and the
-    litellm backend catalog (classified by name/family). Non-chat roles
+    SDK backend catalog (classified by name/family). Non-chat roles
     (embedding, vision, rerank) are excluded so TUI pickers don't offer
     refs that fail pydantic task validation at assignment time.
     """
@@ -313,7 +313,7 @@ def list_installed_models() -> list[str]:
         for manifest in registry.list_installed():
             if manifest.task == ModelTask.CHAT:
                 names.append(f"{manifest.name}:{manifest.tag}")
-        for remote in classify_remote_models(cfg.litellm_base_url):
+        for remote in classify_remote_models(cfg.remote_base_url):
             if remote.task == ModelTask.CHAT:
                 names.append(remote.name)
         return sorted(set(names))

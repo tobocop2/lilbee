@@ -463,6 +463,18 @@ class TestGroupRowsForGrid:
         assert len(sections[msg.HEADING_OUR_PICKS]) == 1
         assert len(sections[ModelTask.RERANK.capitalize()]) == 1
 
+    def test_unknown_task_gets_its_own_section(self) -> None:
+        """A row whose task is outside _TASK_BUCKET_ORDER still appears,
+        in a section after the known buckets — never silently dropped."""
+        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+
+        row = self._row("experimental")  # type: ignore[arg-type]
+        sections = _group_rows_for_grid([row])
+        headings = [s.heading for s in sections]
+        assert "Experimental" in headings
+        experimental = next(s for s in sections if s.heading == "Experimental")
+        assert len(experimental.rows) == 1
+
 
 class SettingsTestApp(App[None]):
     CSS = ""
@@ -4182,7 +4194,7 @@ def test_check_embedding_model_remote_available():
         assert not manager.is_installed(cfg.embedding_model)
 
         embed_base = cfg.embedding_model.split(":")[0]
-        remote_embeds = detect_remote_embedding_models(cfg.litellm_base_url)
+        remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
         assert any(embed_base in name for name in remote_embeds)
 
 
@@ -4200,7 +4212,7 @@ def test_check_embedding_model_not_found():
         assert not manager.is_installed(cfg.embedding_model)
 
         embed_base = cfg.embedding_model.split(":")[0]
-        remote_embeds = detect_remote_embedding_models(cfg.litellm_base_url)
+        remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
         assert not any(embed_base in name for name in remote_embeds)
         # Would call self.app.call_from_thread(self._show_setup_modal, remote_embeds)
 

@@ -61,14 +61,12 @@ def ConfigField(
 
 log = logging.getLogger(__name__)
 
-# Skips the per-role catalog-task check when set AND pytest is imported.
-# The two-signal gate prevents a leaked env var from disabling role
-# validation in production.
+# Test-only bypass. Both the env var and pytest must be present so a
+# leaked env var cannot disable validation in production.
 _SKIP_MODEL_TASK_VALIDATION_ENV = "LILBEE_SKIP_MODEL_TASK_VALIDATION"
 
 
 def _model_task_validation_bypassed() -> bool:
-    """True iff the task-validator should be skipped (test fixtures only)."""
     if not os.environ.get(_SKIP_MODEL_TASK_VALIDATION_ENV):
         return False
     return sys.modules.get("pytest") is not None
@@ -83,20 +81,13 @@ _MODEL_FIELD_TO_TASK: dict[str, str] = {
 
 
 def _find_model_catalog_entry(ref: str) -> Any:
-    """Look up *ref* in the featured catalog.
-
-    ``find_catalog_entry`` handles the ref variants the validator sees
-    (``name``, ``name:tag``, ``display_name``, ``hf_repo``, ``hf_repo:tag``,
-    provider-prefixed), so the caller doesn't need a fallback chain.
-    """
-    # circular: catalog -> config -> catalog (catalog imports ``cfg``).
+    # circular import: catalog imports cfg.
     from lilbee.catalog import find_catalog_entry
 
     return find_catalog_entry(ref)
 
 
 def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
-    """Raise ValueError if *entry*'s task doesn't match *field_name*'s role."""
     from lilbee.models import ModelTask
 
     want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
@@ -105,6 +96,30 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
     from lilbee.server.handlers import format_task_mismatch
 
     raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
+
+
+def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
+    """Return the catalog's canonical ref for *ref*, or raise ValueError.
+
+    ``allow_bypass=True`` (default) honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION``
+    so unrelated tests can set model refs without populating the catalog.
+    Explicit user actions (``PUT /api/models/<role>``) pass
+    ``allow_bypass=False`` to force the check.
+    """
+    if not ref or not ref.strip():
+        return ref
+    if allow_bypass and _model_task_validation_bypassed():
+        return ref
+    entry = _find_model_catalog_entry(ref)
+    if entry is None:
+        raise ValueError(
+            f"Model '{ref}' is not in the featured catalog. "
+            "Pick a featured model for this role, or install one via "
+            "POST /api/models/pull with a known catalog ref."
+        )
+    _enforce_role_match(ref, entry, field_name)
+    canonical: str = entry.ref
+    return canonical
 
 
 _BOOL_TRUE = frozenset({"true", "1", "yes"})
@@ -146,10 +161,7 @@ DEFAULT_ALLOWED_NER_LABELS = frozenset(
     {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT", "FAC", "NORP"}
 )
 
-# Shared HTTP timeout (seconds) for backend catalog / management calls
-# (Ollama /api/tags, /api/show, /v1/models, OpenAI-compatible endpoints).
-# Not exposed as a user config field because changing it is a debugging
-# maneuver, not a deployment knob.
+# Timeout for backend catalog / management HTTP calls.
 DEFAULT_HTTP_TIMEOUT = 30.0
 
 CHUNKS_TABLE = "chunks"
@@ -159,14 +171,11 @@ CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 
-# Default URL-exclusion patterns for recursive crawls. Categorized so each
-# group is inspectable and easy to trim. Users extend or replace via
-# LILBEE_CRAWL_EXCLUDE_PATTERNS (newline-separated) or a
-# `crawl_exclude_patterns = [...]` list in config.toml.
-# All patterns are Python regex (use_glob=False at the call site).
+# Default URL-exclusion regexes for recursive crawls. Grouped by source
+# CMS / category. User overrides come from LILBEE_CRAWL_EXCLUDE_PATTERNS
+# (newline-separated) or config.toml.
 
-# WordPress scaffolding: admin UIs, API endpoints, RPC endpoints, numeric
-# permalink stubs, and the Elementor page-builder staging area.
+# WordPress scaffolding: admin UIs, APIs, RPC, numeric permalinks, Elementor.
 _WP_EXCLUDE: tuple[str, ...] = (
     r"/wp-admin/",
     r"/wp-login(\.php)?",
@@ -243,9 +252,7 @@ _ECOMMERCE_EXCLUDE: tuple[str, ...] = (
     r"/collections/.+/products/.+\?page=",
 )
 
-# Marketing tracking query parameters. One alternation so the regex engine
-# scans the URL once. Each listed key is a widely-seen tracking field; see
-# https://en.wikipedia.org/wiki/UTM_parameters and vendor docs for origins.
+# Marketing / tracking query parameters (utm_*, fbclid, gclid, etc.).
 _TRACKING_EXCLUDE: tuple[str, ...] = (
     (
         r"[?&]("
@@ -269,8 +276,7 @@ _TRACKING_EXCLUDE: tuple[str, ...] = (
     ),
 )
 
-# Site-meta URLs and non-HTML resources. crawl4ai also filters by
-# Content-Type at fetch time; this filter saves the fetch entirely.
+# Site-meta URLs and non-HTML resources; skipped before fetch.
 _META_EXCLUDE: tuple[str, ...] = (
     r"/sitemap[^/]*\.xml",
     r"/robots\.txt",
@@ -278,6 +284,24 @@ _META_EXCLUDE: tuple[str, ...] = (
     r"/favicon\.ico",
     r"/\.well-known/",
     r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
+)
+
+# Mediawiki/Wikipedia navlinks that dominate BFS before the article body.
+_MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
+    r"/wiki/Main_Page$",
+    r"/wiki/Wikipedia:",
+    r"/wiki/Portal:",
+    r"/wiki/Help:",
+    r"/wiki/Special:",
+    r"/wiki/Category:",
+    r"/wiki/Template:",
+    r"/wiki/Template_talk:",
+    r"/wiki/Talk:",
+    r"/wiki/File:",
+    r"/wiki/File_talk:",
+    r"/wiki/User:",
+    r"/wiki/User_talk:",
+    r"/w/index\.php",
 )
 
 DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
@@ -290,6 +314,7 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_ECOMMERCE_EXCLUDE,
     *_TRACKING_EXCLUDE,
     *_META_EXCLUDE,
+    *_MEDIAWIKI_EXCLUDE,
 )
 
 
@@ -302,12 +327,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "explanations. Keep responses concise unless asked to elaborate."
 )
 
-# Default regex for the CORS allow-origin filter. Covers:
-#   - Obsidian desktop (Electron renderer uses app://obsidian.md)
-#   - Obsidian iOS (Capacitor webview uses capacitor://localhost)
-#   - Any http(s) localhost origin, including ports (Android Obsidian, local dev tools)
-#   - IPv4 and IPv6 loopback literals
-# Auth is still enforced on mutating endpoints regardless of CORS — see server/auth.py.
+# CORS allow-origin regex: Obsidian (desktop + iOS) and localhost loopback.
+# Mutating endpoints still require auth regardless of origin.
 _DEFAULT_CORS_ORIGIN_REGEX = (
     r"^(app://obsidian\.md"
     r"|capacitor://localhost"
@@ -329,10 +350,15 @@ class Config(BaseSettings):
 
     # Paths — resolved from env/defaults in model_validator(mode='before')
     data_root: Path = Field(default=Path())
-    documents_dir: Path = Field(default=Path())
+    # Writable so plugin-managed servers can pivot storage to a vault path on
+    # first boot; rebuild the index after migrating.
+    documents_dir: Path = ConfigField(default=Path(), writable=True)
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
+    # Obsidian vault root; when set, search results carry a vault-relative
+    # ``vault_path`` for native-UI deep-links.
+    vault_base: Path | None = ConfigField(default=None, writable=True)
 
     chat_model: str = Field(default="qwen3:0.6b", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text:v1.5", min_length=1)
@@ -357,10 +383,13 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+    # Max concurrent vision-OCR requests per PDF. Default 1 (serial) — raise
+    # only when the vision model is network-hosted with meaningful latency
+    # (remote API, separate Ollama host). Local GPU models contend on a
+    # single device and get slower with concurrency > 1.
+    vision_concurrency: int = ConfigField(default=1, ge=1, writable=True)
 
-    # Wall-clock timeout in seconds for the Tesseract OCR fallback per
-    # file. Large scanned PDFs can otherwise block an ingest worker for
-    # many minutes and make the TUI feel frozen. 0 disables the cap.
+    # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
@@ -372,71 +401,56 @@ class Config(BaseSettings):
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
     top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
-    # 1.1 is the llama.cpp default and the value most open-weights chat
-    # models are tuned with. A None here made chat prone to n-gram loops
-    # ("tire tire tire ...") on some models. Users can still override or
-    # disable via settings / config.toml.
+    # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
+    # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: str = ConfigField(default="auto", writable=True)
-    litellm_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
     anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
     gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
 
-    # Retrieval quality knobs — defaults chosen from academic research and grantflow
-    # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
+    # Retrieval quality knobs.
 
-    # Max chunks per source document in results. Prevents one large file from
-    # dominating all top-k slots. 3 balances coverage vs diversity.
+    # Max chunks per source in top-k; prevents one large file monopolizing results.
     diversity_max_per_source: int = ConfigField(default=3, ge=1, writable=True)
 
-    # MMR relevance/diversity tradeoff. 0.0 = max diversity, 1.0 = pure relevance.
-    # 0.5 is the standard default from Carbonell & Goldstein 1998.
+    # MMR relevance/diversity tradeoff; 0 = max diversity, 1 = pure relevance
+    # (Carbonell & Goldstein 1998).
     mmr_lambda: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
-    # How many extra candidates to retrieve for MMR reranking.
-    # 3x gives enough candidates to find diverse results without excessive latency.
+    # Extra candidates retrieved for MMR reranking (multiplies top_k).
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
-    # Number of LLM-generated alternative queries for expansion.
-    # 3 variants covers lexical + semantic angles. Set to 0 to disable expansion.
+    # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
 
-    # Cosine distance threshold step for adaptive widening.
-    # When too few results are found, threshold widens by this amount per retry.
-    # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
+    # Cosine-distance step when adaptive-widening retry kicks in.
     adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
 
     # Reject expansion variants below expansion_similarity_threshold.
     expansion_guardrails: bool = ConfigField(default=True, writable=True)
 
-    # Minimum cosine similarity (question vs variant embedding).
-    # Calibrate per embedding model.
+    # Min cosine similarity between question and variant embeddings.
     expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
-    # BM25 confidence score above which query expansion is skipped entirely.
-    # Based on 90th percentile of sigmoid-normalized BM25 score distribution.
-    # Higher = expansion runs more often. Calibrate per-corpus.
+    # Sigmoid-normalized BM25 score above which query expansion is skipped.
     expansion_skip_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
 
-    # Minimum gap between top-1 and top-2 BM25 scores to skip expansion.
-    # Approximately 1 standard deviation of typical score spread.
+    # Min BM25 top-1 vs top-2 gap to skip expansion.
     expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
 
-    # Maximum chunks included in LLM context after adaptive selection.
-    # More = more complete answers but higher latency and token cost.
+    # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=5, ge=1, writable=True)
 
-    # Enable HyDE (Hypothetical Document Embeddings) for search.
-    # Gao et al. 2022. Adds ~500ms per query. Best for vague queries.
+    # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
 
-    # Weight for HyDE results relative to original search (0.0-1.0).
-    # Lower = less trust in hypothetical documents.
+    # HyDE result weight relative to real-doc search (0.0-1.0).
     hyde_weight: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
     # HyDE prompt template. Must contain {question} placeholder.
@@ -446,92 +460,70 @@ class Config(BaseSettings):
         "just write the passage.\n\nQuestion: {question}"
     )
 
-    # Reranker model for search results. Empty = disabled. Native GGUF refs
-    # run via llama-cpp-python's pooling_type=LLAMA_POOLING_TYPE_RANK; hosted
-    # refs (cohere/voyage/jina/together/hf-tei) require the litellm extra.
+    # Reranker model ref. Empty disables reranking. Native GGUFs use
+    # llama-cpp rank pooling; hosted refs (cohere/voyage/jina/together/hf-tei)
+    # need the backend extra.
     reranker_model: str = ConfigField(default="", public=True)
 
-    # Number of candidates to rerank with cross-encoder.
+    # Candidate count sent to the reranker.
     rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=True)
 
-    # Enable temporal filtering (date-based result filtering).
-    # Only activates when temporal keywords detected in query.
+    # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
 
-    # Show reasoning model thinking process (<think>...</think> tags).
-    # When False, thinking is stripped silently. When True, emitted as
-    # separate SSE events (event: reasoning) for UI rendering.
+    # If True, emit <think>…</think> content as separate SSE reasoning events;
+    # if False, strip it silently.
     show_reasoning: bool = ConfigField(default=False, writable=True)
 
-    # Web crawling settings
-    # Optional global ceiling on recursion depth. None (default) = no ceiling;
-    # callers decide. Set a positive int in config.toml as a safety cap.
-    crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
+    # Web crawling.
 
-    # Optional global ceiling on total pages per crawl. None (default) = no ceiling.
+    # Optional global ceilings. None = no ceiling.
+    crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
 
-    # Per-page timeout in seconds for fetching a URL.
+    # Per-URL fetch timeout, seconds.
     crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
 
-    # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
+    # 0 = unlimited, default = CPU count.
     crawl_max_concurrent: int = Field(default=0, ge=0)
 
-    # Seconds between periodic syncs during crawl (0 = sync only at end).
+    # Seconds between periodic syncs during crawl. 0 = sync only at end.
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
-    # Uniform delay between in-flight requests within a single crawl.
-    # crawl4ai's own defaults are 0.1 / 0.3; ours are friendlier to hosts.
+    # Per-request delay + jitter (defaults chosen to be gentler than crawl4ai's).
     crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, writable=True)
-
-    # Random jitter added to crawl_mean_delay (seconds).
     crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, writable=True)
 
-    # Concurrent in-flight requests within a single crawl. crawl4ai default
-    # is 5; we use 3 by default to be gentler.
+    # In-flight requests per crawl.
     crawl_concurrent_requests: int = ConfigField(default=3, ge=1, writable=True)
 
-    # Enable the per-domain RateLimiter that backs off on HTTP 429/503 and
-    # retries. Set False to disable the dispatcher entirely.
+    # Per-domain rate-limiter that backs off on HTTP 429/503 and retries.
     crawl_retry_on_rate_limit: bool = ConfigField(default=True, writable=True)
-
-    # Randomized base-delay range the RateLimiter picks from on rate-limit
-    # responses (seconds). Pair: (min, max).
     crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, writable=True)
     crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, writable=True)
-
-    # Upper bound on any single backoff wait (seconds).
     crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, writable=True)
-
-    # Retry count per URL when rate-limit codes come back.
     crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
 
-    # Regex patterns that skip URLs at link-discovery time during recursive
-    # crawls. Defaults block WordPress scaffolding (pagination, archives,
-    # tracking query params) that inflates useful-page count by 5-7x without
-    # adding content. Empty list disables the filter.
+    # Regex patterns dropped at link-discovery time. Defaults block CMS
+    # scaffolding (WordPress admin, archives, tracking params, etc.).
     crawl_exclude_patterns: list[str] = ConfigField(
         default_factory=lambda: list(DEFAULT_CRAWL_EXCLUDE_PATTERNS),
         writable=True,
     )
 
-    # Fraction of GPU/unified memory available for loaded models.
-    # 0.75 leaves headroom for the OS and other processes.
+    # Fraction of GPU/unified memory reserved for loaded models.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Run embedding and vision inference in a subprocess to avoid GIL blocking.
-    # Applies only to the llama-cpp provider.
+    # Run embedding and vision inference in a subprocess (llama-cpp only).
     subprocess_embed: bool = ConfigField(default=False, writable=True)
 
-    # Use Markdown widget for chat responses in the TUI. When False, uses
-    # plain Static text (faster rendering, no formatting).
+    # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
 
-    # Per-model generation defaults (not serialized, not a config field).
-    # Set via apply_model_defaults() when switching models.
+    # Per-model generation defaults set via apply_model_defaults().
     _model_defaults: Any = None
 
     # Wiki layer. LLM-maintained synthesis pages with citation provenance.
@@ -567,13 +559,10 @@ class Config(BaseSettings):
     # more faithfully. 0.1 leaves just enough slack to avoid hard loops.
     wiki_temperature: float = ConfigField(default=0.1, ge=0.0, le=2.0, writable=True)
 
-    # Fraction of citations that must be stale before a wiki page is flagged
-    # for regeneration during pruning. 0.5 = flag when >50% are stale.
+    # Fraction of citations that must be stale before a wiki page is flagged.
     wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
-    # Maximum fraction of content that may change before a regeneration is
-    # flagged for human review instead of overwriting the existing page.
-    # 0.3 = 30% of lines changed triggers the drift guard.
+    # Fraction of content changed that triggers human-review drift guard.
     wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
 
     # LLM prompt templates for wiki page generation. Writable so advanced
@@ -628,35 +617,25 @@ class Config(BaseSettings):
         ),
     )
 
-    # Wiki synthesis clusterer backend. EMBEDDING (default, no extra deps)
-    # runs chunk-level mutual kNN + label propagation over chunk embeddings.
-    # CONCEPTS uses the concept graph adapter and requires the [graph] extra;
-    # when [graph] is missing the services factory logs a warning and falls
-    # back to EMBEDDING.
+    # Wiki synthesis clusterer backend. CONCEPTS requires the [graph] extra
+    # and falls back to EMBEDDING when unavailable.
     wiki_clusterer: ClustererBackend = ConfigField(
         default=ClustererBackend.EMBEDDING, writable=True
     )
 
-    # Neighborhood size for the embedding clusterer's mutual-kNN graph.
-    # 0 means "auto-scale from corpus size" via clamp(log2(N)+2, 5, 20).
-    # Raise to get larger, looser clusters; lower for tighter, smaller ones.
+    # Neighborhood size for the mutual-kNN graph. 0 = auto-scale from corpus size.
     wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True)
 
-    # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
-    # from chunks, builds a co-occurrence graph, and uses it to boost search
-    # results and expand queries. Requires spacy + networkx + graspologic-native.
+    # LazyGraphRAG-style concept graph. Requires the [graph] extra.
     concept_graph: bool = ConfigField(default=True, writable=True)
 
-    # Weight for concept overlap boosting in search results (0.0-1.0).
-    # Higher = concept overlap matters more relative to vector similarity.
+    # Weight of concept overlap boost relative to vector similarity.
     concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
 
-    # Minimum distance after concept boost. Prevents boost from making
-    # marginally relevant results appear artificially close.
+    # Floor on post-boost distance to stop weak boosts from promoting marginal hits.
     concept_boost_floor: float = ConfigField(default=0.05, ge=0.0, writable=True)
 
-    # Maximum noun-phrase concepts extracted per chunk.
-    # Caps extraction to avoid noise from very long chunks.
+    # Max noun-phrase concepts extracted per chunk.
     concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
 
     # spaCy NER labels kept by the wiki entity extractor. Anything not
@@ -794,12 +773,7 @@ class Config(BaseSettings):
     )
     @classmethod
     def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
-        """Ensure model names always have an explicit tag and canonical prefix.
-
-        Whitespace-only values are coerced to "" for roles that allow empty
-        (vision, reranker), and rejected for required roles (chat, embedding)
-        to prevent bypassing ``min_length=1``.
-        """
+        """Normalize a model ref to ``name:tag``; blank values clear optional roles."""
         if not v or not v.strip():
             if info.field_name in {"chat_model", "embedding_model"}:
                 raise ValueError(f"{info.field_name} must not be blank")
@@ -807,35 +781,6 @@ class Config(BaseSettings):
         from lilbee.providers.model_ref import parse_model_ref
 
         return parse_model_ref(v).for_openai_prefix()
-
-    @field_validator(
-        "chat_model", "embedding_model", "vision_model", "reranker_model", mode="after"
-    )
-    @classmethod
-    def _validate_model_task(cls, v: str, info: ValidationInfo) -> str:
-        """Reject model refs whose catalog task doesn't match the role slot.
-
-        Runs at every write path (PATCH /api/config, direct assignment, env
-        loading) via ``validate_assignment=True``. Returns the catalog's
-        canonical ``name:tag`` so every stored ref matches the registry
-        key regardless of the input variant (hf_repo, provider-prefixed,
-        display name). Skipped only when both
-        ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` is set and pytest is imported.
-        """
-        if not v or not v.strip() or _model_task_validation_bypassed():
-            return v
-        # info.field_name is always set when pydantic dispatches field_validator.
-        assert info.field_name is not None
-        entry = _find_model_catalog_entry(v)
-        if entry is None:
-            raise ValueError(
-                f"Model '{v}' is not in the featured catalog. "
-                "Pick a featured model for this role, or install one via "
-                "POST /api/models/pull with a known catalog ref."
-            )
-        _enforce_role_match(v, entry, info.field_name)
-        canonical: str = entry.ref
-        return canonical
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -933,10 +878,10 @@ class Config(BaseSettings):
         if data.get("models_dir") in (None, _UNSET):
             data["models_dir"] = canonical_models_dir()
 
-        if "LILBEE_LITELLM_BASE_URL" not in os.environ:
+        if "LILBEE_REMOTE_BASE_URL" not in os.environ:
             ollama_host = os.environ.get("OLLAMA_HOST")
             if ollama_host:
-                data["litellm_base_url"] = ollama_host
+                data["remote_base_url"] = ollama_host
 
         return data
 
@@ -979,14 +924,7 @@ class Config(BaseSettings):
         object.__setattr__(self, "_model_defaults", None)
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
-        """Build LLM generation options with 3-layer merge.
-        Layer 1 (base): model defaults from ``_model_defaults``
-        Layer 2 (override): user config fields — only if explicitly set (not None)
-        Layer 3 (override): per-call ``overrides`` parameter
-
-        Remaps ``top_k_sampling`` to the provider's ``top_k`` key.
-        Filters out ``None`` values so the provider uses its model defaults.
-        """
+        """Merge model defaults, user config, and per-call overrides, dropping None."""
         result = _model_defaults_dict(self._model_defaults)
         user_fields: dict[str, Any] = {
             "temperature": self.temperature,
@@ -1007,10 +945,7 @@ class Config(BaseSettings):
 
 
 def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
-    """Convert a ModelDefaults instance to a dict with provider key names.
-    Remaps ``top_k`` to the provider's ``top_k`` key (same name for model defaults).
-    Filters out None values.
-    """
+    """Non-None fields of a ModelDefaults instance as a dict."""
     if defaults is None:
         return {}
     from dataclasses import fields as dc_fields
@@ -1023,11 +958,7 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
 
 
 class _PlainEnvSource:
-    """Env source that reads LILBEE_* env vars as plain strings.
-    Avoids pydantic-settings' default JSON parsing of complex types (list, frozenset)
-    so that comma-separated values like ``LILBEE_CORS_ORIGINS=a,b`` pass through to
-    field validators instead of failing JSON decode.
-    """
+    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
 
     def __init__(
         self,

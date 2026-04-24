@@ -7,8 +7,11 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
+import copy
+import functools
 import json
 import logging
+import mimetypes
 import threading
 import time
 import types
@@ -49,6 +52,7 @@ from lilbee.server.models import (
     ModelsInstalledResponse,
     ModelsShowResponse,
     SetModelResponse,
+    SourceContentResponse,
     StatusResponse,
     SyncSummary,
 )
@@ -60,6 +64,11 @@ if TYPE_CHECKING:
     from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
+
+# Windows mimetypes reads from the registry, which may not define ``.md``
+# as ``text/markdown``. Pin the mapping at import time; ``add_type`` is
+# idempotent so repeated imports are safe.
+mimetypes.add_type("text/markdown", ".md")
 
 MAX_ADD_FILES = 100
 
@@ -554,45 +563,56 @@ async def _set_model(
 
 
 def _require_model_available(model: str) -> str:
-    """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
+    """Return the normalized installed model ref; raises ValueError when unavailable.
+
+    Accepts catalog ``name:tag``, HuggingFace repo id, display name, or
+    provider-prefixed ref.
+    """
+    from lilbee.catalog import find_catalog_entry
     from lilbee.models import ensure_tag
 
-    normalized = ensure_tag(model)
+    entry = find_catalog_entry(model)
+    normalized = entry.ref if entry is not None else ensure_tag(model)
     available = get_services().provider.list_models()
     # ``available`` lists bare tags from /api/tags; stored refs may carry an
     # ``ollama/`` prefix. Match on either form so both client styles work.
     bare = parse_model_ref(normalized).name
-    if normalized not in available and bare not in available:
-        raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
-    return normalized
+    if normalized in available or bare in available:
+        return normalized
+    # Providers may report the HuggingFace repo form instead of the catalog
+    # ``name:tag``. When the input resolved to a catalog entry, accept that
+    # entry's ``hf_repo`` (with or without ``:latest``) as an equivalent
+    # installed form so the canonical ref is still returned.
+    if entry is not None:
+        hf_candidates = {entry.hf_repo, ensure_tag(entry.hf_repo)}
+        if hf_candidates.intersection(available):
+            return normalized
+    raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
+
+
+def _build_task_to_field() -> dict[ModelTask, str]:
+    """Invert config's ``_MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
+    from lilbee.config import _MODEL_FIELD_TO_TASK
+
+    return {ModelTask(task): field for field, task in _MODEL_FIELD_TO_TASK.items()}
+
+
+_TASK_TO_FIELD: dict[ModelTask, str] = _build_task_to_field()
 
 
 def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: bool = False) -> str:
-    """Validate *model* is installed and its catalog task matches *expected*.
+    """Validate *model* is installed locally AND passes the catalog task check.
 
-    Out-of-catalog models are rejected: without a catalog entry there is
-    no task metadata to validate against. When *allow_empty* is True, an
-    empty string unsets the role.
-
-    Returns the catalog's canonical ``name:tag`` ref so persisted values
-    match the registry key rather than the user-supplied ``hf_repo:tag``
-    or provider-prefixed form.
+    Empty string unsets the role when *allow_empty* is True. Catalog +
+    task validation delegates to ``validate_model_task_assignment`` so
+    the handler and config paths share a single implementation.
     """
-    from lilbee.catalog import find_catalog_entry
+    from lilbee.config import validate_model_task_assignment
 
     if allow_empty and not model.strip():
         return ""
     normalized = _require_model_available(model)
-    entry = find_catalog_entry(normalized)
-    if entry is None:
-        raise ValueError(
-            f"Model '{normalized}' is not in the featured catalog. "
-            "Pick a featured model for this role, or install one via "
-            "POST /api/models/pull with a known catalog ref."
-        )
-    if entry.task != expected:
-        raise ValueError(format_task_mismatch(normalized, ModelTask(entry.task), expected))
-    return entry.ref
+    return validate_model_task_assignment(_TASK_TO_FIELD[expected], normalized, allow_bypass=False)
 
 
 async def set_chat_model(model: str) -> SetModelResponse:
@@ -699,13 +719,17 @@ async def list_documents(
     limit: int = 50,
     offset: int = 0,
 ) -> DocumentListResponse:
-    """Return indexed documents with metadata, paginated and filterable."""
-    sources = get_services().store.get_sources()
-    if search:
-        search_lower = search.lower()
-        sources = [s for s in sources if search_lower in s["filename"].lower()]
-    total = len(sources)
-    page = sources[offset : offset + limit]
+    """Return indexed documents with metadata, paginated and filterable.
+
+    Pagination and the filename filter are pushed into LanceDB via
+    ``Store.get_sources(search=..., limit=..., offset=...)`` and the
+    total comes from ``Store.count_sources(search=...)`` so neither
+    call materializes the full SOURCES table per request.
+    """
+    store = get_services().store
+    search_term = search or None
+    page = store.get_sources(search=search_term, limit=limit, offset=offset)
+    total = store.count_sources(search=search_term)
     return DocumentListResponse(
         documents=[
             DocumentInfo(
@@ -718,6 +742,7 @@ async def list_documents(
         total=total,
         limit=limit,
         offset=offset,
+        has_more=len(page) > 0 and (offset + len(page)) < total,
     )
 
 
@@ -728,12 +753,40 @@ async def get_config() -> ConfigResponse:
     return ConfigResponse(**result)
 
 
-async def get_config_defaults() -> ConfigResponse:
-    """Return canonical defaults for every public config field.
-
-    Covers writable fields (resettable via PATCH /api/config) and the
-    model-role fields (resettable via PUT /api/models/<role>).
+async def get_source_content(
+    source: str, raw: bool = False
+) -> SourceContentResponse | tuple[bytes, str]:
+    """Return a stored source file: JSON with markdown text for text types, or
+    ``(bytes, content_type)`` when *raw* is True. Binary types return empty
+    markdown so clients know to re-request with ``raw=1``.
     """
+    from lilbee.wiki.index import parse_title
+
+    if not source or not source.strip():
+        raise ValueError("source must not be empty")
+    documents_dir = cfg.documents_dir
+    resolved = validate_path_within(documents_dir / source, documents_dir)
+    if not resolved.is_file():
+        raise FileNotFoundError(source)
+
+    content_type, _ = mimetypes.guess_type(resolved.name)
+    if content_type is None:
+        content_type = "application/octet-stream"
+
+    if raw:
+        return resolved.read_bytes(), content_type
+
+    if not content_type.startswith("text/"):
+        return SourceContentResponse(markdown="", content_type=content_type, title=None)
+
+    text = resolved.read_text(encoding="utf-8", errors="replace")
+    title = parse_title(text) or None
+    return SourceContentResponse(markdown=text, content_type=content_type, title=title)
+
+
+@functools.cache
+def _compute_config_defaults() -> dict[str, Any]:
+    """Materialize Config defaults once per process."""
     defaults: dict[str, Any] = {}
     for name, info in Config.model_fields.items():
         is_writable_public = name in WRITABLE_CONFIG_FIELDS and name in _PUBLIC_CONFIG_FIELDS
@@ -743,7 +796,20 @@ async def get_config_defaults() -> ConfigResponse:
         if value is PydanticUndefined:  # pragma: no cover
             continue
         defaults[name] = value
-    return ConfigResponse(**defaults)
+    return defaults
+
+
+async def get_config_defaults() -> ConfigResponse:
+    """Return canonical defaults for every public config field.
+
+    Covers writable fields (resettable via PATCH /api/config) and the
+    model-role fields (resettable via PUT /api/models/<role>).
+
+    Deepcopies the cached dict so callers that mutate the response
+    (list-valued fields like ``crawl_exclude_patterns``) cannot poison
+    subsequent calls.
+    """
+    return ConfigResponse(**copy.deepcopy(_compute_config_defaults()))
 
 
 async def models_show(model: str) -> ModelsShowResponse:
@@ -820,7 +886,7 @@ async def models_installed() -> ModelsInstalledResponse:
     models = []
     for name in names:
         src = manager.get_source(name)
-        source_str = src.value if src is not None else ModelSource.LITELLM.value
+        source_str = src.value if src is not None else ModelSource.REMOTE.value
         models.append(InstalledModelEntry(name=name, source=source_str))
     return ModelsInstalledResponse(models=models)
 
@@ -933,7 +999,7 @@ _external_cache = _ExternalModelsCache()
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
-    key = f"{cfg.litellm_base_url}:{cfg.llm_api_key or ''}"
+    key = f"{cfg.remote_base_url}:{cfg.llm_api_key or ''}"
     cached = _external_cache.get(key)
     if cached:
         return cached

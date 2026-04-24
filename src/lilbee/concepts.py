@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from lilbee.clustering import SourceCluster
 from lilbee.config import (
@@ -329,47 +330,75 @@ class ConceptGraph:
         return related
 
     def get_related_concepts(self, concept: str, depth: int = 1) -> list[str]:
-        """Find concepts related via graph edges."""
+        """Find concepts related to *concept* via graph edges, up to *depth* hops.
+
+        One batched query per depth level — O(depth) DB round-trips,
+        independent of frontier size.
+        """
         table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if table is None:
             return []
         visited: set[str] = {concept}
         frontier: list[str] = [concept]
         for _ in range(depth):
+            if not frontier:
+                break
+            escaped_list = ", ".join(f"'{escape_sql_string(n)}'" for n in frontier)
+            try:
+                rows = (
+                    table.search()
+                    .where(f"source IN ({escaped_list}) OR target IN ({escaped_list})")
+                    .to_list()
+                )
+            except Exception:
+                log.debug(
+                    "concept expand batch failed at frontier size %d",
+                    len(frontier),
+                    exc_info=True,
+                )
+                break
             next_frontier: list[str] = []
-            for node in frontier:
-                escaped = escape_sql_string(node)
-                try:
-                    rows = (
-                        table.search()
-                        .where(f"source = '{escaped}' OR target = '{escaped}'")
-                        .to_list()
-                    )
-                except Exception:
-                    log.debug("concept expand failed for %s", node, exc_info=True)
-                    continue
-                for row in rows:
-                    neighbor = row["target"] if row["source"] == node else row["source"]
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        next_frontier.append(neighbor)
+            for row in rows:
+                for endpoint in (row["source"], row["target"]):
+                    if endpoint not in visited:
+                        visited.add(endpoint)
+                        next_frontier.append(endpoint)
             frontier = next_frontier
         return [c for c in visited if c != concept]
 
     def top_communities(self, k: int = 10) -> list[Community]:
-        """Return the k largest concept communities."""
+        """Return the *k* largest concept communities.
+
+        Uses ``pyarrow.compute.value_counts`` to pick the top-k
+        cluster_ids in columnar memory, then materializes only those
+        clusters' members. Peak Python memory scales with members of
+        the top *k* clusters, not the total node count.
+        """
         table = self._store.open_table(CONCEPT_NODES_TABLE)
         if table is None:
             return []
-        rows = table.to_arrow().to_pylist()
-        clusters: dict[int, list[str]] = {}
-        for row in rows:
-            cid = row["cluster_id"]
-            clusters.setdefault(cid, []).append(row["concept"])
-        sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
+        arrow_tbl = table.to_arrow()
+        if arrow_tbl.num_rows == 0:
+            return []
+        counts = pc.value_counts(arrow_tbl["cluster_id"]).to_pylist()
+        top = sorted(counts, key=lambda entry: entry["counts"], reverse=True)[:k]
+        top_ids = [entry["values"] for entry in top if entry["values"] is not None]
+        if not top_ids:
+            return []
+        member_rows = arrow_tbl.filter(
+            pc.is_in(arrow_tbl["cluster_id"], value_set=pa.array(top_ids))
+        ).to_pylist()
+        by_cluster: dict[int, list[str]] = {}
+        for row in member_rows:
+            by_cluster.setdefault(row["cluster_id"], []).append(row["concept"])
         return [
-            Community(cluster_id=cid, size=len(concepts), concepts=concepts)
-            for cid, concepts in sorted_clusters[:k]
+            Community(
+                cluster_id=cid,
+                size=len(by_cluster.get(cid, [])),
+                concepts=by_cluster.get(cid, []),
+            )
+            for cid in top_ids
+            if by_cluster.get(cid)
         ]
 
     def rebuild_clusters(self) -> None:
@@ -429,15 +458,18 @@ class ConceptGraph:
         }
 
     def get_cluster_label(self, cluster_id: int) -> str:
-        """Return a human-readable label for a cluster (its highest-degree concept)."""
+        """Return a human-readable label for *cluster_id* (highest-degree concept)."""
         table = self._store.open_table(CONCEPT_NODES_TABLE)
         if table is None:
             return f"cluster-{cluster_id}"
-        rows = table.to_arrow().to_pylist()
-        cluster_concepts = [r for r in rows if r["cluster_id"] == cluster_id]
-        if not cluster_concepts:
+        try:
+            rows = table.search().where(f"cluster_id = {int(cluster_id)}").to_list()
+        except Exception:
+            log.debug("get_cluster_label query failed", exc_info=True)
             return f"cluster-{cluster_id}"
-        best = max(cluster_concepts, key=lambda r: r["degree"])
+        if not rows:
+            return f"cluster-{cluster_id}"
+        best = max(rows, key=lambda r: r["degree"])
         return str(best["concept"])
 
     def get_graph(self) -> bool:

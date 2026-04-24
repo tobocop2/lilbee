@@ -47,6 +47,10 @@ def isolated_env(tmp_path, monkeypatch):
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
+    # The ``crawl_recursive`` entry point now gates on ``crawler_available()``
+    # so a missing ``[crawler]`` extra produces ``CrawlerBackendMissing``.
+    # Stub it True here so orchestration tests don't require crawl4ai.
+    monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
     # Bypass SSRF DNS resolution by default so localhost-like test URLs
     # don't hit real DNS.
     monkeypatch.setattr(
@@ -274,6 +278,8 @@ class TestCrawlAndSaveOrchestration:
         fake_single.assert_awaited_once()
 
     async def test_depth_nonzero_uses_crawl_recursive(self):
+        import inspect as _inspect
+
         async def fake_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
             flush = kwargs.get("on_result")
             results = [
@@ -282,7 +288,9 @@ class TestCrawlAndSaveOrchestration:
             ]
             if flush is not None:
                 for r in results:
-                    flush(r)
+                    rv = flush(r)
+                    if _inspect.isawaitable(rv):
+                        await rv
             return results
 
         with patch("lilbee.crawler.api.crawl_recursive", side_effect=fake_recursive):

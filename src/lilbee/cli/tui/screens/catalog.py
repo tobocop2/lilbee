@@ -38,9 +38,10 @@ from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.config import cfg
-from lilbee.model_manager import OLLAMA_PROVIDER_NAME, RemoteModel, get_model_manager
+from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX
+from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
 log = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ class CatalogScreen(Screen[None]):
             self._filter_grid()
             self._sync_grid_search_cta()
         else:
-            self._refresh_list()
+            self._filter_list()
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
@@ -282,7 +283,7 @@ class CatalogScreen(Screen[None]):
     def _fetch_remote_models(self) -> list[RemoteModel]:
         from lilbee.model_manager import classify_remote_models
 
-        return classify_remote_models(cfg.litellm_base_url)
+        return classify_remote_models(cfg.remote_base_url)
 
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:
@@ -534,6 +535,28 @@ class CatalogScreen(Screen[None]):
             container.mount_all(widgets_to_mount)
         self._update_sort_label()
 
+    def _filter_list(self) -> None:
+        """Filter visible list items by search without rebuilding the list.
+
+        Per-keystroke path: toggles .display on existing ModelListItems
+        and mounts/removes the HF CTA row as needed. Only _refresh_list
+        (data change, sort change) remounts.
+        """
+        search = self._get_search_text()
+        for item in self.query(ModelListItem):
+            item.display = matches_search(item.row, search)
+        self._sync_list_search_cta(search)
+        self._update_sort_label()
+
+    def _sync_list_search_cta(self, search: str) -> None:
+        """Ensure the search-HF CTA row exists iff a search term is active."""
+        container = self.query_one("#catalog-list", VerticalScroll)
+        existing = list(container.query(SearchHFCtaItem))
+        for widget in existing:
+            widget.remove()
+        if search:
+            container.mount(SearchHFCtaItem(search))
+
     def _update_sort_label(self) -> None:
         """Update the sort indicator label."""
         direction = "asc" if self._sort_ascending else "desc"
@@ -579,7 +602,7 @@ class CatalogScreen(Screen[None]):
         elif row.remote_model:
             ref = (
                 f"{OLLAMA_PREFIX}{row.remote_model.name}"
-                if row.remote_model.provider == OLLAMA_PROVIDER_NAME
+                if row.remote_model.provider == OLLAMA_BACKEND_NAME
                 else row.remote_model.name
             )
             cfg.chat_model = ref
@@ -846,21 +869,33 @@ class GridSection:
     rows: list[TableRow]
 
 
+_TASK_BUCKET_ORDER = (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
+
+
 def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
     """Group rows into sections for the grid view."""
-    recommended = [r for r in rows if r.featured]
-    installed = [r for r in rows if r.installed and not r.featured]
-    chat = [r for r in rows if r.task == ModelTask.CHAT and not r.featured and not r.installed]
-    embedding = [
-        r for r in rows if r.task == ModelTask.EMBEDDING and not r.featured and not r.installed
-    ]
-    vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
-    rerank = [r for r in rows if r.task == ModelTask.RERANK and not r.featured and not r.installed]
+    recommended: list[TableRow] = []
+    installed: list[TableRow] = []
+    by_task: dict[str, list[TableRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
+    # Display order is fixed by _TASK_BUCKET_ORDER, but any ModelTask value
+    # not in that tuple still renders in its own section after the known
+    # ones, so adding a new task variant never silently drops rows.
+    extras: dict[str, list[TableRow]] = {}
+    for row in rows:
+        if row.featured:
+            recommended.append(row)
+            continue
+        if row.installed:
+            installed.append(row)
+            continue
+        bucket = by_task.get(row.task)
+        if bucket is not None:
+            bucket.append(row)
+        else:
+            extras.setdefault(row.task, []).append(row)
     return [
         GridSection(msg.HEADING_OUR_PICKS, recommended),
         GridSection(msg.HEADING_INSTALLED, installed),
-        GridSection(ModelTask.CHAT.capitalize(), chat),
-        GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
-        GridSection(ModelTask.VISION.capitalize(), vision),
-        GridSection(ModelTask.RERANK.capitalize(), rerank),
+        *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
+        *[GridSection(task.capitalize(), extras[task]) for task in extras],
     ]

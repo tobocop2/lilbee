@@ -54,8 +54,8 @@ All settings override via environment variables:
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
 - `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
 - `LILBEE_TESSERACT_TIMEOUT`: wall-clock timeout in seconds for the Tesseract OCR fallback (default: `60`, `0` = no limit). Only runs when no vision model is available.
-- `LILBEE_LLM_PROVIDER` — backend: `auto` (default), `llama-cpp`, `litellm` (requires `pip install lilbee[litellm]`)
-- `LILBEE_LITELLM_BASE_URL` — litellm backend endpoint (default: `http://localhost:11434`, also reads `OLLAMA_HOST` for backwards compat)
+- `LILBEE_LLM_PROVIDER` — provider: `auto` (default), `llama-cpp`, `remote` (requires `pip install lilbee[litellm]`)
+- `LILBEE_REMOTE_BASE_URL` — SDK backend endpoint (default: `http://localhost:11434`, also reads `OLLAMA_HOST` for backwards compat)
 - `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `3`)
 - `LILBEE_MMR_LAMBDA` — MMR relevance/diversity tradeoff, 0-1 (default: `0.5`)
 - `LILBEE_CANDIDATE_MULTIPLIER` — extra candidates for MMR reranking (default: `3`)

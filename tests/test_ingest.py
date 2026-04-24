@@ -45,9 +45,19 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.get_sources.side_effect = lambda: list(_sources.values())
     store.add_chunks.side_effect = lambda records: len(records)
-    store.upsert_source.side_effect = lambda fn, fh, cc: _sources.update(
-        {fn: {"filename": fn, "file_hash": fh, "chunk_count": cc, "ingested_at": ""}}
-    )
+
+    def _upsert(fn, fh, cc, source_type="document"):
+        from datetime import UTC, datetime
+
+        _sources[fn] = {
+            "filename": fn,
+            "file_hash": fh,
+            "chunk_count": cc,
+            "ingested_at": datetime.now(UTC).isoformat(),
+            "source_type": source_type,
+        }
+
+    store.upsert_source.side_effect = _upsert
     store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
     store.delete_by_source.return_value = None
     store.drop_all.side_effect = lambda: _sources.clear()
@@ -178,7 +188,7 @@ class TestSync:
         from lilbee.ingest import sync
 
         await sync()
-        f.write_text("Version 2 — different content now")
+        f.write_text("Version 2, different content now")
         assert "changing.txt" in (await sync()).updated
 
     async def test_deleted_file_removed(self, mock_extract_file, isolated_env):
@@ -295,7 +305,7 @@ class TestSync:
 
         await sync()  # First ingest succeeds
 
-        f.write_text("Version 2 — will fail")
+        f.write_text("Version 2, will fail")
 
         orig_ingest = __import__("lilbee.ingest", fromlist=["_ingest_file"])._ingest_file
 
@@ -333,7 +343,7 @@ class TestSync:
         from lilbee.ingest import sync
 
         await sync()  # First ingest succeeds
-        f.write_text("Version 2 — fail quietly")
+        f.write_text("Version 2, fail quietly")
 
         orig = __import__("lilbee.ingest", fromlist=["_ingest_file"])._ingest_file
 
@@ -399,7 +409,7 @@ class TestSyncCancellation:
         # Reset call tracking
         mock_svc.store.delete_by_source.reset_mock()
 
-        f.write_text("Version 2 — modified content")
+        f.write_text("Version 2, modified content")
         await sync(quiet=True)
 
         # delete_by_source should be called (from _process_one), not from the sync loop
@@ -419,7 +429,7 @@ class TestSyncCancellation:
 
         mock_svc.store.delete_by_source.reset_mock()
 
-        f.write_text("Version 2 — modified content")
+        f.write_text("Version 2, modified content")
         cancel = threading.Event()
         cancel.set()
         await sync(quiet=True, cancel=cancel)

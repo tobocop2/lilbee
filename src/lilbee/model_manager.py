@@ -1,8 +1,9 @@
-"""Model lifecycle management across native GGUF and litellm-backed sources."""
+"""Model lifecycle management across native GGUF and SDK-backed sources."""
 
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -12,7 +13,11 @@ import httpx
 
 from lilbee.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.models import ModelTask
-from lilbee.providers.sdk_backend import PROVIDER_KEYS
+from lilbee.providers.sdk_backend import (
+    PROVIDER_KEYS,
+    REMOTE_BACKEND_NAME,
+    detect_backend_name,
+)
 from lilbee.security import validate_path_within
 
 # lilbee.config imported lazily; see lilbee/catalog.py for the rationale.
@@ -24,7 +29,7 @@ class ModelSource(Enum):
     """Where a model is stored."""
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    LITELLM = "litellm"  # Models managed by an external backend
+    REMOTE = "remote"  # Models managed by a remote SDK-backed service
 
     @classmethod
     def parse(cls, value: str | None) -> "ModelSource | None":
@@ -50,53 +55,80 @@ class ModelNotFoundError(RuntimeError):
     """
 
 
+_INSTALLED_CACHE_TTL_SECONDS = 30.0
+
+
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path, litellm_base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, models_dir: Path, remote_base_url: str = "http://localhost:11434") -> None:
         self._models_dir = models_dir
-        self._litellm_base_url = litellm_base_url.rstrip("/")
+        self._remote_base_url = remote_base_url.rstrip("/")
 
         from lilbee.registry import ModelRegistry
 
         self._registry = ModelRegistry(self._models_dir)
+        # Memoize list_installed results to avoid walking the registry
+        # filesystem and hitting the backend HTTP endpoint on every call.
+        # The catalog filter path fires this per request. Time-based TTL
+        # plus explicit invalidation on pull/remove keeps freshness.
+        self._installed_cache: dict[ModelSource | None, tuple[float, list[str]]] = {}
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
-        """List installed model names. source=None lists all sources."""
+        """List installed model names. ``source=None`` lists all sources.
+
+        Memoized with a ``_INSTALLED_CACHE_TTL_SECONDS`` TTL and
+        invalidated eagerly by ``pull``/``remove``.
+        """
+        now = time.monotonic()
+        cached = self._installed_cache.get(source)
+        if cached is not None:
+            cached_at, cached_result = cached
+            if now - cached_at < _INSTALLED_CACHE_TTL_SECONDS:
+                return cached_result
+
         if source is None:
             native = set(self._list_native())
-            remote = set(self._list_litellm())
-            return sorted(native | remote)
-        if source is ModelSource.NATIVE:
-            return self._list_native()
-        return self._list_litellm()
+            remote = set(self._list_remote())
+            result = sorted(native | remote)
+        elif source is ModelSource.NATIVE:
+            result = self._list_native()
+        else:
+            result = self._list_remote()
+
+        self._installed_cache[source] = (now, result)
+        return result
+
+    def _invalidate_installed_cache(self) -> None:
+        """Drop all cached list_installed results."""
+        self._installed_cache.clear()
 
     def _list_native(self) -> list[str]:
         """List native models from the registry only."""
         return sorted(f"{m.name}:{m.tag}" for m in self._registry.list_installed())
 
-    def _list_litellm(self) -> list[str]:
-        """List models from the litellm backend via its HTTP API."""
-        url = f"{self._litellm_base_url}/api/tags"
+    def _list_remote(self) -> list[str]:
+        """List models from the SDK backend via its HTTP API."""
+        url = f"{self._remote_base_url}/api/tags"
         try:
             resp = httpx.get(url, timeout=DEFAULT_HTTP_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
         except httpx.HTTPStatusError as exc:
-            log.warning("litellm backend HTTP error listing models: %s", exc)
+            log.warning("SDK backend HTTP error listing models: %s", exc)
             return []
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            log.debug("litellm backend not reachable: %s", exc)
+            log.debug("SDK backend not reachable: %s", exc)
             return []
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         """Check if model exists in specified source."""
         if source is None:
-            return self._is_native(model) or self._is_litellm(model)
+            return self._is_native(model) or self._is_remote(model)
         if source is ModelSource.NATIVE:
             return self._is_native(model)
-        return self._is_litellm(model)
+        return self._is_remote(model)
 
     def _is_native(self, model: str) -> bool:
         if self._registry.is_installed(model):
@@ -107,15 +139,15 @@ class ModelManager:
             return False
         return (self._models_dir / model).is_file()
 
-    def _is_litellm(self, model: str) -> bool:
-        return model in self._list_litellm()
+    def _is_remote(self, model: str) -> bool:
+        return model in self.list_installed(ModelSource.REMOTE)
 
     def get_source(self, model: str) -> ModelSource | None:
         """Find which source a model lives in. Native takes precedence."""
         if self._is_native(model):
             return ModelSource.NATIVE
-        if self._is_litellm(model):
-            return ModelSource.LITELLM
+        if self._is_remote(model):
+            return ModelSource.REMOTE
         return None
 
     def pull(
@@ -128,17 +160,20 @@ class ModelManager:
     ) -> Path | None:
         """Pull/download model to specified source.
 
-        Returns the Path for native downloads, None for litellm-backed pulls.
+        Returns the Path for native downloads, None for backend-managed pulls.
 
-        *on_progress* receives dict events from the litellm backend.
+        *on_progress* receives dict events from the SDK backend.
         *on_bytes* receives (downloaded_bytes, total_bytes) from native
         HuggingFace downloads. The two sources report progress in different
         shapes, so callers pass whichever matches the chosen source.
         """
-        if source is ModelSource.NATIVE:
-            return self._pull_native(model, on_bytes=on_bytes)
-        self._pull_litellm(model, on_progress=on_progress)
-        return None
+        try:
+            if source is ModelSource.NATIVE:
+                return self._pull_native(model, on_bytes=on_bytes)
+            self._pull_remote(model, on_progress=on_progress)
+            return None
+        finally:
+            self._invalidate_installed_cache()
 
     def _pull_native(
         self,
@@ -159,11 +194,11 @@ class ModelManager:
         log.info("Downloaded %s to %s", model, path)
         return path
 
-    def _pull_litellm(
+    def _pull_remote(
         self, model: str, *, on_progress: Callable[[dict], None] | None = None
     ) -> None:
-        """Pull model via the litellm backend's HTTP API with streaming progress."""
-        url = f"{self._litellm_base_url}/api/pull"
+        """Pull model via the SDK backend's HTTP API with streaming progress."""
+        url = f"{self._remote_base_url}/api/pull"
         try:
             with (
                 httpx.Client(timeout=None) as client,
@@ -180,19 +215,22 @@ class ModelManager:
                         on_progress(data)
         except httpx.ConnectError as exc:
             raise RuntimeError(
-                f"Cannot connect to litellm backend: {exc}. Is the server running?"
+                f"Cannot connect to SDK backend: {exc}. Is the server running?"
             ) from exc
-        log.info("Pulled %s via litellm backend", model)
+        log.info("Pulled %s via SDK backend", model)
 
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove installed model. Returns True if removed."""
-        if source is None:
-            native_removed = self._remove_native(model)
-            litellm_removed = self._remove_litellm(model)
-            return native_removed or litellm_removed
-        if source is ModelSource.NATIVE:
-            return self._remove_native(model)
-        return self._remove_litellm(model)
+        try:
+            if source is None:
+                native_removed = self._remove_native(model)
+                backend_removed = self._remove_remote(model)
+                return native_removed or backend_removed
+            if source is ModelSource.NATIVE:
+                return self._remove_native(model)
+            return self._remove_remote(model)
+        finally:
+            self._invalidate_installed_cache()
 
     def _remove_native(self, model: str) -> bool:
         if self._registry.remove(model):
@@ -209,8 +247,8 @@ class ModelManager:
             return True
         return False
 
-    def _remove_litellm(self, model: str) -> bool:
-        url = f"{self._litellm_base_url}/api/delete"
+    def _remove_remote(self, model: str) -> bool:
+        url = f"{self._remote_base_url}/api/delete"
         try:
             resp = httpx.request(
                 "DELETE",
@@ -220,7 +258,7 @@ class ModelManager:
                 timeout=DEFAULT_HTTP_TIMEOUT,
             )
             if resp.status_code == 200:
-                log.info("Removed litellm model %s", model)
+                log.info("Removed backend model %s", model)
                 return True
             if resp.status_code == 404:
                 return False
@@ -228,7 +266,7 @@ class ModelManager:
             return False
         except httpx.ConnectError as exc:
             raise RuntimeError(
-                f"Cannot connect to litellm backend: {exc}. Is the server running?"
+                f"Cannot connect to SDK backend: {exc}. Is the server running?"
             ) from exc
 
 
@@ -241,38 +279,15 @@ _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minic
 _RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 
 
-OLLAMA_PROVIDER_NAME = "Ollama"
-OPENAI_PROVIDER_NAME = "OpenAI"
-ANTHROPIC_PROVIDER_NAME = "Anthropic"
-REMOTE_PROVIDER_NAME = "Remote"
-
-
 @dataclass
 class RemoteModel:
-    """A model from the litellm backend with inferred task classification."""
+    """A model from the SDK backend with inferred task classification."""
 
     name: str
     task: str  # "chat", "embedding", "vision", "rerank"
     family: str
     parameter_size: str
-    provider: str = REMOTE_PROVIDER_NAME
-
-
-_PROVIDER_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("localhost:11434", OLLAMA_PROVIDER_NAME),
-    ("ollama", OLLAMA_PROVIDER_NAME),
-    ("openai", OPENAI_PROVIDER_NAME),
-    ("anthropic", ANTHROPIC_PROVIDER_NAME),
-)
-
-
-def detect_provider(base_url: str) -> str:
-    """Detect the remote provider name from a litellm base URL."""
-    url_lower = base_url.lower()
-    for pattern, provider in _PROVIDER_PATTERNS:
-        if pattern in url_lower:
-            return provider
-    return REMOTE_PROVIDER_NAME
+    provider: str = REMOTE_BACKEND_NAME
 
 
 def _classify_remote_task(name: str, family: str) -> str:
@@ -302,7 +317,7 @@ def classify_remote_models(
     *,
     timeout: float = _CLASSIFY_DEFAULT_TIMEOUT_S,
 ) -> list[RemoteModel]:
-    """Discover and classify all models from the litellm backend by task.
+    """Discover and classify all models from the SDK backend by task.
 
     Uses /api/tags family metadata for embedding detection and name
     patterns for reranker and vision detection. Returns an empty list
@@ -317,7 +332,7 @@ def classify_remote_models(
         log.debug("Failed to classify remote models", exc_info=True)
         return []
 
-    provider = detect_provider(base_url)
+    provider = detect_backend_name(base_url)
     result: list[RemoteModel] = []
     for model in raw_models:
         name = model.get("name", "")
@@ -386,7 +401,7 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
 
 
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
-    """Return names of models classified as embedding from the litellm backend."""
+    """Return names of models classified as embedding from the SDK backend."""
     return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
 
 
@@ -400,7 +415,7 @@ class _ManagerHolder:
         if self._instance is None:
             from lilbee.config import cfg
 
-            self._instance = ModelManager(cfg.models_dir, cfg.litellm_base_url)
+            self._instance = ModelManager(cfg.models_dir, cfg.remote_base_url)
         return self._instance
 
     def reset(self) -> None:
