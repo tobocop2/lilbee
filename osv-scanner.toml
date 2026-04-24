@@ -1,0 +1,9 @@
+# osv-scanner suppressions. Keep this list short and each entry justified.
+# OSV scans against the OSV.dev database, which covers more ecosystems than
+# pip-audit (GHSA, OSV, Alpine SecDB, and others). When a finding maps to
+# something already triaged in .github/workflows/security-scan.yml, mirror
+# the suppression here so osv-scanner and pip-audit stay in sync.
+
+[[IgnoredVulns]]
+id = "CVE-2025-69872"
+reason = "diskcache 5.6.3 pulled in transitively by llama-cpp-python. No upstream fix published. Exploitation requires write access to the user's own cache directory, which is already a post-compromise scenario. Revisit when llama-cpp-python drops or patches diskcache."

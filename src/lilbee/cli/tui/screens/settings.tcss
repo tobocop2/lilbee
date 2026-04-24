@@ -1,0 +1,127 @@
+SettingsScreen {
+    #settings-top-row {
+        dock: top;
+        height: auto;
+        margin: 0 1;
+    }
+
+    #settings-top-row #settings-search {
+        width: 1fr;
+    }
+
+    .reset-all-button {
+        width: auto;
+        margin-left: 1;
+        color: $text-muted;
+    }
+
+    #settings-scroll {
+        padding: 0 1;
+    }
+
+    .setting-group {
+        border-left: thick $surface-lighten-2;
+        border-top: solid $surface-lighten-2;
+        border-right: solid $surface-lighten-2;
+        border-bottom: solid $surface-lighten-2;
+        padding: 0 1;
+        margin-bottom: 1;
+
+        &:focus-within {
+            border-left: thick $primary;
+        }
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .group-title {
+        color: $text-muted;
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+
+    .api-keys-warning {
+        color: $warning;
+        text-style: italic;
+        padding: 0 0 1 1;
+    }
+
+    .setting-group:focus-within .group-title {
+        color: $primary;
+    }
+
+    .setting-row {
+        margin-bottom: 1;
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .setting-title {
+        padding: 0 0 0 1;
+        text-style: bold;
+    }
+
+    .setting-help {
+        color: $text-muted;
+        padding: 0 0 0 1;
+    }
+
+    .setting-editor {
+        margin: 0 0 0 0;
+    }
+
+    .setting-editor-row {
+        layout: horizontal;
+        height: auto;
+    }
+
+    .setting-editor-row .setting-editor {
+        width: 1fr;
+    }
+
+    .setting-reset-button {
+        width: 3;
+        min-width: 3;
+        margin-left: 1;
+        color: $text-muted;
+    }
+
+    Input, Select SelectCurrent, Checkbox {
+        border: tall $surface-lighten-2;
+
+        &:focus {
+            border: tall $primary;
+        }
+    }
+
+    Select:focus > SelectCurrent {
+        border: tall $primary;
+    }
+
+    Input.-invalid {
+        border: tall $error 60%;
+    }
+
+    .setting-list-editor {
+        height: 16;
+        border: solid $surface;
+        margin-bottom: 1;
+    }
+
+    .setting-list-error {
+        color: $error;
+        display: none;
+    }
+
+    .setting-list-error.-visible {
+        display: block;
+    }
+
+    .setting-list-restore {
+        margin-top: 1;
+    }
+}
