@@ -474,34 +474,25 @@ class TestLockedStreamIteratorExceptionRelease:
 
 
 class TestVisionModel:
-    def testload_vision_llama_creates_handler(
+    def test_load_vision_llama_creates_handler(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """load_vision_llama creates a Llama instance with a chat handler."""
-        from lilbee.providers.llama_cpp_provider import load_vision_llama
+        """``mtmd_backend.load_vision_llama`` wires a chat handler into Llama."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
 
-        # Create mmproj file
         mmproj_path = models_dir / "test-mmproj-f16.gguf"
         mmproj_path.write_bytes(b"fake-mmproj")
-
         mock_handler = mock.MagicMock()
-        mock_handler_cls = mock.MagicMock(return_value=mock_handler)
 
-        # The mock_llama_cpp fixture puts a MagicMock in sys.modules["llama_cpp"],
-        # so submodule imports like llama_cpp.llama_chat_format need to work too.
-        mock_chat_format = mock.MagicMock()
-        mock_chat_format.Llava15ChatHandler = mock_handler_cls
-        sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
-
-        try:
+        with mock.patch(
+            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+            return_value=mock_handler,
+        ) as build:
             load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
 
-            mock_handler_cls.assert_called_once_with(clip_model_path=str(mmproj_path))
-            # Llama called with chat_handler
-            call_kwargs = mock_llama_cpp.Llama.call_args[1]
-            assert call_kwargs["chat_handler"] is mock_handler
-        finally:
-            sys.modules.pop("llama_cpp.llama_chat_format", None)
+        build.assert_called_once_with(models_dir / "test-model.gguf", mmproj_path)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["chat_handler"] is mock_handler
 
     def test_find_mmproj_raises_when_missing(self, models_dir: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
@@ -519,33 +510,6 @@ class TestVisionModel:
         mmproj.write_bytes(b"fake")
         result = find_mmproj_for_model(models_dir / "test-model.gguf")
         assert result == mmproj
-
-    def test_get_vision_llm_caches(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """_get_vision_llm caches the vision model instance."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
-
-        mmproj = models_dir / "test-mmproj-f16.gguf"
-        mmproj.write_bytes(b"fake-mmproj")
-
-        mock_handler = mock.MagicMock()
-        mock_chat_format = mock.MagicMock()
-        mock_chat_format.Llava15ChatHandler = mock.MagicMock(return_value=mock_handler)
-        sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
-
-        instance = mock.MagicMock()
-        instance.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
-        mock_llama_cpp.Llama.return_value = instance
-
-        try:
-            provider = LlamaCppProvider()
-            provider._get_vision_llm("test-model")
-            provider._get_vision_llm("test-model")
-
-            # Llama should only be called once (cached)
-            assert mock_llama_cpp.Llama.call_count == 1
-            provider.shutdown()
-        finally:
-            sys.modules.pop("llama_cpp.llama_chat_format", None)
 
 
 class TestLoadLlamaNCtx:

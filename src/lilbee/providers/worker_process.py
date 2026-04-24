@@ -416,8 +416,9 @@ def _load_embed_model(model_name: str) -> Any:
 
 
 def _load_vision_model(model_name: str) -> Any:
-    """Load a vision model in the child process."""
-    from lilbee.providers.llama_cpp_provider import load_vision_llama, resolve_model_path
+    """Load a vision model in the child process via the mtmd backend."""
+    from lilbee.providers.llama_cpp_provider import resolve_model_path
+    from lilbee.providers.mtmd_backend import load_vision_llama
 
     return load_vision_llama(resolve_model_path(model_name))
 

@@ -70,8 +70,6 @@ class LlamaCppProvider(LLMProvider):
             keep_alive_seconds=cfg.model_keep_alive,
             loader=load_llama,
         )
-        self._vision_llm: Any | None = None
-        self._vision_model_path: str | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
         self._rerank_queue: queue.Queue[_RerankRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
@@ -166,15 +164,6 @@ class LlamaCppProvider(LLMProvider):
         resolved_model = model or cfg.chat_model
         model_path = resolve_model_path(resolved_model)
         return self._cache.load_model(model_path, mode=MODE_CHAT)
-
-    def _get_vision_llm(self, model: str) -> Any:
-        """Lazy-load a Llama instance with a vision chat handler."""
-        model_path = resolve_model_path(model)
-
-        if self._vision_llm is None or self._vision_model_path != str(model_path):
-            self._vision_llm = load_vision_llama(model_path)
-            self._vision_model_path = str(model_path)
-        return self._vision_llm
 
     def _get_embed_llm(self) -> Any:
         """Load or return a cached Llama instance for embeddings."""
@@ -607,22 +596,17 @@ def find_mmproj_for_model(model_path: Path) -> Path:
     )
 
 
-_PROJECTOR_HANDLER_MAP: dict[str, str] = {
-    "ldp": "Llava15ChatHandler",
-    "ldpv2": "Llava16ChatHandler",
-    "lightonocr": "ObsidianChatHandler",
-    "minicpmv": "MiniCPMv26ChatHandler",
-    "moondream": "MoondreamChatHandler",
-    "qwen2vl": "Qwen25VLChatHandler",
-    "resampler": "Llava15ChatHandler",
-}
-
-
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
-    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
+    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model.
+
+    Kept for diagnostic logging only. The mtmd backend in
+    :mod:`lilbee.providers.mtmd_backend` selects the image-tokenization
+    path from this metadata internally, so lilbee no longer needs a
+    projector-type-to-handler lookup table.
+    """
     try:
         reader = GGUFReader(str(mmproj_path))
         field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
@@ -632,64 +616,3 @@ def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     if field is None or field.types[-1] != GGUFValueType.STRING:
         return None
     return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
-
-
-def _resolve_vision_handler(mmproj_path: Path) -> Any:
-    """Determine the correct chat handler class for a vision model's mmproj file."""
-    from llama_cpp import llama_chat_format
-
-    projector = read_mmproj_projector_type(mmproj_path)
-    if projector:
-        handler_name = _PROJECTOR_HANDLER_MAP.get(projector.lower())
-        if handler_name:
-            handler_cls = getattr(llama_chat_format, handler_name, None)
-            if handler_cls:
-                log.info("Using %s for projector type '%s'", handler_name, projector)
-                return handler_cls
-            log.warning("Handler %s not found in llama_chat_format", handler_name)
-        else:
-            log.warning("Unknown projector type '%s', falling back to Llava15", projector)
-
-    from llama_cpp.llama_chat_format import Llava15ChatHandler
-
-    return Llava15ChatHandler
-
-
-def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
-    """Load a Llama instance with the correct vision chat handler.
-    Reads the mmproj GGUF metadata to determine which chat handler to use,
-    rather than hardcoding Llava15ChatHandler for all models.
-    """
-    from llama_cpp import Llama
-
-    if mmproj_path is None:
-        mmproj_path = find_mmproj_for_model(model_path)
-
-    handler_cls = _resolve_vision_handler(mmproj_path)
-    log.info(
-        "Loading vision model %s (handler=%s, mmproj=%s, n_gpu_layers=-1)",
-        model_path.name,
-        handler_cls.__name__,
-        mmproj_path.name,
-    )
-    chat_handler = _suppress_stderr(handler_cls, clip_model_path=str(mmproj_path))
-
-    kwargs: dict[str, Any] = {
-        "model_path": str(model_path),
-        "chat_handler": chat_handler,
-        "verbose": False,
-        "n_gpu_layers": -1,
-    }
-    if cfg.num_ctx is not None:
-        kwargs["n_ctx"] = cfg.num_ctx
-    else:
-        kwargs["n_ctx"] = 0
-
-    llama = _suppress_stderr(Llama, **kwargs)
-    metadata = getattr(llama, "metadata", {}) or {}
-    log.info(
-        "Vision model loaded: n_ctx=%s arch=%s",
-        getattr(llama, "n_ctx", lambda: "?")() if callable(getattr(llama, "n_ctx", None)) else "?",
-        metadata.get("general.architecture", "?"),
-    )
-    return llama

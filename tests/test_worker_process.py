@@ -996,7 +996,7 @@ class TestLoadVisionModel:
                 return_value=vision_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.load_vision_llama",
+                "lilbee.providers.mtmd_backend.load_vision_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):
