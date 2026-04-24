@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
         include:
           - os: ubuntu-latest
             llama-plat: linux_x86_64
@@ -155,6 +155,31 @@ jobs:
             exit 1
           fi
 
+          # END-TO-END INFERENCE SMOKE: download a ~90MB SmolLM2 135M GGUF
+          # through the self-check command and run a tiny completion against
+          # it. This is the exact failure mode that bit a user in b426:
+          # "Shared library with base name 'llama' not found" fires from
+          # llama_cpp/_ctypes_extensions.py when the vendored
+          # llama_cpp/lib/ is missing or unreadable. self-check exits 1
+          # on any failure (download, library load, empty response). The
+          # same command runs in the PyInstaller exe smoke so both artifact
+          # flavors are held to the same bar.
+          export HF_HUB_DISABLE_PROGRESS_BARS=1
+          SELF_CHECK_LOG=$(mktemp)
+          lilbee --json self-check > "$SELF_CHECK_LOG" 2>&1
+          echo "=== self-check output ==="
+          cat "$SELF_CHECK_LOG"
+          python -c "
+          import json, pathlib, sys
+          raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
+          payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
+          data = json.loads(payload)
+          assert data.get('ok'), f'self-check failed: {data}'
+          assert data.get('response','').strip(), f'empty response: {data}'
+          print('self-check response:', repr(data['response']))
+          " "$SELF_CHECK_LOG"
+          echo "E2E INFERENCE PASSED"
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -203,3 +228,88 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Verify the PUBLISHED artifact (not just the locally-built wheel) actually
+  # installs and runs end-to-end across the same OS × Python matrix users
+  # will hit. The in-build smoke tests locally-built dist/*.whl; this one
+  # exercises the exact pip resolution, wheel selection, and install flow a
+  # real user gets, including any way PyPI may have mangled the upload. If
+  # this stage fails, the release is broken for users even though everything
+  # upstream looked green.
+  verify-pypi:
+    if: github.event_name == 'release'
+    needs: [publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install from PyPI (poll until indexed)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # PyPI warehouse indexes new uploads with a short lag. Poll up to
+          # ~3 min so the verify lane isn't flaky on the wait.
+          for i in $(seq 1 30); do
+            if pip install --pre --dry-run "lilbee==${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+              echo "PyPI indexed on attempt ${i}"
+              break
+            fi
+            sleep 6
+            if [ "$i" = "30" ]; then
+              echo "PyPI never indexed lilbee==${{ steps.version.outputs.version }} after 3 min"
+              exit 1
+            fi
+          done
+          pip install --pre "lilbee==${{ steps.version.outputs.version }}"
+
+      - name: Confirm the resolved wheel actually has vendored llama_cpp libs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Fail loudly if pip fell through to sdist or picked a wheel that
+          # doesn't ship libllama. This is the specific failure mode a real
+          # Arch user hit — pip picked something, lilbee imported, but the
+          # shared library wasn't on disk.
+          python -c "
+          import pathlib, llama_cpp
+          lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
+          files = sorted(lib_dir.glob('*')) if lib_dir.is_dir() else []
+          print('llama_cpp/lib:', [f.name for f in files])
+          assert any('llama' in f.name for f in files), (
+              f'PyPI-resolved wheel is missing libllama.*: {[f.name for f in files]}'
+          )
+          "
+
+      - name: self-check end-to-end
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT=$(mktemp)
+          lilbee --json self-check > "$OUT" 2>&1 || true
+          echo "=== self-check output ==="
+          cat "$OUT"
+          python -c "
+          import json, pathlib, sys
+          raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
+          payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
+          data = json.loads(payload)
+          assert data.get('ok'), f'PyPI install self-check failed: {data}'
+          assert data.get('response','').strip(), f'empty response: {data}'
+          print('PyPI install self-check PASSED:', repr(data['response']))
+          " "$OUT"
