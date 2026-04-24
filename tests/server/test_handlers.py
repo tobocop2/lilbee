@@ -404,17 +404,24 @@ class TestAddIngestMutex:
         assert _canonical_source_name("/some/path/doc.txt") == "doc.txt"
         assert _canonical_source_name("doc.txt") == "doc.txt"
 
+    async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
+        """Duplicate paths in one request collapse to a single acquired lock."""
+        from lilbee.server.handlers import _acquire_add_locks, _release_add_locks
+
+        acquired, busy = await _acquire_add_locks(["/x/doc.txt", "/y/doc.txt"])
+        try:
+            assert busy == []
+            assert [name for name, _ in acquired] == ["doc.txt"]
+        finally:
+            _release_add_locks(acquired)
+
     async def test_second_concurrent_add_emits_already_ingesting(self, isolated_env, tmp_path):
-        """Concurrent ``/api/add`` for the same source yields one
-        ``already_ingesting`` event on the second request and closes the
-        stream without a ``done`` event.
-        """
+        """Second /api/add for a held source yields already_ingesting, no done."""
         from lilbee.server.handlers import _try_acquire_source, add_files_stream
 
         src = tmp_path / "holdme.txt"
         src.write_text("payload")
 
-        # Simulate the first request holding the mutex for this source.
         lock = await _try_acquire_source("holdme.txt")
         assert lock is not None
         try:
@@ -427,9 +434,7 @@ class TestAddIngestMutex:
         assert events[0][1] == {"source": "holdme.txt"}
 
     async def test_partial_contention_partitions_paths(self, isolated_env, tmp_path):
-        """When some paths are held and some are not, the handler emits
-        ``already_ingesting`` for the held ones and proceeds for the rest.
-        """
+        """Held paths emit already_ingesting; free paths still run to done."""
         from lilbee.server.handlers import _try_acquire_source, add_files_stream
 
         held = tmp_path / "held.txt"
@@ -455,9 +460,7 @@ class TestAddIngestMutex:
         assert "done" in event_types
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
-        """Two overlapping ``/api/add`` calls for disjoint sources both
-        complete with a ``done`` event.
-        """
+        """Disjoint sources do not contend — both requests complete with done."""
         from lilbee.server.handlers import add_files_stream
 
         a = tmp_path / "a.txt"
@@ -495,10 +498,8 @@ class TestAddIngestMutex:
         with mock.patch("lilbee.ingest.sync", new=_boom):
             events = await self._collect(add_files_stream({"paths": [str(src)]}))
 
-        # Error surfaces back to the client.
         assert any(t == "error" for t, _ in events)
 
-        # Lock must be free again: a follow-up try-acquire succeeds.
         retry = await _try_acquire_source("boom.txt")
         assert retry is not None
         retry.release()
@@ -520,7 +521,6 @@ class TestAddIngestMutex:
             outer.cancel()
             with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
                 await outer
-            # Close the generator to let the finally blocks run.
             await gen.aclose()
 
         retry = await _try_acquire_source("slow.txt")
@@ -532,11 +532,8 @@ class TestAddIngestHardening:
     """Option-A hardening: ``sync()`` always passes ``needs_cleanup=True``."""
 
     async def test_new_file_triggers_cleanup(self, isolated_env, tmp_path, mock_svc):
-        """Even when no prior source row exists, ingest now calls
-        ``delete_by_source`` before adding chunks. This closes the race where
-        a previous ingest crashed mid-flight, leaving orphaned chunks with no
-        matching source row.
-        """
+        """New files still call delete_by_source before adding — closes the
+        orphaned-chunks race when a prior ingest died before upsert_source."""
         from lilbee.ingest import sync
 
         src = isolated_env / "fresh.txt"
