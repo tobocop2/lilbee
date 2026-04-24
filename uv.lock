@@ -1588,10 +1588,12 @@ name = "lilbee"
 version = "0.6.66b420"
 source = { editable = "." }
 dependencies = [
+    { name = "diskcache" },
     { name = "filelock" },
     { name = "gguf" },
     { name = "httpx" },
     { name = "huggingface-hub" },
+    { name = "jinja2" },
     { name = "kreuzberg" },
     { name = "lancedb" },
     { name = "litestar" },
@@ -1605,6 +1607,7 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tree-sitter-language-pack" },
     { name = "typer" },
+    { name = "typing-extensions" },
     { name = "uvicorn" },
 ]
 
@@ -1639,11 +1642,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.8.6" },
+    { name = "diskcache", specifier = ">=5.6.1" },
     { name = "filelock" },
     { name = "gguf", specifier = ">=0.18" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
     { name = "huggingface-hub", specifier = ">=1.11.0" },
+    { name = "jinja2", specifier = ">=2.11.3" },
     { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
@@ -1659,6 +1664,7 @@ requires-dist = [
     { name = "tiktoken" },
     { name = "tree-sitter-language-pack", specifier = ">=1.4.0" },
     { name = "typer" },
+    { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["litellm", "graph", "crawler"]
