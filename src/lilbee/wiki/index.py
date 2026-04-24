@@ -26,10 +26,10 @@ def _wiki_root(config: Config) -> Path:
 
 
 def parse_title(text: str) -> str:
-    """Extract title from frontmatter ``title`` field or first H1 heading.
+    """Extract title from YAML frontmatter ``title`` field or first H1 heading.
 
-    Returns the empty string when neither is present. Callers that want
-    an ``Optional[str]`` should check truthiness.
+    Assumes wiki/Obsidian markdown conventions. Returns the empty string
+    when neither is present.
     """
     fm = parse_frontmatter(text)
     if "title" in fm:

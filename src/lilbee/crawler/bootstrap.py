@@ -24,22 +24,11 @@ from lilbee.progress import (
 
 
 class CrawlerBrowserMissing(RuntimeError):
-    """Playwright is installed but its Chromium browser binary is not.
-
-    Raised early by the crawl4ai adapter's ``_open_crawler`` so task
-    workers route to FAILED with an actionable message instead of
-    letting Playwright print its raw ASCII install banner into the TUI.
-    """
+    """Playwright is installed but its Chromium browser binary is not."""
 
 
 class CrawlerBackendMissing(RuntimeError):
-    """The ``crawler`` extra (crawl4ai) was never installed.
-
-    Raised by the crawl entry points before any work happens so callers
-    see an actionable error SSE event (``event: error``) instead of a
-    crawl that silently completes with ``files_written=0``. Message
-    names the fix so the user doesn't have to grep for it.
-    """
+    """The ``crawler`` extra (crawl4ai) was never installed."""
 
 
 _CHROMIUM_COMPONENT = "chromium"

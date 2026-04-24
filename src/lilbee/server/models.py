@@ -49,12 +49,7 @@ class SetModelRequest(BaseModel):
 
 
 class SourceContentResponse(BaseModel):
-    """Response for GET /api/source?source=... (raw=0 JSON shape).
-
-    ``markdown`` holds UTF-8 text for markdown/html/plaintext sources.
-    For binary formats like PDFs, clients should request ``raw=1`` and
-    handle the bytes themselves; this JSON shape isn't populated for them.
-    """
+    """JSON body for ``GET /api/source`` (``raw=0``); empty ``markdown`` for binary types."""
 
     markdown: str
     content_type: str

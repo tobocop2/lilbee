@@ -131,16 +131,7 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
-    """Fetch a single URL and return its markdown content.
-
-    Fails fast with :class:`CrawlerBackendMissing` when the ``crawler``
-    extra isn't installed. Without this guard the lazy backend import
-    inside the fetcher would be swallowed by the broad ``except Exception``
-    below, turning a missing-extra install into a silent
-    ``CrawlResult(success=False)`` that the SSE layer renders as
-    ``crawl_done`` with ``files_written=0``. Matches the parity gate
-    :func:`crawl_recursive` already has.
-    """
+    """Fetch a single URL. Raises :class:`CrawlerBackendMissing` if crawl4ai isn't installed."""
     validate_crawl_url(url)
     from lilbee.crawler.crawl4ai_fetcher import crawler_available
 
@@ -275,12 +266,8 @@ async def crawl_recursive(
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
     pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
 
-    # Fail fast when the ``crawler`` extra wasn't installed. Without this
-    # the BFS silently drops out and the crawl returns ``files_written=0``
-    # because every lazy backend import inside the fetcher swallows the
-    # ImportError locally. Surfacing a clean ``CrawlerBackendMissing``
-    # here lets the server's SSE layer emit ``event: error`` with a
-    # fix-it message instead of a zero-results crawl_done.
+    # Fail fast when the ``crawler`` extra wasn't installed so SSE
+    # callers see ``event: error`` instead of a silent zero-results run.
     from lilbee.crawler.crawl4ai_fetcher import crawler_available
 
     if not crawler_available():

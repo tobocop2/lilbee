@@ -546,13 +546,10 @@ async def _set_model(
 
 
 def _require_model_available(model: str) -> str:
-    """Validate that *model* exists locally. Returns the normalized name or raises ValueError.
+    """Return the normalized installed model ref; raises ValueError when unavailable.
 
-    Callers may pass the catalog ``name:tag`` (``qwen3:4b``), the HuggingFace
-    repo id (``Qwen/Qwen3-4B-GGUF``, with or without ``:latest``), the
-    display name, or a provider-prefixed ref. Normalise via
-    ``find_catalog_entry`` first so a single installed variant resolves
-    regardless of which form the caller used.
+    Accepts catalog ``name:tag``, HuggingFace repo id, display name, or
+    provider-prefixed ref.
     """
     from lilbee.catalog import find_catalog_entry
     from lilbee.models import ensure_tag
@@ -742,14 +739,9 @@ async def get_config() -> ConfigResponse:
 async def get_source_content(
     source: str, raw: bool = False
 ) -> SourceContentResponse | tuple[bytes, str]:
-    """Read a stored source file and return its contents.
-
-    Resolves ``documents_dir / source`` and requires the result to stay
-    inside ``documents_dir``. With ``raw=True`` the caller gets
-    ``(bytes, content_type)`` to stream; otherwise the JSON shape is
-    populated with markdown text for textual formats and an empty
-    ``markdown`` field for binary ones (the caller should re-request
-    with ``raw=1`` in that case).
+    """Return a stored source file: JSON with markdown text for text types, or
+    ``(bytes, content_type)`` when *raw* is True. Binary types return empty
+    markdown so clients know to re-request with ``raw=1``.
     """
     from lilbee.wiki.index import parse_title
 

@@ -262,10 +262,7 @@ _META_EXCLUDE: tuple[str, ...] = (
     r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
 )
 
-# Mediawiki / Wikipedia chrome that sits in every article's DOM before the
-# body. Without these a BFS from ``/wiki/Chevrolet_Caprice`` spends its
-# first hop on ``Main_Page`` / ``Wikipedia:Contents`` / ``Portal:Current_events``
-# because those nav links appear ahead of the article prose in the HTML.
+# Mediawiki/Wikipedia navlinks that dominate BFS before the article body.
 _MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
     r"/wiki/Main_Page$",
     r"/wiki/Wikipedia:",
@@ -329,18 +326,14 @@ class Config(BaseSettings):
 
     # Paths — resolved from env/defaults in model_validator(mode='before')
     data_root: Path = Field(default=Path())
-    # documents_dir is writable so plugin-managed servers can pivot storage
-    # to a vault-native path on first boot. Changing it on a server with
-    # indexed documents leaves old files in place but invisible to search;
-    # rebuild the index after migration.
+    # Writable so plugin-managed servers can pivot storage to a vault path on
+    # first boot; rebuild the index after migrating.
     documents_dir: Path = ConfigField(default=Path(), writable=True)
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
-    # Filesystem root of the Obsidian vault (or equivalent). When set, the
-    # server stamps ``vault_path`` on search result chunks whose source file
-    # lives under this root, so clients can open sources in the native UI
-    # instead of fetching via ``/api/source``. Null = unset (server-local mode).
+    # Obsidian vault root; when set, search results carry a vault-relative
+    # ``vault_path`` for native-UI deep-links.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
     chat_model: str = Field(default="qwen3:0.6b", min_length=1)

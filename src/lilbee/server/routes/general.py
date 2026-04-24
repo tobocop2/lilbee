@@ -62,12 +62,7 @@ async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
 async def source_content_route(
     source: str, raw: bool = False
 ) -> SourceContentResponse | Response[bytes]:
-    """Return stored source file content.
-
-    ``raw=0`` (default) returns a JSON body with markdown text + content type.
-    ``raw=1`` streams the raw bytes with the guessed Content-Type header so
-    clients can render PDFs, images, or other binary formats directly.
-    """
+    """Return stored source file as JSON (``raw=0``) or raw bytes (``raw=1``)."""
     from litestar.exceptions import NotFoundException
 
     try:

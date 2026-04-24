@@ -109,7 +109,7 @@ class StatusResult(BaseModel):
 
 
 def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
-    """Ignore callback for shutil.copytree , filters ignored directories."""
+    """Ignore callback for shutil.copytree that filters ignored directories."""
     return {
         name
         for name in contents
@@ -128,13 +128,7 @@ def json_output(data: dict) -> None:
 
 
 def clean_result(result: SearchChunk) -> dict:
-    """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores).
-
-    When ``cfg.vault_base`` is set, stamp ``vault_path`` , a vault-relative
-    path for the source file , so clients can deep-link into the native UI
-    instead of round-tripping through ``/api/source``. Best-effort: vault_path
-    is ``None`` when the source filename cannot be located under vault_base.
-    """
+    """Return SearchChunk as a JSON dict, stamping vault_path when resolvable."""
     payload = result.model_dump(exclude={"vector"}, exclude_none=True)
     vault_path = resolve_vault_path(result.source)
     if vault_path is not None:
@@ -145,12 +139,8 @@ def clean_result(result: SearchChunk) -> dict:
 def resolve_vault_path(source_filename: str) -> str | None:
     """Return *source_filename* as a vault-relative path, or None if unresolvable.
 
-    Resolves symlinks on both ``vault_base`` and ``documents_dir`` so
-    macOS setups where ``~/Documents`` is a symlink target still produce
-    the same deep-link. Rejects paths that escape ``documents_dir`` via
-    ``..`` segments. Returns None when the resolved source file does not
-    exist on disk, when ``documents_dir`` is not nested under
-    ``vault_base``, or when ``vault_base`` is unset.
+    Resolves symlinks on both sides and rejects ``..`` escapes from
+    ``documents_dir``.
     """
     if cfg.vault_base is None:
         return None
