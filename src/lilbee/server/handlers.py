@@ -7,6 +7,7 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import functools
 import json
@@ -221,18 +222,30 @@ class SseStream:
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE strings until a sentinel arrives. Cancels *task* on client disconnect."""
+        """Yield SSE strings until a sentinel arrives; cancel *task* on client disconnect.
+
+        Emits a ``heartbeat`` event whenever the producer queue stays
+        idle longer than ``cfg.sse_heartbeat_interval`` seconds so
+        clients that enforce a stream-idle timeout don't abort.
+        """
+        last_yielded = time.monotonic()
         try:
             while True:
                 try:
                     item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
                 except TimeoutError:
+                    now = time.monotonic()
+                    heartbeat_interval = cfg.sse_heartbeat_interval
+                    if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:
+                        last_yielded = now
+                        yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
                     # Fallback for producers that die without a sentinel.
                     if task.done() and self.queue.empty():
                         break
                     continue
                 if item is None:
                     break
+                last_yielded = time.monotonic()
                 yield item
         except (asyncio.CancelledError, GeneratorExit):
             log.info("%s cancelled by client", label)
@@ -405,6 +418,45 @@ async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> Sy
         sse.queue.put_nowait(None)
 
 
+# Registry lock serializes lock creation and the check-and-acquire step to
+# avoid a TOCTOU between locked() and acquire() under concurrent /api/add.
+_INGEST_LOCKS: dict[str, asyncio.Lock] = {}
+_INGEST_LOCK_REGISTRY: asyncio.Lock | None = None
+
+
+def _get_registry_lock() -> asyncio.Lock:
+    """Return the registry lock, creating it on the running loop if needed."""
+    global _INGEST_LOCK_REGISTRY
+    if _INGEST_LOCK_REGISTRY is None:
+        _INGEST_LOCK_REGISTRY = asyncio.Lock()
+    return _INGEST_LOCK_REGISTRY
+
+
+def _reset_ingest_locks() -> None:
+    """Test hook: clear per-source locks and the registry lock."""
+    global _INGEST_LOCK_REGISTRY
+    _INGEST_LOCKS.clear()
+    _INGEST_LOCK_REGISTRY = None
+
+
+async def _try_acquire_source(name: str) -> asyncio.Lock | None:
+    """Acquire the lock for ``name`` or return ``None`` if already held."""
+    async with _get_registry_lock():
+        lock = _INGEST_LOCKS.get(name)
+        if lock is None:
+            lock = asyncio.Lock()
+            _INGEST_LOCKS[name] = lock
+        if lock.locked():
+            return None
+        await lock.acquire()
+        return lock
+
+
+def _canonical_source_name(p_str: str) -> str:
+    """Match the basename ``copy_files`` writes under ``cfg.documents_dir``."""
+    return Path(p_str).name
+
+
 async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event."""
     sse = SseStream()
@@ -458,6 +510,34 @@ async def _run_add(
         sse.queue.put_nowait(None)
 
 
+async def _acquire_add_locks(
+    paths: list[str],
+) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
+    """Return ``(acquired, busy)`` partitioning of ``paths`` by lock state."""
+    acquired: list[tuple[str, asyncio.Lock]] = []
+    busy: list[str] = []
+    seen: set[str] = set()
+    for p_str in paths:
+        name = _canonical_source_name(p_str)
+        if name in seen:
+            continue
+        seen.add(name)
+        lock = await _try_acquire_source(name)
+        if lock is None:
+            busy.append(name)
+        else:
+            acquired.append((name, lock))
+    return acquired, busy
+
+
+def _release_add_locks(acquired: list[tuple[str, asyncio.Lock]]) -> None:
+    """Release every lock in ``acquired``. Safe to call multiple times."""
+    while acquired:
+        _, lock = acquired.pop()
+        if lock.locked():
+            lock.release()
+
+
 def validate_add_paths(
     data: dict[str, Any],
 ) -> tuple[list[str], bool, bool | None, float | None]:
@@ -489,22 +569,42 @@ def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
 
 async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
     """Copy files, sync, and yield SSE progress events.
-    Validation is handled by the route layer before this is called.
+
+    Contended sources emit ``already_ingesting`` and the stream closes
+    without a ``done`` event, signalling the client to wait rather than retry.
     """
     paths = data.get("paths", [])
     force = bool(data.get("force", False))
     enable_ocr, ocr_timeout = _parse_ocr_params(data)
-    sse = SseStream()
-    task = asyncio.create_task(_run_add(paths, force, enable_ocr, ocr_timeout, sse))
-    async for event in sse.drain(task, "Add files stream"):
-        yield event
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
+
+    acquired, busy = await _acquire_add_locks(paths)
+    try:
+        for name in busy:
+            log.info("Rejecting /api/add for %s: already ingesting", name)
+            yield sse_event(SseEvent.ALREADY_INGESTING, {"source": name})
+
+        if not acquired:
             return
-        summary = task.result()
-        yield sse_done(summary.model_dump())
+
+        sse = SseStream()
+        task = asyncio.create_task(_run_add(paths, force, enable_ocr, ocr_timeout, sse))
+        try:
+            async for event in sse.drain(task, "Add files stream"):
+                yield event
+            if not sse.cancel.is_set() and task.done() and not task.cancelled():
+                exc = task.exception()
+                if exc is not None:
+                    yield sse_error(str(exc))
+                    return
+                summary = task.result()
+                yield sse_done(summary.model_dump())
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+    finally:
+        _release_add_locks(acquired)
 
 
 def _catalog_section(

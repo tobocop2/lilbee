@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import multiprocessing
 import sys
 from multiprocessing import get_context
@@ -176,6 +178,17 @@ class TestHandleVision:
         with mock.patch("lilbee.vision.build_vision_messages", return_value=[]) as mock_build:
             _handle_vision(llm, req)
         assert mock_build.call_args[0][0] == "custom prompt"
+
+    def test_does_not_impose_max_tokens_cap(self) -> None:
+        """Generation is bounded by the model's ``n_ctx`` and the GGUF's EOT,
+        so the worker intentionally does not pass ``max_tokens``.
+        """
+        llm = mock.MagicMock()
+        llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "t"}}]}
+        req = VisionRequest(png_bytes=b"png", model="v", prompt="", request_id=1)
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]):
+            _handle_vision(llm, req)
+        assert "max_tokens" not in llm.create_chat_completion.call_args.kwargs
 
 
 class TestWorkerMain:
@@ -725,6 +738,59 @@ class TestWorkerProcessVision:
         ):
             wp.vision_ocr(b"png", "model")
 
+    def test_vision_uses_cfg_ocr_timeout(self, config_snap: ConfigSnapshot) -> None:
+        """vision_ocr passes cfg.ocr_timeout into the round-trip deadline.
+
+        Prevents an image-heavy page from being killed by the built-in
+        120s cap when the user has explicitly raised LILBEE_OCR_TIMEOUT
+        / cfg.ocr_timeout for a slow vision model.
+        """
+        from lilbee.config import cfg
+
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        mock_proc = mock.MagicMock()
+        mock_proc.is_alive.return_value = True
+        wp._process = mock_proc
+        wp._request_queue = mock.MagicMock()
+
+        cfg.ocr_timeout = 600.0
+        seen: list[float] = []
+
+        def capture_round_trip(_req, _resp_type, timeout, *, label):
+            seen.append(timeout)
+            return VisionResponse(text="ok", request_id=1)
+
+        with mock.patch.object(wp, "_round_trip", side_effect=capture_round_trip):
+            wp.vision_ocr(b"png", "model")
+
+        assert seen == [600.0]
+
+    def test_zero_ocr_timeout_is_translated_to_day_cap(self, config_snap: ConfigSnapshot) -> None:
+        """cfg.ocr_timeout == 0 ("no limit") is translated to the day-long
+        ``_NO_CAP_TIMEOUT_S`` substitute for the round-trip deadline loop.
+        """
+        from lilbee.config import cfg
+
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        mock_proc = mock.MagicMock()
+        mock_proc.is_alive.return_value = True
+        wp._process = mock_proc
+        wp._request_queue = mock.MagicMock()
+
+        cfg.ocr_timeout = 0.0
+        seen: list[float] = []
+
+        def capture_round_trip(_req, _resp_type, timeout, *, label):
+            seen.append(timeout)
+            return VisionResponse(text="ok", request_id=1)
+
+        with mock.patch.object(wp, "_round_trip", side_effect=capture_round_trip):
+            wp.vision_ocr(b"png", "model")
+
+        assert seen == [86_400.0]
+
 
 class TestWorkerProcessLoadModel:
     def test_load_model_sends_request(self, config_snap: ConfigSnapshot) -> None:
@@ -930,13 +996,43 @@ class TestLoadVisionModel:
                 return_value=vision_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.load_vision_llama",
+                "lilbee.providers.mtmd_backend.load_vision_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):
             result = _load_vision_model("test-vision")
         assert result is mock_llm
         mock_load.assert_called_once_with(vision_path)
+
+
+class TestConfigureWorkerLogging:
+    def test_no_data_dir_env_is_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.worker_process import _configure_worker_logging
+
+        monkeypatch.delenv("LILBEE_DATA", raising=False)
+        root = logging.getLogger()
+        before = list(root.handlers)
+        _configure_worker_logging()
+        assert root.handlers == before
+
+    def test_attaches_file_handler_to_root_logger(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from lilbee.providers.worker_process import _configure_worker_logging
+
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        root = logging.getLogger()
+        before = len(root.handlers)
+        try:
+            _configure_worker_logging()
+            added = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+            assert any(h.baseFilename == str(tmp_path / "worker.log") for h in added)
+            assert root.level <= logging.INFO
+        finally:
+            for h in root.handlers[before:]:
+                root.removeHandler(h)
+                with contextlib.suppress(Exception):
+                    h.close()
 
 
 def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:

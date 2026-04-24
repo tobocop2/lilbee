@@ -397,6 +397,10 @@ class Config(BaseSettings):
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
     cors_origin_regex: str = Field(default=_DEFAULT_CORS_ORIGIN_REGEX)
+    # Seconds between SSE heartbeat events when the producer queue is idle.
+    # Must stay well below the plugin's STREAM_IDLE_TIMEOUT_MS (120s) so a
+    # single long-running vision OCR page can't starve the client into aborting.
+    sse_heartbeat_interval: float = ConfigField(default=30.0, ge=0.0, writable=True)
     json_mode: bool = False
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)

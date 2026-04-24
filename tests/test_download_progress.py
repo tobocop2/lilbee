@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -216,6 +217,102 @@ class TestCallbackProgressBarLockSafety:
         bar.close()
 
         assert calls == [(250, 1000), (500, 1000), (1000, 1000)]
+
+
+class TestBaseTqdmLockInstalled:
+    """Pinning tqdm's class lock is the only way to keep vanilla tqdm (HF, llama-cpp,
+    sentence-transformers, anything that imports ``tqdm.auto``) from crashing when
+    Textual swaps stderr for a wrapper whose ``fileno()`` returns -1.
+    Mirrors huggingface_hub PR #4065 but applies at the base class so every tqdm
+    subclass in the process inherits the same lock via MRO.
+    """
+
+    def test_tqdm_std_lock_is_threading(self) -> None:
+        """Base ``tqdm.std.tqdm._lock`` was pinned to a threading RLock at package import."""
+        import threading
+
+        from tqdm.std import tqdm as _tqdm_base
+
+        assert isinstance(_tqdm_base._lock, type(threading.RLock()))
+
+    def test_vanilla_tqdm_get_lock_survives_bad_stderr_fileno(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Vanilla ``tqdm.auto.tqdm.get_lock()`` no longer triggers MP-lock lazy init."""
+
+        class _FakeStderr:
+            def write(self, _s: str) -> int:
+                return 0
+
+            def flush(self) -> None:
+                pass
+
+            def isatty(self) -> bool:
+                return True
+
+            def fileno(self) -> int:
+                return -1
+
+        monkeypatch.setattr("sys.stderr", _FakeStderr())
+        from tqdm.auto import tqdm as _vanilla
+
+        lock = _vanilla.get_lock()
+        assert lock is not None
+
+
+class TestInitDefensiveBranches:
+    """The package-init helpers each carry a swallow-and-continue branch.
+    Force each one so 100% coverage covers real behaviour, not pragmas.
+    """
+
+    def test_tqdm_lock_install_returns_on_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import builtins
+
+        from lilbee import _install_thread_only_tqdm_lock
+
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "tqdm.std" or name.startswith("tqdm."):
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)  # type: ignore[no-any-return]
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        _install_thread_only_tqdm_lock()  # must not raise
+
+    def test_prestart_resource_tracker_swallows_runtime_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+
+        from lilbee import _prestart_mp_resource_tracker
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        with mock.patch(
+            "multiprocessing.resource_tracker.ensure_running",
+            side_effect=RuntimeError("simulated crash"),
+        ):
+            _prestart_mp_resource_tracker()  # must not raise
+
+    def test_prestart_resource_tracker_noop_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows has no ``_posixsubprocess``; the prestart must short-circuit
+        so `import _posixsubprocess` inside multiprocessing is never reached.
+        """
+        import sys
+
+        from lilbee import _prestart_mp_resource_tracker
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        with mock.patch(
+            "multiprocessing.resource_tracker.ensure_running",
+            side_effect=AssertionError("must not be called on win32"),
+        ) as called:
+            _prestart_mp_resource_tracker()
+        called.assert_not_called()
 
 
 class TestDownloadModelProgressChain:

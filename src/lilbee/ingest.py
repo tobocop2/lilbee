@@ -740,17 +740,15 @@ async def sync(
             unchanged += 1
             continue
 
+        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
+        # and this closes the race where a prior ingest wrote chunks but died
+        # before upsert_source, leaving orphaned chunks that would duplicate.
+        files_to_process.append(
+            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
+        )
         if old_hash is not None:
-            # Modified — defer old chunk deletion to ingest_batch so
-            # delete + re-ingest are atomic per file (no data loss on cancel).
-            files_to_process.append(
-                FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
-            )
             updated.append(name)
         else:
-            files_to_process.append(
-                FileToProcess(name, path, content_type, current_hash, needs_cleanup=False)
-            )
             added.append(name)
 
     # Ingest files (with optional progress bar)

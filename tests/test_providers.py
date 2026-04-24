@@ -1162,107 +1162,41 @@ class TestReadMmprojProjectorType:
         assert read_mmproj_projector_type(f) == "lightonocr"
 
 
-class TestResolveVisionHandler:
-    def test_known_projector(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _resolve_vision_handler
+class TestMtmdLoadVisionLlama:
+    """mtmd backend replaces the old projector-type → handler lookup."""
 
-        handler_cls = mock.MagicMock()
-        mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
-        mock_llama_cpp.llama_chat_format.MiniCPMv26ChatHandler = mock.MagicMock()
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
-            return_value="minicpmv",
-        ):
-            result = _resolve_vision_handler(Path("test.gguf"))
-        assert result is mock_llama_cpp.llama_chat_format.MiniCPMv26ChatHandler
-
-    def test_unknown_projector_falls_back(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _resolve_vision_handler
-
-        fallback = mock.MagicMock()
-        mock_llama_cpp.llama_chat_format.Llava15ChatHandler = fallback
-        # Register the submodule so `from llama_cpp.llama_chat_format import ...` works
-        sys.modules["llama_cpp.llama_chat_format"] = mock_llama_cpp.llama_chat_format
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
-            return_value="totally_unknown_projector",
-        ):
-            result = _resolve_vision_handler(Path("test.gguf"))
-        assert result is fallback
-        sys.modules.pop("llama_cpp.llama_chat_format", None)
-
-    def test_handler_not_found_falls_back(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _resolve_vision_handler
-
-        fallback = mock.MagicMock()
-        # Use a module mock where getattr returns None for the handler
-        fake_chat_format = mock.MagicMock(spec=[])
-        fake_chat_format.Llava15ChatHandler = fallback
-        mock_llama_cpp.llama_chat_format = fake_chat_format
-        sys.modules["llama_cpp.llama_chat_format"] = fake_chat_format
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
-            return_value="minicpmv",
-        ):
-            result = _resolve_vision_handler(Path("test.gguf"))
-        assert result is fallback
-        sys.modules.pop("llama_cpp.llama_chat_format", None)
-
-    def test_no_projector_falls_back(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _resolve_vision_handler
-
-        fallback = mock.MagicMock()
-        mock_llama_cpp.llama_chat_format.Llava15ChatHandler = fallback
-        sys.modules["llama_cpp.llama_chat_format"] = mock_llama_cpp.llama_chat_format
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
-            return_value=None,
-        ):
-            result = _resolve_vision_handler(Path("test.gguf"))
-        assert result is fallback
-        sys.modules.pop("llama_cpp.llama_chat_format", None)
-
-
-class TestLoadVisionLlama:
     def test_with_mmproj_and_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import load_vision_llama
+        from lilbee.providers.mtmd_backend import load_vision_llama
 
-        handler_cls = mock.MagicMock()
-        mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
         cfg.num_ctx = 4096
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_vision_handler",
-            return_value=handler_cls,
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
         ):
             load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 4096
+        assert call_kwargs["n_gpu_layers"] == -1
 
     def test_without_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import load_vision_llama
+        from lilbee.providers.mtmd_backend import load_vision_llama
 
-        handler_cls = mock.MagicMock()
-        mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
         cfg.num_ctx = None
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_vision_handler",
-            return_value=handler_cls,
+            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+            return_value=mock.MagicMock(),
         ):
             load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 0
 
     def test_without_mmproj_calls_find(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import load_vision_llama
+        from lilbee.providers.mtmd_backend import load_vision_llama
 
-        handler_cls = mock.MagicMock()
-        mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
         cfg.num_ctx = None
 
         with (
@@ -1271,12 +1205,126 @@ class TestLoadVisionLlama:
                 return_value=Path("found_mmproj.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_vision_handler",
-                return_value=handler_cls,
-            ),
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ) as mock_handler,
         ):
             load_vision_llama(Path("model.gguf"))
         assert mock_llama_cpp.Llama.called
+        mock_handler.assert_called_once()
+
+
+class TestReadChatTemplate:
+    def test_reads_chat_template(self, tmp_path: Path) -> None:
+        import struct
+
+        from lilbee.providers.mtmd_backend import read_chat_template
+
+        template = "{% for message in messages %}{{ message.content }}{% endfor %}"
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)
+        buf += struct.pack("<Q", 0)
+        buf += struct.pack("<Q", 1)
+        key = b"tokenizer.chat_template"
+        buf += struct.pack("<Q", len(key)) + key
+        buf += struct.pack("<I", 8)
+        value = template.encode("utf-8")
+        buf += struct.pack("<Q", len(value)) + value
+        f = tmp_path / "model.gguf"
+        f.write_bytes(bytes(buf))
+        assert read_chat_template(f) == template
+
+    def test_returns_none_on_missing_field(self, tmp_path: Path) -> None:
+        """A GGUF without tokenizer.chat_template returns None."""
+        import struct
+
+        from lilbee.providers.mtmd_backend import read_chat_template
+
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)
+        buf += struct.pack("<Q", 0)
+        buf += struct.pack("<Q", 0)
+        f = tmp_path / "empty.gguf"
+        f.write_bytes(bytes(buf))
+        assert read_chat_template(f) is None
+
+    def test_returns_none_on_read_error(self) -> None:
+        from lilbee.providers.mtmd_backend import read_chat_template
+
+        assert read_chat_template(Path("/nonexistent/model.gguf")) is None
+
+
+class TestBuildVisionChatHandler:
+    """Use a stub Llava15ChatHandler so the test stays hermetic."""
+
+    def _patched(self, instances: list[object]):
+        class _StubHandler:
+            CHAT_FORMAT = "stub-default-format"
+            DEFAULT_SYSTEM_MESSAGE = "stub-default"
+
+            def __init__(self, clip_model_path: str, verbose: bool = True):
+                self.clip_model_path = clip_model_path
+                self.verbose = verbose
+                instances.append(self)
+
+        return mock.patch("llama_cpp.llama_chat_format.Llava15ChatHandler", _StubHandler)
+
+    def test_installs_gguf_template(self, tmp_path: Path) -> None:
+        from lilbee.providers.mtmd_backend import build_vision_chat_handler
+
+        template = "<|im_start|>user\n<|image_pad|>{{ content.text }}<|im_end|>"
+        instances: list[object] = []
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_chat_template",
+                return_value=template,
+            ),
+            self._patched(instances),
+        ):
+            handler = build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
+        assert "<|image_pad|>" not in type(handler).CHAT_FORMAT
+        assert "{{ content.image_url.url }}" in type(handler).CHAT_FORMAT
+        assert type(handler).DEFAULT_SYSTEM_MESSAGE is None
+
+    def test_falls_back_when_no_template(self, tmp_path: Path) -> None:
+        from lilbee.providers.mtmd_backend import build_vision_chat_handler
+
+        instances: list[object] = []
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_chat_template",
+                return_value=None,
+            ),
+            self._patched(instances),
+        ):
+            handler = build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
+        assert type(handler).CHAT_FORMAT == "stub-default-format"
+        assert type(handler).DEFAULT_SYSTEM_MESSAGE is None
+
+
+class TestAdaptGgufTemplate:
+    """``adapt_gguf_template_for_mtmd`` rewrites GGUF image-placeholder tokens."""
+
+    def test_replaces_image_pad(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        template = "prefix <|image_pad|> suffix"
+        out = adapt_gguf_template_for_mtmd(template)
+        assert "<|image_pad|>" not in out
+        assert "{{ content.image_url.url }}" in out
+
+    def test_replaces_image_tag(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        assert adapt_gguf_template_for_mtmd("A <image> B") == "A {{ content.image_url.url }} B"
+
+    def test_noop_when_no_token(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        template = "plain {{ content.image_url.url }} template"
+        assert adapt_gguf_template_for_mtmd(template) == template
 
 
 # ---------------------------------------------------------------------------
@@ -1470,16 +1518,12 @@ class TestLlamaCppProviderMethods:
         mock_cache_model = mock.MagicMock()
         provider._cache.load_model.return_value = mock_cache_model
 
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
-                return_value=Path("/models/vision.gguf"),
-            ),
-            mock.patch.object(provider, "_get_vision_llm") as mock_vis,
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            return_value=Path("/models/vision.gguf"),
         ):
             result = provider._get_chat_llm()
 
-        mock_vis.assert_not_called()
         assert result == mock_cache_model
         provider._cache.load_model.assert_called_once_with(Path("/models/vision.gguf"), mode="chat")
 
@@ -1497,44 +1541,6 @@ class TestLlamaCppProviderMethods:
         provider._cache.load_model.assert_called_once_with(
             Path("/models/override.gguf"), mode="chat"
         )
-
-    def test_get_vision_llm_caches(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_get_vision_llm caches the vision model."""
-        provider = _make_provider_no_thread()
-
-        mock_vis = mock.MagicMock()
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
-                return_value=Path("/models/vis.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp_provider.load_vision_llama",
-                return_value=mock_vis,
-            ),
-        ):
-            result = provider._get_vision_llm("vis-model")
-
-        assert result == mock_vis
-        assert provider._vision_llm == mock_vis
-
-    def test_get_vision_llm_reuses_cache(
-        self, mock_llama_cpp: mock.MagicMock, tmp_path: Path
-    ) -> None:
-        """_get_vision_llm reuses cached model for same path."""
-        provider = _make_provider_no_thread()
-        vis_path = tmp_path / "models" / "vis.gguf"
-        existing_vis = mock.MagicMock()
-        provider._vision_llm = existing_vis
-        provider._vision_model_path = str(vis_path)
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
-            return_value=vis_path,
-        ):
-            result = provider._get_vision_llm("vis-model")
-
-        assert result is existing_vis
 
     def test_get_embed_llm(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_get_embed_llm loads embedding model via cache."""
