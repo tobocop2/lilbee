@@ -191,10 +191,11 @@ class WorkerProcess:
         return resp.vectors
 
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
-        """Send a vision OCR request and wait for the response.
-        Auto-starts the worker if not running. Retries once on crash.
-        Honours ``cfg.ocr_timeout`` when set above zero so image-heavy pages
-        on slow vision models can complete instead of being skipped.
+        """Run vision OCR in the worker, honouring ``cfg.ocr_timeout``.
+
+        Auto-starts the worker and retries once on crash. ``cfg.ocr_timeout
+        == 0`` means no cap; substituted with a day-long finite deadline
+        for the internal wait loop.
         """
         self._ensure_started()
         req = VisionRequest(
@@ -205,9 +206,6 @@ class WorkerProcess:
         )
         from lilbee.config import cfg
 
-        # ``cfg.ocr_timeout == 0`` means the user asked for no limit. We
-        # still need a finite value for the internal deadline loop, so we
-        # substitute a day's worth of seconds.
         timeout = cfg.ocr_timeout if cfg.ocr_timeout > 0 else 86_400.0
         resp = self._round_trip(req, VisionResponse, timeout, label="vision OCR")
         return resp.text
@@ -286,14 +284,7 @@ def _redirect_stdio() -> None:  # pragma: no cover
 
 
 def _configure_worker_logging() -> None:  # pragma: no cover
-    """Route the worker's Python logs to ``$LILBEE_DATA/worker.log``.
-
-    ``_redirect_stdio`` points stderr at /dev/null so the parent's Textual
-    render stays clean, but that also silences the subprocess's own
-    progress logs. Writing them to a file alongside the data directory
-    gives operators (and QA runs) a way to watch per-page timing, Metal
-    availability, and model load info without touching the TUI.
-    """
+    """Route the worker's Python logs to ``$LILBEE_DATA/worker.log``."""
     import logging as _logging
     import os as _os
 
@@ -435,12 +426,7 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 
 
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
-    """Process a single vision OCR request.
-
-    Caps generation at ``cfg.vision_max_tokens`` so a page that fails to
-    emit EOT (dense scanned art on some vision models) can't stall the
-    ingest. The cap is well above the token budget of any real page.
-    """
+    """Process a single vision OCR request, capped at ``cfg.vision_max_tokens``."""
     try:
         from lilbee.config import cfg
         from lilbee.vision import OCR_PROMPT, build_vision_messages

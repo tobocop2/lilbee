@@ -23,18 +23,13 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
 def _install_thread_only_tqdm_lock() -> None:
-    """Pin tqdm's class lock to a threading.RLock before anything touches tqdm.
+    """Pin ``tqdm.std.tqdm._lock`` to a threading RLock.
 
-    Textual's App swaps stdout/stderr for a wrapper whose ``fileno()`` returns
-    -1. The first call to ``tqdm.get_lock()`` lazily builds a
-    ``TqdmDefaultWriteLock``, which ends up spawning multiprocessing's
-    resource tracker via ``_posixsubprocess.fork_exec``. fork_exec rejects
-    fd -1 with ``ValueError: bad value(s) in fds_to_keep``, which in lilbee
-    surfaces as every vision OCR page failing the moment the TUI is the
-    frontmost process. Setting ``_lock`` on the base class short-circuits
-    the lazy path for every tqdm instance in the process, including the
-    ones HF hub, sentence-transformers, and llama-cpp create on their own.
-    Matches the approach taken upstream in huggingface_hub PR #4065.
+    Bypasses tqdm's lazy multiprocessing-lock init, which tries to
+    fork_exec the MP resource tracker with ``sys.stderr.fileno() == -1``
+    under Textual and crashes with ``bad value(s) in fds_to_keep``.
+    Matches huggingface_hub PR #4065 but applied at the base class so
+    every tqdm instance in the process inherits the lock via MRO.
     """
     try:
         from tqdm.std import tqdm as _tqdm_base
@@ -45,16 +40,10 @@ def _install_thread_only_tqdm_lock() -> None:
 
 
 def _prestart_mp_resource_tracker() -> None:
-    """Spawn multiprocessing's resource tracker now, while stderr is still real.
+    """Start the multiprocessing resource tracker before Textual swaps stderr.
 
-    ``popen_spawn_posix._launch`` calls ``resource_tracker.getfd()`` every
-    time we start a worker subprocess, and the *first* call to ``getfd()``
-    fork_execs the tracker. Textual's App wrapper makes ``sys.stderr.fileno()
-    == -1``, which propagates into fork_exec's fds_to_keep tuple and raises
-    ``ValueError: bad value(s) in fds_to_keep`` before the tracker's own
-    pipe is even reached. Starting the tracker here, before Textual swaps
-    stderr, keeps the fd tracker alive for the rest of the process so every
-    later ``Process.start()`` in the TUI only sees a cached fd.
+    Later ``Process.start()`` calls reuse the cached tracker fd and
+    never hit the fork_exec with a bad fd.
     """
     try:
         from multiprocessing import resource_tracker

@@ -600,13 +600,7 @@ _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
-    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model.
-
-    Kept for diagnostic logging only. The mtmd backend in
-    :mod:`lilbee.providers.mtmd_backend` selects the image-tokenization
-    path from this metadata internally, so lilbee no longer needs a
-    projector-type-to-handler lookup table.
-    """
+    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
     try:
         reader = GGUFReader(str(mmproj_path))
         field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)

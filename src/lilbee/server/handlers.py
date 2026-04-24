@@ -221,12 +221,11 @@ class SseStream:
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE strings until a sentinel arrives. Cancels *task* on client disconnect.
+        """Yield SSE strings until a sentinel arrives; cancel *task* on client disconnect.
 
-        When the producer queue stays idle longer than ``cfg.sse_heartbeat_interval``
-        seconds, emit a ``heartbeat`` event so clients (Obsidian plugin, TUI) that
-        enforce a stream-idle timeout don't abort a long-running but still-healthy
-        producer (e.g. per-page vision OCR on an image-heavy PDF).
+        Emits a ``heartbeat`` event whenever the producer queue stays
+        idle longer than ``cfg.sse_heartbeat_interval`` seconds so
+        clients that enforce a stream-idle timeout don't abort.
         """
         last_yielded = time.monotonic()
         try:

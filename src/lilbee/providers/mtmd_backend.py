@@ -1,24 +1,5 @@
-"""Vision OCR backend that drives llama.cpp's mtmd subsystem.
-
-``llama_cpp.llama_chat_format.Llava15ChatHandler`` already carries the full
-mtmd pipeline: it reads the mmproj, calls ``mtmd_tokenize`` + ``mtmd_helper_
-eval_chunk_single``, and then hands off to the standard completion sampler.
-The only reason earlier lilbee code picked a specific subclass
-(ObsidianChatHandler, Qwen25VLChatHandler, ...) was to get the right chat
-template. Those subclasses hardcode ``CHAT_FORMAT`` strings which drift
-from the GGUF's own embedded template and cause silent failures:
-
-- LightOnOCR-2-1B's GGUF ends turns on ``<|im_end|>`` but
-  ``ObsidianChatHandler`` emits ``###``. Sampling never sees the real EOT
-  and runs to the token cap.
-- ``Qwen25VLChatHandler`` injects a ``"You are a helpful assistant."``
-  system turn that pulls the model out of OCR mode and hallucinates.
-
-The fix is to load the chat template from the main GGUF itself (every
-recent vision GGUF ships one under ``tokenizer.chat_template``), rewrite
-the model's image-placeholder token into the URL-substitution pattern
-the upstream handler expects, and otherwise reuse the upstream mtmd
-pipeline unchanged.
+"""Vision OCR loader that drives llama.cpp's mtmd pipeline with the GGUF's
+own chat template, so there's no projector-type-to-handler lookup table.
 """
 
 from __future__ import annotations
@@ -32,10 +13,10 @@ from gguf import GGUFReader
 log = logging.getLogger(__name__)
 
 
-# Image-placeholder tokens we know ship inside GGUF chat templates.
-# ``Llava15ChatHandler.__call__`` replaces ``{{ content.image_url.url }}``
-# emissions with mtmd's default media marker; rewriting these tokens into
-# that Jinja expression makes the handler's pipeline work unchanged.
+# Image-placeholder tokens seen in GGUF chat templates. The upstream
+# Llava15ChatHandler pipeline substitutes image URLs with mtmd's media
+# marker, so these get rewritten to {{ content.image_url.url }} before
+# rendering.
 _GGUF_IMAGE_TOKENS: tuple[str, ...] = (
     "<|image_pad|>",
     "<image>",
@@ -62,17 +43,7 @@ def read_chat_template(model_path: Path) -> str | None:
 
 
 def adapt_gguf_template_for_mtmd(template: str) -> str:
-    """Rewrite image-placeholder tokens into the URL-substitution Jinja expression.
-
-    ``Llava15ChatHandler.__call__`` renders the template, then replaces
-    every image URL in the rendered text with ``mtmd_default_marker()``.
-    Many GGUF chat templates skip the URL and emit a fixed token instead
-    (``<|image_pad|>`` on Qwen-family vision models, ``<image>`` on
-    Llama/Llava, ``<__media__>`` on newer mtmd builds). Swapping those
-    for ``{{ content.image_url.url }}`` restores the URL contract so the
-    replacement loop finds a marker at the same position the template
-    meant to reserve for the image.
-    """
+    """Rewrite known image-placeholder tokens to ``{{ content.image_url.url }}``."""
     for token in _GGUF_IMAGE_TOKENS:
         if token in template:
             template = template.replace(token, _IMAGE_URL_JINJA)
@@ -80,14 +51,11 @@ def adapt_gguf_template_for_mtmd(template: str) -> str:
 
 
 def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
-    """Build a chat handler that uses the main GGUF's embedded chat template.
+    """Return a ``Llava15ChatHandler`` with the GGUF's own chat template.
 
-    Returns an instance of a ``Llava15ChatHandler`` subclass with
-    ``CHAT_FORMAT`` replaced by the GGUF template (image tokens rewritten)
-    and ``DEFAULT_SYSTEM_MESSAGE`` set to ``None`` so we never splice a
-    stray ``"You are a helpful assistant."`` into OCR prompts. If the
-    GGUF has no embedded template, falls back to the upstream
-    ``Llava15ChatHandler`` defaults.
+    ``DEFAULT_SYSTEM_MESSAGE`` is set to ``None`` so no stray system turn
+    is injected. Falls back to the upstream template when the GGUF has
+    no ``tokenizer.chat_template``.
     """
     from llama_cpp.llama_chat_format import Llava15ChatHandler
 
@@ -114,13 +82,7 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
 
 
 def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
-    """Load a vision-capable ``Llama`` tied to a GGUF-templated chat handler.
-
-    Replaces ``llama_cpp_provider.load_vision_llama``. Every vision model
-    goes through the same code path, driven by the main GGUF's chat
-    template and mmproj file. No per-model handler class, no projector
-    type lookup table.
-    """
+    """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
     from llama_cpp import Llama
 
     from lilbee.config import cfg
