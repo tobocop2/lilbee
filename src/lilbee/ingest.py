@@ -1,13 +1,21 @@
 """Document sync engine — keeps documents/ dir in sync with LanceDB."""
 
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import hashlib
 import logging
 import os
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
+
+if TYPE_CHECKING:
+    from kreuzberg import ExtractionConfig, ExtractionResult
 
 from pydantic import BaseModel
 from rich.progress import (
@@ -19,12 +27,10 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from lilbee import embedder, store
-from lilbee.chunker import chunk_text
-from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
+from lilbee.chunk import build_chunking_config, chunk_text
+from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
-from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
 from lilbee.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
@@ -35,24 +41,48 @@ from lilbee.progress import (
     noop_callback,
     shared_progress,
 )
+from lilbee.security import validate_path_within
+from lilbee.services import get_services
+from lilbee.store import CHUNK_TYPE_RAW
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
 
-# Minimum total chars for kreuzberg text to be considered meaningful.
+
+class FileToProcess(NamedTuple):
+    """A file queued for ingestion with its metadata."""
+
+    name: str
+    path: Path
+    content_type: str
+    file_hash: str
+    needs_cleanup: bool
+
+
+# Minimum total chars for extracted text to be considered meaningful.
 # 50 chars ≈ 12 words — if a PDF yields less, it's almost certainly a scanned
 # document with no embedded text layer. Text PDFs with even just a title page
 # easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
 _MIN_MEANINGFUL_CHARS = 50
 
-# Approximate chars-per-token ratio (kreuzberg uses chars, not tokens)
-_CHARS_PER_TOKEN = 4
+_PDF_CONTENT_TYPE = "pdf"
+_MARKDOWN_OUTPUT = "markdown"
+_TESSERACT_BACKEND = "tesseract"
+
+
+class ExtractMode(StrEnum):
+    """Extraction topology: pagination / OCR / output format."""
+
+    MARKDOWN = "markdown"
+    PAGINATED = "paginated"
+    PAGINATED_OCR = "paginated_ocr"
 
 
 def _has_meaningful_text(result: Any) -> bool:
-    """Check if kreuzberg extraction produced meaningful text."""
-    if hasattr(result, "chunks") and result.chunks:
-        total = sum(len(c.content.strip()) for c in result.chunks)
+    """Check if extraction produced meaningful text."""
+    chunks = getattr(result, "chunks", None)
+    if chunks:
+        total = sum(len(c.content.strip()) for c in chunks)
         return total > _MIN_MEANINGFUL_CHARS
     return False
 
@@ -62,6 +92,7 @@ class ChunkRecord(TypedDict):
 
     source: str
     content_type: str
+    chunk_type: str
     page_start: int
     page_end: int
     line_start: int
@@ -93,7 +124,11 @@ class SyncResult(BaseModel):
         return "\n".join(lines)
 
     def __repr__(self) -> str:
-        return self.__str__()
+        return (
+            f"SyncResult(added={len(self.added)}, updated={len(self.updated)}, "
+            f"removed={len(self.removed)}, unchanged={self.unchanged}, "
+            f"failed={len(self.failed)})"
+        )
 
     def __rich__(self) -> str:
         return self.__str__()
@@ -107,59 +142,19 @@ class _IngestResult:
     path: Path
     chunk_count: int
     error: Exception | None
+    file_hash: str = ""
 
 
-# File extensions routed to the code chunker (tree-sitter)
-_CODE_EXTENSIONS = supported_extensions()
-
-# All document extensions handled by kreuzberg or structured preprocessors
-_DOCUMENT_EXTENSIONS = frozenset(
-    {
-        ".md",
-        ".txt",
-        ".html",
-        ".rst",
-        ".pdf",
-        ".docx",
-        ".xlsx",
-        ".pptx",
-        ".epub",
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".tiff",
-        ".tif",
-        ".bmp",
-        ".webp",
-        ".csv",
-        ".tsv",
-        ".xml",
-        ".json",
-        ".jsonl",
-        ".yaml",
-        ".yml",
-    }
-)
-
-# Extension → content_type string for metadata
-_EXTENSION_MAP: dict[str, str] = {
+# Extension → content_type string for document formats handled by kreuzberg
+_DOCUMENT_EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
-    ".pdf": "pdf",
-    **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
+    ".pdf": _PDF_CONTENT_TYPE,
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
     **{ext: "data" for ext in (".csv", ".tsv")},
     ".xml": "xml",
     **{ext: "json" for ext in (".json", ".jsonl")},
-}
-
-
-# Preprocessors for structured formats: content_type → callable(Path) → str
-_PREPROCESSORS: dict[str, Callable[[Path], str]] = {
-    "xml": preprocess_xml,
-    "json": preprocess_json,
-    "data": preprocess_csv,
 }
 
 
@@ -181,6 +176,7 @@ def discover_files() -> dict[str, Path]:
     """Scan documents/ recursively, return {relative_name: absolute_path}."""
     if not cfg.documents_dir.exists():
         return {}
+    docs_resolved = cfg.documents_dir.resolve()
     files: dict[str, Path] = {}
     for root, dirs, filenames in os.walk(cfg.documents_dir, topdown=True):
         dirs[:] = [d for d in dirs if not is_ignored_dir(d, cfg.ignore_dirs)]
@@ -188,68 +184,120 @@ def discover_files() -> dict[str, Path]:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            if path.suffix.lower() in _EXTENSION_MAP:
+            try:
+                validate_path_within(path, docs_resolved)
+            except ValueError:
+                log.warning("Symlink escapes documents dir, skipping: %s", path)
+                continue
+            if classify_file(path) is not None:
                 files[_relative_name(path)] = path
     return files
 
 
 def classify_file(path: Path) -> str | None:
     """Classify file by extension. Returns content_type or None if unsupported."""
-    return _EXTENSION_MAP.get(path.suffix.lower())
+    doc_type = _DOCUMENT_EXTENSION_MAP.get(path.suffix.lower())
+    if doc_type is not None:
+        return doc_type
+    if is_code_file(path):
+        return "code"
+    return None
 
 
-def kreuzberg_config(content_type: str) -> object:
-    """Build kreuzberg ExtractionConfig for a given content type."""
-    from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
+def content_type_to_mode(content_type: str) -> ExtractMode:
+    """Map a content_type to the extraction mode."""
+    return ExtractMode.PAGINATED if content_type == _PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
 
-    chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
-    )
 
-    if content_type == "pdf":
-        return ExtractionConfig(
+def extraction_config(mode: ExtractMode) -> ExtractionConfig:
+    """Build ExtractionConfig for the given extraction mode."""
+    from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
+
+    chunking = build_chunking_config()
+    pages = PageConfig(extract_pages=True, insert_page_markers=False)
+    ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
+        ExtractMode.MARKDOWN: lambda: ExtractionConfig(
             chunking=chunking,
-            pages=PageConfig(extract_pages=True, insert_page_markers=False),
-        )
-    return ExtractionConfig(chunking=chunking, output_format="markdown")
+            output_format=_MARKDOWN_OUTPUT,
+        ),
+        ExtractMode.PAGINATED: lambda: ExtractionConfig(
+            chunking=chunking,
+            pages=pages,
+        ),
+        ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
+            chunking=chunking,
+            pages=pages,
+            ocr=ocr,
+        ),
+    }
+    return builders[mode]()
 
 
-def kreuzberg_ocr_config() -> object:
-    """Build kreuzberg ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
-    from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
+@contextlib.contextmanager
+def suppress_fd_stderr() -> Generator[None, None, None]:
+    """Suppress stderr at the file-descriptor level.
+    Catches subprocess output (e.g. Tesseract's "Detected N diacritics")
+    that ``contextlib.redirect_stderr`` cannot intercept.
+    """
+    old_stderr = os.dup(2)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, 2)
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(devnull)
+    finally:
+        os.close(old_stderr)
 
-    chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
-    )
-    return ExtractionConfig(
-        chunking=chunking,
-        pages=PageConfig(extract_pages=True, insert_page_markers=False),
-        ocr=OcrConfig(backend="tesseract"),
-    )
 
+async def _try_tesseract_ocr(
+    path: Path, source_name: str, fallback: ExtractionResult
+) -> ExtractionResult:
+    """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure.
 
-async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> object:
-    """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
+    Wraps extraction in ``asyncio.wait_for(cfg.tesseract_timeout)`` so a
+    huge scanned document can't monopolize an ingest worker for many
+    minutes (which the caller perceives as a UI lockup). The timeout is
+    configurable via ``LILBEE_TESSERACT_TIMEOUT``; 0 disables the cap.
+    """
     try:
         from kreuzberg import extract_file
 
         log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
-        # Suppress Tesseract's "Detected N diacritics" stderr noise at the fd level
-        # (contextlib.redirect_stderr only catches Python's sys.stderr, not subprocess output)
-        old_stderr = os.dup(2)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 2)
-        try:
-            return await extract_file(str(path), config=kreuzberg_ocr_config())
-        finally:
-            os.dup2(old_stderr, 2)
-            os.close(devnull)
-            os.close(old_stderr)
+        with suppress_fd_stderr():
+            coro = extract_file(str(path), config=extraction_config(ExtractMode.PAGINATED_OCR))
+            if cfg.tesseract_timeout > 0:
+                return await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+            return await coro
+    except TimeoutError:
+        log.warning(
+            "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
+            cfg.tesseract_timeout,
+            source_name,
+        )
+        return fallback
     except Exception:
         log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)
         return fallback
+
+
+def _should_run_ocr() -> bool:
+    """Decide whether to attempt vision-based OCR on scanned PDFs.
+
+    Uses ``cfg.enable_ocr`` and ``cfg.vision_model``:
+    True = force on (requires ``cfg.vision_model`` to be set for a real
+    vision run; otherwise the caller falls back to Tesseract).
+    False = force off.
+    None = auto-detect: run vision OCR when ``cfg.vision_model`` is set.
+    """
+    if cfg.enable_ocr is True:
+        return True
+    if cfg.enable_ocr is False:
+        return False
+    return bool(cfg.vision_model)
 
 
 async def _vision_fallback(
@@ -260,31 +308,54 @@ async def _vision_fallback(
     *,
     quiet: bool = False,
 ) -> list[ChunkRecord]:
-    """OCR a scanned PDF via vision model, chunk, and embed."""
+    """OCR a scanned PDF via the configured vision model, chunk, and embed.
 
-    page_texts = await asyncio.to_thread(
-        extract_pdf_vision,
-        path,
-        cfg.vision_model,
-        quiet=quiet,
-        timeout=cfg.vision_timeout,
-        on_progress=on_progress,
-    )
+    Uses ``cfg.vision_model`` unconditionally. The chat model is never
+    loaded as a vision backend. If ``cfg.vision_model`` is empty this
+    returns an empty list; callers should fall back to Tesseract via
+    ``_handle_scanned_pdf_fallback``.
+    """
+    if not cfg.vision_model:
+        return []
+    try:
+        page_texts = await asyncio.to_thread(
+            extract_pdf_vision,
+            path,
+            cfg.vision_model,
+            quiet=quiet,
+            timeout=cfg.ocr_timeout,
+            on_progress=on_progress,
+        )
+    except Exception:
+        log.warning(
+            "Vision OCR failed for %s using vision model %s.",
+            source_name,
+            cfg.vision_model,
+            exc_info=True,
+        )
+        return []
     if not page_texts:
         return []
 
-    all_chunks = [(page_num, chunk) for page_num, text in page_texts for chunk in chunk_text(text)]
+    # Single OCR page rarely spans multiple topics; skip the semantic round-trip.
+    all_chunks = [
+        (page_num, chunk)
+        for page_num, text in page_texts
+        for chunk in chunk_text(text, use_semantic=False)
+    ]
     if not all_chunks:
         return []
 
     texts = [c for _, c in all_chunks]
+
     vectors = await asyncio.to_thread(
-        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
         ChunkRecord(
             source=source_name,
             content_type=content_type,
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=page_num,
             page_end=page_num,
             line_start=0,
@@ -297,64 +368,102 @@ async def _vision_fallback(
     ]
 
 
+async def _handle_scanned_pdf_fallback(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    result: ExtractionResult,
+    *,
+    quiet: bool,
+    on_progress: DetailedProgressCallback,
+) -> list[ChunkRecord] | ExtractionResult:
+    """Handle scanned PDF fallback chain: Tesseract OCR then vision model.
+
+    Returns chunk records if a fallback produced final results, or an
+    updated ExtractionResult when Tesseract OCR succeeded (so the
+    caller can proceed with normal chunking/embedding).
+
+    When vision OCR is available (``_should_run_ocr()`` True) we go
+    straight to it. Tesseract is only attempted when vision isn't an
+    option at all. Running a huge scanned PDF through vision *and then*
+    through Tesseract would double the wall-clock cost for no reason,
+    and Tesseract on a 50+ MB document otherwise feels like a TUI
+    lockup to the user.
+    """
+    use_ocr = _should_run_ocr()
+
+    if use_ocr and cfg.vision_model:
+        log.info(
+            "Scanned PDF: using vision OCR for %s (model=%s)",
+            source_name,
+            cfg.vision_model,
+        )
+        return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
+
+    result = await _try_tesseract_ocr(path, source_name, result)
+
+    if not _has_meaningful_text(result):
+        log.warning(
+            "Skipped %s: text extraction produced no usable text. "
+            "For better results on scanned PDFs, configure a vision model "
+            "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
+            source_name,
+        )
+        return []
+
+    log.info(
+        "Scanned PDF detected — extracted with Tesseract OCR: %s. "
+        "For structured markdown output (tables, headings), "
+        "configure a vision model via PUT /api/models/vision.",
+        source_name,
+    )
+    return result
+
+
 async def ingest_document(
     path: Path,
     source_name: str,
     content_type: str,
     *,
-    force_vision: bool = False,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
-    """Extract and chunk a document via kreuzberg, embed, return records.
+    """Extract and chunk a document, embed, return records.
 
-    When *force_vision* is True (CLI ``--vision``) or a vision model is
-    configured, Tesseract OCR is skipped and we go straight to the vision
-    model for scanned PDFs.
+    Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     """
     from kreuzberg import extract_file
 
-    use_vision = force_vision or bool(cfg.vision_model)
-
-    config = kreuzberg_config(content_type)
+    config = extraction_config(content_type_to_mode(content_type))
     result = await extract_file(str(path), config=config)
 
-    # Scanned PDF fallback chain: Tesseract OCR → vision model
-    if content_type == "pdf" and not _has_meaningful_text(result):
-        # When vision is explicitly enabled, skip Tesseract and go straight to vision
-        if not use_vision:
-            result = await _try_tesseract_ocr(path, source_name, result)
-
-        if not _has_meaningful_text(result):
-            if not cfg.vision_model:
-                log.warning(
-                    "Skipped %s: Tesseract OCR produced no usable text. "
-                    "For better results on complex scans, set a vision model "
-                    "with /vision or LILBEE_VISION_MODEL.",
-                    source_name,
-                )
-                return []
-            log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
-            return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
-
-        log.info(
-            "Scanned PDF detected — extracted with Tesseract OCR: %s. "
-            "For structured markdown output (tables, headings), re-add with --vision.",
+    if content_type == _PDF_CONTENT_TYPE and not _has_meaningful_text(result):
+        fallback = await _handle_scanned_pdf_fallback(
+            path,
             source_name,
+            content_type,
+            result,
+            quiet=quiet,
+            on_progress=on_progress,
         )
+        if isinstance(fallback, list):
+            return fallback
+        # Tesseract OCR succeeded — use the updated ExtractionResult
+        result = fallback
 
     if not result.chunks:
         return []
 
     texts = [chunk.content for chunk in result.chunks]
     vectors = await asyncio.to_thread(
-        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
 
     return [
         ChunkRecord(
             source=source_name,
             content_type=content_type,
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=chunk.metadata.get("first_page") or 0,
             page_end=chunk.metadata.get("last_page") or 0,
             line_start=0,
@@ -378,12 +487,14 @@ def ingest_code_sync(
         return []
 
     texts = [cc.chunk for cc in code_chunks]
+    embedder = get_services().embedder
     vectors = embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
 
     return [
         ChunkRecord(
             source=source_name,
             content_type="code",
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=0,
             page_end=0,
             line_start=cc.line_start,
@@ -396,37 +507,155 @@ def ingest_code_sync(
     ]
 
 
-async def ingest_structured(
+async def ingest_markdown(
     path: Path,
     source_name: str,
-    content_type: str,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
-    """Preprocess a structured file, chunk, embed, and return store-ready records."""
-    preprocessor = _PREPROCESSORS[content_type]
-    text = await asyncio.to_thread(preprocessor, path)
-    if not text.strip():
+    """Chunk a markdown file with heading context prepended to each chunk.
+    Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
+    prepended for better retrieval context.
+    """
+    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+    if not raw_text.strip():
         return []
-    texts = chunk_text(text)
+
+    texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
+
     vectors = await asyncio.to_thread(
-        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
         ChunkRecord(
             source=source_name,
-            content_type=content_type,
+            content_type="text",
+            chunk_type=CHUNK_TYPE_RAW,
             page_start=0,
             page_end=0,
             line_start=0,
             line_end=0,
-            chunk=text,
+            chunk=t,
             chunk_index=idx,
             vector=vec,
         )
-        for idx, (text, vec) in enumerate(zip(texts, vectors, strict=True))
+        for idx, (t, vec) in enumerate(zip(texts, vectors, strict=True))
     ]
+
+
+async def _rebuild_concept_clusters() -> None:
+    """Re-run Leiden clustering after sync. No-op if disabled."""
+    if not cfg.concept_graph:
+        return
+    from lilbee.concepts import concepts_available
+
+    if not concepts_available():
+        return
+    try:
+        cg = get_services().concepts
+        if not cg.get_graph():
+            return
+        await asyncio.to_thread(cg.rebuild_clusters)
+    except Exception:
+        log.warning("Concept cluster rebuild failed", exc_info=True)
+
+
+async def _incremental_wiki_update(changed_sources: set[str]) -> None:
+    """Regenerate only the wiki pages touched by *changed_sources*.
+
+    Runs after a successful sync. Builds a fresh ``ExtractedEntity``
+    set from the current corpus, keeps the records that either have no
+    page on disk yet or whose chunk trail includes one of the changed
+    sources, and regenerates just those. Above
+    ``cfg.wiki_ingest_update_cap`` touched pages the auto-update
+    bails out and logs a manual-update hint instead.
+    """
+    if not cfg.wiki or not changed_sources:
+        return
+    # circular: the wiki layer imports lilbee.ingest.file_hash, so these
+    # stay function-local to break the cycle at the hook-entry boundary.
+    from lilbee.store import SearchChunk
+    from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
+    from lilbee.wiki.entity_extractor import EntityKind, get_entity_extractor
+    from lilbee.wiki.shared import (
+        CONCEPTS_SUBDIR,
+        ENTITIES_SUBDIR,
+        WIKI_LOG_ACTION_INGEST,
+    )
+
+    svc = get_services()
+    extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
+
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+    entities = await asyncio.to_thread(extractor.extract, chunks)
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    touched = []
+    for entity in entities:
+        # Phase D: the extractor emits only ENTITY kind; CONCEPT is
+        # reserved for LLM-curated pages produced inside the batched
+        # call and is intentionally not considered here. Keeping the
+        # dispatch neutral guards against a future extractor that
+        # re-introduces CONCEPT.
+        subdir = CONCEPTS_SUBDIR if entity.kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
+        page_path = wiki_root / subdir / f"{entity.slug}.md"
+        if not page_path.exists():
+            touched.append(entity)
+            continue
+        if any(ref.source in changed_sources for ref in entity.chunk_refs):
+            touched.append(entity)
+
+    if not touched:
+        return
+
+    if len(touched) > cfg.wiki_ingest_update_cap:
+        # warning, not info: the default LILBEE_LOG_LEVEL is WARNING, so
+        # log.info would silently drop the manual-update hint and the user
+        # would see no signal at all during `lilbee sync` when the cap trips.
+        log.warning(
+            "Wiki auto-update skipped: %d pages touched (cap %d). "
+            "Run 'lilbee wiki update' to refresh.",
+            len(touched),
+            cfg.wiki_ingest_update_cap,
+        )
+        append_wiki_log(
+            WIKI_LOG_ACTION_INGEST,
+            f"skipped: {len(touched)} pages exceeds cap {cfg.wiki_ingest_update_cap}",
+        )
+        return
+
+    # extract_concepts=False so an incremental sync does not churn
+    # concept slugs. Concept curation is a deliberate, user-invoked
+    # refresh (full `lilbee wiki build`).
+    pages = await asyncio.to_thread(
+        build_wiki, touched, svc.provider, svc.store, cfg, extract_concepts=False
+    )
+    update_wiki_index()
+    append_wiki_log(
+        WIKI_LOG_ACTION_INGEST,
+        f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}",
+    )
+
+
+async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
+    """Extract and index concepts for ingested chunks. No-op if disabled."""
+    if not cfg.concept_graph or not records:
+        return
+    from lilbee.concepts import concepts_available
+
+    if not concepts_available():
+        return
+    try:
+        cg = get_services().concepts
+        texts = [r["chunk"] for r in records]
+        concept_lists = await asyncio.to_thread(cg.extract_concepts_batch, texts)
+        chunk_ids = [(source_name, r["chunk_index"]) for r in records]
+        await asyncio.to_thread(cg.build_from_chunks, chunk_ids, concept_lists)
+    except Exception:
+        log.warning("Concept indexing failed for %s", source_name, exc_info=True)
 
 
 async def _ingest_file(
@@ -434,7 +663,6 @@ async def _ingest_file(
     source_name: str,
     content_type: str,
     *,
-    force_vision: bool = False,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> int:
@@ -442,39 +670,44 @@ async def _ingest_file(
     records: list[ChunkRecord]
     if content_type == "code":
         records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
-    elif content_type in _PREPROCESSORS:
-        records = await ingest_structured(path, source_name, content_type, on_progress)
+    elif path.suffix.lower() == ".md":
+        records = await ingest_markdown(path, source_name, on_progress)
     else:
         records = await ingest_document(
             path,
             source_name,
             content_type,
-            force_vision=force_vision,
             quiet=quiet,
             on_progress=on_progress,
         )
-    return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+
+    store = get_services().store
+    chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+    await _index_concepts(records, source_name)
+    return chunk_count
 
 
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
     *,
-    force_vision: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
-
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
+    When *cancel* is set, processing stops between files without data loss.
     """
+    _store = get_services().store
+
     if force_rebuild:
-        store.drop_all()
+        _store.drop_all()
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
-    existing_sources = {s["filename"]: s["file_hash"] for s in store.get_sources()}
+    existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
 
     added: list[str] = []
     updated: list[str] = []
@@ -485,49 +718,56 @@ async def sync(
     # Find files to remove (in DB but not on disk)
     for name in existing_sources:
         if name not in disk_files:
-            store.delete_by_source(name)
-            store.delete_source(name)
+            _store.delete_by_source(name)
+            _store.delete_source(name)
             removed.append(name)
 
-    # Process files on disk
-    files_to_process: list[tuple[str, Path, str]] = []  # (name, path, content_type)
+    files_to_process: list[FileToProcess] = []
 
     for name, path in sorted(disk_files.items()):
+        if cancel and cancel.is_set():
+            break
+
         content_type = classify_file(path)
-        assert content_type is not None, f"Unsupported file slipped through discovery: {name}"
+        if content_type is None:
+            raise ValueError(f"Unsupported file slipped through discovery: {name}")
+
+        old_hash = existing_sources.get(name)
 
         current_hash = file_hash(path)
-        old_hash = existing_sources.get(name)
 
         if old_hash == current_hash:
             unchanged += 1
             continue
 
+        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
+        # and this closes the race where a prior ingest wrote chunks but died
+        # before upsert_source, leaving orphaned chunks that would duplicate.
+        files_to_process.append(
+            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
+        )
         if old_hash is not None:
-            # Modified — remove old data
-            store.delete_by_source(name)
-            store.delete_source(name)
-            files_to_process.append((name, path, content_type))
             updated.append(name)
         else:
-            files_to_process.append((name, path, content_type))
             added.append(name)
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        embedder.validate_model()
+        get_services().embedder.validate_model()
         await ingest_batch(
             files_to_process,
             added,
             updated,
             failed,
             quiet=quiet,
-            force_vision=force_vision,
             on_progress=on_progress,
+            cancel=cancel,
         )
 
     if files_to_process or removed:
-        store.ensure_fts_index()
+        _store.ensure_fts_index()
+        await _rebuild_concept_clusters()
+        await _incremental_wiki_update(set(added) | set(updated) | set(removed))
 
     result = SyncResult(
         added=added,
@@ -543,7 +783,7 @@ async def sync(
             updated=len(result.updated),
             removed=len(result.removed),
             failed=len(result.failed),
-        ).model_dump(),
+        ),
     )
     return result
 
@@ -551,62 +791,86 @@ async def sync(
 # Limit concurrent ingestion to avoid overwhelming I/O
 _MAX_CONCURRENT = os.cpu_count() or 4
 
+# Concurrent.futures raises this exact RuntimeError message when submitting to
+# a shutdown executor (Python 3.11+). There is no dedicated exception class to
+# catch, so callers have to string-match the message.
+_EXECUTOR_SHUTDOWN_MSG = "cannot schedule new futures after shutdown"
+
+
+def _is_executor_shutdown(exc: BaseException) -> bool:
+    """True if ``exc`` is the concurrent.futures shutdown-race RuntimeError."""
+    return isinstance(exc, RuntimeError) and _EXECUTOR_SHUTDOWN_MSG in str(exc)
+
 
 async def ingest_batch(
-    files_to_process: list[tuple[str, Path, str]],
+    files_to_process: list[FileToProcess],
     added: list[str],
     updated: list[str],
     failed: list[str],
     *,
     quiet: bool = False,
-    force_vision: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> None:
-    """Ingest a batch of files, optionally showing a Rich progress bar."""
+    """Ingest a batch of files, optionally showing a Rich progress bar.
+    When *needs_cleanup* is True, old chunks are deleted immediately before
+    ingesting new ones so the two operations are atomic per file.
+    When *cancel* is set, pending files raise CancelledError before starting.
+    """
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
     total_files = len(files_to_process)
 
     async def _process_one(
-        name: str, path: Path, content_type: str, file_index: int
+        name: str,
+        path: Path,
+        content_type: str,
+        fhash: str,
+        needs_cleanup: bool,
+        file_index: int,
     ) -> _IngestResult:
         async with semaphore:
+            if cancel and cancel.is_set():
+                raise asyncio.CancelledError
+
             on_progress(
                 EventType.FILE_START,
-                FileStartEvent(
-                    file=name, total_files=total_files, current_file=file_index
-                ).model_dump(),
+                FileStartEvent(file=name, total_files=total_files, current_file=file_index),
             )
             try:
+                if needs_cleanup:
+                    get_services().store.delete_by_source(name)
                 chunk_count = await _ingest_file(
                     path,
                     name,
                     content_type,
-                    force_vision=force_vision,
                     quiet=quiet,
                     on_progress=on_progress,
                 )
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="ok", chunks=chunk_count).model_dump(),
+                    FileDoneEvent(file=name, status="ok", chunks=chunk_count),
                 )
-                return _IngestResult(name, path, chunk_count, error=None)
+                return _IngestResult(name, path, chunk_count, error=None, file_hash=fhash)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if isinstance(
-                    exc, RuntimeError
-                ) and "cannot schedule new futures after shutdown" in str(exc):
+                # During shutdown, worker pools raise RuntimeError from
+                # submit(). Prefer to treat these as cancellation rather than
+                # as ingest failures. Detect via the cancel flag (source of
+                # truth) or the executor's well-known shutdown message as a
+                # fallback when cancel was set after the submit race.
+                if (cancel and cancel.is_set()) or _is_executor_shutdown(exc):
                     raise asyncio.CancelledError from exc
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="error", chunks=0).model_dump(),
+                    FileDoneEvent(file=name, status="error", chunks=0),
                 )
                 return _IngestResult(name, path, 0, error=exc)
 
     if quiet:
         tasks = [
-            asyncio.ensure_future(_process_one(name, path, ct, idx))
-            for idx, (name, path, ct) in enumerate(files_to_process, 1)
+            asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
+            for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
         ]
         await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
@@ -622,11 +886,17 @@ async def ingest_batch(
             token = shared_progress.set((progress, ptask))
             try:
                 tasks = [
-                    asyncio.ensure_future(_process_one(name, path, ct, idx))
-                    for idx, (name, path, ct) in enumerate(files_to_process, 1)
+                    asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
+                    for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
                 ]
-                await _collect_results_with_progress(
-                    progress, ptask, tasks, added, updated, failed, on_progress=on_progress
+                await _collect_results(
+                    tasks,
+                    added,
+                    updated,
+                    failed,
+                    on_progress=on_progress,
+                    progress=progress,
+                    ptask=ptask,
                 )
             finally:
                 shared_progress.reset(token)
@@ -639,11 +909,17 @@ async def _collect_results(
     failed: list[str],
     *,
     on_progress: DetailedProgressCallback = noop_callback,
+    progress: Progress | None = None,
+    ptask: Any = None,
 ) -> None:
-    """Collect task results without progress display."""
+    """Collect task results, optionally updating a Rich progress bar."""
     for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
         _apply_result(result, added, updated, failed)
+        if progress is not None and ptask is not None:
+            desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
+            progress.update(ptask, description=desc)
+            progress.advance(ptask)
         progress_status = "failed" if result.error is not None else "ingested"
         on_progress(
             EventType.BATCH_PROGRESS,
@@ -652,37 +928,14 @@ async def _collect_results(
                 status=progress_status,
                 current=completed_count,
                 total=len(tasks),
-            ).model_dump(),
+            ),
         )
 
 
-async def _collect_results_with_progress(
-    progress: Progress,
-    ptask: Any,
-    tasks: list[asyncio.Task[_IngestResult]],
-    added: list[str],
-    updated: list[str],
-    failed: list[str],
-    *,
-    on_progress: DetailedProgressCallback = noop_callback,
-) -> None:
-    """Collect task results, updating an existing Rich progress bar."""
-    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
-        result = await fut
-        _apply_result(result, added, updated, failed)
-        desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
-        progress.update(ptask, description=desc)
-        progress.advance(ptask)
-        progress_status = "failed" if result.error is not None else "ingested"
-        on_progress(
-            EventType.BATCH_PROGRESS,
-            BatchProgressEvent(
-                file=result.name,
-                status=progress_status,
-                current=completed_count,
-                total=len(tasks),
-            ).model_dump(),
-        )
+def _discard_from_list(lst: list[str], value: str) -> None:
+    """Remove *value* from *lst* if present."""
+    with contextlib.suppress(ValueError):
+        lst.remove(value)
 
 
 def _apply_result(
@@ -693,19 +946,23 @@ def _apply_result(
 ) -> None:
     """Record an ingestion result — update store on success, track failure."""
     if result.error is not None:
-        log.exception("Failed to ingest %s", result.name, exc_info=result.error)
-        if result.name in added:
-            added.remove(result.name)
-        if result.name in updated:
-            updated.remove(result.name)
+        # Log the error message without the traceback: ingest failures are
+        # already surfaced to callers via SyncResult.failed, and the raw
+        # traceback from log.exception bleeds into the TUI chat pane via the
+        # stderr bridge. Full stack traces stay reachable by
+        # lowering LILBEE_LOG_LEVEL to DEBUG.
+        log.warning("Failed to ingest %s: %s", result.name, result.error)
+        log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
+        _discard_from_list(added, result.name)
+        _discard_from_list(updated, result.name)
         failed.append(result.name)
         return
     if result.chunk_count == 0:
         # No chunks produced (e.g. scanned PDF without vision model).
         # Don't record as a source so it gets retried on next sync.
-        if result.name in added:
-            added.remove(result.name)
-        if result.name in updated:
-            updated.remove(result.name)
+        _discard_from_list(added, result.name)
+        _discard_from_list(updated, result.name)
         return
-    store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
+
+    fhash = result.file_hash or file_hash(result.path)
+    get_services().store.upsert_source(result.name, fhash, result.chunk_count)

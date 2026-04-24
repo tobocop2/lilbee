@@ -1,0 +1,34 @@
+ConfirmDialog {
+    align: center middle;
+}
+
+ConfirmDialog > Vertical {
+    width: 50;
+    height: auto;
+    max-height: 12;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+ConfirmDialog #confirm-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+ConfirmDialog #confirm-message {
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+ConfirmDialog Center {
+    width: 100%;
+    height: auto;
+}
+
+ConfirmDialog Button {
+    margin: 0 1;
+}

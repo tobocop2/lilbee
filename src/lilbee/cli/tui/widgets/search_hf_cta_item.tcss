@@ -1,0 +1,23 @@
+SearchHFCtaItem {
+    height: auto;
+    padding: 0 1;
+    margin: 1 0 0 0;
+    border-left: thick transparent;
+    pointer: pointer;
+    color: $accent;
+    text-style: bold;
+
+    &:hover {
+        background: $surface;
+    }
+
+    &:focus {
+        border-left: thick $accent;
+        background: $surface;
+    }
+
+    #cta-label {
+        width: 1fr;
+        height: 1;
+    }
+}

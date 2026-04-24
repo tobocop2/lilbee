@@ -59,7 +59,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
         env:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
 
@@ -75,3 +75,19 @@ jobs:
           # or patches the diskcache dependency.
           ignore-vulns: |
             CVE-2025-69872
+
+  osv-scan:
+    name: OSV-Scanner (multi-ecosystem CVEs)
+    # Complements pip-audit: OSV.dev aggregates advisories from GHSA, OSV,
+    # Alpine SecDB, and others, catching CVEs that PyPI's advisory feed may
+    # lag on. Suppressions live in osv-scanner.toml at the repo root.
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    with:
+      scan-args: |-
+        --config=osv-scanner.toml
+        --recursive
+        ./
