@@ -17,19 +17,17 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.18' }}
 
 jobs:
-  # TEMPORARY (e2e self-check iteration): the cross-OS/cross-Python lint+test
-  # matrix in ci.yml is short-circuited so the wheel + publish + verify-pypi
-  # path can iterate fast. Restore to `uses: ./.github/workflows/ci.yml`
-  # once self-check is green on every platform.
   ci:
     if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "ci temporarily skipped to iterate on e2e self-check"
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
 
   build-wheels:
     needs: [ci]
-    if: always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped' || github.event_name == 'workflow_dispatch')
+    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
