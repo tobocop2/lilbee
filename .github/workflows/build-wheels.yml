@@ -60,7 +60,30 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      - name: Vendor llama-cpp-python and retag wheel
+      # Linux: abetlen only publishes musl-linked linux_x86_64 wheels, which
+      # won't load on glibc systems (every mainstream distro). Build from the
+      # PyPI sdist against the runner's glibc instead. PyPI only ships sdist
+      # for llama-cpp-python, so --no-binary forces the compile path.
+      - name: Build llama-cpp-python from source (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p /tmp/llama-build
+          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
+            --no-deps --no-binary=llama-cpp-python \
+            -w /tmp/llama-build
+          ls -lh /tmp/llama-build/
+
+      - name: Vendor llama-cpp-python and retag wheel (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: >
+          python -m tools.vendor.llama_cpp dist/*.whl
+          --local-wheel /tmp/llama-build/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
+          --wheel-platform ${{ matrix.wheel-plat }}
+
+      - name: Vendor llama-cpp-python and retag wheel (macOS/Windows)
+        if: runner.os != 'Linux'
         shell: bash
         run: >
           python -m tools.vendor.llama_cpp dist/*.whl

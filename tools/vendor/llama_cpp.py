@@ -161,21 +161,24 @@ def _vendor_llama_cpp(llama_dir: Path, lilbee_dir: Path) -> None:
 def _strip_llama_dependency(dist_info: Path) -> None:
     """Remove llama-cpp-python from Requires-Dist in METADATA."""
     metadata_path = dist_info / "METADATA"
-    lines = metadata_path.read_text().splitlines()
+    # PEP 621 / wheel spec mandates UTF-8; Python's Path.read_text defaults
+    # to the locale encoding, which is cp1252 on Windows runners and rejects
+    # valid UTF-8 bytes like 0x90.
+    lines = metadata_path.read_text(encoding="utf-8").splitlines()
     lines = [
         line
         for line in lines
         if not (line.startswith("Requires-Dist:") and "llama-cpp-python" in line.lower())
     ]
-    metadata_path.write_text("\n".join(lines) + "\n")
+    metadata_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _retag_wheel_file(dist_info: Path, py: str, wheel_platform: str) -> None:
     """Update the WHEEL tag from py3-none-any to a platform-specific tag."""
     wheel_path = dist_info / "WHEEL"
-    text = wheel_path.read_text()
+    text = wheel_path.read_text(encoding="utf-8")
     text = text.replace("Tag: py3-none-any", f"Tag: {py}-{py}-{wheel_platform}")
-    wheel_path.write_text(text)
+    wheel_path.write_text(text, encoding="utf-8")
 
 
 def _regenerate_record(lilbee_dir: Path, dist_info: Path) -> None:
@@ -269,17 +272,30 @@ def main() -> None:
     parser.add_argument(
         "--wheel-platform", default=None, help="Output wheel platform tag (auto-detected)"
     )
+    parser.add_argument(
+        "--local-wheel",
+        type=Path,
+        default=None,
+        help="Use this prebuilt llama-cpp-python wheel instead of downloading. "
+        "Needed for Linux: abetlen's linux_x86_64 wheels are musl-linked and "
+        "won't load on glibc, so CI builds from sdist and passes the wheel here.",
+    )
     args = parser.parse_args()
 
     if not args.wheel.exists():
         parser.error(f"Wheel not found: {args.wheel}")
 
-    plat = args.platform or detect_platform_tag()
     wheel_plat = args.wheel_platform or detect_wheel_platform()
 
-    with tempfile.TemporaryDirectory() as tmp:
-        llama_whl = download_wheel(args.version, plat, Path(tmp))
-        repack_wheel(args.wheel, llama_whl, wheel_plat)
+    if args.local_wheel is not None:
+        if not args.local_wheel.exists():
+            parser.error(f"Local llama wheel not found: {args.local_wheel}")
+        repack_wheel(args.wheel, args.local_wheel, wheel_plat)
+    else:
+        plat = args.platform or detect_platform_tag()
+        with tempfile.TemporaryDirectory() as tmp:
+            llama_whl = download_wheel(args.version, plat, Path(tmp))
+            repack_wheel(args.wheel, llama_whl, wheel_plat)
 
 
 if __name__ == "__main__":  # pragma: no cover
