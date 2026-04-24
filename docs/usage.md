@@ -6,20 +6,22 @@
 - [Querying](#querying)
 - [Interactive chat](#interactive-chat)
 - [Managing documents](#managing-documents)
+- [Wiki](#wiki)
 - [Agent integration](#agent-integration)
+- [HTTP Server](#http-server)
 - [Data locations](#data-locations)
 - [Environment variables](#environment-variables)
 - [Optional extras](#optional-extras)
   - [Concept graph](#concept-graph)
-  - [Cross-encoder reranking](#cross-encoder-reranking)
   - [Web crawling](#web-crawling)
   - [Remote providers (SDK backend)](#remote-providers-sdk-backend)
+- [Cross-encoder reranking](#cross-encoder-reranking)
 
 ---
 
 ## Getting started
 
-lilbee uses a git-like per-project model. Running `lilbee init` creates a `.lilbee/` directory in the current folder — just like `git init` creates `.git/`. Once initialized, every lilbee command you run from that directory (or any subdirectory) automatically uses the local database:
+lilbee uses a git-like per-project model. Running `lilbee init` creates a `.lilbee/` directory in the current folder, just like `git init` creates `.git/`. Once initialized, every lilbee command you run from that directory (or any subdirectory) automatically uses the local database:
 
 ```bash
 cd ~/projects/my-engine
@@ -28,9 +30,9 @@ lilbee add docs/manual.pdf   # indexes into .lilbee/
 lilbee search "oil change"   # searches .lilbee/
 ```
 
-If there's no `.lilbee/` in the current directory, lilbee walks up the directory tree looking for one — again, just like git. If none is found, it falls back to a global database at the platform default location (see [Data locations](#data-locations)).
+If there's no `.lilbee/` in the current directory, lilbee walks up the directory tree looking for one (again, just like git). If none is found, it falls back to a global database at the platform default location (see [Data locations](#data-locations)).
 
-This means running `lilbee` without `init` still works — it just uses the global database. Use `lilbee status` to see which database is active:
+This means running `lilbee` without `init` still works; it just uses the global database. Use `lilbee status` to see which database is active:
 
 ```bash
 lilbee status
@@ -52,7 +54,7 @@ lilbee add ~/notes/
 lilbee add ~/docs/*.md ~/data/report.pdf
 ```
 
-If a file with the same name already exists in the knowledge base, `add` skips it. Use `--force` to overwrite:
+If a file with the same name is already indexed, `add` skips it. Use `--force` to overwrite:
 
 ```bash
 lilbee add manual.pdf --force
@@ -66,14 +68,14 @@ For PDFs without embedded text, lilbee supports two OCR backends. When a vision 
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Ollama + model (~1.5 GB for [LightOnOCR-2](https://ollama.com/maternion/LightOnOCR-2)) |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install lilbee[litellm]`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
 See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
 
 ### Tesseract
 
-[Tesseract](https://github.com/tesseract-ocr/tesseract) is used automatically when no vision model is configured — no flags needed.
+[Tesseract](https://github.com/tesseract-ocr/tesseract) is used automatically when no vision model is configured. No flags needed.
 
 ```bash
 brew install tesseract          # macOS
@@ -82,34 +84,35 @@ sudo apt install tesseract-ocr  # Ubuntu/Debian
 
 ### Vision models
 
-Requires [Ollama](https://ollama.com/) with a vision-capable model.
+lilbee runs vision OCR in one of two ways:
+
+1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
+   (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
+   directly. No Ollama, no extra services. This is the recommended path and
+   supports an SSE heartbeat for long scans.
+2. **Remote vision model.** With `pip install lilbee[litellm]`, set the vision
+   model to any remote name your SDK backend understands (Ollama, OpenAI,
+   Anthropic, Gemini, etc.). lilbee will route vision calls accordingly.
 
 ```bash
 lilbee add report.pdf --vision                # prompts for model if none set
 lilbee add report.pdf --vision-timeout 30     # per-page timeout (default: 120s, 0 = no limit)
-export LILBEE_VISION_MODEL=maternion/LightOnOCR-2  # persist across runs
+export LILBEE_VISION_MODEL=lightonocr         # persist across runs (GGUF via mtmd)
 ```
 
-In interactive chat:
-
-```
-/vision                          # show status + picker
-/vision maternion/LightOnOCR-2   # set directly
-/vision off                      # disable and clear saved model
-```
-
-The model is saved to `config.toml` and persists across sessions.
+Pick or change a vision model interactively via `/settings` or `/setup` in the
+TUI; the selection is saved to `config.toml` and persists across sessions.
 
 ## Querying
 
-Search returns relevant chunks from your indexed documents. No LLM needed — `search` works without Ollama running:
+Search returns relevant chunks from your indexed documents. No LLM needed; `search` works without any model loaded:
 
 ```bash
 lilbee search "oil change interval"
 lilbee search "oil change interval" --top-k 20   # more results
 ```
 
-Ask a one-shot question — lilbee finds relevant chunks and passes them to a local LLM:
+Ask a one-shot question. lilbee finds relevant chunks and passes them to the configured chat model:
 
 ```bash
 lilbee ask "What is the recommended oil change interval?"
@@ -126,43 +129,142 @@ lilbee
 
 ### Slash commands
 
-| Command | Description |
-|---------|-------------|
-| `/status` | Show indexed documents and config |
-| `/add [path]` | Add a file or directory (tab-completes paths) |
-| `/model [name]` | Switch chat model — no args opens an interactive picker (tab-completes installed models) |
-| `/vision [name\|off]` | Switch vision OCR model — no args opens a picker, `off` disables |
-| `/settings` | Show all current configuration values |
-| `/set <key> <value>` | Change a setting (e.g. `/set temperature 0.7`) |
-| `/version` | Show lilbee version |
-| `/reset` | Delete all documents and data (asks for confirmation) |
-| `/help` | Show available commands |
-| `/quit` | Exit chat |
+All slash commands available from the TUI:
 
-Slash commands and paths tab-complete. A spinner shows while waiting for the first token from the LLM.
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/model [name]` | | Switch chat model. No args opens the catalog picker; with a name, switches directly or prompts to download |
+| `/models` | `/m`, `/catalog` | Browse the full model catalog |
+| `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
+| `/crawl [url]` | | Crawl a URL. No args opens a dialog |
+| `/delete <name>` | | Remove a document from the index |
+| `/remove <name>` | | Remove an installed model |
+| `/wiki` | | Open the auto-generated wiki |
+| `/setup` | | Run the first-time setup wizard |
+| `/settings` | | View or change settings |
+| `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
+| `/theme <name>` | | Switch theme |
+| `/status` | | Show indexed documents and config |
+| `/login <token>` | | Log in to HuggingFace |
+| `/clear` | | Clear chat history |
+| `/cancel` | | Cancel active operations |
+| `/reset` | | Factory reset (asks for confirmation) |
+| `/version` | | Show lilbee version |
+| `/help` | `/h` | Show available commands |
+| `/quit` | `/q`, `/exit` | Exit |
+
+Slash commands and paths tab-complete. A spinner shows while waiting for the
+first token from the LLM. Background jobs (sync, crawl, wiki build, model pull)
+appear in the Task Center and are cancellable with `/cancel`.
 
 ## Managing documents
 
 | Command | Description |
 |---------|-------------|
-| `lilbee remove manual.pdf` | Remove from knowledge base (keeps source file) |
+| `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
 | `lilbee remove manual.pdf --delete` | Remove and delete the source file |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
-| `lilbee reset` | Factory reset — deletes all documents and data |
+| `lilbee reset` | Factory reset. Deletes all documents and data |
+
+## Wiki
+
+lilbee analyzes the documents you've indexed and writes a wiki about them,
+inspired by Andrej Karpathy's [LLM Wiki](https://karpathy.ai/llmwiki/). Pages
+compound across sources instead of being one-per-document, so concepts and
+entities that show up repeatedly in your corpus get their own page with
+citations from every source that mentions them.
+
+**Layout** (under `$LILBEE_DATA/wiki/` by default):
+
+| Directory | Contents |
+|-----------|----------|
+| `concepts/` | One page per LLM-identified concept (e.g. `braking-systems.md`) |
+| `entities/` | One page per proper-noun entity extracted by NER (e.g. `henry-ford.md`) |
+| `drafts/` | Low-faithfulness or parse-failure pages awaiting your accept/reject |
+| `archive/` | Pages retired by `lilbee wiki prune` |
+| `synthesis/` | Cross-source pages produced by `lilbee wiki synthesize` |
+| `index.md` | Auto-generated table of contents, grouped by page type |
+| `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
+
+**Commands:**
+
+```bash
+lilbee wiki build         # build the wiki from the current index
+lilbee wiki lint          # find orphan pages, stale links, pending drafts
+lilbee wiki synthesize    # generate cross-source synthesis pages
+lilbee wiki drafts list   # list pending drafts
+lilbee wiki drafts accept <slug>   # promote a draft to concepts/ or entities/
+lilbee wiki drafts reject <slug>   # discard a draft
+lilbee wiki prune         # move stale pages to archive/
+```
+
+Every section is citation-verified against the source chunks and scored for
+embedding faithfulness; low-confidence output routes to `drafts/`. Plain-text
+concept slugs inside page bodies are rewritten to Obsidian `[[wiki links]]` so
+the graph view shows how ideas connect. The directory is Obsidian-compatible
+out of the box.
+
+The wiki is built incrementally during `lilbee sync` (with a cap of
+`LILBEE_WIKI_INGEST_UPDATE_CAP` changed sources per sync, default 20) so
+day-to-day re-ingest never churns existing concept slugs. Run
+`lilbee wiki build` explicitly to rebuild from scratch.
+
+MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_synthesize`,
+`wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`,
+`wiki_prune`. See [Agent integration](#agent-integration).
 
 ## Agent integration
 
-lilbee works as a retrieval backend for AI coding agents via MCP or JSON CLI. See [agent-integration.md](agent-integration.md) for setup and [demos/godot-with-lilbee/](../demos/godot-with-lilbee/) for a real-world example.
+lilbee works as a retrieval backend for AI coding agents via MCP or JSON CLI.
+See [agent-integration.md](agent-integration.md) for setup.
 
 > [!CAUTION]
 > **Private data and cloud agents**
 >
-> When an agent queries lilbee, retrieved chunks are sent to whatever LLM the agent uses — including cloud-hosted models. If your knowledge base contains private, confidential, or sensitive documents, verify two things before connecting an agent:
+> When an agent queries lilbee, retrieved chunks are sent to whatever LLM the
+> agent uses, including cloud-hosted models. If your index contains private,
+> confidential, or sensitive documents, verify two things before connecting an
+> agent:
 >
-> 1. **Check which database is active** — run `lilbee status` and confirm the data directory is the one you intend the agent to access. lilbee walks up the directory tree to find `.lilbee/`, so you may be exposing a different project's data than you expect.
-> 2. **Know where your agent sends data** — if the agent uses a cloud-hosted model, your document chunks will leave your machine. Use a local model via Ollama if your documents must stay private.
+> 1. **Check which database is active.** Run `lilbee status` and confirm the
+>    data directory is the one you intend the agent to access. lilbee walks up
+>    the directory tree to find `.lilbee/`, so you may be exposing a different
+>    project's data than you expect.
+> 2. **Know where your agent sends data.** If the agent uses a cloud-hosted
+>    model, your document chunks will leave your machine. Use a local model
+>    (native GGUF via llama-cpp or a local SDK backend) if your documents must
+>    stay private.
+
+## HTTP Server
+
+`lilbee serve` starts a REST API that any tool or GUI can hit. By default it
+picks a random port and writes it to `<data_dir>/server.port` so callers on the
+same machine can discover it:
+
+```bash
+lilbee serve                      # random port
+lilbee serve --port 8080          # fixed port
+lilbee serve --host 0.0.0.0       # bind all interfaces (default: 127.0.0.1)
+```
+
+The surface covers search (with SSE streaming variants for `ask` and `chat`),
+document lifecycle, crawling, model management, configuration (including a
+defaults endpoint that powers per-setting reset), and status/health. The
+Obsidian plugin uses the `/api/source` endpoint for vault-aware source
+retrieval. Interactive API docs live at `/schema/redoc` when the server is
+running, and the full OpenAPI schema is published at the
+[API reference](https://tobocop2.github.io/lilbee/api/).
+
+**Configuration via env vars:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
+| `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
+| `LILBEE_CORS_ORIGINS` | *(none)* | Extra allowed CORS origins (comma-separated) |
+| `LILBEE_CORS_ORIGIN_REGEX` | *(see [Environment variables](#environment-variables))* | Regex for allowed origins |
 
 ## Data locations
 
@@ -192,9 +294,10 @@ All settings are configurable via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path |
-| `LILBEE_CHAT_MODEL` | `qwen3:8b` | Ollama chat model |
-| `LILBEE_VISION_MODEL` | *(none)* | Vision model for PDF OCR — when set, takes precedence over Tesseract |
+| `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Chat model. Native GGUF by default; with `pip install lilbee[litellm]`, any remote name the SDK backend understands |
+| `LILBEE_VISION_MODEL` | *(none)* | Vision model for PDF OCR. When set, takes precedence over Tesseract |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
+| `LILBEE_RERANKER_MODEL` | *(none)* | Cross-encoder reranker. GGUF-native; see [Cross-encoder reranking](#cross-encoder-reranking) |
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
@@ -205,10 +308,10 @@ All settings are configurable via environment variables:
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `LILBEE_SERVER_PORT` | `7433` | Server port |
-| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins for remote clients, e.g. `https://my-app.com`. Additive — the default regex below is still applied. |
+| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins for remote clients, e.g. `https://my-app.com`. Additive; the default regex below is still applied. |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see below)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS`. |
 
-**Generation** — tune LLM output:
+**Generation.** Tune LLM output:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -219,7 +322,7 @@ All settings are configurable via environment variables:
 | `LILBEE_NUM_CTX` | *(model default)* | Context window size |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 
-**Advanced** — most users won't need to change these:
+**Advanced.** Most users won't need to change these:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -238,23 +341,25 @@ CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`,
 lilbee works out of the box with llama-cpp for local inference. These optional extras add capabilities that require heavier dependencies:
 
 ```bash
-pip install lilbee[graph]      # concept graph — topic clustering + search boosting
-pip install lilbee[reranker]   # cross-encoder reranking — precision pass on results
-pip install lilbee[crawler]    # web crawling — index websites alongside local docs
-pip install lilbee[litellm]    # remote providers — connect to your favorite frontier model
+pip install lilbee[graph]      # concept graph: topic clustering + search boosting
+pip install lilbee[crawler]    # web crawling: index websites alongside local docs
+pip install lilbee[litellm]    # remote providers: connect to any SDK-backed provider
 ```
 
-Install multiple at once: `pip install lilbee[graph,reranker,crawler]`
+Install multiple at once: `pip install lilbee[graph,crawler,litellm]`
+
+Cross-encoder reranking is built in (no extra required); see
+[Cross-encoder reranking](#cross-encoder-reranking) below.
 
 ---
 
 ### Concept graph
 
-Builds a topic map of your documents at index time. Related concepts are linked in a co-occurrence graph, which is used to boost search results and expand queries with related terms — all without extra LLM calls.
+Builds a topic map of your documents at index time. Related concepts are linked in a co-occurrence graph, which is used to boost search results and expand queries with related terms, all without extra LLM calls.
 
 **What it does:** Extracts noun phrases from every chunk using spaCy, computes PMI co-occurrence weights between concepts, and clusters them with the Leiden algorithm. At search time, queries are expanded with graph neighbors and results overlapping query concepts get a relevance boost.
 
-**When to use it:** Large knowledge bases (100+ documents) where the same topics appear across multiple files. The graph helps surface connections that pure vector similarity misses — for example, finding "deployment" documents when searching for "CI/CD" because those concepts co-occur frequently.
+**When to use it:** Large corpora (100+ documents) where the same topics appear across multiple files. The graph helps surface connections that pure vector similarity misses. For example, finding "deployment" documents when searching for "CI/CD" because those concepts co-occur frequently.
 
 **Install:** `pip install lilbee[graph]`
 
@@ -266,32 +371,9 @@ export LILBEE_CONCEPT_BOOST_WEIGHT=0.3        # how much concept overlap matters
 export LILBEE_CONCEPT_MAX_PER_CHUNK=10        # max concepts extracted per chunk
 ```
 
-The graph is built automatically during `lilbee sync`. No extra commands needed — search results are boosted transparently.
+The graph is built automatically during `lilbee sync`. No extra commands needed; search results are boosted transparently.
 
 Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990 (PMI), Traag et al. 2019 (Leiden).
-
----
-
-### Cross-encoder reranking
-
-A precision pass that re-scores search results using a cross-encoder model. Each (query, chunk) pair is scored independently, catching cases where the initial ranking was wrong.
-
-**What it does:** After the normal search pipeline (BM25 + vector + RRF) returns candidates, the cross-encoder scores each one. Results are blended with position-aware weights — top results trust the original ranking more, lower results trust the reranker more.
-
-**When to use it:** When you need high-precision answers and are willing to trade ~200-500ms per query. Most useful with large result sets where the top-5 ordering matters.
-
-**Install:** `pip install lilbee[reranker]` (depends on PyTorch, ~2GB)
-
-**Configuration:**
-
-```bash
-export LILBEE_RERANKER_MODEL="cross-encoder/ms-marco-MiniLM-L-6-v2"
-export LILBEE_RERANK_CANDIDATES=20   # how many candidates to rerank
-```
-
-Without this extra, hybrid search + MMR already provides good results for most use cases.
-
-Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al. 2005 (Learning to Rank).
 
 ---
 
@@ -299,9 +381,9 @@ Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al. 2005
 
 Index web pages alongside your local documents. Crawl single pages or follow links recursively.
 
-**What it does:** Fetches web pages using a headless browser (Playwright), extracts markdown content, and indexes it into your knowledge base. Supports recursive crawling with configurable depth, concurrent fetching, and SSRF protection against internal network access.
+**What it does:** Fetches web pages using a headless browser (Playwright), extracts markdown content, and indexes it. Supports recursive crawling with configurable depth, concurrent fetching, live progress, cancel, per-domain rate-limit + retries on HTTP 429/503, and SSRF protection against internal network access.
 
-**When to use it:** When your knowledge spans both local files and web content — documentation sites, wikis, internal tools. Crawled content is hash-tracked so re-crawling only re-indexes changed pages.
+**When to use it:** When your corpus spans both local files and web content such as documentation sites, wikis, or internal tools. Crawled content is hash-tracked so re-crawling only re-indexes changed pages.
 
 **Install:** `pip install lilbee[crawler]`
 
@@ -370,3 +452,24 @@ export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
 Provider options: `auto` (default, routes intelligently), `llama-cpp` (local only), `remote` (hosted only).
+
+---
+
+## Cross-encoder reranking
+
+Built-in. Re-scores retrieval candidates with a cross-encoder for precision on the top results. Unlike the extras above, no extra install is required; reranking is off by default and turns on as soon as you set `LILBEE_RERANKER_MODEL`.
+
+**What it does:** After the hybrid search pipeline (BM25 + vector + RRF) returns candidates, a GGUF cross-encoder scores each `(query, chunk)` pair and results are blended with position-aware weights. Top-ranked candidates keep more of the original ranking; lower-ranked candidates trust the reranker more.
+
+**When to use it:** When you need high-precision answers and are willing to trade roughly 200 to 500 ms per query. Most useful with large candidate sets where top-5 ordering matters.
+
+**Configuration:**
+
+```bash
+export LILBEE_RERANKER_MODEL="bge-reranker-v2-m3"   # any GGUF reranker
+export LILBEE_RERANK_CANDIDATES=20                  # how many candidates to rerank
+```
+
+Without a reranker set, hybrid search + MMR already provides good results for most use cases.
+
+Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al. 2005 (Learning to Rank).
