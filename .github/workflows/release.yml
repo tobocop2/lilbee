@@ -71,6 +71,7 @@ jobs:
           --collect-all tree_sitter_language_pack
           --collect-all tiktoken_ext
           --collect-all pypdfium2
+          --collect-all llama_cpp
           src/lilbee/__main__.py
 
       - name: Smoke test
@@ -158,9 +159,14 @@ jobs:
           # .dll got bundled into the frozen binary AND that inference runs
           # on this OS.
           SELF_CHECK_LOG=$(mktemp)
-          "$EXE" --json self-check > "$SELF_CHECK_LOG" 2>&1
-          echo "=== self-check output ==="
+          SELF_CHECK_RC=0
+          "$EXE" --json self-check > "$SELF_CHECK_LOG" 2>&1 || SELF_CHECK_RC=$?
+          echo "=== self-check output (exit=${SELF_CHECK_RC}) ==="
           cat "$SELF_CHECK_LOG"
+          if [ "${SELF_CHECK_RC}" != "0" ]; then
+            echo "FAIL: self-check exited ${SELF_CHECK_RC}"
+            exit 1
+          fi
           python -c "
           import json, pathlib, sys
           raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
