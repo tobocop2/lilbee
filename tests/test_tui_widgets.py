@@ -487,6 +487,13 @@ class TestModelBar:
             assert "sensitive" in rendered.lower()
 
 
+class TestCloudProviderLabel:
+    def test_empty_chat_model_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _cloud_provider_label
+
+        assert _cloud_provider_label("") is None
+
+
 class TestIsMmproj:
     def test_mmproj_detected(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _is_mmproj
