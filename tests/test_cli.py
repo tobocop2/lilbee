@@ -3191,6 +3191,16 @@ class TestSelfCheck:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload == {"ok": False, "error": "empty inference response"}
 
+    def test_empty_response_human_mode(self, tmp_path: Path) -> None:
+        """Human mode prints SELF-CHECK FAILED when the model returned whitespace."""
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        with mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama("   ")}):
+            result = runner.invoke(app, ["self-check", "--model-path", str(gguf)])
+        assert result.exit_code == 1
+        assert "SELF-CHECK FAILED" in result.output
+        assert "empty inference response" in result.output
+
     def test_human_mode_on_success(self, tmp_path: Path) -> None:
         """Non-JSON mode prints the response and PASSED banner."""
         gguf = tmp_path / "tiny.gguf"
