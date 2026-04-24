@@ -647,6 +647,71 @@ def version() -> None:
     console.print(f"lilbee {ver}")
 
 
+_SELF_CHECK_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
+_SELF_CHECK_FILE = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+
+_self_check_model_path_option = typer.Option(
+    None,
+    "--model-path",
+    help="Path to a GGUF file. Skips the HuggingFace download.",
+)
+_self_check_max_tokens_option = typer.Option(5, "--max-tokens", help="Tokens to generate.")
+
+
+@app.command("self-check")
+def self_check_cmd(
+    model_path: Path | None = _self_check_model_path_option,
+    max_tokens: int = _self_check_max_tokens_option,
+) -> None:
+    """Verify the installation can load llama.cpp and run inference.
+
+    Downloads ``SmolLM2-135M-Instruct-Q3_K_S.gguf`` (~90MB) from HuggingFace
+    if ``--model-path`` is not provided, then runs a tiny completion against
+    it. Exits 0 on success, 1 on any failure. Intended for post-install
+    verification ("does the vendored llama.cpp actually work on my box?")
+    and as the end-to-end gate in release CI.
+    """
+    try:
+        if model_path is None:
+            from huggingface_hub import hf_hub_download
+
+            console.print(f"Downloading {_SELF_CHECK_REPO}/{_SELF_CHECK_FILE}...")
+            model_path = Path(hf_hub_download(_SELF_CHECK_REPO, _SELF_CHECK_FILE))
+        console.print(f"Loading {model_path}")
+
+        import llama_cpp
+
+        llm = llama_cpp.Llama(model_path=str(model_path), n_ctx=256, verbose=False)
+        # stream=False (default) returns a dict, not an iterator, but
+        # create_completion's return type is a union; cast to Any so the
+        # indexing below type-checks without forcing llama_cpp to be a
+        # typecheck-time dep of lilbee.
+        from typing import Any, cast
+
+        out = cast(Any, llm.create_completion("2+2=", max_tokens=max_tokens))
+        text: str = out["choices"][0]["text"]
+    except Exception as exc:
+        if cfg.json_mode:
+            json_output({"ok": False, "error": repr(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {exc!r}")
+        raise typer.Exit(1) from exc
+
+    if not text.strip():
+        msg = "empty inference response"
+        if cfg.json_mode:
+            json_output({"ok": False, "error": msg})
+        else:
+            console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {msg}")
+        raise typer.Exit(1)
+
+    if cfg.json_mode:
+        json_output({"ok": True, "response": text, "model": str(model_path)})
+    else:
+        console.print(f"Response: {text!r}")
+        console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
+
+
 @app.command()
 def status(
     data_dir: Path | None = data_dir_option,
