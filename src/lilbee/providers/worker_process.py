@@ -12,6 +12,7 @@ import contextlib
 import logging
 import multiprocessing
 import multiprocessing.queues
+import os
 import queue
 import time
 from dataclasses import dataclass, field
@@ -284,6 +285,29 @@ def _redirect_stdio() -> None:  # pragma: no cover
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
 
+def _configure_worker_logging() -> None:  # pragma: no cover
+    """Route the worker's Python logs to ``$LILBEE_DATA/worker.log``.
+
+    ``_redirect_stdio`` points stderr at /dev/null so the parent's Textual
+    render stays clean, but that also silences the subprocess's own
+    progress logs. Writing them to a file alongside the data directory
+    gives operators (and QA runs) a way to watch per-page timing, Metal
+    availability, and model load info without touching the TUI.
+    """
+    import logging as _logging
+    import os as _os
+
+    data_dir = _os.environ.get("LILBEE_DATA") or ""
+    if not data_dir:
+        return
+    log_path = _os.path.join(data_dir, "worker.log")
+    handler = _logging.FileHandler(log_path)
+    handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(_logging.INFO)
+
+
 def _worker_main(
     req_q: multiprocessing.Queue[_WorkerRequest],
     resp_q: multiprocessing.Queue[_WorkerResponse],
@@ -291,7 +315,9 @@ def _worker_main(
 ) -> None:
     """Child process entry point. Loads models lazily, processes requests."""
     _redirect_stdio()
+    _configure_worker_logging()
     _apply_config_snapshot(config)
+    log.info("Worker subprocess online (pid=%s)", os.getpid())
 
     embed_llm: Any = None
     vision_llm: Any = None
@@ -420,10 +446,20 @@ def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
 
         prompt = request.prompt or OCR_PROMPT
         messages = build_vision_messages(prompt, request.png_bytes)
+        start = time.monotonic()
         response = llm.create_chat_completion(
             messages=messages, stream=False, max_tokens=cfg.vision_max_tokens
         )
         text: str = response["choices"][0]["message"]["content"] or ""
+        usage = response.get("usage", {}) or {}
+        log.info(
+            "vision_ocr request_id=%s wall=%.1fs prompt_tokens=%s completion_tokens=%s chars=%d",
+            request.request_id,
+            time.monotonic() - start,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            len(text),
+        )
         return VisionResponse(text=text, request_id=request.request_id)
     except Exception as exc:
         return VisionResponse(error=str(exc), request_id=request.request_id)

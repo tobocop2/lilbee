@@ -183,6 +183,13 @@ def _record_page(
     """Drain one completed page future into ``extracted`` and fire progress."""
     i, text = fut.result()
     extracted[i] = text
+    log.info(
+        "Vision OCR completed page %d/%d of %s (%d chars)",
+        i + 1,
+        total,
+        path.name,
+        len(text) if text else 0,
+    )
     on_progress(
         EventType.EXTRACT,
         ExtractEvent(file=path.name, page=i + 1, total_pages=total),

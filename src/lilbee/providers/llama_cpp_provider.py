@@ -666,7 +666,12 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         mmproj_path = find_mmproj_for_model(model_path)
 
     handler_cls = _resolve_vision_handler(mmproj_path)
-    log.info("Loading vision model %s with mmproj %s", model_path.name, mmproj_path.name)
+    log.info(
+        "Loading vision model %s (handler=%s, mmproj=%s, n_gpu_layers=-1)",
+        model_path.name,
+        handler_cls.__name__,
+        mmproj_path.name,
+    )
     chat_handler = _suppress_stderr(handler_cls, clip_model_path=str(mmproj_path))
 
     kwargs: dict[str, Any] = {
@@ -680,4 +685,11 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     else:
         kwargs["n_ctx"] = 0
 
-    return _suppress_stderr(Llama, **kwargs)
+    llama = _suppress_stderr(Llama, **kwargs)
+    metadata = getattr(llama, "metadata", {}) or {}
+    log.info(
+        "Vision model loaded: n_ctx=%s arch=%s",
+        getattr(llama, "n_ctx", lambda: "?")() if callable(getattr(llama, "n_ctx", None)) else "?",
+        metadata.get("general.architecture", "?"),
+    )
+    return llama
