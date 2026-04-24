@@ -3,72 +3,119 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee — local knowledge base for your documents</title>
+<title>lilbee — terminal-first local search engine</title>
+<meta name="description" content="A terminal-first local search engine for your files, the web, and scanned documents. One install, no sidecar services, fully offline by default.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <h1>lilbee</h1>
 <div class="layout">
-<div class="main"><pre><span class="bee-sm">
-      \)  (/
-     _{    }_
-    / /o  o\ \
-    \  \__/  /
-     '-____-'
+  <div class="main">
 
-</span>888 d8b 888 888
+    <div class="topstrip reveal r1">
+      <div><span class="faint">lilbee v0.6.66b</span></div>
+      <div class="right">
+        <span class="faint">Elastic License 2.0 · 100% coverage · typed</span>
+      </div>
+    </div>
+
+    <section class="reveal r2">
+      <pre class="wordmark" aria-hidden="true">888 d8b 888 888
 888 Y8P 888 888
 888     888 888
 888 888 888 88888b.  .d88b.  .d88b.
 888 888 888 888 "88bd8P  Y8bd8P  Y8b
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
-888 888 888 88888P"  "Y8888  "Y8888
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <p class="tagline">a <span>terminal-first local search engine</span> for your files, the web, and scanned documents. <span class="dim">one install, no sidecar services, fully offline by default.</span></p>
+      <pre class="hr-line" aria-hidden="true">════════════════════════════════════════════════════════════════</pre>
+    </section>
 
-<span class="dim">your documents, your hardware, your knowledge</span>
+    <section class="reveal r3">
+      <div class="label">preview</div>
+      <div class="demo">
+<pre class="frame-top">┌─ lilbee chat · owner's manuals ──────────────────── [qwen3:0.6b] ┐</pre>
+<div class="row"><pre class="bar">│ </pre><div class="content"><span class="prompt">&gt;</span> what does the oil pressure warning mean?</div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content">the oil pressure warning indicates low oil pressure.<sup>[¹]</sup></div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content">when the light stays on, stop the engine immediately.<sup>[²]</sup></div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content">&nbsp;</div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content"><span class="cite">─── sources ──────────────────────────────────────────────</span></div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content"><span class="cite">[¹ owners-manual.pdf:42]  [² owners-manual.pdf:43]</span></div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content">&nbsp;</div><pre class="bar"> │</pre></div>
+<div class="row"><pre class="bar">│ </pre><div class="content"><span class="prompt">&gt;</span> <span class="cursor"></span></div><pre class="bar"> │</pre></div>
+<pre class="frame-bot">└──────────────────────────────────────────────────────────────────┘</pre>
+      </div>
+    </section>
 
-<span class="faint">════════════════════════════════════════════</span>
+    <section class="reveal r4">
+      <div class="label">what it does</div>
+      <div class="caps">
+        <div class="cap">
+          <h3>personal encyclopedia</h3>
+          <p>Index PDFs, notes, ebooks, code. Every answer clicks back to the source line. Private Encarta you build from your own files.</p>
+        </div>
+        <div class="cap">
+          <h3>grounding for AI agents</h3>
+          <p>Plug into any MCP agent. It reads the code it's about to call, cites file and line, and says "I don't know" instead of guessing.</p>
+        </div>
+        <div class="cap">
+          <h3>offline copies of websites</h3>
+          <p>One command to crawl a docs site or wiki, convert to markdown, and index. Search and chat with it offline, even if it goes down.</p>
+        </div>
+        <div class="cap">
+          <h3>scans &amp; OCR</h3>
+          <p>Paper archives and photos go through Tesseract or a local vision GGUF, landing as searchable markdown with layout preserved.</p>
+        </div>
+      </div>
+    </section>
 
- <a href="https://github.com/tobocop2/lilbee">[1] GitHub</a><span class="link-dots"> <span class="faint">··············</span></span><span class="link-desc"> <span class="dim">source code</span></span>
- <a href="https://pypi.org/project/lilbee/">[2] PyPI</a><span class="link-dots"> <span class="faint">················</span></span><span class="link-desc"> <span class="dim">package</span></span>
- <a href="api/">[3] API docs</a><span class="link-dots"> <span class="faint">············</span></span><span class="link-desc"> <span class="dim">OpenAPI / Redoc</span></span>
- <a href="coverage/">[4] Coverage</a><span class="link-dots"> <span class="faint">············</span></span><span class="link-desc"> <span class="dim">100% tested</span></span>
+    <section class="reveal r5">
+      <div class="label">install</div>
+      <div class="install">
+<pre class="box-top">┌──────────────────────────────────────────────────────────────────┐</pre>
+<div class="box-mid">
+  <span class="bar">│</span>
+  <span class="cmd"><span class="dollar">$</span><span id="install-cmd">pip install lilbee</span><span class="cursor"></span></span>
+  <button type="button" class="copy" id="copy-btn" aria-label="Copy install command">[ copy ]</button>
+  <span class="bar">│</span>
+</div>
+<pre class="box-bot">└──────────────────────────────────────────────────────────────────┘</pre>
+      </div>
+      <p class="extras">extras: <span class="faint">[crawler]</span> websites · <span class="faint">[litellm]</span> frontier models · <span class="faint">[graph]</span> concept-graph search</p>
+    </section>
 
-<span class="faint">──── built with lilbee ─────────────────────</span>
+    <section class="reveal r6">
+      <div class="label">go deeper</div>
+      <div class="links">
+        <a href="https://github.com/tobocop2/lilbee"><span class="num">[1] GitHub</span><span class="dots">···················</span><span class="desc">source</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[2] PyPI</span><span class="dots">·····················</span><span class="desc">package</span></a>
+        <a href="api/"><span class="num">[3] API docs</span><span class="dots">·················</span><span class="desc">openapi</span></a>
+        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md"><span class="num">[4] Usage guide</span><span class="dots">··············</span><span class="desc">commands</span></a>
+        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/agent-integration.md"><span class="num">[5] Agents</span><span class="dots">···················</span><span class="desc">mcp / cli</span></a>
+        <a href="coverage/"><span class="num">[6] Coverage</span><span class="dots">·················</span><span class="desc">100%</span></a>
+        <a href="https://github.com/tobocop2/lilbee/releases"><span class="num">[7] Changelog</span><span class="dots">················</span><span class="desc">releases</span></a>
+        <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8] Benchmarks</span><span class="dots">···············</span><span class="desc">godot · ocr</span></a>
+        <a href="https://github.com/tobocop2/obsidian-lilbee/pull/7"><span class="num">[9] Obsidian plugin</span><span class="dots">··········</span><span class="desc">soon</span></a>
+      </div>
+    </section>
 
- <a href="https://tobocop2.github.io/obsidian-lilbee/">Obsidian Plugin</a><span class="link-dots"> <span class="faint">········</span></span><span class="link-desc"> <span class="dim">chat, search, sync your vault</span></span>
-
-<span class="faint">════════════════════════════════════════════</span>
-
- <span class="dim">&gt;</span> your hardware, your data — chat with your
-   documents completely offline, no cloud needed
- <span class="dim">&gt;</span> make any model better — augment AI agents
-   via MCP or shell with hybrid RAG search
- <span class="dim">&gt;</span> talks to everything — PDFs, Office docs,
-   images, ebooks, code, <a href="https://github.com/Goldziher/kreuzberg">150+ formats</a>
- <span class="dim">&gt;</span> git-like model — <span class="dim">lilbee init</span> creates a
-   per-project DB for faster, focused search;
-   or use a single global knowledge base
- <span class="dim">&gt;</span> bring your own GUI — built-in REST API,
-   no extra app needed — <a href="https://tobocop2.github.io/obsidian-lilbee/">see Obsidian plugin</a>
-
- <span class="faint">$</span> pip install lilbee<span class="cursor"></span>
-
-<span class="faint">════════════════════════════════════════════</span>
-<span class="faint">────</span> <span class="dim">contact</span> <span class="faint">───────────────────────────────</span>
-
-<span class="dim">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    <footer class="reveal r7">
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |t|o|b|i|a|s|.|p|e|r|e|l|s|t|e|i|n|
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-+-+-+-+-+-+-+-+-+-+-+
-|@|g|m|a|i|l|.|c|o|m|
-+-+-+-+-+-+-+-+-+-+-+</span>
+        +-+-+-+-+-+-+-+-+-+-+
+        |@|g|m|a|i|l|.|c|o|m|
+        +-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta">
+        <div><a href="https://github.com/tobocop2/lilbee">lilbee</a> · Elastic License 2.0</div>
+      </div>
+    </footer>
+  </div>
 
-<span class="faint">════════════════════════════════════════════</span>
- <span class="faint"><a href="https://github.com/tobocop2/lilbee">lilbee</a> — MIT License</span>
-</pre></div>
-<aside class="bee-art" aria-hidden="true"><pre>
-     %           %
+  <aside class="bee-art reveal r3" aria-hidden="true"><pre>     %           %
          %           %
             %           %
                %          %
@@ -105,8 +152,33 @@
                               ZZZZ
                               ZZZ
                              ZZ
-                            Z
-</pre></aside>
+                            Z</pre></aside>
 </div>
+<script>
+(function () {
+  var btn = document.getElementById('copy-btn');
+  if (!btn) return;
+  var cmd = document.getElementById('install-cmd');
+  btn.addEventListener('click', function () {
+    var text = cmd ? cmd.textContent : 'pip install lilbee';
+    var done = function () {
+      var original = btn.textContent;
+      btn.textContent = '[ copied ]';
+      setTimeout(function () { btn.textContent = original; }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, done);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      done();
+    }
+  });
+})();
+</script>
 </body>
 </html>
