@@ -19,6 +19,9 @@ class DocumentResult(BaseModel):
     content_type: str
     excerpts: list[Excerpt]
     best_relevance: float
+    # Vault-relative path for clients to deep-link into the native UI.
+    # ``None`` when the server can't resolve the source under ``cfg.vault_base``.
+    vault_path: str | None = None
 
 
 def _zero_to_none(val: int) -> int | None:
@@ -42,6 +45,8 @@ def _to_excerpt(chunk: SearchChunk) -> Excerpt:
 
 def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
     """Group raw LanceDB chunks into document-centric results."""
+    from lilbee.cli.helpers import resolve_vault_path
+
     by_source: dict[str, list[SearchChunk]] = {}
     for chunk in chunks:
         source = chunk.source
@@ -60,6 +65,7 @@ def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
                 content_type=source_chunks[0].content_type,
                 excerpts=excerpts,
                 best_relevance=excerpts[0].relevance,
+                vault_path=resolve_vault_path(source),
             )
         )
 

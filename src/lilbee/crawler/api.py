@@ -131,8 +131,15 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
-    """Fetch a single URL and return its markdown content."""
+    """Fetch a single URL. Raises :class:`CrawlerBackendMissing` if crawl4ai isn't installed."""
     validate_crawl_url(url)
+    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
+            "(or 'pip install crawl4ai') to enable web crawling."
+        )
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
@@ -258,6 +265,16 @@ async def crawl_recursive(
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
     pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+
+    # Fail fast when the ``crawler`` extra wasn't installed so SSE
+    # callers see ``event: error`` instead of a silent zero-results run.
+    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
+            "(or 'pip install crawl4ai') to enable recursive web crawling."
+        )
 
     # Fail fast before pulling in crawl4ai submodules so callers get a clean
     # CrawlerBrowserMissing instead of a Playwright install banner.

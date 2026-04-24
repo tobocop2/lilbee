@@ -1909,3 +1909,126 @@ class TestSearchRouteErrors:
                     "/api/ask", json={"question": "test"}, headers=self._auth_headers()
                 )
         assert resp.status_code == 503
+
+
+class TestSourceContentRoute:
+    """GET /api/source routing: JSON shape, raw streaming, and error paths.
+
+    ``get_source_content`` is covered through the route so we exercise the
+    ``isinstance(result, tuple)`` branch in ``source_content_route`` at the
+    same time; separate handler-level tests would double the surface
+    without adding signal.
+    """
+
+    @staticmethod
+    def _auth_headers() -> dict[str, str]:
+        from lilbee.server import auth as _auth_mod
+
+        return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
+
+    async def test_empty_source_returns_400(self, isolated_env):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "   "}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 400
+
+    async def test_missing_file_returns_404(self, isolated_env):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "nope.md"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 404
+
+    async def test_path_traversal_returns_400(self, isolated_env):
+        """``..`` traversal escapes ``documents_dir`` → ValueError → 400.
+
+        ``validate_path_within`` resolves the path and checks
+        ``is_relative_to``; the resulting ``ValueError`` is translated to
+        ValidationException by the route wrapper.
+        """
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "../../etc/passwd"},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 400
+
+    async def test_text_file_returns_markdown_json(self, isolated_env):
+        """A markdown source returns JSON with markdown, title, content_type."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "doc.md").write_text("# Hello\n\nbody\n", encoding="utf-8")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "doc.md"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["markdown"].startswith("# Hello")
+        assert payload["title"] == "Hello"
+        assert payload["content_type"].startswith("text/")
+
+    async def test_binary_file_returns_empty_markdown(self, isolated_env):
+        """Non-text types return empty markdown; client should re-request raw=1."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "doc.pdf").write_bytes(b"%PDF-1.4\nbinarydata")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "doc.pdf"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["markdown"] == ""
+        assert payload["content_type"] == "application/pdf"
+        assert payload["title"] is None
+
+    async def test_unknown_extension_falls_back_to_octet_stream(self, isolated_env):
+        """A file without an extension maps to application/octet-stream."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "mystery").write_bytes(b"\x00\x01\x02")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "mystery"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        assert resp.json()["content_type"] == "application/octet-stream"
+
+    async def test_raw_returns_bytes_with_content_type(self, isolated_env):
+        """raw=1 streams the file bytes with a real Content-Type header."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        payload = b"%PDF-1.4\nbinarydata\n"
+        (cfg.documents_dir / "doc.pdf").write_bytes(payload)
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "doc.pdf", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.content == payload
+        assert resp.headers["content-type"].startswith("application/pdf")

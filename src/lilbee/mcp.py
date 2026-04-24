@@ -6,10 +6,11 @@ import asyncio
 import concurrent.futures
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from lilbee.cli.helpers import clean_result
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
@@ -22,9 +23,6 @@ from lilbee.wiki.shared import (
     WIKI_STATUS_FAILED,
     WIKI_STATUS_GENERATED,
 )
-
-if TYPE_CHECKING:
-    from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +39,7 @@ def search(query: str, top_k: int = 5) -> list[dict[str, Any]] | dict[str, Any]:
     try:
         results = get_services().searcher.search(query, top_k=top_k)
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
-        return [clean(r) for r in results]
+        return [clean_result(r) for r in results]
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -526,11 +524,6 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
     except ValueError as exc:
         return {"error": str(exc)}
     return remove_model_data(model, source=src).model_dump()
-
-
-def clean(result: SearchChunk) -> dict[str, object]:
-    """Convert SearchChunk to a JSON-friendly dict."""
-    return result.model_dump(exclude={"vector"}, exclude_none=True)
 
 
 def main() -> None:

@@ -47,6 +47,10 @@ def isolated_env(tmp_path, monkeypatch):
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
+    # The ``crawl_recursive`` entry point now gates on ``crawler_available()``
+    # so a missing ``[crawler]`` extra produces ``CrawlerBackendMissing``.
+    # Stub it True here so orchestration tests don't require crawl4ai.
+    monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
     # Bypass SSRF DNS resolution by default so localhost-like test URLs
     # don't hit real DNS.
     monkeypatch.setattr(

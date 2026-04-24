@@ -262,6 +262,24 @@ _META_EXCLUDE: tuple[str, ...] = (
     r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
 )
 
+# Mediawiki/Wikipedia navlinks that dominate BFS before the article body.
+_MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
+    r"/wiki/Main_Page$",
+    r"/wiki/Wikipedia:",
+    r"/wiki/Portal:",
+    r"/wiki/Help:",
+    r"/wiki/Special:",
+    r"/wiki/Category:",
+    r"/wiki/Template:",
+    r"/wiki/Template_talk:",
+    r"/wiki/Talk:",
+    r"/wiki/File:",
+    r"/wiki/File_talk:",
+    r"/wiki/User:",
+    r"/wiki/User_talk:",
+    r"/w/index\.php",
+)
+
 DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_WP_EXCLUDE,
     *_ARCHIVE_EXCLUDE,
@@ -272,6 +290,7 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_ECOMMERCE_EXCLUDE,
     *_TRACKING_EXCLUDE,
     *_META_EXCLUDE,
+    *_MEDIAWIKI_EXCLUDE,
 )
 
 
@@ -307,10 +326,15 @@ class Config(BaseSettings):
 
     # Paths — resolved from env/defaults in model_validator(mode='before')
     data_root: Path = Field(default=Path())
-    documents_dir: Path = Field(default=Path())
+    # Writable so plugin-managed servers can pivot storage to a vault path on
+    # first boot; rebuild the index after migrating.
+    documents_dir: Path = ConfigField(default=Path(), writable=True)
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
+    # Obsidian vault root; when set, search results carry a vault-relative
+    # ``vault_path`` for native-UI deep-links.
+    vault_base: Path | None = ConfigField(default=None, writable=True)
 
     chat_model: str = Field(default="qwen3:0.6b", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text:v1.5", min_length=1)

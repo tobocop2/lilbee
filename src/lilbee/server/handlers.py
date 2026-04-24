@@ -12,6 +12,7 @@ import copy
 import functools
 import json
 import logging
+import mimetypes
 import threading
 import time
 import types
@@ -52,6 +53,7 @@ from lilbee.server.models import (
     ModelsInstalledResponse,
     ModelsShowResponse,
     SetModelResponse,
+    SourceContentResponse,
     StatusResponse,
     SyncSummary,
 )
@@ -64,6 +66,11 @@ if TYPE_CHECKING:
     from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
+
+# Windows mimetypes reads from the registry, which may not define ``.md``
+# as ``text/markdown``. Pin the mapping at import time; ``add_type`` is
+# idempotent so repeated imports are safe.
+mimetypes.add_type("text/markdown", ".md")
 
 MAX_ADD_FILES = 100
 
@@ -539,17 +546,31 @@ async def _set_model(
 
 
 def _require_model_available(model: str) -> str:
-    """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
+    """Return the normalized installed model ref; raises ValueError when unavailable.
+
+    Accepts catalog ``name:tag``, HuggingFace repo id, display name, or
+    provider-prefixed ref.
+    """
+    from lilbee.catalog import find_catalog_entry
     from lilbee.models import ensure_tag
 
-    normalized = ensure_tag(model)
+    entry = find_catalog_entry(model)
+    normalized = entry.ref if entry is not None else ensure_tag(model)
     available = get_services().provider.list_models()
     # ``available`` lists bare tags from /api/tags; stored refs may carry an
     # ``ollama/`` prefix. Match on either form so both client styles work.
     bare = parse_model_ref(normalized).name
-    if normalized not in available and bare not in available:
-        raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
-    return normalized
+    if normalized in available or bare in available:
+        return normalized
+    # Providers may report the HuggingFace repo form instead of the catalog
+    # ``name:tag``. When the input resolved to a catalog entry, accept that
+    # entry's ``hf_repo`` (with or without ``:latest``) as an equivalent
+    # installed form so the canonical ref is still returned.
+    if entry is not None:
+        hf_candidates = {entry.hf_repo, ensure_tag(entry.hf_repo)}
+        if hf_candidates.intersection(available):
+            return normalized
+    raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:
@@ -713,6 +734,37 @@ async def get_config() -> ConfigResponse:
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     return ConfigResponse(**result)
+
+
+async def get_source_content(
+    source: str, raw: bool = False
+) -> SourceContentResponse | tuple[bytes, str]:
+    """Return a stored source file: JSON with markdown text for text types, or
+    ``(bytes, content_type)`` when *raw* is True. Binary types return empty
+    markdown so clients know to re-request with ``raw=1``.
+    """
+    from lilbee.wiki.index import parse_title
+
+    if not source or not source.strip():
+        raise ValueError("source must not be empty")
+    documents_dir = cfg.documents_dir
+    resolved = validate_path_within(documents_dir / source, documents_dir)
+    if not resolved.is_file():
+        raise FileNotFoundError(source)
+
+    content_type, _ = mimetypes.guess_type(resolved.name)
+    if content_type is None:
+        content_type = "application/octet-stream"
+
+    if raw:
+        return resolved.read_bytes(), content_type
+
+    if not content_type.startswith("text/"):
+        return SourceContentResponse(markdown="", content_type=content_type, title=None)
+
+    text = resolved.read_text(encoding="utf-8", errors="replace")
+    title = parse_title(text) or None
+    return SourceContentResponse(markdown=text, content_type=content_type, title=title)
 
 
 @functools.cache
