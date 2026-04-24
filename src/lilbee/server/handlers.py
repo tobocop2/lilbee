@@ -749,6 +749,13 @@ async def get_source_content(
 
     from lilbee.wiki.index import parse_title
 
+    # Windows ships ``mimetypes`` without a registered type for ``.md``
+    # unless a markdown-aware editor has written one into the registry,
+    # so CI runners on Windows see ``guess_type('doc.md')`` return
+    # ``(None, None)`` and fall through to ``application/octet-stream``.
+    # Pin the mapping explicitly; ``add_type`` is idempotent.
+    mimetypes.add_type("text/markdown", ".md")
+
     if not source or not source.strip():
         raise ValueError("source must not be empty")
     documents_dir = cfg.documents_dir
