@@ -21,7 +21,6 @@ A terminal-first local search engine for your own files, websites, and scanned d
 - [Why lilbee](#why-lilbee)
 - [Previews](#previews)
 - [What you can do with it](#what-you-can-do-with-it)
-- [Wiki](#wiki)
 - [TUI](#tui)
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
@@ -29,6 +28,7 @@ A terminal-first local search engine for your own files, websites, and scanned d
 - [HTTP Server](#http-server) · [API reference](https://tobocop2.github.io/lilbee/api/)
 - [Interactive chat](#interactive-chat)
 - [Supported formats](#supported-formats)
+- [Experimental](#experimental)
 
 ---
 
@@ -172,20 +172,6 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install lilbee[litellm]` away when a local model isn't enough, so the power is there when you need it.
 
-### Experimental
-
-A semantic-chunking mode is available as an experimental opt-in for long-form prose (novels, essays, research papers, interview transcripts) where topic flow matters more than fixed-size token splits. See the [usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
-
-## Wiki
-
-> **Experimental.** Generation quality depends on your corpus and the chosen chat model. Some pages will land in `drafts/` for human review rather than publish direct. Feedback on what's useful and what isn't is welcome.
-
-lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources instead of being one-per-document, so concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Pages live under `$LILBEE_DATA/wiki/`, grouped into `concepts/`, `entities/`, and a `drafts/` queue when confidence is low. An `index.md` tracks them all and `log.md` records every build, ingest, and prune.
-
-Every section is citation-verified against the source chunks and scored for embedding faithfulness before publish. Plain-text concept slugs inside page bodies are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections.
-
-See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full command list and configuration.
-
 ## TUI
 
 `lilbee` with no args (or `lilbee chat`) launches a full Textual terminal app. Chat streams replies with clickable citations. A Task Center tracks every background job (sync, crawl, wiki build, model pull) and lets you cancel them with `/cancel`. Other screens cover the model catalog (`/models`), settings (`/settings`), first-time setup wizard (`/setup`), and the auto-built wiki (`/wiki`). Tab completion works for slash commands, file paths, model names, setting keys, and themes.
@@ -280,6 +266,24 @@ Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structur
 | Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | none |
 
 See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
+
+## Experimental
+
+Two opt-in features that work but are still finding their final shape. Generation quality and retrieval behavior depend on corpus, models, and knobs; expect to iterate. Feedback is welcome.
+
+### Wiki
+
+lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources instead of being one-per-document, so concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Pages live under `$LILBEE_DATA/wiki/`, grouped into `concepts/`, `entities/`, and a `drafts/` queue when confidence is low. An `index.md` tracks them all and `log.md` records every build, ingest, and prune.
+
+Every section is citation-verified against the source chunks and scored for embedding faithfulness before publish. Plain-text concept slugs inside page bodies are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Some pages will land in `drafts/` for human review rather than publish direct.
+
+See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full command list and configuration.
+
+### Semantic chunking
+
+A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy corpora like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
+
+See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
 
 ## License
 

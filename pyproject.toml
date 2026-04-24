@@ -1,21 +1,23 @@
 [project]
 name = "lilbee"
-version = "0.6.0"
-description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Runs fully offline with llama-cpp."
+version = "0.6.66b420"
+description = "Terminal-first local RAG and AI chat for your own documents, code, and crawled websites. Semantic and hybrid search, vision OCR, auto-built wiki, browsable GGUF model catalog. One install, no sidecars. CLI, TUI, MCP server, REST API, and Python library in one process."
 readme = "README.md"
 license = "Elastic-2.0"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
-    "knowledge-base", "rag", "lancedb", "mcp",
-    "vector-search", "ocr", "pdf", "local-llm", "offline",
+    "rag", "local-llm", "local-ai", "offline-ai", "terminal-ai", "self-hosted",
+    "ai-agent", "ai-coding-assistant", "mcp-server", "llm-apps",
+    "semantic-search", "vector-search", "retrieval", "embedding", "document-search",
+    "llama-cpp", "lancedb", "textual",
+    "vision-ocr", "web-crawler", "privacy", "hybrid-search",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
