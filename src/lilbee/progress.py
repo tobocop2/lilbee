@@ -35,6 +35,7 @@ class SseEvent(StrEnum):
     DONE = "done"
     PROGRESS = "progress"
     HEARTBEAT = "heartbeat"
+    ALREADY_INGESTING = "already_ingesting"
 
 
 class FileStartEvent(BaseModel):

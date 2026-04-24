@@ -740,17 +740,19 @@ async def sync(
             unchanged += 1
             continue
 
+        # Always set needs_cleanup=True so ingest_batch calls
+        # delete_by_source(name) before re-adding. delete_by_source is
+        # idempotent (no-op when no chunks exist), so this is cheap on the
+        # happy path. It closes a race where a previous ingest crashed after
+        # writing chunks but before upsert_source recorded the hash: the
+        # source row is missing from existing_sources, but the chunks are
+        # still in LanceDB, and a naive re-add would append duplicates.
+        files_to_process.append(
+            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
+        )
         if old_hash is not None:
-            # Modified — defer old chunk deletion to ingest_batch so
-            # delete + re-ingest are atomic per file (no data loss on cancel).
-            files_to_process.append(
-                FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
-            )
             updated.append(name)
         else:
-            files_to_process.append(
-                FileToProcess(name, path, content_type, current_hash, needs_cleanup=False)
-            )
             added.append(name)
 
     # Ingest files (with optional progress bar)
