@@ -16,6 +16,7 @@
   - [Web crawling](#web-crawling)
   - [Remote providers (SDK backend)](#remote-providers-sdk-backend)
 - [Cross-encoder reranking](#cross-encoder-reranking)
+- [Semantic chunking](#semantic-chunking)
 
 ---
 
@@ -289,29 +290,59 @@ Run `lilbee init` to create a `.lilbee/` directory in your project. It contains 
 
 ## Environment variables
 
-All settings are configurable via environment variables:
+Every setting has a default that works out of the box. The tables below are grouped from most-commonly-touched to rarely-touched, so you can skim the top and skip the bottom unless you have a specific reason.
+
+### Common settings
+
+The ones most users set at least once.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_DATA` | *(platform default)* | Data directory path |
+| `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
 | `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Chat model. Native GGUF by default; with `pip install lilbee[litellm]`, any remote name the SDK backend understands |
-| `LILBEE_VISION_MODEL` | *(none)* | Vision model for PDF OCR. When set, takes precedence over Tesseract |
+| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text:v1.5` | Embedding model. Changing this requires `lilbee rebuild` |
+| `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
-| `LILBEE_RERANKER_MODEL` | *(none)* | Cross-encoder reranker. GGUF-native; see [Cross-encoder reranking](#cross-encoder-reranking) |
-| `LILBEE_TOP_K` | `10` | Number of retrieval results |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
+| `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
 
-**Server:**
+### Retrieval tuning
+
+Reach for these when search quality matters. Defaults are solid; tune only if something feels off.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_SERVER_HOST` | `127.0.0.1` | Server bind address |
-| `LILBEE_SERVER_PORT` | `7433` | Server port |
-| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins for remote clients, e.g. `https://my-app.com`. Additive; the default regex below is still applied. |
-| `LILBEE_CORS_ORIGIN_REGEX` | *(see below)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS`. |
+| `LILBEE_TOP_K` | `10` | Number of retrieval results returned |
+| `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff. Lower = stricter filtering, fewer but more relevant results. `1.0` disables filtering |
+| `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance (1.0 = pure relevance, 0.0 = pure diversity). Raise for factual lookups, lower for exploratory queries |
+| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `3` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
+| `LILBEE_QUERY_EXPANSION_COUNT` | `3` | LLM-generated query variants per search. `0` disables expansion entirely for faster queries |
+| `LILBEE_RERANKER_MODEL` | *(none)* | GGUF cross-encoder reranker for a precision pass over top results. See [Cross-encoder reranking](#cross-encoder-reranking) |
+| `LILBEE_RERANK_CANDIDATES` | `20` | Candidates to rerank when a reranker is configured |
+| `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
+| `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
+| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | When too few results pass `LILBEE_MAX_DISTANCE`, widen the threshold step by step. Useful on small or noisy corpora |
+| `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
+| `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
+| `LILBEE_MAX_CONTEXT_SOURCES` | `5` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
 
-**Generation.** Tune LLM output:
+### Ingestion and chunking
+
+How documents become chunks. Changes here require `lilbee rebuild` to take effect on already-indexed material.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk |
+| `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
+| `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
+| `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
+| `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
+| `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
+
+### Generation
+
+LLM output shape. Unset values fall through to the model's own defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -322,17 +353,37 @@ All settings are configurable via environment variables:
 | `LILBEE_NUM_CTX` | *(model default)* | Context window size |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 
-**Advanced.** Most users won't need to change these:
+### Server
+
+Only relevant when running `lilbee serve`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
-| `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensions (must match model) |
-| `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |
-| `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
-| `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
-| `LILBEE_SEMANTIC_CHUNKING` | `false` | Opt-in topic-aware chunking during ingest. On prose-heavy corpora it can improve topical retrieval; on procedural/reference docs it may fragment numbered steps. Enabling it triggers a one-time kreuzberg ONNX embedding model download (separate from the chunk-to-vector embedder) and roughly 9x more downstream embedding calls. Default is the fixed-size chunker. |
-| `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine similarity threshold for topic boundaries, 0.0-1.0 (lower = more splits). Only has effect when semantic chunking is enabled. |
+| `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
+| `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
+| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
+| `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
+
+### Wiki tuning (experimental)
+
+Only relevant if you run `lilbee wiki build`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Max changed sources processed by incremental wiki updates during `lilbee sync`. Prevents a big re-ingest from churning concepts |
+| `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` | `25` | Top-K chunks grounding each wiki page section |
+
+### Advanced
+
+Rarely touched. Defaults derived from published IR research; there's usually a reason the defaults are the defaults.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 confidence threshold above which query expansion is skipped (90th-percentile sigmoid-normalized score) |
+| `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Minimum score gap between top-1 and top-2 for expansion to skip (ensures the match is unambiguous) |
+| `LILBEE_EXPANSION_GUARDRAILS` | `true` | Filter expansion variants whose embedding drifts too far from the original query |
+| `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
+| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Extra candidates to retrieve before MMR reranking |
 
 CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`, `--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
 
@@ -473,3 +524,41 @@ export LILBEE_RERANK_CANDIDATES=20                  # how many candidates to rer
 Without a reranker set, hybrid search + MMR already provides good results for most use cases.
 
 Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al. 2005 (Learning to Rank).
+
+---
+
+## Semantic chunking
+
+Experimental. Off by default. lilbee ships with two chunking strategies; which one serves you depends on what you're indexing.
+
+**Fixed-size (default).** Breaks documents into roughly equal token windows with overlap. Fast, deterministic, works well on code, reference manuals, user guides, API specs, and anything with clear structural boundaries. The assumption is that each chunk only needs to be coherent enough for retrieval, and the model will handle the rest from a small window of context.
+
+**Semantic (experimental).** Uses embedding similarity to detect topic boundaries and splits there instead of at fixed sizes. Each chunk tends to represent one coherent thought rather than an arbitrary slice through one. The benefit shows up on prose-heavy material: novels, essays, long-form research papers, interview transcripts, qualitative research notes, anything where an argument develops across paragraphs. When you ask a question, the retrieved chunk is more likely to contain the full passage that matches rather than the first half of it plus unrelated setup.
+
+**Trade-off:** Enabling semantic chunking triggers a one-time download of kreuzberg's ONNX embedding model (separate from the chunk-to-vector embedder) and runs roughly 9x more downstream embedding calls during indexing. Indexing takes longer; retrieval latency is unchanged.
+
+### How to enable it
+
+Three equivalent paths:
+
+```bash
+# Environment variable
+export LILBEE_SEMANTIC_CHUNKING=true
+
+# TUI /set command (interactive)
+/set semantic_chunking true
+
+# config.toml in your .lilbee/ vault
+[general]
+semantic_chunking = true
+```
+
+After enabling, run `lilbee rebuild` so existing documents are re-chunked under the new strategy. New documents added from that point use semantic chunking automatically.
+
+### Tuning
+
+```bash
+export LILBEE_TOPIC_THRESHOLD=0.75   # cosine threshold for topic boundaries (0.0-1.0)
+```
+
+Lower values produce more, smaller chunks (more splits). Higher values produce fewer, larger chunks (the chunker holds related content together until similarity drops sharply).
