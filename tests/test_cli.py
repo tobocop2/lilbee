@@ -3112,3 +3112,171 @@ class TestSetupCrawlerCommand:
         assert result.exit_code == 1
         assert '"error"' in result.stdout
         assert "offline" in result.stdout
+
+
+class TestSelfCheck:
+    """`lilbee self-check` exercises llama_cpp.Llama end-to-end.
+
+    We stub both the urllib download and llama_cpp so these tests don't
+    fetch from HuggingFace or load a real GGUF. The function being tested
+    is a thin shell over those two calls; each branch (download ok, load
+    ok, inference ok, empty text, any exception) needs a case.
+    """
+
+    @staticmethod
+    def _fake_llama(response_text: str):
+        llm = MagicMock()
+        llm.create_completion.return_value = {"choices": [{"text": response_text}]}
+        module = MagicMock()
+        module.Llama.return_value = llm
+        return module
+
+    def test_skips_download_when_model_path_given(self, tmp_path: Path) -> None:
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        with (
+            mock.patch(
+                "lilbee.cli.commands._download_self_check_model",
+                side_effect=AssertionError("must not download when --model-path given"),
+            ),
+            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama(" 4")}),
+        ):
+            result = runner.invoke(app, ["--json", "self-check", "--model-path", str(gguf)])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {"ok": True, "response": " 4", "model": str(gguf)}
+
+    def test_downloads_when_model_path_missing(self, tmp_path: Path) -> None:
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        with (
+            mock.patch(
+                "lilbee.cli.commands._download_self_check_model",
+                return_value=gguf,
+            ),
+            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama(" 4")}),
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 0, result.output
+
+    def test_download_failure_emits_json_error(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands._download_self_check_model",
+            side_effect=RuntimeError("network is down"),
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "network is down" in payload["error"]
+
+    def test_llama_load_failure_emits_json_error(self, tmp_path: Path) -> None:
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        bad_module = MagicMock()
+        bad_module.Llama.side_effect = RuntimeError("Shared library not found")
+        with mock.patch.dict("sys.modules", {"llama_cpp": bad_module}):
+            result = runner.invoke(app, ["--json", "self-check", "--model-path", str(gguf)])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "Shared library not found" in payload["error"]
+
+    def test_empty_response_emits_json_error(self, tmp_path: Path) -> None:
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        with mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama("   ")}):
+            result = runner.invoke(app, ["--json", "self-check", "--model-path", str(gguf)])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {"ok": False, "error": "empty inference response"}
+
+    def test_human_mode_on_success(self, tmp_path: Path) -> None:
+        """Non-JSON mode prints the response and PASSED banner."""
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        with mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama(" hello")}):
+            result = runner.invoke(app, ["self-check", "--model-path", str(gguf)])
+        assert result.exit_code == 0, result.output
+        assert "SELF-CHECK PASSED" in result.output
+        assert "hello" in result.output
+
+    def test_human_mode_on_failure(self, tmp_path: Path) -> None:
+        gguf = tmp_path / "tiny.gguf"
+        gguf.write_bytes(b"not a real gguf")
+        bad_module = MagicMock()
+        bad_module.Llama.side_effect = OSError("boom")
+        with mock.patch.dict("sys.modules", {"llama_cpp": bad_module}):
+            result = runner.invoke(app, ["self-check", "--model-path", str(gguf)])
+        assert result.exit_code == 1
+        assert "SELF-CHECK FAILED" in result.output
+
+
+class TestDownloadSelfCheckModel:
+    """`_download_self_check_model` retries URLError up to 3 times."""
+
+    def test_successful_download_returns_path(self, tmp_path: Path) -> None:
+        from lilbee.cli import commands as cmds
+
+        payload = b"gguf-bytes"
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload
+
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", return_value=_Resp()),
+        ):
+            path = cmds._download_self_check_model()
+
+        assert path == tmp_path / cmds._SELF_CHECK_FILE
+        assert path.read_bytes() == payload
+
+    def test_retries_then_raises_after_three_attempts(self, tmp_path: Path) -> None:
+        import urllib.error
+
+        from lilbee.cli import commands as cmds
+
+        err = urllib.error.URLError("dns failed")
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", side_effect=err) as opened,
+            pytest.raises(RuntimeError, match="3 attempts"),
+        ):
+            cmds._download_self_check_model()
+
+        assert opened.call_count == 3
+
+    def test_retry_then_succeed(self, tmp_path: Path) -> None:
+        import urllib.error
+
+        from lilbee.cli import commands as cmds
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        urlopen = mock.Mock(
+            side_effect=[urllib.error.URLError("flaky"), _Resp()],
+        )
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", urlopen),
+        ):
+            path = cmds._download_self_check_model()
+
+        assert urlopen.call_count == 2
+        assert path.read_bytes() == b"ok"
