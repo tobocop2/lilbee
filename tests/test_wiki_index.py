@@ -1,0 +1,248 @@
+"""Tests for wiki index and log generation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from conftest import write_wiki_page
+from lilbee.config import cfg
+from lilbee.wiki.index import (
+    append_wiki_log,
+    parse_source_count,
+    parse_title,
+    update_wiki_index,
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_env(wiki_isolated_env: Path):
+    yield wiki_isolated_env
+
+
+_SUMMARY_PAGE = (
+    "---\ntitle: My Document\nsources: [doc.md]\n---\n\n# My Document\n\nSome content.\n"
+)
+
+_CONCEPT_PAGE = (
+    "---\n"
+    "title: Type Safety\n"
+    "sources: [a.md, b.md, c.md]\n"
+    "---\n\n"
+    "# Type Safety\n\nCross-source synthesis.\n"
+)
+
+
+class TestParseTitle:
+    def test_from_frontmatter(self):
+        assert parse_title("---\ntitle: Hello World\n---\n# Other") == "Hello World"
+
+    def test_from_heading(self):
+        assert parse_title("# First Heading\nSome text.") == "First Heading"
+
+    def test_frontmatter_takes_precedence(self):
+        assert parse_title("---\ntitle: FM Title\n---\n# Heading") == "FM Title"
+
+    def test_no_title(self):
+        assert parse_title("Just text, no heading.") == ""
+
+    def test_empty_string(self):
+        assert parse_title("") == ""
+
+
+class TestParseSourceCount:
+    def test_single_source(self):
+        assert parse_source_count("---\nsources: [doc.md]\n---\n") == 1
+
+    def test_multiple_sources(self):
+        assert parse_source_count("---\nsources: [a.md, b.md, c.md]\n---\n") == 3
+
+    def test_no_sources_field(self):
+        assert parse_source_count("---\ntitle: Hello\n---\n") == 0
+
+    def test_empty_sources(self):
+        assert parse_source_count("---\nsources: []\n---\n") == 0
+
+    def test_no_frontmatter(self):
+        assert parse_source_count("Just text, no frontmatter") == 0
+
+    def test_string_sources_comma_separated(self):
+        assert parse_source_count('---\nsources: "a.md, b.md"\n---\n') == 2
+
+
+class TestUpdateWikiIndex:
+    def test_empty_wiki(self, isolated_env: Path):
+        path = update_wiki_index()
+        assert path == isolated_env / "wiki" / "index.md"
+        content = path.read_text(encoding="utf-8")
+        assert content.startswith("# Wiki Index")
+        assert "- [" not in content
+
+    def test_summary_pages_listed(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "summaries", "my-doc", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "[My Document](summaries/my-doc.md)" in content
+        assert "summary" in content
+        assert "1 sources" in content
+
+    def test_synthesis_pages_listed(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "synthesis", "type-safety", _CONCEPT_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "[Type Safety](synthesis/type-safety.md)" in content
+        assert "synthesis" in content
+        assert "3 sources" in content
+
+    def test_both_subdirs(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "synthesis", "type-safety", _CONCEPT_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "summaries/doc-a.md" in content
+        assert "synthesis/type-safety.md" in content
+
+    def test_sorted_within_subdir(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "summaries", "z-doc", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "a-doc", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        a_pos = content.index("a-doc")
+        z_pos = content.index("z-doc")
+        assert a_pos < z_pos
+
+    def test_fallback_title_from_stem(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "summaries", "no-title", "Just text, no heading.")
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "[No Title]" in content
+
+    def test_creates_wiki_dir_if_missing(self, isolated_env: Path):
+        wiki_dir = isolated_env / "wiki"
+        assert not wiki_dir.exists()
+        path = update_wiki_index()
+        assert path.exists()
+
+    def test_overwrites_existing_index(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
+        update_wiki_index()
+        write_wiki_page(isolated_env, "summaries", "doc-b", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "doc-a" in content
+        assert "doc-b" in content
+
+    def test_accepts_explicit_config(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "summaries", "doc", _SUMMARY_PAGE)
+        path = update_wiki_index(config=cfg)
+        assert path.exists()
+
+    def test_lists_nested_per_source_pages(self, isolated_env: Path):
+        """Pages under per-source subdirectories (stage-1 layout) are listed with nested slugs."""
+        write_wiki_page(isolated_env, "summaries", "cv-manual/page-0001", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "cv-manual/page-0042", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "[My Document](summaries/cv-manual/page-0001.md)" in content
+        assert "[My Document](summaries/cv-manual/page-0042.md)" in content
+
+
+class TestAppendWikiLog:
+    def test_creates_log_file(self, isolated_env: Path):
+        path = append_wiki_log("generated", "summary page for doc.md")
+        assert path == isolated_env / "wiki" / "log.md"
+        content = path.read_text(encoding="utf-8")
+        assert content.startswith("# Wiki Log")
+        assert "generated | summary page for doc.md" in content
+
+    def test_appends_to_existing(self, isolated_env: Path):
+        append_wiki_log("generated", "first event")
+        path = append_wiki_log("pruned (archived)", "second event")
+        content = path.read_text(encoding="utf-8")
+        assert "first event" in content
+        assert "second event" in content
+        assert content.count("## [") == 2
+
+    def test_timestamp_format(self, isolated_env: Path):
+        path = append_wiki_log("test", "details")
+        content = path.read_text(encoding="utf-8")
+        # Format includes minutes so repeated actions within the same build
+        # don't collide on the same header.
+        import re
+
+        assert re.search(r"## \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]", content)
+
+    def test_preserves_header(self, isolated_env: Path):
+        append_wiki_log("first", "a")
+        append_wiki_log("second", "b")
+        content = (isolated_env / "wiki" / "log.md").read_text(encoding="utf-8")
+        assert content.count("# Wiki Log") == 1
+
+    def test_creates_wiki_dir_if_missing(self, isolated_env: Path):
+        wiki_dir = isolated_env / "wiki"
+        assert not wiki_dir.exists()
+        path = append_wiki_log("test", "details")
+        assert path.exists()
+
+    def test_accepts_explicit_config(self, isolated_env: Path):
+        path = append_wiki_log("test", "details", config=cfg)
+        assert path.exists()
+
+
+class TestIndexSectioning:
+    """The index groups pages under type-specific headers in a fixed order."""
+
+    def test_concepts_and_entities_get_their_own_sections(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "concepts", "braking-systems", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "entities", "henry-ford", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "## Concepts" in content
+        assert "## Entities" in content
+        concepts_pos = content.index("## Concepts")
+        entities_pos = content.index("## Entities")
+        assert concepts_pos < entities_pos
+
+    def test_empty_sections_are_omitted(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "concepts", "tire-pressure", _CONCEPT_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        assert "## Concepts" in content
+        assert "## Entities" not in content
+        assert "## Source Summaries" not in content
+
+    def test_sections_ordered_concepts_entities_summaries_synthesis(
+        self, isolated_env: Path
+    ) -> None:
+        write_wiki_page(isolated_env, "summaries", "s", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "synthesis", "x", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "concepts", "c", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "entities", "e", _SUMMARY_PAGE)
+        path = update_wiki_index()
+        content = path.read_text(encoding="utf-8")
+        positions = [
+            content.index("## Concepts"),
+            content.index("## Entities"),
+            content.index("## Source Summaries"),
+            content.index("## Synthesis"),
+        ]
+        assert positions == sorted(positions)
+
+
+class TestLogActionConstants:
+    """New ops (build, update, ingest, lint) land as importable constants."""
+
+    def test_action_constants_exist(self):
+        from lilbee.wiki.shared import (
+            WIKI_LOG_ACTION_BUILD,
+            WIKI_LOG_ACTION_GENERATED,
+            WIKI_LOG_ACTION_INGEST,
+            WIKI_LOG_ACTION_LINT,
+        )
+
+        assert WIKI_LOG_ACTION_BUILD == "build"
+        assert WIKI_LOG_ACTION_INGEST == "ingest"
+        assert WIKI_LOG_ACTION_LINT == "lint"
+        # Pre-existing constant is unchanged so old log entries still read the same.
+        assert WIKI_LOG_ACTION_GENERATED == "generated"

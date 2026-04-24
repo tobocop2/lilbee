@@ -9,6 +9,11 @@
 - [Agent integration](#agent-integration)
 - [Data locations](#data-locations)
 - [Environment variables](#environment-variables)
+- [Optional extras](#optional-extras)
+  - [Concept graph](#concept-graph)
+  - [Cross-encoder reranking](#cross-encoder-reranking)
+  - [Web crawling](#web-crawling)
+  - [Remote providers (SDK backend)](#remote-providers-sdk-backend)
 
 ---
 
@@ -200,7 +205,8 @@ All settings are configurable via environment variables:
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `LILBEE_SERVER_PORT` | `7433` | Server port |
-| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of allowed CORS origins (e.g. `app://obsidian.md,https://my-app.com`). Localhost is always allowed. |
+| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins for remote clients, e.g. `https://my-app.com`. Additive — the default regex below is still applied. |
+| `LILBEE_CORS_ORIGIN_REGEX` | *(see below)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS`. |
 
 **Generation** — tune LLM output:
 
@@ -222,5 +228,145 @@ All settings are configurable via environment variables:
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
+| `LILBEE_SEMANTIC_CHUNKING` | `false` | Opt-in topic-aware chunking during ingest. On prose-heavy corpora it can improve topical retrieval; on procedural/reference docs it may fragment numbered steps. Enabling it triggers a one-time kreuzberg ONNX embedding model download (separate from the chunk-to-vector embedder) and roughly 9x more downstream embedding calls. Default is the fixed-size chunker. |
+| `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine similarity threshold for topic boundaries, 0.0-1.0 (lower = more splits). Only has effect when semantic chunking is enabled. |
 
 CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`, `--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
+
+## Optional extras
+
+lilbee works out of the box with llama-cpp for local inference. These optional extras add capabilities that require heavier dependencies:
+
+```bash
+pip install lilbee[graph]      # concept graph — topic clustering + search boosting
+pip install lilbee[reranker]   # cross-encoder reranking — precision pass on results
+pip install lilbee[crawler]    # web crawling — index websites alongside local docs
+pip install lilbee[litellm]    # remote providers — connect to your favorite frontier model
+```
+
+Install multiple at once: `pip install lilbee[graph,reranker,crawler]`
+
+---
+
+### Concept graph
+
+Builds a topic map of your documents at index time. Related concepts are linked in a co-occurrence graph, which is used to boost search results and expand queries with related terms — all without extra LLM calls.
+
+**What it does:** Extracts noun phrases from every chunk using spaCy, computes PMI co-occurrence weights between concepts, and clusters them with the Leiden algorithm. At search time, queries are expanded with graph neighbors and results overlapping query concepts get a relevance boost.
+
+**When to use it:** Large knowledge bases (100+ documents) where the same topics appear across multiple files. The graph helps surface connections that pure vector similarity misses — for example, finding "deployment" documents when searching for "CI/CD" because those concepts co-occur frequently.
+
+**Install:** `pip install lilbee[graph]`
+
+**Configuration:**
+
+```bash
+export LILBEE_CONCEPT_GRAPH=true              # enable (default: true when deps installed)
+export LILBEE_CONCEPT_BOOST_WEIGHT=0.3        # how much concept overlap matters (0.0-1.0)
+export LILBEE_CONCEPT_MAX_PER_CHUNK=10        # max concepts extracted per chunk
+```
+
+The graph is built automatically during `lilbee sync`. No extra commands needed — search results are boosted transparently.
+
+Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990 (PMI), Traag et al. 2019 (Leiden).
+
+---
+
+### Cross-encoder reranking
+
+A precision pass that re-scores search results using a cross-encoder model. Each (query, chunk) pair is scored independently, catching cases where the initial ranking was wrong.
+
+**What it does:** After the normal search pipeline (BM25 + vector + RRF) returns candidates, the cross-encoder scores each one. Results are blended with position-aware weights — top results trust the original ranking more, lower results trust the reranker more.
+
+**When to use it:** When you need high-precision answers and are willing to trade ~200-500ms per query. Most useful with large result sets where the top-5 ordering matters.
+
+**Install:** `pip install lilbee[reranker]` (depends on PyTorch, ~2GB)
+
+**Configuration:**
+
+```bash
+export LILBEE_RERANKER_MODEL="cross-encoder/ms-marco-MiniLM-L-6-v2"
+export LILBEE_RERANK_CANDIDATES=20   # how many candidates to rerank
+```
+
+Without this extra, hybrid search + MMR already provides good results for most use cases.
+
+Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al. 2005 (Learning to Rank).
+
+---
+
+### Web crawling
+
+Index web pages alongside your local documents. Crawl single pages or follow links recursively.
+
+**What it does:** Fetches web pages using a headless browser (Playwright), extracts markdown content, and indexes it into your knowledge base. Supports recursive crawling with configurable depth, concurrent fetching, and SSRF protection against internal network access.
+
+**When to use it:** When your knowledge spans both local files and web content — documentation sites, wikis, internal tools. Crawled content is hash-tracked so re-crawling only re-indexes changed pages.
+
+**Install:** `pip install lilbee[crawler]`
+
+**Usage:**
+
+```bash
+# Single page (no --crawl)
+lilbee add https://docs.example.com/guide
+
+# Whole-site crawl (recursive, unbounded by default)
+lilbee add https://docs.example.com --crawl
+
+# Cap depth or page count
+lilbee add https://docs.example.com --crawl --depth 2 --max-pages 200
+
+# Multiple URLs
+lilbee add https://docs.example.com https://wiki.example.com
+```
+
+Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI (`/crawl`).
+
+**Configuration (all optional):**
+
+```bash
+# Global ceilings. Unset = no cap. Explicit --depth/--max-pages always win.
+export LILBEE_CRAWL_MAX_DEPTH=3          # cap link-following depth
+export LILBEE_CRAWL_MAX_PAGES=1000       # cap total pages
+
+# Pacing within a single crawl.
+export LILBEE_CRAWL_MEAN_DELAY=0.5       # seconds between requests
+export LILBEE_CRAWL_MAX_DELAY_RANGE=0.5  # random jitter on top
+export LILBEE_CRAWL_CONCURRENT_REQUESTS=3
+
+# Per-domain rate-limit + retries on HTTP 429/503.
+export LILBEE_CRAWL_RETRY_ON_RATE_LIMIT=true
+export LILBEE_CRAWL_RETRY_BASE_DELAY_MIN=1.0
+export LILBEE_CRAWL_RETRY_BASE_DELAY_MAX=3.0
+export LILBEE_CRAWL_RETRY_MAX_BACKOFF=30.0
+export LILBEE_CRAWL_RETRY_MAX_ATTEMPTS=3
+
+# Other.
+export LILBEE_CRAWL_TIMEOUT=30           # per-page timeout (seconds)
+export LILBEE_CRAWL_MAX_CONCURRENT=0     # 0 = CPU count (top-level concurrency)
+export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during crawl
+```
+
+---
+
+### Remote providers (SDK backend)
+
+Connect to hosted LLM providers instead of (or alongside) local llama-cpp inference.
+
+**What it does:** Routes chat and embedding calls to any provider reachable via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and many more). The routing provider automatically detects which models are available locally vs. remotely and routes each call to the right backend.
+
+**When to use it:** When you want to use your favorite frontier model for chat while keeping embeddings local for privacy, or when you're already running Ollama and want to use its models.
+
+**Install:** `pip install lilbee[litellm]` (pip extra retains the adapter library name).
+
+**Configuration:**
+
+```bash
+export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
+export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # Ollama default
+export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
+export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
+```
+
+Provider options: `auto` (default, routes intelligently), `llama-cpp` (local only), `remote` (hosted only).
