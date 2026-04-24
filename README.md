@@ -42,7 +42,7 @@ Historically that meant juggling a background daemon, a separate inference serve
 
 The same executable ships a Textual TUI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Focused project vaults search better than one giant catch-all index.
 
-An Encarta 99 you build for yourself, from your own files, shaped to your needs.
+An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
 ## Previews
 
