@@ -17,20 +17,17 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.18' }}
 
 jobs:
-  # TEMPORARY: the full CI (lint/test matrix across 3 OSes and 3 Pythons)
-  # is short-circuited to speed up release-smoke-test iteration. Restore
-  # the `uses: ./.github/workflows/ci.yml` reference and the
-  # `needs.ci.result == 'success'` gate once the release publishes a
-  # working wheel.
   ci:
     if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "ci temporarily skipped to speed up release-wheel iteration"
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
 
   build-wheels:
     needs: [ci]
-    if: always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped' || github.event_name == 'workflow_dispatch')
+    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
