@@ -1,0 +1,77 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  code-scan:
+    name: Code scan (SAST + secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-and-quality
+          config-file: ./.github/codeql-config.yml
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:python
+
+      - name: Run Gitleaks
+        if: always()
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: Dependency CVEs (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
+
+      - name: Run pip-audit
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: .
+          # CVE-2025-69872: diskcache 5.6.3 uses pickle for serialization.
+          # Pulled in transitively by llama-cpp-python; no upstream fix
+          # published. Exploitation requires write access to the cache
+          # directory under the user's own data dir, which is already a
+          # post-compromise scenario. Revisit when llama-cpp-python drops
+          # or patches the diskcache dependency.
+          ignore-vulns: |
+            CVE-2025-69872
