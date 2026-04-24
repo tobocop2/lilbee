@@ -314,6 +314,26 @@ class TestInitDefensiveBranches:
             _prestart_mp_resource_tracker()
         called.assert_not_called()
 
+    def test_prestart_resource_tracker_noop_when_frozen(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In a PyInstaller frozen bundle sys.executable is the lilbee exe,
+        so spawning the tracker re-enters typer with '-B -s -E' and the CLI
+        rejects the unknown options. Short-circuit to avoid that.
+        """
+        import sys
+
+        from lilbee import _prestart_mp_resource_tracker
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        with mock.patch(
+            "multiprocessing.resource_tracker.ensure_running",
+            side_effect=AssertionError("must not be called when frozen"),
+        ) as called:
+            _prestart_mp_resource_tracker()
+        called.assert_not_called()
+
 
 class TestDownloadModelProgressChain:
     """Verify download_model correctly chains progress through to the user callback."""
