@@ -60,19 +60,35 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      # Build llama-cpp-python from source on every platform. abetlen's CPU
-      # index only ships up to 0.3.19 and Linux's wheels are musl-linked
-      # (broken on glibc); building from source against the runner's
-      # toolchain gives us 0.3.20 with consistent behavior everywhere.
-      # GGML_NATIVE=OFF on every OS so wheels are portable across the runner
-      # pool's CPU classes (avoids the "Illegal instruction" failures on
-      # weaker CI machines). Metal stays ON for macOS arm64 since that's
-      # the whole point of an Apple Silicon wheel.
+      # Build llama-cpp-python from source on every platform with GPU
+      # acceleration enabled per OS:
+      #   * macOS arm64 — Metal (built into the OS, no extra setup).
+      #   * Linux x86_64 — Vulkan (cross-vendor: NVIDIA, AMD, Intel Arc).
+      #     Requires libvulkan-dev at build time and libvulkan1 at runtime;
+      #     verify-pypi installs the runtime loader, real users typically
+      #     get it via their GPU driver.
+      #   * Windows x86_64 — Vulkan, same story as Linux.
+      # GGML_NATIVE=OFF on every OS so the wheel runs on any CPU class in
+      # the pool (avoids "Illegal instruction" on weaker runners).
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc
+
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
       - name: Build llama-cpp-python from source (Linux)
         if: runner.os == 'Linux'
         shell: bash
         env:
-          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF"
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_VULKAN=ON"
         run: |
           mkdir -p /tmp/llama-build
           pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
@@ -101,7 +117,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=ON -DGGML_BLAS=OFF"
         run: |
           mkdir -p /tmp/llama-build
           pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
@@ -205,8 +221,10 @@ jobs:
           payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
           data = json.loads(payload)
           assert data.get('ok'), f'self-check failed: {data}'
-          assert data.get('response','').strip(), f'empty response: {data}'
-          print('self-check response:', repr(data['response']))
+          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
+          dims = data.get('embedding_dims')
+          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
+          print(f'self-check chat={data[\"chat_response\"]!r} embedding_dims={dims}')
           " "$SELF_CHECK_LOG"
           echo "E2E INFERENCE PASSED"
 
@@ -274,19 +292,30 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-        exclude:
-          # 3.14 wheels for these platforms aren't produced upstream; see the
-          # matching exclude in build-wheels above. Nothing to verify.
-          - os: macos-latest
-            python-version: "3.14"
-          - os: windows-latest
-            python-version: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      # Vulkan-built wheels link against libvulkan; without the loader on
+      # the verify-pypi runner the import fails. Real users on systems
+      # with a GPU driver already have it. CPU-only headless boxes need
+      # to install it explicitly — same install we run here.
+      - name: Install Vulkan loader (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1
+
+      - name: Install Vulkan runtime (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
 
       - name: Resolve release version
         id: version
@@ -352,6 +381,8 @@ jobs:
           payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
           data = json.loads(payload)
           assert data.get('ok'), f'PyPI install self-check failed: {data}'
-          assert data.get('response','').strip(), f'empty response: {data}'
-          print('PyPI install self-check PASSED:', repr(data['response']))
+          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
+          dims = data.get('embedding_dims')
+          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
+          print(f'PyPI install self-check PASSED chat={data[\"chat_response\"]!r} embedding_dims={dims}')
           " "$OUT"
