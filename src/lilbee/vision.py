@@ -95,8 +95,8 @@ def _png_to_data_url(png_bytes: bytes) -> str:
 
 def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
     """Build OpenAI-compatible messages with image content for vision models.
-    Uses the multipart content format expected by llama-cpp-python's
-    vision chat handlers (Llava15ChatHandler, etc.).
+    Uses the multipart content format expected by llama.cpp's mtmd
+    pipeline.
     """
     return [
         {

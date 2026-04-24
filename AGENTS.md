@@ -52,8 +52,10 @@ All settings override via environment variables:
 - `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.9`). Higher = more results, lower = stricter filtering
 - `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
-- `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
+- `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
+- `LILBEE_VISION_MAX_TOKENS` — hard cap on tokens generated per vision OCR page (default: `2048`). Safety net against runaway generation on dense pages.
 - `LILBEE_TESSERACT_TIMEOUT`: wall-clock timeout in seconds for the Tesseract OCR fallback (default: `60`, `0` = no limit). Only runs when no vision model is available.
+- `LILBEE_SSE_HEARTBEAT_INTERVAL` — seconds between SSE heartbeat events when the producer queue is idle (default: `30`). Set to `0` to disable.
 - `LILBEE_LLM_PROVIDER` — provider: `auto` (default), `llama-cpp`, `remote` (requires `pip install lilbee[litellm]`)
 - `LILBEE_REMOTE_BASE_URL` — SDK backend endpoint (default: `http://localhost:11434`)
 - `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `3`)
@@ -64,7 +66,7 @@ All settings override via environment variables:
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
 - `LILBEE_NO_SPLASH` — set to any non-empty value to suppress the startup bee animation
 
-CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision-timeout`, and `--log-level`.
+CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-timeout`, and `--log-level`.
 
 ## Code Quality Rules
 

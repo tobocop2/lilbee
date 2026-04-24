@@ -234,9 +234,10 @@ class SseStream:
                     item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
                 except TimeoutError:
                     now = time.monotonic()
-                    if now - last_yielded >= cfg.sse_heartbeat_interval:
+                    heartbeat_interval = cfg.sse_heartbeat_interval
+                    if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:
                         last_yielded = now
-                        yield sse_event(SseEvent.HEARTBEAT, {"ts": now})
+                        yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
                     # Fallback for producers that die without a sentinel.
                     if task.done() and self.queue.empty():
                         break

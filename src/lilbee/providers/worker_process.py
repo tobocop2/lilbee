@@ -26,9 +26,11 @@ log = logging.getLogger(__name__)
 _ResponseT = TypeVar("_ResponseT", "EmbedResponse", "VisionResponse")
 
 _EMBED_TIMEOUT_S = 30.0
-_VISION_TIMEOUT_S = 120.0
 _JOIN_TIMEOUT_S = 5.0
 _RESTART_DELAY_S = 0.1
+# Substituted when ``cfg.ocr_timeout == 0`` ("no limit"). The round-trip
+# wait loop needs a finite deadline; one day is effectively unlimited.
+_NO_CAP_TIMEOUT_S = 86_400.0
 
 
 @dataclass(frozen=True)
@@ -194,8 +196,8 @@ class WorkerProcess:
         """Run vision OCR in the worker, honouring ``cfg.ocr_timeout``.
 
         Auto-starts the worker and retries once on crash. ``cfg.ocr_timeout
-        == 0`` means no cap; substituted with a day-long finite deadline
-        for the internal wait loop.
+        == 0`` means no cap; substituted with ``_NO_CAP_TIMEOUT_S`` for
+        the round-trip wait loop.
         """
         self._ensure_started()
         req = VisionRequest(
@@ -204,9 +206,7 @@ class WorkerProcess:
             prompt=prompt,
             request_id=self._next_request_id(),
         )
-        from lilbee.config import cfg
-
-        timeout = cfg.ocr_timeout if cfg.ocr_timeout > 0 else 86_400.0
+        timeout = cfg.ocr_timeout if cfg.ocr_timeout > 0 else _NO_CAP_TIMEOUT_S
         resp = self._round_trip(req, VisionResponse, timeout, label="vision OCR")
         return resp.text
 
@@ -283,20 +283,17 @@ def _redirect_stdio() -> None:  # pragma: no cover
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
 
-def _configure_worker_logging() -> None:  # pragma: no cover
+def _configure_worker_logging() -> None:
     """Route the worker's Python logs to ``$LILBEE_DATA/worker.log``."""
-    import logging as _logging
-    import os as _os
-
-    data_dir = _os.environ.get("LILBEE_DATA") or ""
+    data_dir = os.environ.get("LILBEE_DATA") or ""
     if not data_dir:
         return
-    log_path = _os.path.join(data_dir, "worker.log")
-    handler = _logging.FileHandler(log_path)
-    handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    root = _logging.getLogger()
+    log_path = os.path.join(data_dir, "worker.log")
+    handler = logging.FileHandler(log_path)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
     root.addHandler(handler)
-    root.setLevel(_logging.INFO)
+    root.setLevel(logging.INFO)
 
 
 def _worker_main(
@@ -428,7 +425,6 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
     """Process a single vision OCR request, capped at ``cfg.vision_max_tokens``."""
     try:
-        from lilbee.config import cfg
         from lilbee.vision import OCR_PROMPT, build_vision_messages
 
         prompt = request.prompt or OCR_PROMPT
@@ -439,14 +435,21 @@ def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
         )
         text: str = response["choices"][0]["message"]["content"] or ""
         usage = response.get("usage", {}) or {}
+        completion_tokens = usage.get("completion_tokens")
         log.info(
             "vision_ocr request_id=%s wall=%.1fs prompt_tokens=%s completion_tokens=%s chars=%d",
             request.request_id,
             time.monotonic() - start,
             usage.get("prompt_tokens"),
-            usage.get("completion_tokens"),
+            completion_tokens,
             len(text),
         )
+        if completion_tokens is not None and completion_tokens >= cfg.vision_max_tokens:
+            log.warning(
+                "vision_ocr request_id=%s hit vision_max_tokens cap (%d); output may be truncated",
+                request.request_id,
+                cfg.vision_max_tokens,
+            )
         return VisionResponse(text=text, request_id=request.request_id)
     except Exception as exc:
         return VisionResponse(error=str(exc), request_id=request.request_id)

@@ -363,7 +363,7 @@ class _LockedStreamIterator:
 _STDERR_LOCK = threading.Lock()
 
 
-def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
+def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call *fn* with C-level stderr suppressed.
     llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
     that bypass Python logging. This redirects fd 2 to /dev/null for the
@@ -384,7 +384,7 @@ def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 def embed_one(llm: Any, text: str) -> list[float]:
     """Embed a single text with llama.cpp stderr noise suppressed."""
-    response = _suppress_stderr(llm.create_embedding, input=[text])
+    response = suppress_native_stderr(llm.create_embedding, input=[text])
     result: list[float] = response["data"][0]["embedding"]
     return result
 
@@ -396,7 +396,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """
     from llama_cpp import Llama
 
-    llm = _suppress_stderr(
+    llm = suppress_native_stderr(
         Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
     )
     try:
@@ -497,7 +497,7 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
 
-    return _suppress_stderr(Llama, **kwargs)
+    return suppress_native_stderr(Llama, **kwargs)
 
 
 def _is_rerank_model(model: str) -> bool:
@@ -520,7 +520,7 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
     scores: list[float] = []
     for candidate in candidates:
         pair = f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}"
-        response = _suppress_stderr(llm.create_embedding, input=pair)
+        response = suppress_native_stderr(llm.create_embedding, input=pair)
         score = _extract_rerank_score(response)
         scores.append(score)
     return scores

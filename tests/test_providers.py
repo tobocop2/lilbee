@@ -1214,6 +1214,96 @@ class TestMtmdLoadVisionLlama:
         mock_handler.assert_called_once()
 
 
+class TestReadChatTemplate:
+    def test_reads_chat_template(self, tmp_path: Path) -> None:
+        import struct
+
+        from lilbee.providers.mtmd_backend import read_chat_template
+
+        template = "{% for message in messages %}{{ message.content }}{% endfor %}"
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)
+        buf += struct.pack("<Q", 0)
+        buf += struct.pack("<Q", 1)
+        key = b"tokenizer.chat_template"
+        buf += struct.pack("<Q", len(key)) + key
+        buf += struct.pack("<I", 8)
+        value = template.encode("utf-8")
+        buf += struct.pack("<Q", len(value)) + value
+        f = tmp_path / "model.gguf"
+        f.write_bytes(bytes(buf))
+        assert read_chat_template(f) == template
+
+    def test_returns_none_on_missing_field(self, tmp_path: Path) -> None:
+        """A GGUF without tokenizer.chat_template returns None."""
+        import struct
+
+        from lilbee.providers.mtmd_backend import read_chat_template
+
+        buf = bytearray()
+        buf += b"GGUF"
+        buf += struct.pack("<I", 3)
+        buf += struct.pack("<Q", 0)
+        buf += struct.pack("<Q", 0)
+        f = tmp_path / "empty.gguf"
+        f.write_bytes(bytes(buf))
+        assert read_chat_template(f) is None
+
+    def test_returns_none_on_read_error(self) -> None:
+        from lilbee.providers.mtmd_backend import read_chat_template
+
+        assert read_chat_template(Path("/nonexistent/model.gguf")) is None
+
+
+class TestBuildVisionChatHandler:
+    """Use a stub Llava15ChatHandler so the test stays hermetic."""
+
+    def _patched(self, instances: list[object]):
+        class _StubHandler:
+            CHAT_FORMAT = "stub-default-format"
+            DEFAULT_SYSTEM_MESSAGE = "stub-default"
+
+            def __init__(self, clip_model_path: str, verbose: bool = True):
+                self.clip_model_path = clip_model_path
+                self.verbose = verbose
+                instances.append(self)
+
+        return mock.patch("llama_cpp.llama_chat_format.Llava15ChatHandler", _StubHandler)
+
+    def test_installs_gguf_template(self, tmp_path: Path) -> None:
+        from lilbee.providers.mtmd_backend import build_vision_chat_handler
+
+        template = "<|im_start|>user\n<|image_pad|>{{ content.text }}<|im_end|>"
+        instances: list[object] = []
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_chat_template",
+                return_value=template,
+            ),
+            self._patched(instances),
+        ):
+            handler = build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
+        assert "<|image_pad|>" not in type(handler).CHAT_FORMAT
+        assert "{{ content.image_url.url }}" in type(handler).CHAT_FORMAT
+        assert type(handler).DEFAULT_SYSTEM_MESSAGE is None
+
+    def test_falls_back_when_no_template(self, tmp_path: Path) -> None:
+        from lilbee.providers.mtmd_backend import build_vision_chat_handler
+
+        instances: list[object] = []
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_chat_template",
+                return_value=None,
+            ),
+            self._patched(instances),
+        ):
+            handler = build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
+        assert type(handler).CHAT_FORMAT == "stub-default-format"
+        assert type(handler).DEFAULT_SYSTEM_MESSAGE is None
+
+
 class TestAdaptGgufTemplate:
     """``adapt_gguf_template_for_mtmd`` rewrites GGUF image-placeholder tokens."""
 
@@ -1228,10 +1318,7 @@ class TestAdaptGgufTemplate:
     def test_replaces_image_tag(self) -> None:
         from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
 
-        assert (
-            adapt_gguf_template_for_mtmd("A <image> B")
-            == "A {{ content.image_url.url }} B"
-        )
+        assert adapt_gguf_template_for_mtmd("A <image> B") == "A {{ content.image_url.url }} B"
 
     def test_noop_when_no_token(self) -> None:
         from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd

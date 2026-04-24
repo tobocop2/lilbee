@@ -680,6 +680,21 @@ class TestDrainHeartbeat:
         ts_payload = json.loads(heartbeats[0].split("data: ")[1].strip())
         assert isinstance(ts_payload.get("ts"), int | float)
 
+    async def test_heartbeat_disabled_when_interval_is_zero(self):
+        """``cfg.sse_heartbeat_interval == 0`` opts out of heartbeats."""
+        from lilbee.server.handlers import SseStream
+
+        cfg.sse_heartbeat_interval = 0.0
+        sse = SseStream()
+
+        async def slow_producer():
+            await asyncio.sleep(0.25)
+            sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(slow_producer())
+        events = [e async for e in sse.drain(task, "disabled")]
+        assert not any(e.startswith("event: heartbeat") for e in events)
+
     async def test_heartbeat_skipped_when_producer_emits_faster_than_interval(self):
         """A chatty producer never triggers a heartbeat."""
         from lilbee.server.handlers import SseStream

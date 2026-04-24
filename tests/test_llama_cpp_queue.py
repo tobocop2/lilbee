@@ -561,9 +561,9 @@ class TestLoadLlamaNCtx:
 
 
 class TestSuppressStderrThreadSafety:
-    def test_concurrent_suppress_stderr_no_corruption(self) -> None:
-        """B3: _suppress_stderr serializes fd 2 manipulation via _STDERR_LOCK."""
-        from lilbee.providers.llama_cpp_provider import _suppress_stderr
+    def test_concurrentsuppress_native_stderr_no_corruption(self) -> None:
+        """B3: suppress_native_stderr serializes fd 2 manipulation via _STDERR_LOCK."""
+        from lilbee.providers.llama_cpp_provider import suppress_native_stderr
 
         results: list[int] = []
         errors: list[Exception] = []
@@ -572,7 +572,7 @@ class TestSuppressStderrThreadSafety:
         def worker(value: int) -> None:
             barrier.wait()
             try:
-                result = _suppress_stderr(lambda v: v * 2, value)
+                result = suppress_native_stderr(lambda v: v * 2, value)
                 results.append(result)
             except Exception as exc:
                 errors.append(exc)
@@ -583,12 +583,12 @@ class TestSuppressStderrThreadSafety:
         for t in threads:
             t.join(timeout=5)
 
-        assert not errors, f"Errors during concurrent _suppress_stderr: {errors}"
+        assert not errors, f"Errors during concurrent suppress_native_stderr: {errors}"
         assert sorted(results) == [0, 2, 4, 6]
 
-    def test_suppress_stderr_uses_lock(self) -> None:
-        """B3: Verify _suppress_stderr acquires _STDERR_LOCK."""
-        from lilbee.providers.llama_cpp_provider import _STDERR_LOCK, _suppress_stderr
+    def testsuppress_native_stderr_uses_lock(self) -> None:
+        """B3: Verify suppress_native_stderr acquires _STDERR_LOCK."""
+        from lilbee.providers.llama_cpp_provider import _STDERR_LOCK, suppress_native_stderr
 
         lock_was_held = []
 
@@ -600,6 +600,6 @@ class TestSuppressStderrThreadSafety:
             lock_was_held.append(locked)
             return 42
 
-        result = _suppress_stderr(check_lock)
+        result = suppress_native_stderr(check_lock)
         assert result == 42
         assert lock_was_held == [True]

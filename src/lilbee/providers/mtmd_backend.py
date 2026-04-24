@@ -14,9 +14,11 @@ log = logging.getLogger(__name__)
 
 
 # Image-placeholder tokens seen in GGUF chat templates. The upstream
-# Llava15ChatHandler pipeline substitutes image URLs with mtmd's media
-# marker, so these get rewritten to {{ content.image_url.url }} before
-# rendering.
+# mtmd pipeline substitutes image URLs with mtmd's media marker, so
+# these get rewritten to {{ content.image_url.url }} before rendering.
+# Case matters: GGUF templates are machine-emitted and stable, so a
+# case-insensitive replace would risk corrupting unrelated Jinja
+# identifiers.
 _GGUF_IMAGE_TOKENS: tuple[str, ...] = (
     "<|image_pad|>",
     "<image>",
@@ -34,7 +36,7 @@ def read_chat_template(model_path: Path) -> str | None:
     try:
         reader = GGUFReader(str(model_path))
         field = reader.get_field(_TOKENIZER_CHAT_TEMPLATE_KEY)
-    except Exception:
+    except (OSError, ValueError, IndexError, KeyError):
         log.debug("Failed to read chat template from %s", model_path, exc_info=True)
         return None
     if field is None:
@@ -51,14 +53,17 @@ def adapt_gguf_template_for_mtmd(template: str) -> str:
 
 
 def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
-    """Return a ``Llava15ChatHandler`` with the GGUF's own chat template.
+    """Return the mtmd chat handler configured with the GGUF's embedded template.
 
     ``DEFAULT_SYSTEM_MESSAGE`` is set to ``None`` so no stray system turn
-    is injected. Falls back to the upstream template when the GGUF has
-    no ``tokenizer.chat_template``.
+    is injected. Falls back to the upstream default template when the
+    GGUF has no ``tokenizer.chat_template``.
     """
     from llama_cpp.llama_chat_format import Llava15ChatHandler
 
+    # Defined per call so each loaded model binds its own CHAT_FORMAT to a
+    # fresh class; hoisting this to module scope would make the first
+    # loaded model's template leak into every subsequent one.
     class _GgufTemplateChatHandler(Llava15ChatHandler):
         DEFAULT_SYSTEM_MESSAGE = None
 
@@ -86,7 +91,7 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     from llama_cpp import Llama
 
     from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import _suppress_stderr, find_mmproj_for_model
+    from lilbee.providers.llama_cpp_provider import find_mmproj_for_model, suppress_native_stderr
 
     if mmproj_path is None:
         mmproj_path = find_mmproj_for_model(model_path)
@@ -101,7 +106,7 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         "n_ctx": cfg.num_ctx if cfg.num_ctx is not None else 0,
     }
 
-    llama = _suppress_stderr(Llama, **kwargs)
+    llama = suppress_native_stderr(Llama, **kwargs)
     metadata = getattr(llama, "metadata", {}) or {}
     n_ctx_fn = getattr(llama, "n_ctx", None)
     n_ctx = n_ctx_fn() if callable(n_ctx_fn) else "?"
