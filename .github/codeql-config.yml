@@ -1,0 +1,8 @@
+name: lilbee CodeQL config
+
+# Analyse lilbee's own Python: shipped code in src/ and the test suite.
+# Everything outside these paths (docs, fixtures, generated content) is
+# excluded so findings are strictly about code we author.
+paths:
+  - src
+  - tests
