@@ -67,14 +67,23 @@ jobs:
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
           inputs: .
-          # CVE-2025-69872: diskcache 5.6.3 uses pickle for serialization.
-          # Pulled in transitively by llama-cpp-python; no upstream fix
-          # published. Exploitation requires write access to the cache
-          # directory under the user's own data dir, which is already a
-          # post-compromise scenario. Revisit when llama-cpp-python drops
-          # or patches the diskcache dependency.
+          # Keep this list mirrored with osv-scanner.toml. Per-ID rationale:
+          # - CVE-2025-69872: diskcache 5.6.3 uses pickle for serialization.
+          #   Pulled in transitively by llama-cpp-python; no upstream fix.
+          #   Exploitation requires write access to the user's own cache dir
+          #   (post-compromise scenario). Revisit when llama-cpp-python drops
+          #   or patches the diskcache dependency.
+          # - PYSEC-2022-42969: ReDoS in the unmaintained `py` package 1.11.0
+          #   (py.path.svnwc). Pulled in transitively by pytest-forked>=1.6.0.
+          #   Not reachable from lilbee or pytest-forked. No upstream fix.
+          # - GHSA-vfmq-68hx-4jfw: XXE in lxml <6.1 default iterparse config.
+          #   Transitively pinned to 5.x by crawl4ai 0.8.6 (`lxml~=5.3`);
+          #   only installed with the `crawler` extra. Revisit when crawl4ai
+          #   allows lxml 6.x.
           ignore-vulns: |
             CVE-2025-69872
+            PYSEC-2022-42969
+            GHSA-vfmq-68hx-4jfw
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)
