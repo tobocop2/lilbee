@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.18' }}
+  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
   ci:
@@ -33,15 +33,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-        exclude:
-          # abetlen has no cp314 prebuilts for macos-arm64 or win-amd64 on the
-          # CPU wheel index as of 2026-04. Linux 3.14 still works because we
-          # build llama-cpp-python from source on Linux runners anyway.
-          # Re-enable when upstream ships cp314 wheels for these platforms.
-          - os: macos-latest
-            python-version: "3.14"
-          - os: windows-latest
-            python-version: "3.14"
         include:
           - os: ubuntu-latest
             llama-plat: linux_x86_64
@@ -69,21 +60,18 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      # Linux: abetlen only publishes musl-linked linux_x86_64 wheels, which
-      # won't load on glibc systems (every mainstream distro). Build from the
-      # PyPI sdist against the runner's glibc instead. PyPI only ships sdist
-      # for llama-cpp-python, so --no-binary forces the compile path.
+      # Build llama-cpp-python from source on every platform. abetlen's CPU
+      # index only ships up to 0.3.19 and Linux's wheels are musl-linked
+      # (broken on glibc); building from source against the runner's
+      # toolchain gives us 0.3.20 with consistent behavior everywhere.
+      # GGML_NATIVE=OFF on every OS so wheels are portable across the runner
+      # pool's CPU classes (avoids the "Illegal instruction" failures on
+      # weaker CI machines). Metal stays ON for macOS arm64 since that's
+      # the whole point of an Apple Silicon wheel.
       - name: Build llama-cpp-python from source (Linux)
         if: runner.os == 'Linux'
         shell: bash
         env:
-          # GGML_NATIVE defaults to ON, which bakes -march=native into the
-          # build. The wheel then won't run on any CPU lacking the
-          # build-runner's full instruction set (seen as "Illegal instruction
-          # (core dumped)" on verify-pypi runners that got a different CPU
-          # class from the pool). Force the build to target a baseline x86_64
-          # ABI. CUDA/Metal/BLAS stay off so the Linux CPU wheel is truly
-          # portable; we're the CPU lane by design.
           CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF"
         run: |
           mkdir -p /tmp/llama-build
@@ -92,21 +80,40 @@ jobs:
             -w /tmp/llama-build
           ls -lh /tmp/llama-build/
 
-      - name: Vendor llama-cpp-python and retag wheel (Linux)
-        if: runner.os == 'Linux'
+      - name: Build llama-cpp-python from source (macOS arm64)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_METAL=ON -DGGML_BLAS=OFF"
+          # Deployment target matches the wheel platform tag we stamp on
+          # the lilbee wheel (macosx_11_0_arm64). Without this, cmake
+          # defaults to the runner's current macOS (15+), which would
+          # produce a dylib that fails to load on macOS 11–14 users.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          mkdir -p /tmp/llama-build
+          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
+            --no-deps --no-binary=llama-cpp-python \
+            -w /tmp/llama-build
+          ls -lh /tmp/llama-build/
+
+      - name: Build llama-cpp-python from source (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
+        run: |
+          mkdir -p /tmp/llama-build
+          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
+            --no-deps --no-binary=llama-cpp-python \
+            -w /tmp/llama-build
+          ls -lh /tmp/llama-build/
+
+      - name: Vendor llama-cpp-python and retag wheel
         shell: bash
         run: >
           python -m tools.vendor.llama_cpp dist/*.whl
           --local-wheel /tmp/llama-build/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
-          --wheel-platform ${{ matrix.wheel-plat }}
-
-      - name: Vendor llama-cpp-python and retag wheel (macOS/Windows)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: >
-          python -m tools.vendor.llama_cpp dist/*.whl
-          --version ${{ env.LLAMA_CPP_VERSION }}
-          --platform ${{ matrix.llama-plat }}
           --wheel-platform ${{ matrix.wheel-plat }}
 
       - name: List output

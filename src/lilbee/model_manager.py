@@ -277,8 +277,8 @@ _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
 _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
 # Reranker detection runs BEFORE embedding detection so ``bge-reranker-*``
 # (family "bge" but clearly a reranker) does not get misclassified as
-# EMBEDDING. ``cross-encoder`` covers the sentence-transformers SBERT
-# naming convention for cross-encoder rerankers.
+# EMBEDDING. ``cross-encoder`` covers the SBERT-style naming convention
+# for cross-encoder rerankers.
 _RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 
 
