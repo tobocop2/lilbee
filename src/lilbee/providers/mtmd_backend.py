@@ -61,9 +61,10 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
     """
     from llama_cpp.llama_chat_format import Llava15ChatHandler
 
-    # Defined per call so each loaded model binds its own CHAT_FORMAT to a
-    # fresh class; hoisting this to module scope would make the first
-    # loaded model's template leak into every subsequent one.
+    # Defined per call so each loaded model binds its own ``CHAT_FORMAT``
+    # (set below) to a fresh class; hoisting this to module scope would
+    # make the first loaded model's template leak into every subsequent
+    # one.
     class _GgufTemplateChatHandler(Llava15ChatHandler):
         DEFAULT_SYSTEM_MESSAGE = None
 
@@ -79,7 +80,8 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
         )
     else:
         log.info(
-            "Vision chat handler: no GGUF template in %s, falling back to Llava15 default",
+            "Vision chat handler: no GGUF-embedded chat template for %s; "
+            "using upstream default",
             model_path.name,
         )
 

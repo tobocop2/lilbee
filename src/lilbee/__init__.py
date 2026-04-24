@@ -49,7 +49,7 @@ def _prestart_mp_resource_tracker() -> None:
         from multiprocessing import resource_tracker
 
         resource_tracker.ensure_running()
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         # Best-effort: if the tracker already crashed or cannot be started
         # in the current env, leave the state alone. The worker's own
         # spawn will surface a real error at call time.

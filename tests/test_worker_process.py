@@ -768,9 +768,9 @@ class TestWorkerProcessVision:
     def test_vision_uses_cfg_ocr_timeout(self, config_snap: ConfigSnapshot) -> None:
         """vision_ocr passes cfg.ocr_timeout into the round-trip deadline.
 
-        Prevents an image-heavy page from being killed by the built-in 120s
-        cap when the user has explicitly raised LILBEE_VISION_TIMEOUT /
-        cfg.ocr_timeout for a slow vision model.
+        Prevents an image-heavy page from being killed by the built-in
+        120s cap when the user has explicitly raised LILBEE_OCR_TIMEOUT
+        / cfg.ocr_timeout for a slow vision model.
         """
         from lilbee.config import cfg
 
