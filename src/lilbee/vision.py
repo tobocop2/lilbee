@@ -95,8 +95,8 @@ def _png_to_data_url(png_bytes: bytes) -> str:
 
 def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
     """Build OpenAI-compatible messages with image content for vision models.
-    Uses the multipart content format expected by llama-cpp-python's
-    vision chat handlers (Llava15ChatHandler, etc.).
+    Uses the multipart content format expected by llama.cpp's mtmd
+    pipeline.
     """
     return [
         {
@@ -183,6 +183,13 @@ def _record_page(
     """Drain one completed page future into ``extracted`` and fire progress."""
     i, text = fut.result()
     extracted[i] = text
+    log.info(
+        "Vision OCR completed page %d/%d of %s (%d chars)",
+        i + 1,
+        total,
+        path.name,
+        len(text) if text else 0,
+    )
     on_progress(
         EventType.EXTRACT,
         ExtractEvent(file=path.name, page=i + 1, total_pages=total),

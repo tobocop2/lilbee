@@ -12,6 +12,7 @@ import contextlib
 import logging
 import multiprocessing
 import multiprocessing.queues
+import os
 import queue
 import time
 from dataclasses import dataclass, field
@@ -25,9 +26,11 @@ log = logging.getLogger(__name__)
 _ResponseT = TypeVar("_ResponseT", "EmbedResponse", "VisionResponse")
 
 _EMBED_TIMEOUT_S = 30.0
-_VISION_TIMEOUT_S = 120.0
 _JOIN_TIMEOUT_S = 5.0
 _RESTART_DELAY_S = 0.1
+# Substituted when ``cfg.ocr_timeout == 0`` ("no limit"). The round-trip
+# wait loop needs a finite deadline; one day is effectively unlimited.
+_NO_CAP_TIMEOUT_S = 86_400.0
 
 
 @dataclass(frozen=True)
@@ -190,8 +193,11 @@ class WorkerProcess:
         return resp.vectors
 
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
-        """Send a vision OCR request and wait for the response.
-        Auto-starts the worker if not running. Retries once on crash.
+        """Run vision OCR in the worker, honouring ``cfg.ocr_timeout``.
+
+        Auto-starts the worker and retries once on crash. ``cfg.ocr_timeout
+        == 0`` means no cap; substituted with ``_NO_CAP_TIMEOUT_S`` for
+        the round-trip wait loop.
         """
         self._ensure_started()
         req = VisionRequest(
@@ -200,7 +206,8 @@ class WorkerProcess:
             prompt=prompt,
             request_id=self._next_request_id(),
         )
-        resp = self._round_trip(req, VisionResponse, _VISION_TIMEOUT_S, label="vision OCR")
+        timeout = cfg.ocr_timeout if cfg.ocr_timeout > 0 else _NO_CAP_TIMEOUT_S
+        resp = self._round_trip(req, VisionResponse, timeout, label="vision OCR")
         return resp.text
 
     def _round_trip(
@@ -276,6 +283,19 @@ def _redirect_stdio() -> None:  # pragma: no cover
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
 
+def _configure_worker_logging() -> None:
+    """Route the worker's Python logs to ``$LILBEE_DATA/worker.log``."""
+    data_dir = os.environ.get("LILBEE_DATA") or ""
+    if not data_dir:
+        return
+    log_path = os.path.join(data_dir, "worker.log")
+    handler = logging.FileHandler(log_path)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
 def _worker_main(
     req_q: multiprocessing.Queue[_WorkerRequest],
     resp_q: multiprocessing.Queue[_WorkerResponse],
@@ -283,7 +303,9 @@ def _worker_main(
 ) -> None:
     """Child process entry point. Loads models lazily, processes requests."""
     _redirect_stdio()
+    _configure_worker_logging()
     _apply_config_snapshot(config)
+    log.info("Worker subprocess online (pid=%s)", os.getpid())
 
     embed_llm: Any = None
     vision_llm: Any = None
@@ -382,8 +404,9 @@ def _load_embed_model(model_name: str) -> Any:
 
 
 def _load_vision_model(model_name: str) -> Any:
-    """Load a vision model in the child process."""
-    from lilbee.providers.llama_cpp_provider import load_vision_llama, resolve_model_path
+    """Load a vision model in the child process via the mtmd backend."""
+    from lilbee.providers.llama_cpp_provider import resolve_model_path
+    from lilbee.providers.mtmd_backend import load_vision_llama
 
     return load_vision_llama(resolve_model_path(model_name))
 
@@ -400,14 +423,29 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 
 
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
-    """Process a single vision OCR request."""
+    """Process a single vision OCR request.
+
+    Generation is bounded by the model's ``n_ctx`` (llama.cpp stops when
+    the remaining context is exhausted) and by EOT, which the GGUF's own
+    chat template now fires correctly. No extra per-request cap.
+    """
     try:
         from lilbee.vision import OCR_PROMPT, build_vision_messages
 
         prompt = request.prompt or OCR_PROMPT
         messages = build_vision_messages(prompt, request.png_bytes)
+        start = time.monotonic()
         response = llm.create_chat_completion(messages=messages, stream=False)
         text: str = response["choices"][0]["message"]["content"] or ""
+        usage = response.get("usage", {}) or {}
+        log.info(
+            "vision_ocr request_id=%s wall=%.1fs prompt_tokens=%s completion_tokens=%s chars=%d",
+            request.request_id,
+            time.monotonic() - start,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            len(text),
+        )
         return VisionResponse(text=text, request_id=request.request_id)
     except Exception as exc:
         return VisionResponse(error=str(exc), request_id=request.request_id)

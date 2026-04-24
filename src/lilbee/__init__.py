@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 # Disable huggingface_hub's xet transfer layer before any HF submodule loads.
 # huggingface_hub.constants reads HF_HUB_DISABLE_XET at import time, so this
@@ -16,9 +17,52 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 # Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that
 # leak cursor escapes into the TUI. Our custom tqdm_class is NOT a subclass
 # of huggingface_hub.utils.tqdm, so huggingface_hub's `_create_progress_bar`
-# instantiates it directly without honoring this flag — download callbacks
+# instantiates it directly without honoring this flag. Download callbacks
 # continue to fire. See lilbee/catalog.py::_CallbackProgressBar.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def _install_thread_only_tqdm_lock() -> None:
+    """Pin ``tqdm.std.tqdm._lock`` to a threading RLock.
+
+    Bypasses tqdm's lazy multiprocessing-lock init, which tries to
+    fork_exec the MP resource tracker with ``sys.stderr.fileno() == -1``
+    under Textual and crashes with ``bad value(s) in fds_to_keep``.
+    Matches huggingface_hub PR #4065 but applied at the base class so
+    every tqdm instance in the process inherits the lock via MRO.
+    """
+    try:
+        from tqdm.std import tqdm as _tqdm_base
+    except ImportError:
+        return
+    if getattr(_tqdm_base, "_lock", None) is None:
+        _tqdm_base._lock = threading.RLock()
+
+
+def _prestart_mp_resource_tracker() -> None:
+    """Start the multiprocessing resource tracker before Textual swaps stderr.
+
+    Later ``Process.start()`` calls reuse the cached tracker fd and
+    never hit the fork_exec with a bad fd. No-op on Windows, which
+    doesn't use ``_posixsubprocess``.
+    """
+    import sys as _sys
+
+    if _sys.platform == "win32":
+        return
+    try:
+        from multiprocessing import resource_tracker
+
+        resource_tracker.ensure_running()
+    except (OSError, RuntimeError, ValueError, ImportError):
+        # Best-effort: if the tracker already crashed or cannot be started
+        # in the current env, leave the state alone. The worker's own
+        # spawn will surface a real error at call time.
+        pass
+
+
+_install_thread_only_tqdm_lock()
+_prestart_mp_resource_tracker()
 
 
 def _shrink_hf_download_chunk_size() -> None:

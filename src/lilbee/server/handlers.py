@@ -221,18 +221,30 @@ class SseStream:
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE strings until a sentinel arrives. Cancels *task* on client disconnect."""
+        """Yield SSE strings until a sentinel arrives; cancel *task* on client disconnect.
+
+        Emits a ``heartbeat`` event whenever the producer queue stays
+        idle longer than ``cfg.sse_heartbeat_interval`` seconds so
+        clients that enforce a stream-idle timeout don't abort.
+        """
+        last_yielded = time.monotonic()
         try:
             while True:
                 try:
                     item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
                 except TimeoutError:
+                    now = time.monotonic()
+                    heartbeat_interval = cfg.sse_heartbeat_interval
+                    if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:
+                        last_yielded = now
+                        yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
                     # Fallback for producers that die without a sentinel.
                     if task.done() and self.queue.empty():
                         break
                     continue
                 if item is None:
                     break
+                last_yielded = time.monotonic()
                 yield item
         except (asyncio.CancelledError, GeneratorExit):
             log.info("%s cancelled by client", label)

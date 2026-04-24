@@ -75,12 +75,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     Uses registry manifests for native models and the SDK backend's
     backend metadata for remote models. Filters out mmproj files.
     """
-    buckets: dict[ModelTask, list[ModelOption]] = {
-        ModelTask.CHAT: [],
-        ModelTask.EMBEDDING: [],
-        ModelTask.VISION: [],
-        ModelTask.RERANK: [],
-    }
+    buckets: dict[ModelTask, list[ModelOption]] = {task: [] for task in ModelTask}
     seen: set[str] = set()
 
     _collect_native_models(buckets, seen)

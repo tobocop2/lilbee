@@ -70,8 +70,6 @@ class LlamaCppProvider(LLMProvider):
             keep_alive_seconds=cfg.model_keep_alive,
             loader=load_llama,
         )
-        self._vision_llm: Any | None = None
-        self._vision_model_path: str | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
         self._rerank_queue: queue.Queue[_RerankRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
@@ -166,15 +164,6 @@ class LlamaCppProvider(LLMProvider):
         resolved_model = model or cfg.chat_model
         model_path = resolve_model_path(resolved_model)
         return self._cache.load_model(model_path, mode=MODE_CHAT)
-
-    def _get_vision_llm(self, model: str) -> Any:
-        """Lazy-load a Llama instance with a vision chat handler."""
-        model_path = resolve_model_path(model)
-
-        if self._vision_llm is None or self._vision_model_path != str(model_path):
-            self._vision_llm = load_vision_llama(model_path)
-            self._vision_model_path = str(model_path)
-        return self._vision_llm
 
     def _get_embed_llm(self) -> Any:
         """Load or return a cached Llama instance for embeddings."""
@@ -374,7 +363,7 @@ class _LockedStreamIterator:
 _STDERR_LOCK = threading.Lock()
 
 
-def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
+def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call *fn* with C-level stderr suppressed.
     llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
     that bypass Python logging. This redirects fd 2 to /dev/null for the
@@ -395,7 +384,7 @@ def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 def embed_one(llm: Any, text: str) -> list[float]:
     """Embed a single text with llama.cpp stderr noise suppressed."""
-    response = _suppress_stderr(llm.create_embedding, input=[text])
+    response = suppress_native_stderr(llm.create_embedding, input=[text])
     result: list[float] = response["data"][0]["embedding"]
     return result
 
@@ -407,7 +396,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """
     from llama_cpp import Llama
 
-    llm = _suppress_stderr(
+    llm = suppress_native_stderr(
         Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
     )
     try:
@@ -508,7 +497,7 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
 
-    return _suppress_stderr(Llama, **kwargs)
+    return suppress_native_stderr(Llama, **kwargs)
 
 
 def _is_rerank_model(model: str) -> bool:
@@ -531,7 +520,7 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
     scores: list[float] = []
     for candidate in candidates:
         pair = f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}"
-        response = _suppress_stderr(llm.create_embedding, input=pair)
+        response = suppress_native_stderr(llm.create_embedding, input=pair)
         score = _extract_rerank_score(response)
         scores.append(score)
     return scores
@@ -607,17 +596,6 @@ def find_mmproj_for_model(model_path: Path) -> Path:
     )
 
 
-_PROJECTOR_HANDLER_MAP: dict[str, str] = {
-    "ldp": "Llava15ChatHandler",
-    "ldpv2": "Llava16ChatHandler",
-    "lightonocr": "ObsidianChatHandler",
-    "minicpmv": "MiniCPMv26ChatHandler",
-    "moondream": "MoondreamChatHandler",
-    "qwen2vl": "Qwen25VLChatHandler",
-    "resampler": "Llava15ChatHandler",
-}
-
-
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 
@@ -632,52 +610,3 @@ def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     if field is None or field.types[-1] != GGUFValueType.STRING:
         return None
     return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
-
-
-def _resolve_vision_handler(mmproj_path: Path) -> Any:
-    """Determine the correct chat handler class for a vision model's mmproj file."""
-    from llama_cpp import llama_chat_format
-
-    projector = read_mmproj_projector_type(mmproj_path)
-    if projector:
-        handler_name = _PROJECTOR_HANDLER_MAP.get(projector.lower())
-        if handler_name:
-            handler_cls = getattr(llama_chat_format, handler_name, None)
-            if handler_cls:
-                log.info("Using %s for projector type '%s'", handler_name, projector)
-                return handler_cls
-            log.warning("Handler %s not found in llama_chat_format", handler_name)
-        else:
-            log.warning("Unknown projector type '%s', falling back to Llava15", projector)
-
-    from llama_cpp.llama_chat_format import Llava15ChatHandler
-
-    return Llava15ChatHandler
-
-
-def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
-    """Load a Llama instance with the correct vision chat handler.
-    Reads the mmproj GGUF metadata to determine which chat handler to use,
-    rather than hardcoding Llava15ChatHandler for all models.
-    """
-    from llama_cpp import Llama
-
-    if mmproj_path is None:
-        mmproj_path = find_mmproj_for_model(model_path)
-
-    handler_cls = _resolve_vision_handler(mmproj_path)
-    log.info("Loading vision model %s with mmproj %s", model_path.name, mmproj_path.name)
-    chat_handler = _suppress_stderr(handler_cls, clip_model_path=str(mmproj_path))
-
-    kwargs: dict[str, Any] = {
-        "model_path": str(model_path),
-        "chat_handler": chat_handler,
-        "verbose": False,
-        "n_gpu_layers": -1,
-    }
-    if cfg.num_ctx is not None:
-        kwargs["n_ctx"] = cfg.num_ctx
-    else:
-        kwargs["n_ctx"] = 0
-
-    return _suppress_stderr(Llama, **kwargs)
