@@ -1,0 +1,82 @@
+/* Setup wizard — mirrors the catalog's grid aesthetic. */
+
+#setup-title {
+    text-style: bold;
+    text-align: center;
+    padding: 1 0 0 0;
+}
+
+#setup-intro {
+    color: $text-muted;
+    padding: 0 4 1 4;
+    text-align: center;
+}
+
+#setup-grid-container {
+    height: 1fr;
+    padding: 0 1;
+}
+
+/* setup-enter-hint lives inside the BottomBars wrapper; docking directly
+ * here would overlap with the TaskBar above the Footer (see BottomBars
+ * docstring). */
+#setup-enter-hint {
+    height: 1;
+    width: 100%;
+    text-align: center;
+    color: $primary;
+    text-style: italic;
+    padding: 0 2;
+    border-top: solid $surface-lighten-2;
+}
+
+ModelCard {
+    border: tall transparent;
+}
+
+ModelCard.-selected {
+    border-left: thick $primary;
+    background: $primary 10%;
+}
+
+GridSelect:focus ModelCard.-highlight {
+    border: tall $primary;
+    background: $surface;
+}
+
+GridSelect:focus ModelCard.-highlight.-selected {
+    border-left: thick $primary;
+}
+
+GridSelect:focus ModelCard.-highlight #card-hint {
+    color: $primary;
+    text-style: bold italic;
+}
+
+.section-heading {
+    text-style: bold;
+    color: $primary;
+    padding: 1 1 0 2;
+    border-bottom: solid $surface-lighten-2;
+}
+
+GridSelect {
+    height: auto;
+    padding: 0;
+    margin: 0 1;
+    grid-gutter: 1;
+    border: round $secondary 50%;
+    keyline: none;
+
+    &.-highlight {
+        background: $surface;
+        border: tall $primary 30%;
+    }
+
+    &:focus * {
+        &.-highlight {
+            background: $surface;
+            border: tall $primary;
+        }
+    }
+}

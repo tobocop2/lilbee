@@ -1,13 +1,13 @@
 [project]
 name = "lilbee"
-version = "0.5.4"
-description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
+version = "0.6.0"
+description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Runs fully offline with llama-cpp."
 readme = "README.md"
-license = "MIT"
+license = "Elastic-2.0"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
-    "knowledge-base", "rag", "ollama", "lancedb", "mcp",
+    "knowledge-base", "rag", "lancedb", "mcp",
     "vector-search", "ocr", "pdf", "local-llm", "offline",
 ]
 classifiers = [
@@ -26,21 +26,30 @@ classifiers = [
 ]
 
 dependencies = [
-    "ollama",
     "lancedb",
-    "kreuzberg",
+    "kreuzberg>=4.9.1",
     "filelock",
-    "tree-sitter>=0.25",
-    "tree-sitter-language-pack>=0.7",
+    "tree-sitter-language-pack>=1.4.0",
     "typer",
     "tiktoken",
-    "prompt-toolkit>=3.0",
+    "textual>=0.75",
     "mcp>=1.26.0",
-    "pypdfium2>=5.6.0",
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
+    "httpx",
+    "llama-cpp-python",
+    "gguf>=0.18",
+    "huggingface_hub>=1.11.0",
+    "psutil>=5.9",
+    "pydantic-settings>=2.13.1",
+    "numpy",
 ]
+
+[project.optional-dependencies]
+litellm = ["litellm>=1.50"]
+graph = ["spacy>=3.8", "graspologic-native>=1.2"]
+crawler = ["crawl4ai>=0.8.6"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
@@ -48,7 +57,7 @@ Repository = "https://github.com/tobocop2/lilbee"
 Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
-lilbee = "lilbee.cli:app"
+lilbee = "lilbee.launcher:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -60,31 +69,54 @@ packages = ["src/lilbee"]
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
-    "pexpect>=4.9.0",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
     "reportlab",
     "ruff>=0.15.4",
     "httpx>=0.27",
+    "pytest-httpserver",
+    "types-pyyaml>=6.0.12.20250915",
+    "pytest-xdist>=3.8.0",
+    "pytest-forked>=1.6.0",
+    "pytest-timeout>=2.3",
 ]
 
 [tool.pytest.ini_options]
+pythonpath = [".", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--ignore=tests/integration"
+timeout = 60
+markers = [
+    "slow: integration tests that download models or take >10s",
+    "real_model_classify: opt out of the global _classify_installed_models mock",
+]
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py"]
+omit = ["src/lilbee/__main__.py", "src/lilbee/launcher.py"]
+concurrency = ["thread"]
 
 [tool.coverage.report]
 show_missing = true
 fail_under = 100
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if sys.platform",
+    "class.*Protocol",
+]
+omit = [
+    "src/lilbee/__main__.py",
+    "src/lilbee/launcher.py",
+    "src/lilbee/platform.py",
+]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "tools"]
 
 [tool.ruff.lint]
 select = [
@@ -96,7 +128,20 @@ select = [
     "B",     # flake8-bugbear
     "SIM",   # flake8-simplify
     "RUF",   # ruff-specific
+    "S",     # flake8-bandit: security antipatterns (eval, exec, pickle, unsafe subprocess, etc.)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Test-context S-rule noise. Each of these is either a test fixture
+# (hardcoded token/password literals, fake /tmp paths, 0.0.0.0 bind
+# assertions), or an intentional subprocess spawn for an e2e test:
+# - S101 assert (tests are built on it)
+# - S104 bind-all-interfaces (testing host parsing)
+# - S105/S106 hardcoded password string/arg (test fixtures)
+# - S108 /tmp paths (mocked, not actual temp-file usage)
+# - S603/S607 subprocess (e2e tests spawning sys.executable)
+"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S108", "S603", "S607"]
+"conftest.py" = ["S101"]
 
 [tool.mypy]
 python_version = "3.11"

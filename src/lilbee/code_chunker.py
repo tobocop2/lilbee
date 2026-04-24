@@ -1,18 +1,37 @@
-"""Tree-sitter based code chunking — splits source files on function/class boundaries."""
+"""Code chunking via tree-sitter AST analysis.
+
+Extracts structured symbol information (functions, classes, imports)
+and builds enriched chunk headers with symbol metadata.
+"""
 
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-import tree_sitter
+from tree_sitter_language_pack import (
+    ProcessConfig,
+    detect_language,  # TODO: use public API once tree-sitter-language-pack >= 1.3.4
+    has_language,
+    init,
+    process,
+)
 
-from lilbee.chunker import chunk_text
-from lilbee.languages import DEFINITION_TYPES, EXT_TO_LANG
+from lilbee.chunk import chunk_text
+from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
-# Container nodes whose children may also be definitions
-_CONTAINERS = frozenset({"class_body", "block", "declaration_list", "impl_body"})
+
+@dataclass
+class SymbolInfo:
+    """Extracted symbol metadata from tree-sitter process()."""
+
+    name: str
+    kind: str
+    line_start: int
+    line_end: int
+    text: str
 
 
 @dataclass
@@ -25,39 +44,22 @@ class CodeChunk:
     chunk_index: int
 
 
-def get_parser(lang_name: str) -> tree_sitter.Parser | None:
-    """Get a tree-sitter parser for the given language."""
+def _detect_language(file_path: Path) -> str | None:
+    """Detect language from file path using tree-sitter-language-pack."""
+    result: str | None = detect_language(str(file_path))
+    return result
+
+
+def _ensure_language(lang: str) -> bool:
+    """Download language parser if not already available."""
     try:
-        from tree_sitter_language_pack import get_parser
-
-        return get_parser(lang_name)  # type: ignore[arg-type]
+        if has_language(lang):
+            return True
+        init({"languages": [lang]})
+        return has_language(lang)
     except Exception:
-        log.debug("Failed to load tree-sitter language: %s", lang_name)
-        return None
-
-
-def _node_span(node: tree_sitter.Node, source: bytes) -> dict:
-    """Extract text and line range from an AST node."""
-    return {
-        "text": source[node.start_byte : node.end_byte].decode("utf-8", errors="replace"),
-        "line_start": node.start_point.row + 1,
-        "line_end": node.end_point.row + 1,
-    }
-
-
-def collect_definitions(
-    root: tree_sitter.Node,
-    source: bytes,
-    def_types: frozenset[str],
-) -> list[dict]:
-    """Walk top-level children + one level of containers for definitions."""
-    results: list[dict] = []
-    for child in root.children:
-        if child.type in def_types:
-            results.append(_node_span(child, source))
-        elif child.type in _CONTAINERS:
-            results.extend(_node_span(gc, source) for gc in child.children if gc.type in def_types)
-    return results
+        log.debug("Failed to download tree-sitter language: %s", lang)
+        return False
 
 
 def find_line(needle: str, lines: list[str], start: int) -> int:
@@ -69,7 +71,7 @@ def find_line(needle: str, lines: list[str], start: int) -> int:
 
 
 def _fallback_chunks(text: str) -> list[CodeChunk]:
-    """Token-based chunking with approximate line tracking."""
+    """Fallback text chunking with approximate line tracking."""
     raw = chunk_text(text)
     lines = text.split("\n")
     results: list[CodeChunk] = []
@@ -92,36 +94,82 @@ def _fallback_chunks(text: str) -> list[CodeChunk]:
     return results
 
 
-def chunk_code(file_path: Path) -> list[CodeChunk]:
-    """Chunk a source file using tree-sitter. Falls back to token-based if needed."""
-    source = file_path.read_bytes()
-    source_text = source.decode("utf-8", errors="replace")
-
-    lang_name = EXT_TO_LANG.get(file_path.suffix.lower())
-    if not lang_name:
-        return _fallback_chunks(source_text)
-
-    parser = get_parser(lang_name)
-    def_types = DEFINITION_TYPES.get(lang_name, frozenset())
-    if not parser or not def_types:
-        return _fallback_chunks(source_text)
-
-    definitions = collect_definitions(parser.parse(source).root_node, source, def_types)
-    if not definitions:
-        return _fallback_chunks(source_text)
-
-    prefix = f"# File: {file_path}\n\n"
-    return [
-        CodeChunk(
-            chunk=prefix + d["text"],
-            line_start=d["line_start"],
-            line_end=d["line_end"],
-            chunk_index=i,
+def _extract_symbols(result: Any, source_text: str) -> list[SymbolInfo]:
+    """Parse process() result into typed SymbolInfo objects."""
+    raw = result.get("structure", [])
+    if not isinstance(raw, list):
+        return []
+    symbols: list[SymbolInfo] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        span = entry.get("span", {})
+        start_byte = span.get("start_byte", 0)
+        end_byte = span.get("end_byte", len(source_text))
+        symbols.append(
+            SymbolInfo(
+                name=str(entry.get("name", "")),
+                kind=str(entry.get("kind", "")).lower(),
+                line_start=int(span.get("start_line", 0)) + 1,
+                line_end=int(span.get("end_line", 0)) + 1,
+                text=source_text[start_byte:end_byte],
+            )
         )
-        for i, d in enumerate(definitions)
-    ]
+    return symbols
 
 
-def supported_extensions() -> set[str]:
-    """File extensions supported by tree-sitter chunking."""
-    return set(EXT_TO_LANG)
+def chunk_code(file_path: Path) -> list[CodeChunk]:
+    """Chunk a source file using tree-sitter-language-pack's process() API.
+    Extracts structural symbols (functions, classes) and builds enriched
+    chunks with metadata headers. Falls back to token-based chunking
+    if the language isn't supported or parsing fails.
+    """
+    source_text = file_path.read_text(encoding="utf-8", errors="replace")
+    if not source_text.strip():
+        return []
+
+    lang = _detect_language(file_path)
+    if not lang:
+        return _fallback_chunks(source_text)
+
+    try:
+        if not _ensure_language(lang):
+            return _fallback_chunks(source_text)
+        config = ProcessConfig(
+            lang,
+            structure=True,
+            symbols=True,
+            docstrings=True,
+            chunk_max_size=cfg.chunk_size,
+        )
+        result = process(source_text, config)
+    except Exception:
+        log.debug("tree-sitter process() failed for %s", file_path, exc_info=True)
+        return _fallback_chunks(source_text)
+
+    symbols = _extract_symbols(result, source_text)
+    if not symbols:
+        return _fallback_chunks(source_text)
+
+    chunks: list[CodeChunk] = []
+    for i, sym in enumerate(symbols):
+        header = f"# File: {file_path}"
+        if sym.name and sym.kind:
+            header += f" | {sym.kind}: {sym.name}"
+        header += f" (lines {sym.line_start}-{sym.line_end})"
+
+        chunks.append(
+            CodeChunk(
+                chunk=f"{header}\n\n{sym.text}",
+                line_start=sym.line_start,
+                line_end=sym.line_end,
+                chunk_index=i,
+            )
+        )
+
+    return chunks
+
+
+def is_code_file(file_path: Path) -> bool:
+    """Check if a file is supported by tree-sitter chunking."""
+    return detect_language(str(file_path)) is not None

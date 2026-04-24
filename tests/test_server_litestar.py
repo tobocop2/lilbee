@@ -4,9 +4,12 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
+from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.config import cfg
+from lilbee.models import ModelTask
+from lilbee.server.handlers import format_task_mismatch
 
 
 @pytest.fixture(autouse=True)
@@ -25,10 +28,13 @@ def isolated_env(tmp_path):
 
 @pytest.fixture()
 def client():
-    from lilbee.server.litestar_app import create_app
+    import lilbee.server.auth as auth_mod
+    from lilbee.server.app import create_app
 
+    auth_mod.session_manager.token = None  # disable auth for route-level tests
     app = create_app()
-    return TestClient(app)
+    yield TestClient(app)
+    auth_mod.session_manager.token = None
 
 
 async def mock_async_gen(*events):
@@ -68,7 +74,7 @@ class TestSearchRoute:
         resp = client.get("/api/search", params={"q": "hello", "top_k": "3"})
         assert resp.status_code == 200
         assert resp.json() == []
-        mock_search.assert_awaited_once_with("hello", top_k=3)
+        mock_search.assert_awaited_once_with("hello", top_k=3, chunk_type=None)
 
     @mock.patch(
         "lilbee.server.handlers.search",
@@ -83,7 +89,11 @@ class TestSearchRoute:
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
     def test_default_top_k(self, mock_search, client):
         client.get("/api/search", params={"q": "x"})
-        mock_search.assert_awaited_once_with("x", top_k=5)
+        mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
+
+    def test_invalid_chunk_type_rejected_with_400(self, client):
+        resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
+        assert resp.status_code == 400
 
 
 class TestAskRoute:
@@ -96,7 +106,9 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "meaning?"})
         assert resp.status_code == 201
         assert resp.json()["answer"] == "42"
-        mock_ask.assert_awaited_once_with(question="meaning?", top_k=0, options=None)
+        mock_ask.assert_awaited_once_with(
+            question="meaning?", top_k=0, options=None, chunk_type=None
+        )
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -106,7 +118,7 @@ class TestAskRoute:
     def test_forwards_top_k(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
         assert resp.status_code == 201
-        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None)
+        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None, chunk_type=None)
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -136,6 +148,30 @@ class TestAskRoute:
         assert sources[0]["source"] == "doc.pdf"
         assert sources[0]["distance"] == 0.1
 
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_forwards_chunk_type_raw(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "raw"})
+        assert resp.status_code == 201
+        assert mock_ask.call_args.kwargs.get("chunk_type") == "raw"
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_chunk_type_both_normalizes_to_none(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "both"})
+        assert resp.status_code == 201
+        assert mock_ask.call_args.kwargs.get("chunk_type") is None
+
+    def test_invalid_chunk_type_rejected_with_400(self, client):
+        resp = client.post("/api/ask", json={"question": "q", "chunk_type": "bogus"})
+        assert resp.status_code == 400
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")
@@ -145,6 +181,13 @@ class TestAskStreamRoute:
         assert resp.status_code == 201
         assert "text/event-stream" in resp.headers["content-type"]
         assert b"event: token" in resp.content
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_forwards_chunk_type(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("")
+        resp = client.post("/api/ask/stream", json={"question": "hi", "chunk_type": "wiki"})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs.get("chunk_type") == "wiki"
 
 
 class TestChatRoute:
@@ -157,7 +200,9 @@ class TestChatRoute:
         history = [{"role": "user", "content": "hi"}]
         resp = client.post("/api/chat", json={"question": "q", "history": history})
         assert resp.status_code == 201
-        mock_chat.assert_awaited_once_with(question="q", history=history, top_k=0, options=None)
+        mock_chat.assert_awaited_once_with(
+            question="q", history=history, top_k=0, options=None, chunk_type=None
+        )
 
     @mock.patch(
         "lilbee.server.handlers.chat",
@@ -166,7 +211,9 @@ class TestChatRoute:
     )
     def test_default_empty_history(self, mock_chat, client):
         client.post("/api/chat", json={"question": "q"})
-        mock_chat.assert_awaited_once_with(question="q", history=[], top_k=0, options=None)
+        mock_chat.assert_awaited_once_with(
+            question="q", history=[], top_k=0, options=None, chunk_type=None
+        )
 
 
 class TestChatStreamRoute:
@@ -180,6 +227,16 @@ class TestChatStreamRoute:
         assert resp.status_code == 201
         assert b"event: done" in resp.content
 
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_forwards_chunk_type(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("")
+        resp = client.post(
+            "/api/chat/stream",
+            json={"question": "hi", "history": [], "chunk_type": "raw"},
+        )
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
+
 
 class TestSyncRoute:
     @mock.patch("lilbee.server.handlers.sync_stream")
@@ -188,25 +245,49 @@ class TestSyncRoute:
         resp = client.post("/api/sync")
         assert resp.status_code == 201
         assert b"event: done" in resp.content
-        mock_stream.assert_called_once_with(force_vision=False)
+        mock_stream.assert_called_once_with(enable_ocr=None)
 
     @mock.patch("lilbee.server.handlers.sync_stream")
-    def test_force_vision(self, mock_stream, client):
+    def test_enable_ocr(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        client.post("/api/sync", json={"force_vision": True})
-        mock_stream.assert_called_once_with(force_vision=True)
+        client.post("/api/sync", json={"enable_ocr": True})
+        mock_stream.assert_called_once_with(enable_ocr=True)
 
 
 class TestModelsListRoute:
     @mock.patch(
         "lilbee.server.handlers.list_models",
         new_callable=AsyncMock,
-        return_value={"chat": {}, "vision": {}},
     )
     def test_returns_json(self, mock_patched, client):
+        from lilbee.server.handlers import ModelCatalogSection, ModelsResponse
+
+        empty_section = ModelCatalogSection(active="", catalog=[], installed=[])
+        mock_patched.return_value = ModelsResponse(
+            chat=empty_section,
+            embedding=empty_section,
+            vision=empty_section,
+            reranker=empty_section,
+        )
         resp = client.get("/api/models")
         assert resp.status_code == 200
-        assert "chat" in resp.json()
+        body = resp.json()
+        assert "chat" in body
+        assert "embedding" in body
+        assert "vision" in body
+        assert "reranker" in body
+
+
+class TestModelsExternalRoute:
+    @mock.patch(
+        "lilbee.server.handlers.list_external_models",
+        new_callable=AsyncMock,
+        return_value={"models": ["model-large", "model-small"]},
+    )
+    def test_returns_json(self, mock_patched, client):
+        resp = client.get("/api/models/external")
+        assert resp.status_code == 200
+        assert resp.json()["models"] == ["model-large", "model-small"]
 
 
 class TestModelsSetChatRoute:
@@ -220,17 +301,306 @@ class TestModelsSetChatRoute:
         assert resp.status_code == 200
         assert resp.json()["model"] == "llama3:8b"
 
+    @mock.patch(
+        "lilbee.server.handlers.set_chat_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Model 'bogus:latest' is not available."),
+    )
+    def test_returns_422_for_unavailable_model(self, mock_set, client):
+        resp = client.put("/api/models/chat", json={"model": "bogus"})
+        assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
 
-class TestModelsSetVisionRoute:
+
+class TestSetEmbeddingModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_embedding_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Model 'bogus:latest' is not available."),
+    )
+    def test_returns_422_for_unavailable_embedding(self, mock_set, client):
+        resp = client.put("/api/models/embedding", json={"model": "bogus"})
+        assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
+
+
+class TestSetVisionModelRoute:
     @mock.patch(
         "lilbee.server.handlers.set_vision_model",
         new_callable=AsyncMock,
-        return_value={"model": "llava:13b"},
+        return_value={"model": "lightonocr:2-1b"},
     )
     def test_returns_model(self, mock_set, client):
-        resp = client.put("/api/models/vision", json={"model": "llava:13b"})
+        resp = client.put("/api/models/vision", json={"model": "lightonocr:2-1b"})
         assert resp.status_code == 200
-        assert resp.json()["model"] == "llava:13b"
+        assert resp.json()["model"] == "lightonocr:2-1b"
+
+    @mock.patch(
+        "lilbee.server.handlers.set_vision_model",
+        new_callable=AsyncMock,
+        return_value={"model": ""},
+    )
+    def test_accepts_empty_string_to_unset(self, mock_set, client):
+        resp = client.put("/api/models/vision", json={"model": ""})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == ""
+
+    @mock.patch(
+        "lilbee.server.handlers.set_vision_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError(
+            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.VISION)
+        ),
+    )
+    def test_returns_422_for_task_mismatch(self, mock_set, client):
+        resp = client.put("/api/models/vision", json={"model": "qwen3:0.6b"})
+        assert resp.status_code == 422
+        assert "not vision" in resp.json()["detail"]
+        assert "/api/models/chat" in resp.json()["detail"]
+
+
+class TestSetRerankerModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        return_value={"model": "bge-reranker-v2-m3:latest"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": "bge-reranker-v2-m3:latest"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "bge-reranker-v2-m3:latest"
+
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        return_value={"model": ""},
+    )
+    def test_accepts_empty_string_to_unset(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": ""})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == ""
+
+    @mock.patch(
+        "lilbee.server.handlers.set_reranker_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError(
+            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.RERANK)
+        ),
+    )
+    def test_returns_422_for_task_mismatch(self, mock_set, client):
+        resp = client.put("/api/models/reranker", json={"model": "qwen3:0.6b"})
+        assert resp.status_code == 422
+        assert "not rerank" in resp.json()["detail"]
+
+    @mock.patch("lilbee.server.handlers._require_model_available")
+    @mock.patch("lilbee.server.handlers._set_model", new_callable=AsyncMock)
+    def test_route_canonicalizes_hf_repo_form(self, mock_set, mock_available, client):
+        """POSTing hf_repo form returns the catalog's canonical ``name:tag``.
+
+        Locks the full Litestar pipeline (route serialization + handler
+        + ``_require_model_for_task`` canonicalization) so the response
+        body carries the registry key rather than the user-supplied
+        hf_repo ref.
+        """
+        mock_available.return_value = "gpustack/bge-reranker-v2-m3-GGUF:latest"
+        mock_set.return_value = {"model": "bge-reranker-v2-m3:latest"}
+        resp = client.put(
+            "/api/models/reranker",
+            json={"model": "gpustack/bge-reranker-v2-m3-GGUF"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "bge-reranker-v2-m3:latest"
+        # _set_model was called with the canonical ref, not the hf_repo ref.
+        assert mock_set.call_args.args[1] == "bge-reranker-v2-m3:latest"
+
+
+class TestModelsCatalogRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_catalog",
+        new_callable=AsyncMock,
+        return_value={"total": 0, "limit": 20, "offset": 0, "models": []},
+    )
+    def test_returns_json(self, mock_cat, client):
+        resp = client.get("/api/models/catalog")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
+class TestModelsInstalledRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_installed",
+        new_callable=AsyncMock,
+        return_value={"models": []},
+    )
+    def test_returns_json(self, mock_inst, client):
+        resp = client.get("/api/models/installed")
+        assert resp.status_code == 200
+        assert resp.json()["models"] == []
+
+
+class TestModelsPullRoute:
+    @mock.patch("lilbee.server.handlers.models_pull")
+    def test_returns_sse(self, mock_pull, client):
+        mock_pull.return_value = mock_async_gen("event: progress\ndata: {}\n\n")
+        resp = client.post("/api/models/pull", json={"model": "test", "source": "native"})
+        assert resp.status_code == 201
+
+
+class TestModelsShowRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_show",
+        new_callable=AsyncMock,
+        return_value={"parameters": "temp 0.7"},
+    )
+    def test_returns_json(self, mock_show, client):
+        resp = client.post("/api/models/show", json={"model": "test"})
+        assert resp.status_code == 201
+        assert resp.json()["parameters"] == "temp 0.7"
+
+
+class TestModelsDeleteRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_delete",
+        new_callable=AsyncMock,
+        return_value={"deleted": True, "model": "test", "freed_gb": 0.0},
+    )
+    def test_returns_json(self, mock_del, client):
+        resp = client.delete("/api/models/test")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+
+
+class TestConfigRoute:
+    @mock.patch(
+        "lilbee.server.handlers.get_config",
+        new_callable=AsyncMock,
+        return_value={"chat_model": "qwen3:8b", "system_prompt": "You are helpful."},
+    )
+    def test_returns_json(self, mock_cfg, client):
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+        assert resp.json()["chat_model"] == "qwen3:8b"
+        assert "system_prompt" in resp.json()
+
+
+class TestConfigDefaultsRoute:
+    def test_returns_writable_defaults(self, client):
+        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        resp = client.get("/api/config/defaults")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Scalar defaults present.
+        assert data["chunk_size"] == 512
+        assert data["top_k"] == 10
+        # Nullable defaults come through as null.
+        assert data["crawl_max_depth"] is None
+        assert data["crawl_max_pages"] is None
+        # default_factory fields come through as their evaluated list.
+        assert data["crawl_exclude_patterns"] == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        # Model role defaults surface so UI reset affordances can restore
+        # them via PUT /api/models/<role>, even though the fields are
+        # non-writable on PATCH /api/config.
+        assert data["chat_model"] == "qwen3:0.6b"
+        # Wiki cfg fields are writable and appear with their declared defaults.
+        assert data["wiki_prune_raw"] is False
+        assert data["wiki_embedding_faithfulness_threshold"] == 0.5
+
+
+class TestConfigUpdateRoute:
+    @mock.patch(
+        "lilbee.server.handlers.update_config",
+        new_callable=AsyncMock,
+        return_value={"updated": ["temperature"], "reindex_required": False},
+    )
+    def test_returns_json(self, mock_update, client):
+        resp = client.patch("/api/config", json={"temperature": 0.7})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["temperature"]
+
+    @mock.patch(
+        "lilbee.server.handlers.update_config",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Unknown or read-only config field: bogus"),
+    )
+    def test_unknown_field_returns_error(self, mock_update, client):
+        resp = client.patch("/api/config", json={"bogus": 1})
+        assert resp.status_code == 400
+
+    def test_pydantic_validation_error_returns_400(self, client):
+        from pydantic import ValidationError
+
+        @mock.patch(
+            "lilbee.server.handlers.update_config",
+            new_callable=AsyncMock,
+            side_effect=ValidationError.from_exception_data(
+                "Config",
+                [
+                    {
+                        "type": "int_parsing",
+                        "loc": ("chunk_size",),
+                        "msg": "Input should be a valid integer",
+                        "input": "not_a_number",
+                    }
+                ],
+            ),
+        )
+        def _inner(mock_update):
+            resp = client.patch("/api/config", json={"chunk_size": "not_a_number"})
+            assert resp.status_code == 400
+
+        _inner()
+
+    def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
+        # Invalid character class — `p-a` is a backwards range; should be rejected
+        # at PATCH time rather than crashing the next crawl with an opaque error.
+        resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
+        assert resp.status_code == 400
+        body = resp.text
+        assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
+
+    def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
+        resp = client.patch(
+            "/api/config", json={"crawl_exclude_patterns": [r"/page/\d+/?$", r"/tag/"]}
+        )
+        assert resp.status_code == 200
+        assert "crawl_exclude_patterns" in resp.json()["updated"]
+
+
+class TestModelsSetEmbeddingRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_embedding_model",
+        new_callable=AsyncMock,
+        return_value={"model": "nomic-embed-text:latest"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "nomic-embed-text:latest"
+
+
+class TestDocumentsListRoute:
+    @mock.patch(
+        "lilbee.server.handlers.list_documents",
+        new_callable=AsyncMock,
+        return_value={"documents": [], "total": 0},
+    )
+    def test_returns_json(self, mock_list, client):
+        resp = client.get("/api/documents")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
+class TestDocumentsRemoveRoute:
+    @mock.patch(
+        "lilbee.server.handlers.delete_documents",
+        new_callable=AsyncMock,
+        return_value={"removed": ["a.md"], "not_found": []},
+    )
+    def test_returns_json(self, mock_remove, client):
+        resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
+        assert resp.status_code == 201
+        assert resp.json()["removed"] == ["a.md"]
 
 
 class TestOpenAPISchema:
@@ -262,7 +632,7 @@ class TestCors:
         from litestar.testing import TestClient
 
         cfg.cors_origins = ["app://custom.example"]
-        from lilbee.server.litestar_app import create_app
+        from lilbee.server.app import create_app
 
         with TestClient(create_app()) as c:
             resp = c.options(
@@ -283,7 +653,7 @@ class TestCors:
         from litestar.testing import TestClient
 
         cfg.cors_origins = ["app://obsidian.md", "https://my-app.com"]
-        from lilbee.server.litestar_app import create_app
+        from lilbee.server.app import create_app
 
         with TestClient(create_app()) as c:
             for origin in cfg.cors_origins:
@@ -301,21 +671,353 @@ class TestCors:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_localhost_origin_allowed(self, mock_patched, client):
-        resp = client.options(
-            "/api/health",
-            headers={
-                "Origin": "http://localhost:7433",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+    def test_localhost_origin_allowed(self, mock_patched):
+        from litestar.testing import TestClient
+
+        cfg.cors_origins = ["http://localhost:7433"]
+        from lilbee.server.app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "http://localhost:7433",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
+class TestCorsDefaultRegex:
+    """Default cors_origin_regex should allow Obsidian (desktop + mobile) and any
+    localhost origin out of the box, without any config or env var."""
+
+    @staticmethod
+    def _preflight(origin: str) -> str | None:
+        from lilbee.server.app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+        return resp.headers.get("access-control-allow-origin")
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_obsidian_desktop(self, mock_patched):
+        assert self._preflight("app://obsidian.md") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_obsidian_mobile_capacitor(self, mock_patched):
+        assert self._preflight("capacitor://localhost") == "capacitor://localhost"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_http_localhost_any_port(self, mock_patched):
+        assert self._preflight("http://localhost:3000") == "http://localhost:3000"
+        assert self._preflight("http://localhost:8080") == "http://localhost:8080"
+        assert self._preflight("https://localhost:8443") == "https://localhost:8443"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_loopback_ipv4(self, mock_patched):
+        assert self._preflight("http://127.0.0.1:7433") == "http://127.0.0.1:7433"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_loopback_ipv6(self, mock_patched):
+        assert self._preflight("http://[::1]:7433") == "http://[::1]:7433"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_rejects_random_remote(self, mock_patched):
+        assert self._preflight("https://evil.example.com") is None
+        assert self._preflight("app://some-other-app.md") is None
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_regex_and_explicit_list_combine(self, mock_patched):
+        # User adds an explicit remote origin; default regex is untouched.
+        cfg.cors_origins = ["https://my-remote-app.example"]
+        assert self._preflight("https://my-remote-app.example") == "https://my-remote-app.example"
+        # Default regex still applies on top.
+        assert self._preflight("app://obsidian.md") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_match_nothing_regex_disables_default(self, mock_patched):
+        # Documented opt-out: set regex to ^$ so only the explicit list is consulted.
+        cfg.cors_origin_regex = "^$"
+        cfg.cors_origins = ["https://only-this.example"]
+        assert self._preflight("https://only-this.example") == "https://only-this.example"
+        assert self._preflight("app://obsidian.md") is None
+        assert self._preflight("http://localhost:3000") is None
+
+
+class TestCrawlRoute:
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_streams_sse(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen(
+            "event: crawl_start\ndata: {}\n\n",
+            "event: done\ndata: {}\n\n",
+        )
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "depth": 1})
+        assert resp.status_code == 201
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert b"crawl_start" in resp.content
+
+    @mock.patch(
+        "lilbee.server.handlers.crawl_stream",
+        side_effect=ValueError("URL must start with http:// or https://"),
+    )
+    def test_post_crawl_invalid_url(self, mock_stream, client):
+        resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
+        assert resp.status_code == 400
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_null_max_pages(self, mock_stream, client):
+        """null max_pages / depth passes through as None (unbounded)."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post(
+            "/api/crawl",
+            json={"url": "https://example.com", "depth": None, "max_pages": None},
+        )
+        assert resp.status_code == 201
+        kwargs = mock_stream.call_args.kwargs
+        assert kwargs["depth"] is None
+        assert kwargs["max_pages"] is None
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_omitted_fields_default_to_none(self, mock_stream, client):
+        """When depth/max_pages are omitted, the handler receives None (unbounded)."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post("/api/crawl", json={"url": "https://example.com"})
+        assert resp.status_code == 201
+        kwargs = mock_stream.call_args.kwargs
+        assert kwargs["depth"] is None
+        assert kwargs["max_pages"] is None
+
+    def test_post_crawl_rejects_zero_max_pages(self, client):
+        """max_pages=0 is invalid (use null for unbounded)."""
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": 0})
+        assert resp.status_code == 400
+
+
+class TestSetupCrawlerRoutes:
+    """bb-wq8g: GET /setup/crawler/status + POST /setup/crawler."""
+
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=True)
+    def test_status_when_installed(self, _mock, client):
+        resp = client.get("/setup/crawler/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["installed"] is True
+        assert body["component"] == "chromium"
+        assert "browsers_path" in body
+
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=False)
+    def test_status_when_missing(self, _mock, client):
+        resp = client.get("/setup/crawler/status")
+        assert resp.status_code == 200
+        assert resp.json()["installed"] is False
+
+    def test_post_setup_crawler_streams_setup_events(self, client):
+        """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
+        from lilbee.progress import EventType, SetupDoneEvent, SetupStartEvent
+
+        async def _fake_bootstrap(on_progress=None):
+            if on_progress is not None:
+                on_progress(EventType.SETUP_START, SetupStartEvent(component="chromium"))
+                on_progress(
+                    EventType.SETUP_DONE,
+                    SetupDoneEvent(component="chromium", success=True, error=None),
+                )
+
+        with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
+            resp = client.post("/setup/crawler")
+            assert resp.status_code == 201
+            assert "text/event-stream" in resp.headers["content-type"]
+            assert b"event: setup_start" in resp.content
+            assert b"event: setup_done" in resp.content
+
+    def test_post_setup_crawler_emits_error_when_bootstrap_raises(self, client):
+        """Non-zero-exit bootstrap routes through sse_error before done."""
+        from lilbee.crawler import CrawlerBrowserMissing
+
+        async def _fake_bootstrap(on_progress=None):
+            raise CrawlerBrowserMissing("network unreachable")
+
+        with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
+            resp = client.post("/setup/crawler")
+            assert resp.status_code == 201
+            assert b"event: error" in resp.content
+            assert b"network unreachable" in resp.content
+
+
 class TestCreateAppReexport:
-    @mock.patch("lilbee.server.litestar_app.create_app")
+    @mock.patch("lilbee.server.app.create_app")
     def test_lazy_import(self, mock_create):
         from lilbee.server import create_app
 
         create_app()
         mock_create.assert_called_once()
+
+
+class TestLifespan:
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_calls_get_services(self, mock_get_svc):
+        mock_svc = mock.MagicMock()
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
+
+        async with _lifespan(mock.MagicMock()):
+            pass
+        mock_get_svc.assert_called()
+        mock_svc.embedder.validate_model.assert_called_once()
+
+    @mock.patch("lilbee.server.app.get_services", side_effect=RuntimeError("no provider"))
+    async def test_provider_failure_does_not_block(self, mock_get_svc):
+        from lilbee.server.app import _lifespan
+
+        async with _lifespan(mock.MagicMock()):
+            pass
+
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_validate_model_failure_does_not_block(self, mock_get_svc):
+        mock_svc = mock.MagicMock()
+        mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
+
+        async with _lifespan(mock.MagicMock()):
+            pass
+        mock_get_svc.assert_called()
+
+
+class TestAuthMiddleware:
+    @pytest.fixture()
+    def middleware(self):
+        from lilbee.server.auth import AuthMiddleware
+
+        app = AsyncMock()
+        return AuthMiddleware(app)
+
+    @pytest.mark.asyncio
+    async def test_non_http_scope_passes_through(self, middleware):
+        scope = {"type": "websocket"}
+        await middleware(scope, AsyncMock(), AsyncMock())
+        middleware.app.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_options_method_passes_through(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = "secret"
+        try:
+            scope = {"type": "http", "method": "OPTIONS", "headers": []}
+            await middleware(scope, AsyncMock(), AsyncMock())
+            middleware.app.assert_awaited_once()
+        finally:
+            auth_mod.session_manager.token = old
+
+    @pytest.mark.asyncio
+    async def test_read_only_handler_passes_through(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = "secret"
+        try:
+            handler = mock.MagicMock()
+            handler.fn._lilbee_read_only = True
+            scope = {"type": "http", "method": "GET", "headers": [], "route_handler": handler}
+            await middleware(scope, AsyncMock(), AsyncMock())
+            middleware.app.assert_awaited_once()
+        finally:
+            auth_mod.session_manager.token = old
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_raises(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = "valid_token"
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"authorization", b"Bearer wrong_token")],
+            }
+            with pytest.raises(NotAuthorizedException):
+                await middleware(scope, AsyncMock(), AsyncMock())
+        finally:
+            auth_mod.session_manager.token = old
+
+    @pytest.mark.asyncio
+    async def test_empty_token_raises(self, middleware):
+        """When session token is empty string, requests are denied."""
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = ""
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"authorization", b"Bearer anything")],
+            }
+            with pytest.raises(NotAuthorizedException, match="not initialized"):
+                await middleware(scope, AsyncMock(), AsyncMock())
+        finally:
+            auth_mod.session_manager.token = old
+
+
+class TestAuthRequiredRoutes:
+    """Verify mutating endpoints return 401 without a valid bearer token."""
+
+    @pytest.fixture()
+    def auth_client(self):
+        import lilbee.server.auth as auth_mod
+        from lilbee.server.app import create_app
+
+        auth_mod.session_manager.token = "test-secret"
+        app = create_app()
+        yield TestClient(app)
+        auth_mod.session_manager.token = None
+
+    def test_patch_config_requires_auth(self, auth_client):
+        resp = auth_client.patch("/api/config", json={"temperature": 0.5})
+        assert resp.status_code == 401
+
+    def test_put_models_embedding_requires_auth(self, auth_client):
+        resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
+        assert resp.status_code == 401
