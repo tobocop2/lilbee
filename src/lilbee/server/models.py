@@ -361,3 +361,49 @@ class WikiPruneResult(BaseModel):
     records: list[WikiPruneRecordResponse] = []
     archived: int = 0
     flagged: int = 0
+
+
+class DraftInfoResponse(BaseModel):
+    """Metadata about a single wiki draft, mirroring ``DraftInfo.to_dict()``.
+
+    ``pending_kind`` distinguishes drift drafts (``None``) from the Phase D
+    batched-generation markers (``"parse"``, ``"collision"``).
+    """
+
+    slug: str
+    path: str
+    drift_ratio: float | None = None
+    faithfulness_score: float | None = None
+    bad_title: bool = False
+    published_path: str | None = None
+    published_exists: bool = False
+    mtime: float = 0.0
+    pending_kind: str | None = None
+
+
+class WikiDraftDiffResponse(BaseModel):
+    """Unified diff of a draft against its published counterpart."""
+
+    slug: str
+    diff: str
+
+
+class WikiDraftAcceptResponse(BaseModel):
+    """Outcome of accepting a draft: where it landed and how many chunks reindexed.
+
+    ``slug`` is the slug where the content was published.
+    ``requested_slug`` is the slug the client asked to accept. The two
+    differ for PENDING-COLLISION drafts, where the request slug carries
+    a ``-collision-<hash>`` suffix that is stripped on publish.
+    """
+
+    slug: str
+    requested_slug: str
+    moved_to: str
+    reindexed_chunks: int
+
+
+class WikiDraftRejectResponse(BaseModel):
+    """Outcome of rejecting a draft."""
+
+    slug: str

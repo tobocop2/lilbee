@@ -595,6 +595,11 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
     wiki_root = cfg.data_root / cfg.wiki_dir
     touched = []
     for entity in entities:
+        # Phase D: the extractor emits only ENTITY kind; CONCEPT is
+        # reserved for LLM-curated pages produced inside the batched
+        # call and is intentionally not considered here. Keeping the
+        # dispatch neutral guards against a future extractor that
+        # re-introduces CONCEPT.
         subdir = CONCEPTS_SUBDIR if entity.kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
         page_path = wiki_root / subdir / f"{entity.slug}.md"
         if not page_path.exists():
@@ -622,7 +627,12 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
         )
         return
 
-    pages = await asyncio.to_thread(build_wiki, touched, svc.provider, svc.store, cfg)
+    # extract_concepts=False so an incremental sync does not churn
+    # concept slugs. Concept curation is a deliberate, user-invoked
+    # refresh (full `lilbee wiki build`).
+    pages = await asyncio.to_thread(
+        build_wiki, touched, svc.provider, svc.store, cfg, extract_concepts=False
+    )
     update_wiki_index()
     append_wiki_log(
         WIKI_LOG_ACTION_INGEST,

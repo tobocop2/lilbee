@@ -180,6 +180,77 @@ class TestTomlConfigFile:
             c = Config()
             assert c.chat_model == "qwen3:0.6b"
 
+    def test_deprecated_config_keys_log_warning_on_load(self, tmp_path, caplog):
+        """Phase D dropped four wiki config keys; each should log a
+        warning when present in config.toml, and neither survive as
+        a Config attribute.
+        """
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            "wiki_faithfulness_threshold = 0.7\n"
+            'wiki_faithfulness_prompt = "old"\n'
+            "wiki_faithfulness_max_tokens = 256\n"
+            'wiki_concept_prompt = "old"\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level("WARNING", logger="lilbee.config"),
+        ):
+            c = Config()
+        assert not hasattr(c, "wiki_faithfulness_threshold")
+        assert not hasattr(c, "wiki_faithfulness_prompt")
+        assert not hasattr(c, "wiki_faithfulness_max_tokens")
+        assert not hasattr(c, "wiki_concept_prompt")
+        warning_text = " ".join(r.message for r in caplog.records)
+        for key in (
+            "wiki_faithfulness_threshold",
+            "wiki_faithfulness_prompt",
+            "wiki_faithfulness_max_tokens",
+            "wiki_concept_prompt",
+        ):
+            assert key in warning_text
+
+    def test_deprecated_env_vars_log_warning_on_load(self, tmp_path, caplog):
+        """Environment-variable override path mirrors the TOML deprecation
+        warning so users on env configs also see the migration hint."""
+        from lilbee import config as config_module
+
+        config_module._deprecated_env_warned.clear()
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_WIKI_FAITHFULNESS_THRESHOLD"] = "0.7"
+        env["LILBEE_WIKI_CONCEPT_PROMPT"] = "old-prompt"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level("WARNING", logger="lilbee.config"),
+        ):
+            c = Config()
+        assert not hasattr(c, "wiki_faithfulness_threshold")
+        assert not hasattr(c, "wiki_concept_prompt")
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "LILBEE_WIKI_FAITHFULNESS_THRESHOLD" in warning_text
+        assert "LILBEE_WIKI_CONCEPT_PROMPT" in warning_text
+
+    def test_deprecated_env_vars_warn_once(self, tmp_path, caplog):
+        """Repeated Config constructions with the same deprecated env var
+        don't spam the log — the per-key set caches the first emission."""
+        from lilbee import config as config_module
+
+        config_module._deprecated_env_warned.clear()
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_WIKI_FAITHFULNESS_THRESHOLD"] = "0.7"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level("WARNING", logger="lilbee.config"),
+        ):
+            Config()
+            Config()
+        hits = [r for r in caplog.records if "LILBEE_WIKI_FAITHFULNESS_THRESHOLD" in r.message]
+        assert len(hits) == 1
+
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('embedding_model = "my-embed"\n')
@@ -758,6 +829,49 @@ class TestIgnoreDirs:
             c = Config()
             assert "foo" in c.ignore_dirs
             assert "bar" in c.ignore_dirs
+
+
+class TestConceptAllowedEntTypes:
+    """A3 entity-type filter: spaCy NER labels kept by the wiki extractor."""
+
+    def test_default_includes_core_wiki_types(self):
+        c = Config()
+        for label in ("PERSON", "ORG", "GPE", "PRODUCT", "FAC", "NORP"):
+            assert label in c.concept_allowed_ent_types
+
+    def test_default_excludes_quantitative_types(self):
+        c = Config()
+        for label in ("QUANTITY", "CARDINAL", "DATE", "TIME", "MONEY", "PERCENT"):
+            assert label not in c.concept_allowed_ent_types
+
+    def test_env_override_replaces_defaults(self):
+        # Replace-semantics: narrowing the set should NOT re-union with
+        # the defaults the way ``ignore_dirs`` does.
+        with mock.patch.dict(os.environ, {"LILBEE_CONCEPT_ALLOWED_ENT_TYPES": "PERSON,ORG"}):
+            c = Config()
+            assert c.concept_allowed_ent_types == frozenset({"PERSON", "ORG"})
+
+    def test_env_override_is_case_insensitive(self):
+        with mock.patch.dict(os.environ, {"LILBEE_CONCEPT_ALLOWED_ENT_TYPES": "person,Org"}):
+            c = Config()
+            assert c.concept_allowed_ent_types == frozenset({"PERSON", "ORG"})
+
+    def test_empty_env_falls_back_to_default(self):
+        # Empty override should not silently deactivate the gate.
+        env = _clean_env()
+        env["LILBEE_CONCEPT_ALLOWED_ENT_TYPES"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert "PERSON" in c.concept_allowed_ent_types
+
+    def test_non_string_non_collection_input_falls_back_to_default(self):
+        """A programmatic override with an unsupported type keeps defaults.
+
+        The validator accepts str/set/frozenset/list. Anything else (None,
+        int, bytes) hits the trailing fallback branch instead of raising.
+        """
+        c = Config(concept_allowed_ent_types=None)  # type: ignore[arg-type]
+        assert "PERSON" in c.concept_allowed_ent_types
 
 
 class TestEmptyStringValidation:

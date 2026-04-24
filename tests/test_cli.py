@@ -2321,6 +2321,80 @@ class TestWikiBuild:
         assert result.exit_code == 0
         assert msg.CMD_WIKI_DISABLED in result.output
 
+    def test_dry_run_skips_build_wiki_and_shows_candidates(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        """``--dry-run`` prints the extraction candidates and never
+        invokes ``build_wiki``. The page builder is stubbed to raise so
+        any call surfaces as a test failure."""
+        from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
+        from lilbee.wiki.entity_extractor.base import ChunkRef
+
+        mock_svc.store.get_sources.return_value = []
+        extractor = self._stub_extraction(monkeypatch)
+        extractor.extract.return_value = [
+            ExtractedEntity(
+                slug="chevrolet",
+                kind=EntityKind.ENTITY,
+                label="Chevrolet",
+                type_hint="ORG",
+                chunk_refs=(ChunkRef(source="a.md", chunk_index=0),),
+            ),
+        ]
+
+        def build_boom(*a, **kw):
+            raise AssertionError("build_wiki must not run in --dry-run")
+
+        monkeypatch.setattr("lilbee.wiki.build_wiki", build_boom)
+        result = runner.invoke(app, ["wiki", "build", "--dry-run"])
+        assert result.exit_code == 0
+        assert "chevrolet" in result.output
+        assert "dry-run" in result.output.lower()
+        assert "No LLM calls were made" in result.output
+
+    def test_dry_run_json_output(self, mock_svc, isolated_env, monkeypatch):
+        from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
+        from lilbee.wiki.entity_extractor.base import ChunkRef
+
+        cfg.json_mode = True
+        mock_svc.store.get_sources.return_value = []
+        extractor = self._stub_extraction(monkeypatch)
+        extractor.extract.return_value = [
+            ExtractedEntity(
+                slug="x",
+                kind=EntityKind.CONCEPT,
+                label="x",
+                type_hint="noun_phrase",
+                chunk_refs=(
+                    ChunkRef(source="a.md", chunk_index=0),
+                    ChunkRef(source="b.md", chunk_index=3),
+                ),
+            ),
+        ]
+
+        def build_boom(*a, **kw):
+            raise AssertionError("build_wiki must not run in --dry-run")
+
+        monkeypatch.setattr("lilbee.wiki.build_wiki", build_boom)
+        result = runner.invoke(app, ["--json", "wiki", "build", "--dry-run"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_build"
+        assert data["dry_run"] is True
+        assert data["count"] == 1
+        assert data["entities"][0]["slug"] == "x"
+        assert data["entities"][0]["mentions"] == 2
+        assert sorted(data["entities"][0]["sources"]) == ["a.md", "b.md"]
+
+    def test_dry_run_with_no_candidates_prints_empty_note(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        mock_svc.store.get_sources.return_value = []
+        self._stub_extraction(monkeypatch)
+        result = runner.invoke(app, ["wiki", "build", "--dry-run"])
+        assert result.exit_code == 0
+        assert "No candidate entities" in result.output
+
 
 class TestWikiCitations:
     def test_citations_empty(self, mock_svc):
@@ -2493,6 +2567,142 @@ class TestWikiPrune:
             result = runner.invoke(app, ["wiki", "prune"])
         assert result.exit_code == 0
         assert "old.md" in result.output
+
+
+class TestWikiDraftsCli:
+    """Phase B1/D: ``wiki drafts list / diff / accept / reject`` CLI surface."""
+
+    def _seed(self, isolated_env: Path) -> Path:
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        drafts = isolated_env / "wiki" / "drafts"
+        drafts.mkdir(parents=True)
+        (drafts / "x.md").write_text(
+            "<!-- DRIFT: 25% content changed - flagged for human review -->\n\n"
+            "---\nfaithfulness_score: 0.8\n---\n\n# X\n\nnew body\n",
+            encoding="utf-8",
+        )
+        summaries = isolated_env / "wiki" / "summaries"
+        summaries.mkdir(parents=True)
+        (summaries / "x.md").write_text("old body\n", encoding="utf-8")
+        return isolated_env
+
+    def test_list_no_drafts(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        assert "No drafts pending review" in result.output
+
+    def test_list_renders_table(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        result = runner.invoke(app, ["wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        assert "x" in result.output
+        assert "25%" in result.output or "0.8" in result.output
+
+    def test_list_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "list"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_list"
+        assert data["total"] == 1
+
+    def test_diff_shows_unified_diff(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        result = runner.invoke(app, ["wiki", "drafts", "diff", "x"])
+        assert result.exit_code == 0
+        assert "-old body" in result.output
+        assert "+new body" in result.output
+
+    def test_diff_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "diff", "x"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_diff"
+
+    def test_diff_missing_slug_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "diff", "missing"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_diff_missing_slug_json_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "diff", "missing"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+    def test_accept_moves_draft_into_published(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 0
+        assert "Accepted" in result.output
+        assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
+
+    def test_accept_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
+            result = runner.invoke(app, ["--json", "wiki", "drafts", "accept", "x"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_accept"
+        assert data["slug"] == "x"
+
+    def test_accept_missing_slug_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "accept", "missing"])
+        assert result.exit_code == 1
+
+    def test_accept_missing_slug_json_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "accept", "missing"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+    def test_reject_deletes_draft(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "x"])
+        assert result.exit_code == 0
+        assert "Rejected" in result.output
+        assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
+
+    def test_reject_json_output(self, mock_svc, isolated_env):
+        self._seed(isolated_env)
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "reject", "x"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_drafts_reject"
+
+    def test_reject_missing_slug_exits_nonzero(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "missing"])
+        assert result.exit_code == 1
+
+    def test_reject_missing_slug_json_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "drafts", "reject", "missing"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
 
 
 class TestCrawlProgressCallback:

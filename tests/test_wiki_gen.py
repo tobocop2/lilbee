@@ -10,26 +10,31 @@ import pytest
 from lilbee.config import CHUNKS_TABLE, cfg
 from lilbee.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation
+from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.gen import (
     _check_faithfulness,
     _chunks_to_text,
     _content_change_ratio,
     _diff_summary,
     _divert_to_drafts,
+    _embedding_faithfulness_score,
     _extract_excerpt,
     _find_cached_leaf,
     _find_excerpt_source,
     _generate_synthesis_page,
     _group_chunks_by_page,
-    _index_wiki_page,
+    _group_entities_by_primary_source,
     _leaf_hash,
     _match_citation_source,
-    _parse_faithfulness_score,
+    _maybe_run_phase_d_migration,
+    _mean_vector,
     _resolve_citations,
     _resolve_multi_source_citations,
     _truncate_chunks_to_budget,
+    _unwrap_archived_links,
     _verify_citations,
     generate_synthesis_pages,
+    index_wiki_page,
 )
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
@@ -60,6 +65,10 @@ def _stub_wiki_index_services(monkeypatch):
 
 
 def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
+    # Default chunk vectors match ``cfg.embedding_dim`` so the
+    # stub embedder's body vector (also cfg.embedding_dim) is
+    # dimension-compatible with the chunk vectors when the
+    # batched path computes cosine similarity.
     defaults = {
         "source": source,
         "content_type": "text",
@@ -70,7 +79,7 @@ def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
         "line_end": 0,
         "chunk": text,
         "chunk_index": 0,
-        "vector": [0.1],
+        "vector": [0.1] * cfg.embedding_dim,
     }
     defaults.update(kwargs)
     return SearchChunk(**defaults)
@@ -153,24 +162,38 @@ class TestTruncateChunksToBudget:
         assert "Truncated chunks from 5 to 1" in caplog.text
 
 
-class TestParseFaithfulnessScore:
-    def test_valid_score(self):
-        assert _parse_faithfulness_score("0.85") == 0.85
+class TestEmbeddingFaithfulness:
+    """Phase D: deterministic cosine-similarity faithfulness scoring."""
 
-    def test_clamps_high(self):
-        assert _parse_faithfulness_score("1.5") == 1.0
+    def test_mean_vector_of_empty_list_is_empty(self):
+        assert _mean_vector([]) == []
 
-    def test_clamps_low(self):
-        assert _parse_faithfulness_score("-0.5") == 0.0
+    def test_mean_vector_averages_componentwise(self):
+        vectors = [[1.0, 2.0], [3.0, 4.0]]
+        assert _mean_vector(vectors) == [2.0, 3.0]
 
-    def test_multiline_extracts_first_number(self):
-        assert _parse_faithfulness_score("Score:\n0.72\nDone") == 0.72
+    def test_score_is_dot_for_normalized_vectors(self):
+        # two identical unit vectors => score 1.0
+        unit = [1.0, 0.0, 0.0]
+        assert _embedding_faithfulness_score(unit, [unit]) == pytest.approx(1.0)
 
-    def test_unparseable_returns_zero(self):
-        assert _parse_faithfulness_score("I think it's good") == 0.0
+    def test_score_clamped_to_zero_for_orthogonal(self):
+        assert _embedding_faithfulness_score([1.0, 0.0], [[0.0, 1.0]]) == pytest.approx(0.0)
 
-    def test_empty_returns_zero(self):
-        assert _parse_faithfulness_score("") == 0.0
+    def test_score_clamped_to_zero_for_anti_correlated(self):
+        score = _embedding_faithfulness_score([1.0, 0.0], [[-1.0, 0.0]])
+        assert score == pytest.approx(0.0)
+
+    def test_score_zero_for_missing_inputs(self):
+        assert _embedding_faithfulness_score([], [[1.0]]) == 0.0
+        assert _embedding_faithfulness_score([1.0], []) == 0.0
+
+    def test_score_zero_on_dim_mismatch_and_warns(self, caplog: pytest.LogCaptureFixture):
+        """Off-shape body vector vs source-mean vector returns 0.0 with a warning."""
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        score = _embedding_faithfulness_score([1.0, 0.0], [[1.0, 0.0, 0.0]])
+        assert score == 0.0
+        assert any("does not match source vector dim" in r.message for r in caplog.records)
 
 
 class TestExtractExcerpt:
@@ -387,40 +410,173 @@ class TestBuildWikiMessages:
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
 
 
-class TestCheckFaithfulness:
-    def test_returns_score(self):
-        provider = MagicMock()
-        provider.chat.return_value = "0.85"
-        score = _check_faithfulness("chunks", "wiki", provider, "test")
-        assert score == 0.85
+_COHERENT_WIKI = "# Test\n\nThe test concept refers to the thing under test."
 
-    def test_failure_returns_zero(self):
-        provider = MagicMock()
-        provider.chat.side_effect = ConnectionError("down")
-        score = _check_faithfulness("chunks", "wiki", provider, "test")
+
+def _chunk_with_vector(vector: list[float], text: str = "t", **kw) -> SearchChunk:
+    return _make_chunk(text, vector=vector, **kw)
+
+
+class TestCheckFaithfulness:
+    """Phase D: embedding-based faithfulness replacing the LLM call.
+
+    The cosine-similarity path uses the chunk's own .vector (set by
+    LanceDB for every SearchChunk) and an embedder call for the body
+    side only.
+    """
+
+    def test_uses_chunk_vectors_no_embed_batch_for_chunks(self, monkeypatch):
+        """The body embeds once; chunks reuse their stored .vector."""
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        assert score == pytest.approx(1.0)
+        # Only ONE call, and its argument is the body text list — no
+        # chunks_text batch embedding.
+        assert svc.embedder.embed_batch.call_count == 1
+        body_arg = svc.embedder.embed_batch.call_args[0][0]
+        assert isinstance(body_arg, list) and len(body_arg) == 1
+
+    def test_below_threshold_score_stays_low(self, monkeypatch):
+        """A body that points away from the chunk mean scores at/near zero."""
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[0.0, 1.0]]
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        assert score == pytest.approx(0.0)
+
+    def test_coherence_failure_returns_zero(self, monkeypatch):
+        """B3: a structurally broken H1 returns 0.0 without embedding."""
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        wiki = "# | | bad\n\nbody"
+        chunks = [_chunk_with_vector([1.0])]
+        score = _check_faithfulness(chunks, wiki, "bad")
+        assert score == 0.0
+        svc.embedder.embed_batch.assert_not_called()
+
+    def test_missing_concept_mention_returns_zero(self, monkeypatch):
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        wiki = "# Brakes\n\nThis page talks about tires and wheels."
+        chunks = [_chunk_with_vector([1.0])]
+        score = _check_faithfulness(chunks, wiki, "brakes")
         assert score == 0.0
 
-    def test_passes_faithfulness_max_tokens_cap(self):
-        """Faithfulness chat is capped by cfg.wiki_faithfulness_max_tokens.
+    def test_missing_h1_returns_zero(self, monkeypatch):
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        wiki = "No heading here, just prose about brakes."
+        chunks = [_chunk_with_vector([1.0])]
+        score = _check_faithfulness(chunks, wiki, "brakes")
+        assert score == 0.0
 
-        Without this cap a reasoning model (Qwen3, DeepSeek-R1) can burn
-        the whole context window thinking before emitting the number.
-        """
-        provider = MagicMock()
-        provider.chat.return_value = "0.85"
-        cfg.wiki_faithfulness_max_tokens = 42
-        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
-        _, kwargs = provider.chat.call_args
-        assert kwargs["options"]["max_tokens"] == 42
+    def test_coherent_page_uses_embedding_score(self, monkeypatch):
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        wiki = "# Chevrolet\n\nChevrolet is a manufacturer of vehicles."
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, wiki, "Chevrolet")
+        assert score == pytest.approx(1.0)
 
-    def test_uses_wiki_temperature(self):
-        """Faithfulness chat uses the lower wiki temperature, not the chat default."""
-        provider = MagicMock()
-        provider.chat.return_value = "0.85"
-        cfg.wiki_temperature = 0.05
-        _check_faithfulness("chunks", "wiki", provider, "test", cfg)
-        _, kwargs = provider.chat.call_args
-        assert kwargs["options"]["temperature"] == 0.05
+    def test_display_name_cleanup_before_comparison(self, monkeypatch):
+        """Structural chars in the label don't block coherence matching."""
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        wiki = "# Designer\n\nThe designer of the Caprice was Irv Rybicki."
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, wiki, "| | designer")
+        assert score == pytest.approx(1.0)
+
+    def test_embedder_failure_returns_zero(self, monkeypatch):
+        svc = MagicMock()
+        svc.embedder.embed_batch.side_effect = RuntimeError("down")
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        assert score == 0.0
+
+    def test_empty_source_vectors_returns_zero(self, monkeypatch):
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        score = _check_faithfulness([], _COHERENT_WIKI, "test")
+        assert score == 0.0
+
+    def test_empty_display_label_returns_zero(self, monkeypatch):
+        """clean_label_for_display → empty string → coherence False."""
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0])]
+        # A label made entirely of structural chars reduces to empty
+        # display under clean_label_for_display, hitting the guard
+        # in _title_content_coherence.
+        score = _check_faithfulness(chunks, "# anything\n\nbody", "|||")
+        assert score == 0.0
+        # Embedder is never called because coherence already failed.
+        svc.embedder.embed_batch.assert_not_called()
+
+    def test_empty_body_after_citation_strip_returns_zero(self, monkeypatch):
+        """A page whose body is entirely citation block collapses to empty."""
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        # Construct a wiki text whose body (after strip_citation_block)
+        # is blank. ``## footnotes`` is the citation block header used
+        # by render_citation_block, so strip_citation_block removes
+        # everything from it downward. The H1 alone remains above it.
+        # The title-coherence check still needs the body to mention the
+        # display name; we craft a page where H1 passes the coherence
+        # gate (display in heading, display in body just once in the
+        # paragraph) so we reach the embedder stage, then swap in a
+        # wiki whose citation strip zeroes the body.
+        wiki = (
+            "# test\n\n"
+            "The test concept applies here.\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "x"\n'
+        )
+        # Monkeypatch strip_citation_block to return an empty body so
+        # we exercise the empty-body guard directly without fighting
+        # the title-coherence gate semantics.
+        monkeypatch.setattr("lilbee.wiki.gen.strip_citation_block", lambda _: "   ")
+        chunks = [_chunk_with_vector([1.0])]
+        score = _check_faithfulness(chunks, wiki, "test")
+        assert score == 0.0
+        svc.embedder.embed_batch.assert_not_called()
+
+    def test_empty_body_vectors_returns_zero(self, monkeypatch):
+        """Embedder returned an empty list → score 0.0 without crashing."""
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = []
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        chunks = [_chunk_with_vector([1.0, 0.0])]
+        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        assert score == 0.0
+
+
+class TestTitleContentCoherence:
+    """B3 deterministic gate unchanged; kept for regression coverage."""
+
+    def test_coherence_failure_returns_zero_score(self, monkeypatch):
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        wiki = "# | | designer\n\nThe designer refers to an individual."
+        chunks = [_chunk_with_vector([1.0])]
+        score = _check_faithfulness(chunks, wiki, "designer")
+        assert score == 0.0
+
+    def test_logs_info_on_coherence_failure(self, monkeypatch, caplog: pytest.LogCaptureFixture):
+        svc = MagicMock()
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        chunks = [_chunk_with_vector([1.0])]
+        _check_faithfulness(chunks, "# bad\n\nbody", "brakes")
+        assert any("coherence failed" in r.message for r in caplog.records)
 
 
 class TestGroupChunksByPage:
@@ -609,9 +765,15 @@ class TestResolveMultiSourceCitations:
         assert records[0]["source_filename"] == "fallback.md"
 
 
-def _synthesis_wiki_text(sources: list[str]) -> str:
-    """Build a valid synthesis wiki text with citations to the given sources."""
-    lines = ["# Synthesis\n"]
+def _synthesis_wiki_text(sources: list[str], topic: str | None = None) -> str:
+    """Build a valid synthesis wiki text with citations to the given sources.
+
+    Heading defaults to ``# <topic>`` so the B3 title/body coherence
+    gate passes; override ``topic`` when a test wants to exercise a
+    mismatched-heading path.
+    """
+    heading = topic or "topic"
+    lines = [f"# {heading}\n", f"This page is about {heading}.\n"]
     cite_lines = [
         "---",
         "<!-- citations (auto-generated from _citations table -- do not edit) -->",
@@ -631,7 +793,7 @@ class TestGenerateSynthesisPage:
         chunks_by_source = {
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
-        wiki_text = _synthesis_wiki_text(sources)
+        wiki_text = _synthesis_wiki_text(sources, topic="gradual typing")
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
@@ -650,7 +812,10 @@ class TestGenerateSynthesisPage:
         content = result.read_text()
         assert "generated_by: test-model" in content
         assert 'sources: ["a.md", "b.md", "c.md"]' in content
-        assert "faithfulness_score: 0.85" in content
+        # Phase D: faithfulness is now a cosine-similarity score between
+        # the body embedding and the mean of the source chunk vectors.
+        # Matching stub vectors produce a score of 1.00 (identical).
+        assert "faithfulness_score: 1.00" in content
         store.add_citations.assert_called_once()
 
     def test_low_score_goes_to_drafts(self, tmp_path: Path):
@@ -721,14 +886,17 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
-    def test_faithfulness_failure_uses_zero(self, tmp_path: Path):
+    def test_faithfulness_failure_uses_zero(self, tmp_path: Path, _stub_wiki_index_services):
+        """Phase D: body-embedding failure routes to drafts (score 0.0)."""
         sources = ["a.md"]
         (tmp_path / "documents" / "a.md").write_text("Fact from a.md.")
         chunks_by_source = {"a.md": [_make_chunk("Fact from a.md.", source="a.md")]}
         wiki_text = _synthesis_wiki_text(sources)
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, ConnectionError("down")]
+        provider = _mock_provider(wiki_text)
         store = _mock_store()
+        # The body-side embed call crashes so _check_faithfulness
+        # returns 0.0 and the page routes to drafts.
+        _stub_wiki_index_services.embedder.embed_batch.side_effect = ConnectionError("down")
 
         result = _generate_synthesis_page(
             "topic",
@@ -939,7 +1107,7 @@ class TestSynthesisDriftDetection:
         chunks_by_source = {
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
-        wiki_text = _synthesis_wiki_text(sources)
+        wiki_text = _synthesis_wiki_text(sources, topic="gradual typing")
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
@@ -953,7 +1121,7 @@ class TestSynthesisDriftDetection:
 
 
 class TestWikiIndexing:
-    """``_index_wiki_page`` chunks, embeds and writes wiki page bodies."""
+    """``index_wiki_page`` chunks, embeds and writes wiki page bodies."""
 
     @staticmethod
     def _target(subdir: str = CONCEPTS_SUBDIR, slug: str = "brakes") -> PageTarget:
@@ -996,7 +1164,7 @@ class TestWikiIndexing:
                 return_value=["Brakes convert kinetic energy to heat through friction pads."],
             ),
         ):
-            _index_wiki_page(content, target, store)
+            index_wiki_page(content, target.wiki_source, store)
 
         store.clear_table.assert_called_once()
         call_args = store.clear_table.call_args
@@ -1029,10 +1197,21 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=["body"]),
         ):
-            _index_wiki_page(self._content("body"), target, store)
+            index_wiki_page(self._content("body"), target.wiki_source, store)
 
         store.clear_table.assert_not_called()
         store.add_chunks.assert_not_called()
+
+    def test_malformed_wiki_source_logs_warning_and_skips(self, caplog: pytest.LogCaptureFixture):
+        """A ``wiki_source`` without a subdir component is logged and
+        skipped rather than silently writing to the store or crashing.
+        """
+        store = MagicMock(spec=Store)
+        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        result = index_wiki_page(self._content("body"), "malformed", store)
+        assert result == 0
+        store.clear_table.assert_not_called()
+        assert any("malformed wiki_source" in r.message for r in caplog.records)
 
     def test_empty_body_clears_stale_but_adds_nothing(self):
         """A page whose body is empty after frontmatter+citation stripping invalidates
@@ -1052,7 +1231,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text") as chunker,
         ):
-            _index_wiki_page(content, target, store)
+            index_wiki_page(content, target.wiki_source, store)
 
         store.clear_table.assert_called_once()
         chunker.assert_not_called()
@@ -1067,7 +1246,7 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=[]),
         ):
-            _index_wiki_page(self._content("some body"), target, store)
+            index_wiki_page(self._content("some body"), target.wiki_source, store)
 
         store.clear_table.assert_called_once()
         store.add_chunks.assert_not_called()
@@ -1085,7 +1264,165 @@ class TestWikiIndexing:
             patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
             patch("lilbee.wiki.gen.chunk_text", return_value=["one chunk"]),
         ):
-            _index_wiki_page(self._content("first body"), target, store)
-            _index_wiki_page(self._content("second body"), target, store)
+            index_wiki_page(self._content("first body"), target.wiki_source, store)
+            index_wiki_page(self._content("second body"), target.wiki_source, store)
 
         assert call_order == ["clear", "add", "clear", "add"]
+
+
+class TestBuildFrontmatter:
+    """B2: frontmatter carries a provenance block when chunks are provided."""
+
+    def test_no_chunks_omits_provenance(self):
+        from lilbee.wiki.gen import _build_frontmatter
+
+        fm = _build_frontmatter(cfg, ["doc.md"], 0.9)
+        assert "provenance:" not in fm
+
+    def test_with_chunks_renders_provenance_block(self):
+        from lilbee.wiki.gen import _build_frontmatter
+
+        chunks = [
+            _make_chunk("body a", source="doc.md", chunk_index=0),
+            _make_chunk("body b", source="doc.md", chunk_index=1),
+        ]
+        fm = _build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
+        assert "provenance:" in fm
+        assert f"extraction_method: {cfg.wiki_entity_mode.value}" in fm
+        # yaml.safe_dump emits block style; unquoted scalars on safe names.
+        assert "source: doc.md" in fm
+        assert "chunk_index: 0" in fm
+        assert "chunk_index: 1" in fm
+
+    def test_provenance_round_trips_through_parse_frontmatter(self):
+        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
+
+        chunks = [_make_chunk("a", source="foo.pdf", chunk_index=5)]
+        fm = _build_frontmatter(cfg, ["foo.pdf"], 0.7, chunks=chunks)
+        parsed = parse_frontmatter(fm + "body\n")
+        assert parsed["provenance"]["extraction_method"] == cfg.wiki_entity_mode.value
+        assert parsed["provenance"]["chunks"] == [{"source": "foo.pdf", "chunk_index": 5}]
+
+    def test_existing_frontmatter_without_provenance_still_parses(self):
+        """Pages generated before B2 have no provenance block; the
+        parser must still return a dict (backwards-compat)."""
+        from lilbee.wiki.shared import parse_frontmatter
+
+        fm = (
+            "---\n"
+            "generated_by: qwen3:0.6b\n"
+            "generated_at: 2026-01-01T00:00:00\n"
+            'sources: ["doc.md"]\n'
+            "faithfulness_score: 0.90\n"
+            "---\n\n"
+            "body\n"
+        )
+        parsed = parse_frontmatter(fm)
+        assert parsed["faithfulness_score"] == 0.90
+        assert "provenance" not in parsed
+
+    def test_provenance_quotes_safely_on_pathological_chunk_source(self):
+        """Chunk sources with ``"``, ``\\``, ``:``, or newlines must
+        still yield valid YAML inside the provenance block. Before B2
+        review this rendered inline as ``source: "<raw>"`` and broke
+        the parser on any embedded quote; ``yaml.safe_dump`` escapes
+        them correctly now.
+
+        The outer ``sources:`` list is pre-existing hand-rolled YAML
+        (not part of this PR); pass a benign value for the sources
+        list so the test isolates the provenance-block behavior.
+        """
+        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
+
+        pathological = 'weird "name": with\\slash\n'
+        chunks = [_make_chunk("body", source=pathological, chunk_index=0)]
+        fm = _build_frontmatter(cfg, ["benign.md"], 0.5, chunks=chunks)
+        parsed = parse_frontmatter(fm + "body\n")
+        assert parsed["provenance"]["chunks"] == [{"source": pathological, "chunk_index": 0}]
+
+
+class TestGroupEntitiesByPrimarySource:
+    def test_primary_source_by_mention_count(self):
+        ent = ExtractedEntity(
+            slug="x",
+            kind=EntityKind.ENTITY,
+            label="X",
+            type_hint="PERSON",
+            chunk_refs=(
+                ChunkRef("a.md", 0),
+                ChunkRef("a.md", 1),
+                ChunkRef("b.md", 0),
+            ),
+        )
+        grouped = _group_entities_by_primary_source([ent])
+        assert list(grouped) == ["a.md"]
+
+    def test_lexicographic_tiebreak(self):
+        ent = ExtractedEntity(
+            slug="x",
+            kind=EntityKind.ENTITY,
+            label="X",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef("b.md", 0), ChunkRef("a.md", 0)),
+        )
+        grouped = _group_entities_by_primary_source([ent])
+        assert list(grouped) == ["a.md"]
+
+    def test_empty_refs_dropped(self):
+        ent = ExtractedEntity(
+            slug="x",
+            kind=EntityKind.ENTITY,
+            label="X",
+            type_hint="PERSON",
+            chunk_refs=(),
+        )
+        assert _group_entities_by_primary_source([ent]) == {}
+
+
+class TestPhaseDMigration:
+    def test_archives_concept_pages(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "foo.md").write_text("original")
+        data_dir = tmp_path / "data"
+        _maybe_run_phase_d_migration(wiki_root, data_dir)
+        assert not (wiki_root / "concepts" / "foo.md").exists()
+        assert (wiki_root / "archive" / "concepts" / "foo.md").read_text() == "original"
+        assert (data_dir / ".phase-d-migrated").exists()
+
+    def test_idempotent(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "foo.md").write_text("original")
+        data_dir = tmp_path / "data"
+        _maybe_run_phase_d_migration(wiki_root, data_dir)
+        # Second run: nothing to archive; should not touch disk state.
+        (wiki_root / "concepts").mkdir(parents=True, exist_ok=True)
+        (wiki_root / "concepts" / "new.md").write_text("fresh")
+        _maybe_run_phase_d_migration(wiki_root, data_dir)
+        # Fresh D3 page stayed put.
+        assert (wiki_root / "concepts" / "new.md").exists()
+
+
+class TestUnwrapArchivedLinks:
+    def test_replaces_wiki_links_with_plain_text(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "entities").mkdir(parents=True)
+        (wiki_root / "entities" / "henry.md").write_text(
+            "# Henry\n\nRelated: [[foo]], [[bar]], keep [[not-archived]]."
+        )
+        _unwrap_archived_links(wiki_root, ["foo", "bar"])
+        body = (wiki_root / "entities" / "henry.md").read_text()
+        assert "[[foo]]" not in body
+        assert "foo" in body
+        assert "[[bar]]" not in body
+        assert "[[not-archived]]" in body
+
+    def test_no_archived_slugs_noop(self, tmp_path: Path):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "entities").mkdir(parents=True)
+        (wiki_root / "entities" / "henry.md").write_text("body")
+        _unwrap_archived_links(wiki_root, [])
+        assert (wiki_root / "entities" / "henry.md").read_text() == "body"

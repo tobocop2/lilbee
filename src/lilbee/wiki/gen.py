@@ -15,9 +15,11 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from operator import itemgetter
 from pathlib import Path
 from typing import cast
+
+import numpy as np
+import yaml
 
 from lilbee.chunk import chunk_text
 from lilbee.clustering import SourceClusterer
@@ -27,7 +29,6 @@ from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
 from lilbee.services import get_services
 from lilbee.store import (
-    CHUNK_TYPE_RAW,
     CHUNK_TYPE_WIKI,
     CitationRecord,
     SearchChunk,
@@ -45,15 +46,21 @@ from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
+    ARCHIVE_SUBDIR,
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
     ENTITIES_SUBDIR,
     MIN_CLUSTER_SOURCES,
+    PENDING_KIND_PARSE,
+    PENDING_MARKER_KEYWORD_COLLISION,
+    PENDING_MARKER_KEYWORD_PARSE,
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
     WIKI_LOG_ACTION_GENERATED,
     PageTarget,
+    clean_label_for_display,
+    is_valid_label,
     make_slug,
     parse_frontmatter,
 )
@@ -198,20 +205,6 @@ def _chunks_to_text(chunks: list[SearchChunk]) -> str:
             location = f" (lines {chunk.line_start}-{chunk.line_end})"
         parts.append(f"[Chunk {i + 1}]{location}:\n{chunk.chunk}")
     return "\n\n".join(parts)
-
-
-def _parse_faithfulness_score(response: str) -> float:
-    """Extract a float score from the LLM's faithfulness response."""
-    text = response.strip()
-    for line in text.splitlines():
-        line = line.strip()
-        try:
-            score = float(line)
-            return max(0.0, min(1.0, score))
-        except ValueError:
-            continue
-    log.warning("Could not parse faithfulness score from: %r", text[:100])
-    return 0.0
 
 
 def _extract_excerpt(source_ref: str) -> str:
@@ -413,29 +406,149 @@ def _verify_citations(
     return verified
 
 
+def _title_content_coherence(wiki_text: str, label: str) -> bool:
+    """Deterministic pre-check: title and body must reference the concept.
+
+    The LLM faithfulness score evaluates whether the prose reflects
+    the source chunks but does not penalize structural noise in the
+    title (bb-8b7s: ``| | designer`` passed at 0.90 because the body
+    was coherent). This pre-check asserts three invariants:
+
+    1. The first ``# `` heading must be a sanity-valid label per
+       :func:`is_valid_label`. A heading like ``| | designer`` fails
+       the structural-char gate even though it contains the cleaned
+       display name as a substring.
+    2. The cleaned display name must appear in the heading as a
+       case-insensitive substring. Covers LLM drift where the
+       heading names a different concept than requested.
+    3. The body must mention the display name at least once outside
+       the heading. Covers the "LLM talked about something adjacent
+       but never named the concept" regression.
+
+    Returns True when all three hold, False otherwise.
+    """
+    display = clean_label_for_display(label).lower()
+    if not display:
+        return False
+    heading: str | None = None
+    body_parts: list[str] = []
+    for line in wiki_text.splitlines():
+        if heading is None and line.startswith("# "):
+            heading = line[2:].strip()
+            continue
+        body_parts.append(line)
+    if heading is None:
+        return False
+    if not is_valid_label(heading):
+        return False
+    if display not in heading.lower():
+        return False
+    body = "\n".join(body_parts).lower()
+    return display in body
+
+
+def _mean_vector(vectors: list[list[float]]) -> list[float]:
+    """Compute the element-wise mean of a non-empty vector list.
+
+    Empty input returns an empty list; callers must check before any
+    downstream dot-product so we do not leak a shape mismatch.
+
+    Routes through numpy so the inner loop runs in C: for the typical
+    ``D=768``, ``N=10`` case this cuts per-call cost from ~8k Python
+    ops to a single SIMD-backed reduction.
+    """
+    if not vectors:
+        return []
+    result: list[float] = np.asarray(vectors, dtype=np.float32).mean(axis=0).tolist()
+    return result
+
+
+def _embedding_faithfulness_score(
+    body_vec: list[float],
+    source_vectors: list[list[float]],
+) -> float:
+    """Cosine-similarity score between the body and the mean source vector.
+
+    Assumes L2-normalized vectors (both the embedder and the store
+    return normalized vectors); cosine reduces to a dot product.
+    Falls through to :func:`cosine_sim` so a non-normalized vector
+    does not silently produce an out-of-range value. Result is
+    clamped at zero because a negative cosine means the body vector
+    points the other way from the mean of the sources — treat that
+    the same as uncorrelated for threshold purposes.
+
+    Returns 0.0 on a dimension mismatch between the body vector and
+    the source-vector mean. That is not expected in production (the
+    embedder and the chunk vectors come from the same model), but a
+    stub-driven test may hand in off-shape vectors and crashing the
+    whole pipeline on the shape-check hides the real assertion.
+    """
+    from lilbee.store import cosine_sim
+
+    mean_vec = _mean_vector(source_vectors)
+    if not mean_vec or not body_vec:
+        return 0.0
+    if len(mean_vec) != len(body_vec):
+        log.warning(
+            "Body vector dim %d does not match source vector dim %d; scoring 0.0",
+            len(body_vec),
+            len(mean_vec),
+        )
+        return 0.0
+    return max(0.0, cosine_sim(body_vec, mean_vec))
+
+
 def _check_faithfulness(
-    chunks_text: str,
+    chunks: list[SearchChunk],
     wiki_text: str,
-    provider: LLMProvider,
     label: str,
     config: Config | None = None,
 ) -> float:
-    """Run the faithfulness check and return the score (0.0 on failure)."""
-    if config is None:
-        config = cfg
-    template = config.wiki_faithfulness_prompt
-    prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
-    messages = _build_wiki_messages(prompt, provider, config)
-    options = config.generation_options(
-        temperature=config.wiki_temperature,
-        max_tokens=config.wiki_faithfulness_max_tokens,
-    )
-    try:
-        response = provider.chat(messages, stream=False, options=options)
-        return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
-    except Exception as exc:
-        log.warning("Faithfulness check failed for %s: %s", label, exc)
+    """Score the wiki body's similarity to its source chunks, 0.0 on failure.
+
+    Phase D: replaces the LLM-based faithfulness call with a
+    deterministic cosine-similarity score between the page body and
+    the mean of its source chunk vectors. The B3 title/body coherence
+    pre-check still runs first as a hard gate: a garbage H1 returns
+    0.0 regardless of embedding similarity, so structurally broken
+    pages route to drafts even when the prose happens to be coherent.
+
+    ``chunks`` carries ``.vector`` populated by LanceDB (see
+    ``SearchChunk`` in ``store.py``), so no extra embedder call is
+    needed for the source side. The body is embedded once via the
+    shared services embedder. Any exception in the embedder (model
+    missing, network issue, invalid config) is caught and reported as
+    0.0 so a single faulty page drops to drafts instead of aborting
+    the whole build.
+    """
+    if not _title_content_coherence(wiki_text, label):
+        log.info(
+            "Faithfulness title/body coherence failed for %r; scoring 0.0",
+            label,
+        )
         return 0.0
+    source_vectors = [c.vector for c in chunks if c.vector]
+    if not source_vectors:
+        log.warning("No source vectors for %s; scoring 0.0", label)
+        return 0.0
+
+    # Strip the frontmatter + citation block so we embed only the body
+    # prose. render_citation_block may not have run yet when the score
+    # is computed (it is appended later), but strip_citation_block is
+    # idempotent on missing trailers.
+    body_text = strip_citation_block(wiki_text).strip()
+    if not body_text:
+        log.warning("Empty body for %s; scoring 0.0", label)
+        return 0.0
+
+    try:
+        body_vectors = get_services().embedder.embed_batch([body_text])
+    except Exception as exc:
+        log.warning("Body embedding failed for %s: %s", label, exc)
+        return 0.0
+    if not body_vectors:
+        return 0.0
+    return _embedding_faithfulness_score(body_vectors[0], source_vectors)
 
 
 def _build_frontmatter(
@@ -443,14 +556,20 @@ def _build_frontmatter(
     source_names: list[str],
     score: float,
     leaf_hash: str = "",
+    chunks: list[SearchChunk] | None = None,
 ) -> str:
     """Build YAML frontmatter for a wiki page.
 
-    When ``leaf_hash`` is non-empty it is written so incremental rebuild can
-    skip regeneration on a subsequent sync whose chunks produce the same hash.
+    When ``leaf_hash`` is non-empty it is written so incremental rebuild
+    can skip regeneration on a subsequent sync whose chunks produce the
+    same hash. When ``chunks`` is provided the frontmatter carries a
+    ``provenance`` block naming the source/chunk-index pairs that fed
+    the generator and the extraction method from config, so a bad page
+    is auditable without re-running the pipeline.
     """
     sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
     hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
+    provenance_block = _render_provenance(config, chunks) if chunks is not None else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
@@ -458,8 +577,26 @@ def _build_frontmatter(
         f"sources: [{sources_yaml}]\n"
         f"faithfulness_score: {score:.2f}\n"
         f"{hash_line}"
+        f"{provenance_block}"
         f"---\n\n"
     )
+
+
+def _render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
+    """Render the provenance block: chunk references + extraction method.
+
+    Routes through ``yaml.safe_dump`` rather than hand-rolled string
+    formatting so a chunk source containing a quote, backslash,
+    colon, or newline does not produce invalid YAML that
+    ``parse_frontmatter`` would silently drop on read.
+    """
+    block = {
+        "provenance": {
+            "extraction_method": config.wiki_entity_mode.value,
+            "chunks": [{"source": c.source, "chunk_index": c.chunk_index} for c in chunks],
+        }
+    }
+    return yaml.safe_dump(block, sort_keys=False)
 
 
 def _write_page(
@@ -501,34 +638,48 @@ def _assemble_content(
     return full
 
 
-def _index_wiki_page(content: str, target: PageTarget, store: Store) -> None:
+def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     """Chunk a wiki page body, embed it, and write rows with ``chunk_type="wiki"``.
 
-    Drafts and archive pages never enter the search pool. Stale rows for
-    the same ``wiki_source`` are cleared first so regeneration replaces
-    instead of accumulating. Record shape matches the markdown-ingest
-    convention in ``ingest.py``: ``content_type="text"``, all four
-    page/line positions ``0`` (wiki pages are not paginated).
+    ``wiki_source`` must follow the ``<wiki_dir>/<subdir>/<slug>.md``
+    shape (see :attr:`PageTarget.wiki_source`). Three branches:
+
+    - subdir in :data:`WIKI_CONTENT_SUBDIRS`: clear stale rows, chunk,
+      embed, write. Returns the row count.
+    - subdir is ``drafts/`` or ``archive/``: skip without touching the
+      store. Returns 0.
+    - malformed ``wiki_source`` (no subdir component): log.warning and
+      return 0. Does not raise because the caller set is narrow (only
+      internal wiki paths reach here) and surfacing the bad input in
+      the log is sufficient triage.
+
+    Record shape matches the markdown-ingest convention in
+    ``ingest.py``: ``content_type="text"``, all four page/line
+    positions ``0`` (wiki pages are not paginated).
     """
-    if target.subdir not in WIKI_CONTENT_SUBDIRS:
-        return
+    subdir = _subdir_from_wiki_source(wiki_source)
+    if subdir is None:
+        log.warning("index_wiki_page: malformed wiki_source %r (no subdir)", wiki_source)
+        return 0
+    if subdir not in WIKI_CONTENT_SUBDIRS:
+        return 0
 
     body = extract_body(content).strip()
     store.clear_table(
         CHUNKS_TABLE,
-        f"source = '{escape_sql_string(target.wiki_source)}' AND chunk_type = '{CHUNK_TYPE_WIKI}'",
+        f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{CHUNK_TYPE_WIKI}'",
     )
     if not body:
-        return
+        return 0
 
     chunks = chunk_text(body, mime_type="text/markdown", use_semantic=True)
     if not chunks:
-        return
+        return 0
 
     vectors = get_services().embedder.embed_batch(chunks)
     records = [
         {
-            "source": target.wiki_source,
+            "source": wiki_source,
             "content_type": "text",
             "chunk_type": CHUNK_TYPE_WIKI,
             "page_start": 0,
@@ -542,6 +693,18 @@ def _index_wiki_page(content: str, target: PageTarget, store: Store) -> None:
         for idx, (text, vector) in enumerate(zip(chunks, vectors, strict=True))
     ]
     store.add_chunks(records)
+    return len(records)
+
+
+def _subdir_from_wiki_source(wiki_source: str) -> str | None:
+    """Return the subdir component (``summaries``, ``concepts``, ...) of *wiki_source*.
+
+    ``wiki_source`` is the ``<wiki_dir>/<subdir>/<slug>.md`` path
+    stored in citations and chunks. Returns None when the path has
+    fewer than two components.
+    """
+    parts = wiki_source.split("/")
+    return parts[1] if len(parts) >= 2 else None
 
 
 def _persist_and_finalize(
@@ -561,7 +724,7 @@ def _persist_and_finalize(
     store.delete_citations_for_wiki(target.wiki_source)
     store.add_citations(verified)
 
-    _index_wiki_page(content, target, store)
+    index_wiki_page(content, target.wiki_source, store)
 
     if config.wiki_prune_raw:
         for name in source_names:
@@ -580,7 +743,6 @@ def _generate_page(
     label: str,
     prompt: str,
     chunks: list[SearchChunk],
-    chunks_text: str,
     citation_resolver: Callable[[list[ParsedCitation]], list[CitationRecord]],
     page_type: str,
     slug: str,
@@ -626,14 +788,14 @@ def _generate_page(
         return None
 
     _emit("faithfulness_check")
-    score = _check_faithfulness(chunks_text, wiki_text, provider, label, config)
-    threshold = config.wiki_faithfulness_threshold
+    score = _check_faithfulness(chunks, wiki_text, label, config)
+    threshold = config.wiki_embedding_faithfulness_threshold
     subdir = page_type if score >= threshold else DRAFTS_SUBDIR
     if subdir == DRAFTS_SUBDIR:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)
-    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash)
+    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash, chunks=chunks)
     citation_block = render_citation_block(verified)
     full_content = _assemble_content(frontmatter, wiki_text, citation_block)
 
@@ -744,7 +906,8 @@ def _generate_synthesis_page(
     chunks_text = _chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
     template = config.wiki_synthesis_prompt
-    prompt = template.format(topic=topic, source_list=source_list, chunks_text=chunks_text)
+    display_topic = clean_label_for_display(topic)
+    prompt = template.format(topic=display_topic, source_list=source_list, chunks_text=chunks_text)
     slug = make_slug(topic)
 
     source_hashes: dict[str, str] = {}
@@ -759,10 +922,9 @@ def _generate_synthesis_page(
         )
 
     return _generate_page(
-        label=repr(topic),
+        label=topic,
         prompt=prompt,
         chunks=all_chunks,
-        chunks_text=chunks_text,
         citation_resolver=resolver,
         page_type=SYNTHESIS_SUBDIR,
         slug=slug,
@@ -819,132 +981,6 @@ def generate_synthesis_pages(
     return pages
 
 
-def _apply_per_source_cap(chunks: list[SearchChunk], cap: int) -> list[SearchChunk]:
-    """Cap how many chunks from any single source survive, preserving order."""
-    if cap <= 0:
-        return chunks
-    seen: dict[str, int] = {}
-    out: list[SearchChunk] = []
-    for chunk in chunks:
-        count = seen.get(chunk.source, 0)
-        if count >= cap:
-            continue
-        seen[chunk.source] = count + 1
-        out.append(chunk)
-    return out
-
-
-def _gather_chunks_for_label(
-    label: str,
-    provider: LLMProvider,
-    store: Store,
-    config: Config,
-) -> list[SearchChunk]:
-    """Retrieve the chunks most relevant to *label* for a concept/entity page.
-
-    Embeds the label, runs the store's hybrid search over the raw chunk
-    table to build a candidate pool, then either scores the pool through
-    the native GGUF reranker (when ``cfg.reranker_model`` is set and
-    supported) or leaves the hybrid-ranked order in place. A per-source
-    diversity cap is applied last so one loud document does not own the
-    page.
-    """
-    if not label.strip():
-        return []
-
-    top_k = config.wiki_concept_max_chunks_per_page
-    pool_size = top_k * config.candidate_multiplier
-
-    try:
-        vectors = provider.embed([label])
-    except Exception as exc:
-        log.warning("Embedding failed for wiki label %r: %s", label, exc)
-        return []
-    if not vectors:
-        return []
-
-    candidates = store.search(
-        query_vector=vectors[0],
-        top_k=pool_size,
-        query_text=label,
-        chunk_type=CHUNK_TYPE_RAW,
-    )
-    if not candidates:
-        return []
-
-    if config.reranker_model and provider.supports_rerank():
-        try:
-            scores = provider.rerank(label, [c.chunk for c in candidates])
-        except Exception as exc:
-            log.warning("Rerank failed for %r, keeping hybrid order: %s", label, exc)
-        else:
-            if len(scores) == len(candidates):
-                candidates = [
-                    chunk
-                    for _, chunk in sorted(
-                        zip(scores, candidates, strict=True),
-                        key=itemgetter(0),
-                        reverse=True,
-                    )
-                ]
-
-    capped = _apply_per_source_cap(candidates, config.diversity_max_per_source)
-    return capped[:top_k]
-
-
-def _generate_concept_like_page(
-    label: str,
-    kind: str,
-    page_type: str,
-    provider: LLMProvider,
-    store: Store,
-    config: Config,
-) -> Path | None:
-    """Shared body for ``generate_concept_page`` and ``generate_entity_page``."""
-    chunks = _gather_chunks_for_label(label, provider, store, config)
-    if not chunks:
-        log.info("No chunks found for %s %r, skipping wiki page", kind, label)
-        return None
-
-    chunks = _truncate_chunks_to_budget(chunks, config)
-    chunks_by_source: dict[str, list[SearchChunk]] = {}
-    for chunk in chunks:
-        chunks_by_source.setdefault(chunk.source, []).append(chunk)
-    source_names = sorted(chunks_by_source)
-    chunks_text = _chunks_to_text(chunks)
-    source_list = "\n".join(f"- {name}" for name in source_names)
-
-    prompt = config.wiki_concept_prompt.format(
-        topic=label,
-        kind=kind,
-        source_list=source_list,
-        chunks_text=chunks_text,
-        related_max=config.wiki_related_max,
-    )
-
-    source_hashes = _hash_existing_sources(source_names, config.documents_dir)
-    resolver = functools.partial(
-        _resolve_multi_source_citations,
-        source_names=source_names,
-        source_hashes=source_hashes,
-        chunks_by_source=chunks_by_source,
-    )
-
-    return _generate_page(
-        label=label,
-        prompt=prompt,
-        chunks=chunks,
-        chunks_text=chunks_text,
-        citation_resolver=resolver,
-        page_type=page_type,
-        slug=make_slug(label),
-        source_names=source_names,
-        provider=provider,
-        store=store,
-        config=config,
-    )
-
-
 def _hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict[str, str]:
     """Hash each source file that still exists on disk (used for citation staleness)."""
     out: dict[str, str] = {}
@@ -955,38 +991,548 @@ def _hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict
     return out
 
 
-def generate_concept_page(
-    label: str,
-    provider: LLMProvider,
-    store: Store,
+# Phase D: archive-migration sentinel and helpers. The sentinel lives
+# under data_dir (NOT inside wiki/) so Obsidian sync and wiki
+# tree-walkers never surface it.
+_PHASE_D_SENTINEL_NAME = ".phase-d-migrated"
+
+# Pre-Phase-D wiki concepts that we move to archive/ as part of the
+# one-time migration. Matches wiki/<CONCEPTS_SUBDIR>/*.md recursively.
+_ARCHIVE_CONCEPTS_SUBPATH = Path(ARCHIVE_SUBDIR) / CONCEPTS_SUBDIR
+
+
+def _maybe_run_phase_d_migration(wiki_root: Path, data_dir: Path) -> None:
+    """One-time migration: archive pre-Phase-D concept pages.
+
+    Runs idempotently, gated by ``{data_dir}/.phase-d-migrated``:
+
+    1. Move every ``wiki/concepts/*.md`` to ``wiki/archive/concepts/``
+       preserving relative subpaths. Older concept pages stay
+       readable but drop out of the active wiki browse surface.
+    2. Unwrap stale ``[[archived-slug]]`` references across the
+       remaining pages so a reader clicking a link does not hit a
+       404. Archived slugs become plain text.
+    3. Write the sentinel so future builds skip this path.
+
+    D3's freshly LLM-curated concept pages written AFTER the sentinel
+    exists are never touched.
+    """
+    sentinel = data_dir / _PHASE_D_SENTINEL_NAME
+    if sentinel.exists():
+        return
+    concepts_dir = wiki_root / CONCEPTS_SUBDIR
+    archive_dir = wiki_root / _ARCHIVE_CONCEPTS_SUBPATH
+    archived_slugs: list[str] = []
+    if concepts_dir.is_dir():
+        for src in sorted(concepts_dir.rglob("*.md")):
+            rel = src.relative_to(concepts_dir)
+            dest = archive_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src.replace(dest)
+            archived_slugs.append(str(rel.with_suffix("")).replace("\\", "/"))
+
+    if archived_slugs:
+        _unwrap_archived_links(wiki_root, archived_slugs)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    if archived_slugs:
+        log.info(
+            "Phase D migration: archived %d concept pages, sentinel written at %s",
+            len(archived_slugs),
+            sentinel,
+        )
+
+
+def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
+    """Rewrite ``[[slug]]`` → ``slug`` (plain text) across remaining wiki pages.
+
+    The existing ``_rewrite_links_across_wiki`` path is the wrong
+    tool here: it compiles an *additive* surface map, not a
+    removal pass. Walk the active wiki content subdirs once per
+    archived slug is acceptable because the archive count is
+    bounded (concepts that existed pre-migration). Pages whose body
+    did not change are not rewritten.
+    """
+    if not archived_slugs:
+        return
+    patterns = [(re.compile(r"\[\[" + re.escape(slug) + r"\]\]"), slug) for slug in archived_slugs]
+    for subdir in WIKI_CONTENT_SUBDIRS:
+        subdir_path = wiki_root / subdir
+        if not subdir_path.is_dir():
+            continue
+        for md_path in subdir_path.rglob("*.md"):
+            original = md_path.read_text(encoding="utf-8")
+            rewritten = original
+            for pattern, replacement in patterns:
+                rewritten = pattern.sub(replacement, rewritten)
+            if rewritten != original:
+                md_path.write_text(rewritten, encoding="utf-8")
+
+
+# Pending-marker conventions: the drafts listing surface
+# (``lilbee.wiki.drafts``) scans for these prefixes to classify a
+# draft as PARSE or COLLISION instead of a drift-routed regen. The
+# keyword phrases live in ``wiki.shared`` so writer (gen) and reader
+# (drafts) stay in sync on the exact wording.
+_PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
+_PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
+
+
+def _write_pending_marker(
+    drafts_dir: Path,
+    slug: str,
+    marker_line: str,
+    frontmatter: str = "",
+) -> Path:
+    """Write a PENDING marker page under ``drafts/<slug>.md``.
+
+    ``marker_line`` is the leading HTML comment that both identifies
+    the marker kind and carries the context (source, label). The
+    optional ``frontmatter`` preserves minimal metadata for the
+    drafts surface to round-trip (e.g. ``bad_title``-style fields).
+    """
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    draft_path = drafts_dir / f"{slug}.md"
+    body = marker_line + "\n"
+    if frontmatter:
+        body += "\n" + frontmatter
+    draft_path.write_text(body, encoding="utf-8")
+    return draft_path
+
+
+def _delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
+    """Delete an existing PENDING marker for *slug*; return whether one was removed.
+
+    Match is slug-equality (not fuzzy): an LLM that rephrases a
+    label on retry (``brake system`` → ``braking system``) leaves
+    the old marker behind for the user to drain via ``wiki drafts
+    reject``. Documented limitation; follow-up if the pattern
+    matters.
+    """
+    draft_path = drafts_dir / f"{slug}.md"
+    if not draft_path.is_file():
+        return False
+    try:
+        body = draft_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    first_line = body.splitlines()[0] if body else ""
+    is_pending = first_line.startswith(_PENDING_PARSE_MARKER_PREFIX) or first_line.startswith(
+        _PENDING_COLLISION_MARKER_PREFIX
+    )
+    if not is_pending:
+        return False
+    draft_path.unlink()
+    return True
+
+
+def _group_entities_by_primary_source(
+    entities: list[ExtractedEntity],
+) -> dict[str, list[ExtractedEntity]]:
+    """Group entities under the source that mentions them most.
+
+    Primary source = source with the highest chunk-ref count;
+    lexicographic tiebreak. An entity with no refs is dropped
+    silently (defensive: extractor always attaches refs, but a
+    future extractor might not).
+    """
+    grouped: dict[str, list[ExtractedEntity]] = {}
+    for entity in entities:
+        if not entity.chunk_refs:
+            continue
+        counts: dict[str, int] = {}
+        for ref in entity.chunk_refs:
+            counts[ref.source] = counts.get(ref.source, 0) + 1
+        primary = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        grouped.setdefault(primary, []).append(entity)
+    return grouped
+
+
+# Regex that matches section headers the batch parser recognizes:
+# H1 (``# Name``), H2 (``## Name``), or a bold-line heading
+# (``**Name**``) at line start. The name capture is anchored to the
+# rest of the line (stripped of trailing whitespace) so labels like
+# ``## Brake System (hydraulic)`` still parse.
+_SECTION_HEADER_RE = re.compile(
+    r"^(?:(?:##?)\s+(?P<hashname>[^\n]+)|\*\*(?P<boldname>[^\*\n]+)\*\*)\s*$",
+    re.MULTILINE,
+)
+
+# In-body ``[^keyN]`` footnote-marker pattern. Module-scope so the
+# batched-generation hot path (`_finalize_section`) does not recompile
+# it on every recovered section.
+_FOOTNOTE_MARKER_RE = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
+
+
+def _split_batched_output(
+    text: str,
+    expected_entity_labels: set[str],
+    expected_concept_labels: set[str] | None = None,
+) -> dict[str, tuple[EntityKind, str]]:
+    """Best-effort parse of the batched LLM response into per-label bodies.
+
+    Splits on H1/H2/bold-line headers, then matches each header
+    against the expected entity and concept label sets via
+    case-insensitive substring. Known labels are tagged with the
+    right ``EntityKind``; unknown headers are dropped. Labels whose
+    section could not be recovered at all are surfaced to the caller
+    (they show up as *missing from the return dict* rather than a
+    separate list — caller loops over the expected sets to write
+    PENDING markers).
+    """
+    concepts = expected_concept_labels or set()
+    recovered: dict[str, tuple[EntityKind, str]] = {}
+    matches = list(_SECTION_HEADER_RE.finditer(text))
+    if not matches:
+        return recovered
+    for i, match in enumerate(matches):
+        name = match.group("hashname") or match.group("boldname") or ""
+        name = name.strip()
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        if not body:
+            continue
+        lowered = name.lower()
+        kind_label = _match_label(lowered, expected_entity_labels, EntityKind.ENTITY)
+        if kind_label is None:
+            kind_label = _match_label(lowered, concepts, EntityKind.CONCEPT)
+        if kind_label is None:
+            # Concept labels come from the LLM itself — tag any
+            # unmatched section as CONCEPT only when the caller is
+            # expecting concept curation; otherwise drop it as
+            # noise.
+            if concepts is not None and expected_concept_labels is not None:
+                recovered.setdefault(name, (EntityKind.CONCEPT, _prefix_heading(name, body)))
+            continue
+        kind, label = kind_label
+        recovered[label] = (kind, _prefix_heading(name, body))
+    return recovered
+
+
+def _match_label(
+    lowered_name: str,
+    expected: set[str],
+    kind: EntityKind,
+) -> tuple[EntityKind, str] | None:
+    """Case-insensitive substring match of *lowered_name* against *expected*.
+
+    Returns ``(kind, original_label)`` on hit, ``None`` otherwise.
+    A substring match (not equality) accommodates the LLM adding
+    qualifiers ("Brake System (hydraulic)" vs "brake system").
+    """
+    for label in expected:
+        low = label.lower()
+        if low and (low in lowered_name or lowered_name in low):
+            return (kind, label)
+    return None
+
+
+def _prefix_heading(name: str, body: str) -> str:
+    """Ensure the extracted body starts with a ``# Name`` H1.
+
+    The batched prompt instructs the model to emit ``## Name`` per
+    section. After splitting, the per-section body has lost its
+    header. Rebuild an H1 so the B3 title/body coherence gate still
+    has a heading to match.
+    """
+    stripped = body.lstrip()
+    if stripped.startswith("# "):
+        return body
+    return f"# {name}\n\n{body}"
+
+
+def _chunks_for_source(chunks: list[SearchChunk], source: str) -> list[SearchChunk]:
+    """Return the subset of *chunks* whose ``source`` matches, preserving order."""
+    return [c for c in chunks if c.source == source]
+
+
+def _build_batch_prompt(
+    source: str,
+    entities: list[ExtractedEntity],
+    chunks_text: str,
+    extract_concepts: bool,
     config: Config,
-) -> Path | None:
-    """Generate one wiki page for a noun-phrase concept label."""
-    return _generate_concept_like_page(
-        label=label,
-        kind="concept",
-        page_type=CONCEPTS_SUBDIR,
-        provider=provider,
-        store=store,
-        config=config,
+) -> str:
+    """Render :attr:`Config.wiki_entity_batch_prompt` for one source call.
+
+    ``extract_concepts`` controls whether the concept-curation
+    paragraph is injected: True adds a "identify 3-5 concepts" block;
+    False leaves ``{concept_instruction}`` empty so the LLM writes
+    entity sections only. Keeps the per-source batched call the
+    single entry point whether or not concepts are requested.
+    """
+    entity_labels = ", ".join(clean_label_for_display(e.label) for e in entities) or "(none)"
+    if extract_concepts:
+        concept_instruction = (
+            "First, identify 3-5 CONCEPTS — abstract topics or domain terms "
+            "from the source that deserve a standalone wiki page. Do NOT include "
+            "pronouns, articles, or generic nouns.\n\n"
+            "Then write a wiki section for each of the concepts you identified, "
+            "PLUS one section for each NER ENTITY listed below.\n\n"
+        )
+    else:
+        concept_instruction = ""
+    return config.wiki_entity_batch_prompt.format(
+        source=source,
+        entity_list=entity_labels,
+        chunks_text=chunks_text,
+        concept_instruction=concept_instruction,
     )
 
 
-def generate_entity_page(
-    label: str,
+def _short_source_hash(source: str) -> str:
+    """8-char sha256 digest of *source* (stable collision-marker suffix)."""
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
+
+
+def _generate_source_batch(
+    source: str,
+    entities: list[ExtractedEntity],
+    chunks: list[SearchChunk],
     provider: LLMProvider,
     store: Store,
     config: Config,
-) -> Path | None:
-    """Generate one wiki page for a proper-noun entity label."""
-    return _generate_concept_like_page(
-        label=label,
-        kind="entity",
-        page_type=ENTITIES_SUBDIR,
-        provider=provider,
-        store=store,
-        config=config,
+    *,
+    extract_concepts: bool,
+    written_concept_slugs: dict[str, str],
+) -> list[Path]:
+    """Issue one LLM call for *source* and finalize every recovered section.
+
+    Returns the list of page paths written (entities + concepts
+    combined). Labels not recovered by the parser become PENDING
+    markers under ``wiki/drafts/`` so the next build can retry.
+    Concept slugs already written by an earlier source produce a
+    PENDING-COLLISION marker on the losing side (see
+    :func:`_handle_concept_write`).
+
+    ``written_concept_slugs`` is the per-build ledger of
+    slug → first_source. Callers share one dict across the per-source
+    loop. The second source to propose a slug is the one that gets
+    diverted to a collision marker.
+    """
+    if not chunks:
+        return []
+    budgeted = _truncate_chunks_to_budget(chunks, config)
+    chunks_text = _chunks_to_text(budgeted)
+    prompt = _build_batch_prompt(source, entities, chunks_text, extract_concepts, config)
+    messages = _build_wiki_messages(prompt, provider, config)
+    options = config.generation_options(
+        temperature=config.wiki_temperature,
+        max_tokens=config.wiki_summary_max_tokens,
     )
+    try:
+        response = provider.chat(messages, stream=False, options=options)
+        text = strip_reasoning(cast(str, response)).strip()
+    except Exception as exc:
+        log.warning("Batched LLM call failed for source %s: %s", source, exc)
+        return []
+
+    if not text:
+        log.warning("Batched LLM call returned empty response for source %s", source)
+        return []
+
+    expected_entity_labels = {e.label for e in entities}
+    expected_concepts: set[str] | None = set() if extract_concepts else None
+    parsed = _split_batched_output(text, expected_entity_labels, expected_concepts)
+
+    wiki_root = config.data_root / config.wiki_dir
+    drafts_dir = wiki_root / DRAFTS_SUBDIR
+    source_names = [source]
+    source_hashes = _hash_existing_sources(source_names, config.documents_dir)
+    chunks_by_source = {source: budgeted}
+
+    # Citation definitions live in the trailing block of the WHOLE
+    # response, not inside any one section body. Parse once over the
+    # full text and replay the same list for every section, so each
+    # page sees its own citations even when only the last section
+    # carries the definition trailer.
+    shared_parsed_citations = parse_wiki_citations(text)
+
+    pages: list[Path] = []
+    seen_labels: set[str] = set()
+    for header_label, (kind, body) in parsed.items():
+        seen_labels.add(header_label)
+        resolver = functools.partial(
+            _resolve_multi_source_citations,
+            source_names=source_names,
+            source_hashes=source_hashes,
+            chunks_by_source=chunks_by_source,
+        )
+        page = _finalize_section(
+            header_label=header_label,
+            kind=kind,
+            body=body,
+            chunks=budgeted,
+            citation_resolver=resolver,
+            source_names=source_names,
+            store=store,
+            config=config,
+            source=source,
+            written_concept_slugs=written_concept_slugs,
+            drafts_dir=drafts_dir,
+            shared_parsed_citations=shared_parsed_citations,
+        )
+        if page is not None:
+            pages.append(page)
+
+    for entity in entities:
+        if entity.label not in seen_labels:
+            marker = (
+                f"{_PENDING_PARSE_MARKER_PREFIX} for source {source}, "
+                f"entity/concept {entity.label} - "
+                "run wiki build again or manually accept via wiki drafts accept -->"
+            )
+            # Route through ``yaml.safe_dump`` so a label or source
+            # containing a colon, quote, or newline does not produce a
+            # frontmatter block that ``parse_frontmatter`` silently drops.
+            frontmatter_body = yaml.safe_dump(
+                {
+                    "pending_source": source,
+                    "pending_label": entity.label,
+                    "pending_kind": PENDING_KIND_PARSE,
+                },
+                sort_keys=False,
+            )
+            frontmatter = f"---\n{frontmatter_body}---\n"
+            path = _write_pending_marker(drafts_dir, entity.slug, marker, frontmatter)
+            log.info("Wrote PENDING-PARSE marker for %s -> %s", entity.slug, path)
+
+    return pages
+
+
+def _finalize_section(
+    *,
+    header_label: str,
+    kind: EntityKind,
+    body: str,
+    chunks: list[SearchChunk],
+    citation_resolver: Callable[[list[ParsedCitation]], list[CitationRecord]],
+    source_names: list[str],
+    store: Store,
+    config: Config,
+    source: str,
+    written_concept_slugs: dict[str, str],
+    drafts_dir: Path,
+    shared_parsed_citations: list[ParsedCitation],
+) -> Path | None:
+    """Citation-check, faithfulness-check, write one batched section.
+
+    Shared by entity and concept sections from the per-source batched
+    call. Returns the written page path, or ``None`` if the section
+    failed any gate (no citations, empty body, slug collision marker
+    handled via side channel). ``shared_parsed_citations`` is the
+    definition list parsed once over the whole response — every
+    section replays it so pages other than the last one still have
+    their footnotes resolved.
+    """
+    slug = make_slug(header_label)
+    if not slug:
+        log.info("Empty slug for batched section %r; skipping", header_label)
+        return None
+
+    # Only replay citation keys that this section actually references
+    # in the body; otherwise every section would claim every citation.
+    section_keys = {ref.citation_key for ref in parse_wiki_citations(body)}
+    # Fall back to in-body ``[^keyN]`` references when no definitions
+    # live inside the section: count occurrences of the footnote
+    # marker against the shared definition set.
+    section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
+    relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
+    verified = _verify_citations(citation_resolver(relevant), chunks, header_label, config)
+    if not verified:
+        log.info("No valid citations for batched section %s, skipping", header_label)
+        return None
+
+    score = _check_faithfulness(chunks, body, header_label, config)
+    threshold = config.wiki_embedding_faithfulness_threshold
+    page_type = CONCEPTS_SUBDIR if kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
+    subdir = page_type if score >= threshold else DRAFTS_SUBDIR
+    if subdir == DRAFTS_SUBDIR:
+        log.info(
+            "Batched section %s scored %.2f (< %.2f), sending to drafts",
+            header_label,
+            score,
+            threshold,
+        )
+
+    clean_body = strip_citation_block(body)
+    frontmatter = _build_frontmatter(config, source_names, score, chunks=chunks)
+    citation_block = render_citation_block(verified)
+    full_content = _assemble_content(frontmatter, clean_body, citation_block)
+
+    # Concept collision: the second source proposing a slug loses
+    # and writes to a drafts collision marker; the winning source's
+    # page stays untouched.
+    if kind is EntityKind.CONCEPT and subdir == CONCEPTS_SUBDIR:
+        first_source = written_concept_slugs.get(slug)
+        if first_source is not None and first_source != source:
+            return _divert_concept_collision(
+                slug=slug,
+                source=source,
+                first_source=first_source,
+                content=full_content,
+                drafts_dir=drafts_dir,
+            )
+        written_concept_slugs.setdefault(slug, source)
+
+    # Successful regen of a previously-PENDING slug: remove the old
+    # marker so the drafts surface no longer lists it.
+    _delete_pending_marker_if_present(drafts_dir, slug)
+
+    wiki_root = config.data_root / config.wiki_dir
+    target = PageTarget(
+        wiki_root=wiki_root,
+        subdir=subdir,
+        slug=slug,
+        wiki_source=f"{config.wiki_dir}/{subdir}/{slug}.md",
+        page_type=page_type,
+        label=header_label,
+    )
+    page_path = _persist_and_finalize(full_content, target, verified, source_names, store, config)
+    log.info(
+        "Generated batched page for %s -> %s (score=%.2f, citations=%d)",
+        header_label,
+        target.subdir,
+        score,
+        len(verified),
+    )
+    return page_path
+
+
+def _divert_concept_collision(
+    *,
+    slug: str,
+    source: str,
+    first_source: str,
+    content: str,
+    drafts_dir: Path,
+) -> Path:
+    """Write the losing concept to ``drafts/<slug>-collision-<hash>.md``.
+
+    The winning source's page is unchanged on disk. Hash is the
+    first 8 hex of sha256(source_filename); stable per source so a
+    retry on the same two sources lands at the same draft path,
+    letting the user iterate without marker sprawl.
+    """
+    short = _short_source_hash(source)
+    collision_slug = f"{slug}-collision-{short}"
+    marker = (
+        f"{_PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "
+        f"content from {source} held for review -->\n\n"
+    )
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    path = drafts_dir / f"{collision_slug}.md"
+    path.write_text(marker + content, encoding="utf-8")
+    log.warning(
+        "Concept slug collision: %s already written by %s; diverted %s's version to %s",
+        slug,
+        first_source,
+        source,
+        path,
+    )
+    return path
 
 
 def build_wiki(
@@ -994,33 +1540,105 @@ def build_wiki(
     provider: LLMProvider,
     store: Store,
     config: Config | None = None,
+    *,
+    extract_concepts: bool = True,
 ) -> list[Path]:
-    """Produce concept and entity pages for each extracted record.
+    """Produce entity and LLM-curated concept pages per source.
 
-    Dispatches to :func:`generate_concept_page` for ``EntityKind.CONCEPT``
-    records and :func:`generate_entity_page` for ``EntityKind.ENTITY``
-    records. After all pages are written, runs the ``[[wiki link]]``
-    rewriter across every markdown under ``wiki/`` so new pages and
-    existing ones alike cross-reference the freshly extracted slugs.
-    Pages that fail to ground a single citation are silently skipped by
-    ``_generate_page``; the returned list is the set of pages that
-    landed on disk.
+    Phase D replaces the per-entity / per-concept fan-out with a
+    per-source batched call: for each source in ``entities``' chunk
+    refs, one LLM call identifies 3-5 concepts AND writes a wiki
+    section for every pre-extracted entity belonging to that source.
+    Output sections are split, citation-verified, embedding-scored,
+    and landed under ``wiki/entities/`` or ``wiki/concepts/``
+    depending on kind.
+
+    ``extract_concepts=False`` (used by the incremental-ingest hook)
+    drops the concept-curation paragraph from the prompt so a
+    touched source does not churn concept slugs.
+
+    A one-time archive migration runs first (idempotently, gated by
+    ``{data_dir}/.phase-d-migrated``), moving pre-Phase-D concept
+    pages under ``wiki/archive/concepts/`` and unwrapping stale
+    ``[[archived-slug]]`` links across the remaining pages.
     """
     if config is None:
         config = cfg
+    wiki_root = config.data_root / config.wiki_dir
+    _maybe_run_phase_d_migration(wiki_root, config.data_dir)
 
+    grouped = _group_entities_by_primary_source(entities)
+    all_sources = _all_sources_in_scope(entities, grouped, store, config, extract_concepts)
+    written_concept_slugs: dict[str, str] = {}
     pages: list[Path] = []
-    for entity in entities:
-        if entity.kind is EntityKind.CONCEPT:
-            page = generate_concept_page(entity.label, provider, store, config)
-        else:
-            page = generate_entity_page(entity.label, provider, store, config)
-        if page is not None:
-            pages.append(page)
+
+    for source in sorted(all_sources):
+        source_entities = grouped.get(source, [])
+        chunks = store.get_chunks_by_source(source)
+        chunk_count = len(chunks)
+        source_extract = extract_concepts and chunk_count >= config.wiki_batch_min_chunks
+        if not source_entities and not source_extract:
+            log.info(
+                "Skipping source %s: %d entities, %d chunks, min=%d, extract=%s",
+                source,
+                len(source_entities),
+                chunk_count,
+                config.wiki_batch_min_chunks,
+                source_extract,
+            )
+            continue
+        source_pages = _generate_source_batch(
+            source=source,
+            entities=source_entities,
+            chunks=chunks,
+            provider=provider,
+            store=store,
+            config=config,
+            extract_concepts=source_extract,
+            written_concept_slugs=written_concept_slugs,
+        )
+        pages.extend(source_pages)
 
     _rewrite_links_across_wiki(entities, config)
-    log.info("Generated %d concept/entity pages", len(pages))
+    log.info("Generated %d batched wiki pages", len(pages))
     return pages
+
+
+def _all_sources_in_scope(
+    entities: list[ExtractedEntity],
+    grouped: dict[str, list[ExtractedEntity]],
+    store: Store,
+    config: Config,
+    extract_concepts: bool,
+) -> set[str]:
+    """Union of sources with entities and (when enabled) eligible for concept curation.
+
+    Seed the union with every entity's primary source. When
+    ``extract_concepts`` is True AND ``wiki_batch_min_chunks`` is
+    satisfied, add any source in the store that passes the floor.
+    This gives concept-only sources (no extracted entities) their
+    chance at curation while keeping zero-entity short sources
+    skipped entirely.
+    """
+    sources: set[str] = set(grouped)
+    if not extract_concepts:
+        return sources
+    try:
+        records = store.get_sources()
+    except Exception as exc:
+        log.warning("get_sources failed; sticking to entity-grouped sources: %s", exc)
+        return sources
+    for record in records:
+        name = record.get("filename", "") if isinstance(record, dict) else ""
+        if not name:
+            continue
+        if name in sources:
+            continue
+        chunk_count = record.get("chunk_count", 0) if isinstance(record, dict) else 0
+        if chunk_count >= config.wiki_batch_min_chunks:
+            sources.add(name)
+    _ = entities  # silences linters on unused pass-through; kept for doc clarity
+    return sources
 
 
 def _entity_surface_map(entities: list[ExtractedEntity]) -> dict[str, str]:

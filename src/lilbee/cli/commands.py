@@ -6,12 +6,14 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 if TYPE_CHECKING:
     import uvicorn
+
+    from lilbee.wiki.entity_extractor import ExtractedEntity
 from rich.table import Table
 
 from lilbee.cli import theme
@@ -1201,6 +1203,14 @@ def _fail_wiki_disabled() -> None:
 def wiki_build(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Run extraction only; skip every LLM call. Prints the NER entity candidates. "
+            "LLM-curated concept pages require a build call and are not shown in dry-run."
+        ),
+    ),
 ) -> None:
     """Build the concept and entity wiki across all ingested sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -1219,7 +1229,18 @@ def wiki_build(
 
     extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
     entities = extractor.extract(chunks)
-    pages = build_wiki(entities, svc.provider, svc.store, cfg)
+
+    if dry_run:
+        _wiki_build_dry_run_output(entities)
+        return
+
+    pages = build_wiki(
+        entities,
+        svc.provider,
+        svc.store,
+        cfg,
+        extract_concepts=cfg.wiki_extract_concepts,
+    )
     update_wiki_index()
     append_wiki_log(
         WIKI_LOG_ACTION_BUILD,
@@ -1249,6 +1270,73 @@ def wiki_build(
         console.print(f"  {path}")
 
 
+_DRY_RUN_CONCEPT_NOTE = (
+    "Note: LLM-curated concepts are not shown in --dry-run. "
+    "Run `lilbee wiki build` to see which concepts the LLM proposes."
+)
+
+
+def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
+    """Render the extraction result as JSON or table without calling any LLM.
+
+    Phase D: concepts come from the per-source batched LLM call, so
+    listing them would require the call we are trying to avoid. The
+    dry-run surface is NER-entity only, with a trailing note so a
+    user who expected concepts in the output knows why they are
+    missing.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "slug": e.slug,
+            "label": e.label,
+            "kind": e.kind.value,
+            "type_hint": e.type_hint,
+            "mentions": len(e.chunk_refs),
+            "sources": sorted({r.source for r in e.chunk_refs}),
+        }
+        for e in entities
+    ]
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_build",
+                "dry_run": True,
+                "entities": rows,
+                "count": len(rows),
+                "note": _DRY_RUN_CONCEPT_NOTE,
+            }
+        )
+        return
+
+    if not rows:
+        console.print("No candidate entities extracted. Run sync first.")
+        console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+        return
+
+    table = Table(title=f"Wiki build dry-run ({len(rows)} NER entity candidates)")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Kind", style=theme.MUTED)
+    table.add_column("Type")
+    table.add_column("Mentions")
+    table.add_column("Sources")
+    for row in rows:
+        sources_list: list[str] = row["sources"]
+        table.add_row(
+            str(row["slug"]),
+            str(row["kind"]),
+            str(row["type_hint"]),
+            str(row["mentions"]),
+            ", ".join(sources_list[:3]) + (", ..." if len(sources_list) > 3 else ""),
+        )
+    console.print(table)
+    console.print(
+        f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
+        "No LLM calls were made."
+    )
+    console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+
+
 @wiki_app.command(name="update")
 def wiki_update(
     data_dir: Path | None = data_dir_option,
@@ -1259,4 +1347,130 @@ def wiki_update(
     Currently a full rebuild. The incremental touched-slug regeneration
     lands in the ingest-hook task and will re-route this command then.
     """
-    wiki_build(data_dir=data_dir, use_global=use_global)
+    wiki_build(data_dir=data_dir, use_global=use_global, dry_run=False)
+
+
+drafts_app = typer.Typer(help="Review wiki drafts: list, diff, accept, reject.")
+wiki_app.add_typer(drafts_app, name="drafts")
+
+
+@drafts_app.command(name="list")
+def wiki_drafts_list(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """List pending wiki drafts with drift, faithfulness, and pairing info."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import PENDING_KIND_DRIFT, list_drafts
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    drafts = list_drafts(wiki_root)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_drafts_list",
+                "drafts": [d.to_dict() for d in drafts],
+                "total": len(drafts),
+            }
+        )
+        return
+
+    if not drafts:
+        console.print("No drafts pending review.")
+        return
+
+    table = Table(title="Wiki Drafts")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Kind", style=theme.MUTED)
+    table.add_column("Drift")
+    table.add_column("Faithfulness")
+    table.add_column("Published?", style=theme.MUTED)
+    for d in drafts:
+        kind = d.pending_kind or PENDING_KIND_DRIFT
+        drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
+        faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
+        published = "yes" if d.published_exists else "no"
+        table.add_row(d.slug, kind, drift, faith, published)
+    console.print(table)
+
+
+@drafts_app.command(name="diff")
+def wiki_drafts_diff(
+    slug: str = typer.Argument(..., help="Draft slug (e.g. chevrolet)."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Show a unified diff of the draft against its published counterpart."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import diff_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        diff = diff_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
+        return
+    console.print(diff or "(no differences)")
+
+
+@drafts_app.command(name="accept")
+def wiki_drafts_accept(
+    slug: str = typer.Argument(..., help="Draft slug to accept."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Overwrite the published page with the draft and re-index its chunks."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import accept_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        result = accept_draft(slug, wiki_root, get_services().store)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_accept", **result.to_dict()})
+        return
+    console.print(
+        f"Accepted [{theme.ACCENT}]{slug}[/{theme.ACCENT}] -> "
+        f"{result.moved_to} ({result.reindexed_chunks} chunks re-indexed)"
+    )
+
+
+@drafts_app.command(name="reject")
+def wiki_drafts_reject(
+    slug: str = typer.Argument(..., help="Draft slug to reject."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Delete the draft file. Does not touch the published page or index."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import reject_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        reject_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_reject", "slug": slug})
+        return
+    console.print(f"Rejected [{theme.ACCENT}]{slug}[/{theme.ACCENT}]")

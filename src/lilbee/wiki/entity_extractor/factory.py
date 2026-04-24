@@ -24,15 +24,15 @@ _EXTRACTOR_BY_MODE: dict[
     WikiEntityMode,
     Callable[[LLMProvider, Config], EntityExtractor],
 ] = {
-    WikiEntityMode.NER_CONCEPTS: NerConceptsExtractor,
+    WikiEntityMode.NER_ENTITIES: NerConceptsExtractor,
     WikiEntityMode.NER_CONCEPTS_PLUS_LLM_TYPES: NerConceptsPlusLlmTypesExtractor,
     WikiEntityMode.LLM_TAGGED: LlmTaggedExtractor,
 }
 
 # Implementations whose ``extract`` actually runs. Modes outside this set
 # are accepted for forward compatibility (so config files and env vars
-# keep parsing) but fall back to ``NER_CONCEPTS`` with a warning.
-_IMPLEMENTED_MODES: frozenset[WikiEntityMode] = frozenset({WikiEntityMode.NER_CONCEPTS})
+# keep parsing) but fall back to ``NER_ENTITIES`` with a warning.
+_IMPLEMENTED_MODES: frozenset[WikiEntityMode] = frozenset({WikiEntityMode.NER_ENTITIES})
 
 
 def get_entity_extractor(
@@ -40,7 +40,7 @@ def get_entity_extractor(
 ) -> EntityExtractor:
     """Return an ``EntityExtractor`` implementation for *mode*.
 
-    Unimplemented strategies fall back to ``NER_CONCEPTS`` with a
+    Unimplemented strategies fall back to ``NER_ENTITIES`` with a
     warning so a user who flips the config to a stub never crashes a
     build or sync mid-flight.
     """
@@ -48,8 +48,8 @@ def get_entity_extractor(
         log.warning(
             "Entity-extraction mode %r is not yet implemented; falling back to %r",
             mode.value,
-            WikiEntityMode.NER_CONCEPTS.value,
+            WikiEntityMode.NER_ENTITIES.value,
         )
-        mode = WikiEntityMode.NER_CONCEPTS
+        mode = WikiEntityMode.NER_ENTITIES
     factory = _EXTRACTOR_BY_MODE[mode]
     return factory(provider, config)

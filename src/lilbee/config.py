@@ -23,9 +23,15 @@ class ClustererBackend(StrEnum):
 
 
 class WikiEntityMode(StrEnum):
-    """Strategy used to extract concepts and entities for the wiki."""
+    """Strategy used to extract entities for the wiki.
 
-    NER_CONCEPTS = "ner_concepts"
+    Phase D: the extractor no longer emits concepts — concept pages
+    are proposed by the LLM inside the per-source batched call in
+    ``wiki.gen``. The enum values reflect the extractor's current
+    responsibility (typed NER entities only).
+    """
+
+    NER_ENTITIES = "ner_entities"
     NER_CONCEPTS_PLUS_LLM_TYPES = "ner_concepts_plus_llm_types"
     LLM_TAGGED = "llm_tagged"
 
@@ -128,6 +134,16 @@ DEFAULT_IGNORE_DIRS = frozenset(
         "coverage",
         "htmlcov",
     }
+)
+
+# spaCy NER labels that map onto something wiki-shaped. Excludes
+# QUANTITY / ORDINAL / CARDINAL / DATE / TIME / MONEY / PERCENT /
+# LANGUAGE / LAW because pages for "42" or "2021" are never useful.
+# FAC (buildings / airports) and NORP (nationalities / political /
+# religious groups) are included because corpora routinely surface
+# them as wiki-worthy topics.
+DEFAULT_ALLOWED_NER_LABELS = frozenset(
+    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT", "FAC", "NORP"}
 )
 
 # Shared HTTP timeout (seconds) for backend catalog / management calls
@@ -525,16 +541,24 @@ class Config(BaseSettings):
     wiki: bool = ConfigField(default=True, writable=True)
     wiki_dir: str = "wiki"
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
-    wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
-    # Per-call output token caps for wiki generation. Without these, a
+    # Minimum cosine similarity between a page body and the mean of its
+    # source chunk vectors before a page is published (below → drafts).
+    # Replaces the old LLM-based faithfulness score: mean-of-chunks is a
+    # deterministic, zero-LLM-call signal that routes topic-drifted
+    # pages to drafts without the 0.0 to 1.0 ambiguity of a model-emitted
+    # number. Tuning knob: swap to per-chunk max or top-K-mean if the
+    # default 0.5 produces false drafts.
+    wiki_embedding_faithfulness_threshold: float = ConfigField(
+        default=0.5, ge=0.0, le=1.0, writable=True
+    )
+
+    # Per-call output token cap for wiki generation. Without this a
     # reasoning model (Qwen3, DeepSeek-R1) can burn the full context
     # window emitting <think> tokens before the actual answer, taking
-    # minutes per page. Defaults leave headroom for a typical reasoning
-    # budget plus a real response: summary ~1000 tokens of output + ~1000
-    # slack for thinking; faithfulness ~32 tokens of answer + ~200 slack.
+    # minutes per page. Default leaves headroom for a typical reasoning
+    # budget plus a real response (~1000 output + ~1000 slack).
     wiki_summary_max_tokens: int = ConfigField(default=2048, ge=256, writable=True)
-    wiki_faithfulness_max_tokens: int = ConfigField(default=256, ge=32, writable=True)
 
     # Wiki generation is a structured-output task: the model must emit the
     # block separators, the citation footnotes, and verbatim quotes. The
@@ -577,21 +601,6 @@ class Config(BaseSettings):
             "Source document: {source_name}\n\n"
             "Chunks:\n{chunks_text}\n\n"
             "Write the wiki summary page now. Start with a heading."
-        ),
-    )
-    wiki_faithfulness_prompt: str = ConfigField(
-        writable=True,
-        default=(
-            "You are a fact-checker. Given source chunks and a wiki summary page generated "
-            "from them, score the summary's faithfulness to the sources on a scale of 0.0 "
-            "to 1.0.\n\n"
-            "Criteria:\n"
-            "- 1.0 = every claim is directly supported by the source chunks\n"
-            "- 0.5 = some claims are supported, some are unsupported extrapolations\n"
-            "- 0.0 = the summary contains fabricated information\n\n"
-            "Source chunks:\n{chunks_text}\n\n"
-            "Wiki summary:\n{wiki_text}\n\n"
-            "Respond with ONLY a number between 0.0 and 1.0. Nothing else."
         ),
     )
     wiki_synthesis_prompt: str = ConfigField(
@@ -650,13 +659,21 @@ class Config(BaseSettings):
     # Caps extraction to avoid noise from very long chunks.
     concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
 
-    # Strategy used to extract concepts and entities for the concept/entity
-    # wiki. NER_CONCEPTS (default) combines spaCy NER with noun-phrase
-    # clusters. NER_CONCEPTS_PLUS_LLM_TYPES layers an LLM-proposed domain
-    # schema on top. LLM_TAGGED asks the LLM to tag every chunk (most
-    # expensive). Unimplemented modes fall back to NER_CONCEPTS.
+    # spaCy NER labels kept by the wiki entity extractor. Anything not
+    # in this set (QUANTITY, CARDINAL, DATE, TIME, MONEY, PERCENT,
+    # ORDINAL, ...) is dropped before aggregation. Override via
+    # LILBEE_CONCEPT_ALLOWED_ENT_TYPES as a comma-separated list.
+    concept_allowed_ent_types: frozenset[str] = Field(default=DEFAULT_ALLOWED_NER_LABELS)
+
+    # Strategy used to extract entities for the concept/entity wiki.
+    # NER_ENTITIES (default) pulls typed NER entities with spaCy; concept
+    # pages are proposed by the LLM inside the per-source batched call,
+    # not by the extractor. NER_CONCEPTS_PLUS_LLM_TYPES layers an
+    # LLM-proposed domain schema on top. LLM_TAGGED asks the LLM to tag
+    # every chunk (most expensive). Unimplemented modes fall back to
+    # NER_ENTITIES.
     wiki_entity_mode: WikiEntityMode = ConfigField(
-        default=WikiEntityMode.NER_CONCEPTS, writable=True
+        default=WikiEntityMode.NER_ENTITIES, writable=True
     )
 
     # Minimum distinct chunk mentions before an entity or concept earns
@@ -678,34 +695,44 @@ class Config(BaseSettings):
     # bulk import from firing hundreds of LLM calls.
     wiki_ingest_update_cap: int = ConfigField(default=20, ge=1, writable=True)
 
-    # Prompt template for concept and entity wiki pages. Must contain
-    # {topic}, {kind}, {source_list}, {chunks_text}, and {related_max}
-    # placeholders.
-    wiki_concept_prompt: str = ConfigField(
+    # Whether the per-source batched call asks the LLM to curate
+    # concept pages alongside the pre-extracted entity list. False →
+    # entity sections only, no concept curation (incremental ingest
+    # path uses this to avoid churning concept slugs per source-touch).
+    wiki_extract_concepts: bool = ConfigField(default=True, writable=True)
+
+    # Minimum chunk count a source must contribute before it is eligible
+    # for concept curation. Sources below the floor still get a batched
+    # call when they have entities (the prompt writes entity-only
+    # sections); sources below the floor with zero entities are skipped
+    # entirely. Prevents boilerplate / TOC / appendix documents from
+    # burning an LLM call to invent "concepts".
+    wiki_batch_min_chunks: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Prompt template for the per-source batched call. Placeholders:
+    # {source}, {entity_list}, {chunks_text}, {concept_instruction}.
+    # {concept_instruction} is filled with a concept-curation paragraph
+    # when concepts are requested, or the empty string otherwise.
+    wiki_entity_batch_prompt: str = ConfigField(
         writable=True,
         default=(
-            "You are a knowledge compiler. Given source chunks that mention the "
-            "{kind} '{topic}', write a wiki page in markdown that explains what "
-            "the {kind} is, how it appears across the sources, and how it connects "
-            "to related ideas.\n\n"
+            "You are writing wiki sections based on these chunks from {source}.\n\n"
+            "{concept_instruction}"
+            "Write a wiki section for each of these NER ENTITIES: {entity_list}\n\n"
+            "Format each section exactly as:\n"
+            "## Name\n"
+            "{{content with [^src1]-style citations}}\n\n"
             "Rules:\n"
             "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
             "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
-            "3. For connections or patterns you identify across sources, mark with [*inference*].\n"
+            "3. For interpretations or connections not directly stated, mark with [*inference*].\n"
             "4. Use blockquotes (>) for directly cited facts.\n"
-            "5. End the body with a `## Related` section listing at most {related_max} "
-            "other concepts or entities that co-occur with '{topic}' in the chunks. "
-            "One per line as a bullet.\n"
-            "6. After `## Related`, end with a citation block in this format:\n\n"
+            "5. End the response with a citation block in this format:\n\n"
             "---\n"
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
             '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
-            "Topic: {topic}\n"
-            "Kind: {kind}\n\n"
-            "Sources:\n{source_list}\n\n"
-            "Chunks:\n{chunks_text}\n\n"
-            "Write the page now. Start with a heading."
+            "Source chunks:\n{chunks_text}\n"
         ),
     )
 
@@ -861,6 +888,24 @@ class Config(BaseSettings):
             return DEFAULT_IGNORE_DIRS | frozenset(v)
         return DEFAULT_IGNORE_DIRS
 
+    @field_validator("concept_allowed_ent_types", mode="before")
+    @classmethod
+    def _parse_ent_types(cls, v: Any) -> frozenset[str]:
+        """Replace-semantics override: a narrowed set is used as-is,
+        not unioned with defaults. A user asking for ``PERSON,ORG``
+        wants exactly those kinds. Accepts comma-separated strings
+        from env and list / set / frozenset from code. Empty input
+        falls back to :data:`DEFAULT_ALLOWED_NER_LABELS` so an empty
+        env var does not silently disable the gate.
+        """
+        if isinstance(v, str):
+            parts = frozenset(name.strip().upper() for name in v.split(",") if name.strip())
+            return parts or DEFAULT_ALLOWED_NER_LABELS
+        if isinstance(v, (set, frozenset, list)):
+            parts = frozenset(str(x).upper() for x in v)
+            return parts or DEFAULT_ALLOWED_NER_LABELS
+        return DEFAULT_ALLOWED_NER_LABELS
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
@@ -1004,7 +1049,44 @@ class _PlainEnvSource:
             if self._ignore_empty and raw == "":
                 continue
             result[field_name] = raw
+        _warn_deprecated_env_keys(self._prefix)
         return result
+
+
+_DEPRECATED_WIKI_KEYS: frozenset[str] = frozenset(
+    {
+        "wiki_faithfulness_threshold",
+        "wiki_faithfulness_prompt",
+        "wiki_faithfulness_max_tokens",
+        "wiki_concept_prompt",
+    }
+)
+
+_deprecated_env_warned: set[str] = set()
+
+
+def _warn_deprecated_env_keys(prefix: str) -> None:
+    """Emit one ``log.warning`` per dropped Phase-D env var seen in ``os.environ``.
+
+    Mirrors ``_TomlSource._warn_deprecated`` so users on env-var configs
+    (``LILBEE_WIKI_FAITHFULNESS_THRESHOLD`` etc.) also see a migration
+    hint instead of silent Pydantic ``extra="ignore"`` discards. Cached
+    per-field so running with the same env set across multiple Config
+    constructions does not spam the log.
+    """
+    for key in _DEPRECATED_WIKI_KEYS:
+        env_name = f"{prefix}{key.upper()}"
+        if env_name in _deprecated_env_warned:
+            continue
+        if env_name in os.environ:
+            _deprecated_env_warned.add(env_name)
+            log.warning(
+                "Environment variable %r is no longer used and was ignored. "
+                "Phase D removed the LLM faithfulness path; see "
+                "LILBEE_WIKI_EMBEDDING_FAITHFULNESS_THRESHOLD and "
+                "LILBEE_WIKI_ENTITY_BATCH_PROMPT for the replacements.",
+                env_name,
+            )
 
 
 class _TomlSource:
@@ -1019,10 +1101,32 @@ class _TomlSource:
         try:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
-            return {k: str(v) for k, v in data.items()}
         except (ValueError, OSError):
             log.warning("Failed to read %s, ignoring", self._path)
             return {}
+        self._warn_deprecated(data)
+        return {k: str(v) for k, v in data.items()}
+
+    def _warn_deprecated(self, data: dict[str, Any]) -> None:
+        """Emit one ``log.warning`` per dropped Phase-D config key.
+
+        Deprecated keys are swallowed by Pydantic's ``extra="ignore"``
+        model config, so without this hook a user's config.toml that
+        still carries ``wiki_faithfulness_threshold = 0.7`` would be
+        silently ignored and they would assume the old behavior is in
+        effect. Auto-remapping the threshold is intentionally not done:
+        the old [0,1] semantics (LLM self-score) and the new [0,1]
+        semantics (cosine similarity) are incomparable.
+        """
+        for key in _DEPRECATED_WIKI_KEYS:
+            if key in data:
+                log.warning(
+                    "Config field %r is no longer used and was ignored. "
+                    "Phase D removed the LLM faithfulness path; see "
+                    "wiki_embedding_faithfulness_threshold and "
+                    "wiki_entity_batch_prompt for the replacements.",
+                    key,
+                )
 
 
 cfg = Config()

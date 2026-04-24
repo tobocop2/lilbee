@@ -22,8 +22,6 @@ from lilbee.wiki.citation import (
 from lilbee.wiki.gen import (
     WikiProgressCallback,
     build_wiki,
-    generate_concept_page,
-    generate_entity_page,
     generate_synthesis_pages,
 )
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
@@ -51,8 +49,6 @@ __all__ = [
     "build_wiki",
     "find_page",
     "find_unmarked_claims",
-    "generate_concept_page",
-    "generate_entity_page",
     "generate_synthesis_pages",
     "lint_all",
     "lint_wiki_page",

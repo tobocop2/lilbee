@@ -279,7 +279,7 @@ def wiki_isolated_env(tmp_path: Path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.wiki = True
     cfg.wiki_dir = "wiki"
-    cfg.wiki_faithfulness_threshold = 0.7
+    cfg.wiki_embedding_faithfulness_threshold = 0.5
     cfg.wiki_prune_raw = False
     cfg.chat_model = "test-model"
     yield tmp_path

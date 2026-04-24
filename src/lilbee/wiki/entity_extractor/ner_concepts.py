@@ -1,4 +1,9 @@
-"""spaCy NER + noun-phrase concept extractor (default strategy)."""
+"""spaCy NER entity extractor (default strategy).
+
+Phase D removed the noun-chunk "concept" path from this extractor. The
+per-source batched call in :mod:`lilbee.wiki.gen` now proposes concept
+pages through the LLM. This module produces typed NER entities only.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ from lilbee.wiki.entity_extractor.base import (
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.shared import make_slug
+from lilbee.wiki.shared import is_valid_label, make_slug
 
 if TYPE_CHECKING:
     from lilbee.config import Config
@@ -20,11 +25,18 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_ALLOWED_NER_LABELS: frozenset[str] = frozenset(
-    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT"}
-)
-_MIN_CONCEPT_LEN = 2
 _WHITESPACE_RE = re.compile(r"\s+")
+
+# Pre-spaCy markdown-noise strippers. Compiled once at module scope so
+# the extractor's hot path does not recompile them per chunk. Match on
+# line boundaries via re.MULTILINE; each sub() empties the matched
+# line so downstream line-joins collapse the hole to a single newline.
+_TABLE_ROW_RE = re.compile(r"^\|.*\|\s*$", re.MULTILINE)
+_PAGE_NUMBER_RE = re.compile(r"^\s*\d{1,4}\s*$", re.MULTILINE)
+_NAV_CHROME_RE = re.compile(
+    r"^\s*(?:Home|Menu|Navigation|Edit this page|Jump to navigation|Jump to search)\s*$",
+    re.MULTILINE,
+)
 
 
 def _normalize(text: str) -> str:
@@ -32,14 +44,33 @@ def _normalize(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text.strip().lower())
 
 
-class NerConceptsExtractor:
-    """Combine spaCy NER and noun-phrase concepts into one entity set.
+def pre_clean_for_ner(text: str) -> str:
+    """Strip markdown-structural noise before handing text to spaCy.
 
-    NER surface forms (PERSON/ORG/etc.) become ``EntityKind.ENTITY``
-    records. Noun-phrase concepts become ``EntityKind.CONCEPT`` records.
-    A concept whose normalized form matches an entity's normalized form
-    is folded into the entity record so one topic never splits across
-    two pages.
+    Removes whole-line markdown-table rows (``| Designer | Irv ... |``),
+    standalone page-number lines from PDF extraction (``42``), and
+    Wikipedia / CMS navigation chrome (``Edit this page``). Leaves
+    prose untouched: every regex anchors to a full line and emits an
+    empty line in place of the match, which spaCy treats as a sentence
+    break.
+
+    Only targets the noise patterns actually observed in the bb-8b7s
+    QA corpus. Fuller markdown parsing is deferred; a regex pre-clean
+    is sufficient for the current signal-to-noise ratio.
+    """
+    text = _TABLE_ROW_RE.sub("", text)
+    text = _PAGE_NUMBER_RE.sub("", text)
+    return _NAV_CHROME_RE.sub("", text)
+
+
+class NerConceptsExtractor:
+    """Emit typed NER entities (``EntityKind.ENTITY`` only).
+
+    Phase D removed the noun-chunk concept loop: LLM-curated concept
+    pages are produced downstream by the per-source batched call in
+    :mod:`lilbee.wiki.gen`. The class name is kept for backwards
+    compatibility at the factory dispatch site; the implementation
+    emits only ``EntityKind.ENTITY`` records now.
     """
 
     def __init__(self, provider: LLMProvider, config: Config) -> None:
@@ -54,43 +85,52 @@ class NerConceptsExtractor:
             return []
 
         entity_records: dict[str, _Aggregate] = {}
-        concept_records: dict[str, _Aggregate] = {}
+        allowed_ent_types = self._config.concept_allowed_ent_types
 
-        for chunk, doc in zip(chunks, nlp.pipe(c.chunk for c in chunks), strict=True):
+        debug_enabled = log.isEnabledFor(logging.DEBUG)
+        # Per-pass funnel counters; emitted once after the loop so the
+        # DEBUG trace captures the whole corpus in one line instead of
+        # one per chunk.
+        funnel = {
+            "raw_ents": 0,
+            "type_filter_dropped": 0,
+            "label_sanity_dropped_entities": 0,
+            "kept_entity_surfaces": 0,
+        }
+        cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
+        for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
             ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
             for ent in doc.ents:
-                if ent.label_ not in _ALLOWED_NER_LABELS:
+                funnel["raw_ents"] += 1
+                if ent.label_ not in allowed_ent_types:
+                    funnel["type_filter_dropped"] += 1
                     continue
                 surface = ent.text.strip()
-                if len(surface) < _MIN_CONCEPT_LEN:
+                if not is_valid_label(surface):
+                    funnel["label_sanity_dropped_entities"] += 1
+                    if debug_enabled:
+                        log.debug("label-sanity: rejected entity %r", surface)
                     continue
                 key = _normalize(surface)
                 rec = entity_records.setdefault(
                     key, _Aggregate(label=surface, type_hint=ent.label_)
                 )
                 rec.refs.add(ref)
-            for noun_chunk in doc.noun_chunks:
-                surface = noun_chunk.text.strip()
-                if len(surface) < _MIN_CONCEPT_LEN:
-                    continue
-                key = _normalize(surface)
-                rec = concept_records.setdefault(
-                    key, _Aggregate(label=key, type_hint="noun_phrase")
-                )
-                rec.refs.add(ref)
+                funnel["kept_entity_surfaces"] += 1
 
-        for key, entity_agg in entity_records.items():
-            if key in concept_records:
-                entity_agg.refs.update(concept_records.pop(key).refs)
+        if debug_enabled:
+            log.debug(
+                "ner funnel: raw_ents=%(raw_ents)d "
+                "type_filter_dropped=%(type_filter_dropped)d "
+                "label_sanity_dropped_entities=%(label_sanity_dropped_entities)d "
+                "kept_entity_surfaces=%(kept_entity_surfaces)d",
+                funnel,
+            )
 
         min_mentions = self._config.wiki_entity_min_mentions
         results: list[ExtractedEntity] = []
         for agg in entity_records.values():
             record = _make_record(agg, EntityKind.ENTITY, min_mentions)
-            if record is not None:
-                results.append(record)
-        for agg in concept_records.values():
-            record = _make_record(agg, EntityKind.CONCEPT, min_mentions)
             if record is not None:
                 results.append(record)
         results.sort(key=lambda e: (e.kind.value, e.slug))

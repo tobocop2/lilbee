@@ -9,6 +9,7 @@ from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
 from lilbee.server import auth as _auth_mod
+from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
 
 def _h() -> dict[str, str]:
@@ -74,6 +75,21 @@ class TestWikiDisabled:
     async def test_drafts_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/drafts", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_drafts_diff_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/anything", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_drafts_accept_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/anything", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_drafts_reject_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/anything", headers=_h())
         assert resp.status_code == 404
 
     async def test_citations_reverse_returns_404(self):
@@ -237,7 +253,12 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         drafts = resp.json()
         assert len(drafts) == 1
-        assert drafts[0]["slug"] == "drafts/failed-page"
+        # The Phase D DraftInfo slug is relative to the drafts subdir, not
+        # the wiki root — matches the CLI / service-layer contract.
+        assert drafts[0]["slug"] == "failed-page"
+        assert drafts[0]["pending_kind"] is None
+        assert drafts[0]["faithfulness_score"] == 0.9
+        assert drafts[0]["published_exists"] is False
 
     async def test_lint_returns_report(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
@@ -270,6 +291,134 @@ class TestWikiEnabled:
         assert "records" in body
         assert body["archived"] == 0
         assert body["flagged"] == 0
+
+
+def _make_draft(
+    wiki_root: Path,
+    slug: str,
+    *,
+    drift_pct: int | None = 42,
+    pending_marker: str = "",
+    faithfulness: float = 0.7,
+) -> Path:
+    """Write a draft markdown file with optional drift / pending markers."""
+    draft_dir = wiki_root / "drafts"
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    path = draft_dir / f"{slug}.md"
+    drift_line = ""
+    if drift_pct is not None:
+        drift_line = f"<!-- DRIFT: {drift_pct}% content changed - flagged for human review -->\n\n"
+    body = (
+        f"{drift_line}{pending_marker}"
+        f"---\nfaithfulness_score: {faithfulness}\n---\n\n"
+        "Draft body text.\n"
+    )
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class TestWikiDraftsEndpoints:
+    """Phase D draft review endpoints: list (upgraded), diff, accept, reject."""
+
+    @pytest.fixture(autouse=True)
+    def enable_wiki(self):
+        cfg.wiki = True
+
+    async def test_list_carries_pending_kind(self, isolated_env: Path):
+        wiki_root = isolated_env / "wiki"
+        _make_draft(
+            wiki_root,
+            "parse-fail",
+            drift_pct=None,
+            pending_marker=(f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for section foo -->\n\n"),
+        )
+        _make_draft(wiki_root, "drifted", drift_pct=55, faithfulness=0.8)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts", headers=_h())
+        assert resp.status_code == 200
+        drafts = {d["slug"]: d for d in resp.json()}
+        assert drafts["parse-fail"]["pending_kind"] == "parse"
+        assert drafts["parse-fail"]["drift_ratio"] is None
+        assert drafts["drifted"]["pending_kind"] is None
+        assert drafts["drifted"]["drift_ratio"] == pytest.approx(0.55)
+        assert drafts["drifted"]["faithfulness_score"] == pytest.approx(0.8)
+
+    async def test_diff_happy(self, isolated_env: Path):
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=30, faithfulness=0.9)
+        # Published counterpart to diff against.
+        _make_wiki_page(wiki_root, "summaries", "cv-manual")
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/cv-manual", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["slug"] == "cv-manual"
+        assert "Draft body text" in body["diff"]
+
+    async def test_diff_missing_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/nope", headers=_h())
+        assert resp.status_code == 404
+        assert "draft not found" in resp.json()["detail"]
+
+    async def test_accept_happy(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.server import wiki as server_wiki_mod
+        from lilbee.wiki.drafts import AcceptResult
+
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=20)
+
+        captured: dict[str, object] = {}
+
+        def _fake_accept(slug: str, root: Path, store: object) -> AcceptResult:
+            captured["slug"] = slug
+            captured["root"] = root
+            return AcceptResult(
+                slug=slug,
+                requested_slug=slug,
+                moved_to=root / "summaries" / f"{slug}.md",
+                reindexed_chunks=3,
+            )
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["slug"] == "cv-manual"
+        assert body["requested_slug"] == "cv-manual"
+        assert body["reindexed_chunks"] == 3
+        assert body["moved_to"].endswith("summaries/cv-manual.md")
+        assert captured["slug"] == "cv-manual"
+
+    async def test_accept_missing_404(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        def _fake_accept(slug: str, root: Path, store: object) -> None:
+            raise FileNotFoundError(f"draft not found: {slug}")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/nope", headers=_h())
+        assert resp.status_code == 404
+        assert "draft not found" in resp.json()["detail"]
+
+    async def test_reject_happy(self, isolated_env: Path):
+        wiki_root = isolated_env / "wiki"
+        draft_path = _make_draft(wiki_root, "doomed", drift_pct=25)
+        assert draft_path.is_file()
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/doomed", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["slug"] == "doomed"
+        assert not draft_path.exists()
+
+    async def test_reject_missing_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/nope", headers=_h())
+        assert resp.status_code == 404
+        assert "draft not found" in resp.json()["detail"]
 
 
 class TestFrontmatterParsing:

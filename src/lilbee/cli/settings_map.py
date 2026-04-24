@@ -173,11 +173,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text="Delete raw chunks after summarizing into the wiki",
     ),
-    "wiki_faithfulness_threshold": SettingDef(
+    "wiki_embedding_faithfulness_threshold": SettingDef(
         float,
         nullable=False,
         group="Wiki",
-        help_text="Minimum faithfulness score (0-1) to accept a generated page",
+        help_text=(
+            "Minimum cosine similarity (0-1) between a generated page and "
+            "the mean of its source chunk vectors before publishing. "
+            "Pages below the threshold route to drafts/."
+        ),
     ),
     "wiki_stale_citation_threshold": SettingDef(
         float,
@@ -204,7 +208,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text=(
             "Entity extraction strategy "
-            "(ner_concepts = default, NER + noun-phrase clusters; "
+            "(ner_entities = default, typed NER entities; "
             "plus_llm_types = NER + LLM-proposed schema; "
             "llm_tagged = LLM tags every chunk)"
         ),
@@ -247,16 +251,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Must keep the {source_name} and {chunks_text} placeholders."
         ),
     ),
-    "wiki_faithfulness_prompt": SettingDef(
-        str,
-        nullable=False,
-        render=RenderStyle.FULL,
-        group="Wiki",
-        help_text=(
-            "Prompt that asks the model to score a page's faithfulness. "
-            "Must keep {chunks_text} and {wiki_text}."
-        ),
-    ),
     "wiki_synthesis_prompt": SettingDef(
         str,
         nullable=False,
@@ -267,14 +261,33 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Must keep {topic}, {source_list}, and {chunks_text}."
         ),
     ),
-    "wiki_concept_prompt": SettingDef(
+    "wiki_entity_batch_prompt": SettingDef(
         str,
         nullable=False,
         render=RenderStyle.FULL,
         group="Wiki",
         help_text=(
-            "Prompt for concept and entity pages. "
-            "Must keep {topic}, {kind}, {source_list}, {chunks_text}, and {related_max}."
+            "Prompt for the per-source batched call. "
+            "Must keep {source}, {entity_list}, {chunks_text}, and {concept_instruction}."
+        ),
+    ),
+    "wiki_extract_concepts": SettingDef(
+        bool,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Whether the per-source batched call asks the LLM to curate concept pages "
+            "alongside the pre-extracted entity list."
+        ),
+    ),
+    "wiki_batch_min_chunks": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Minimum chunks a source must contribute before its batched call includes "
+            "concept curation. Sources below the floor skip the concept-curation "
+            "instruction; sources with zero entities AND below the floor are skipped entirely."
         ),
     ),
     "wiki_clusterer_k": SettingDef(

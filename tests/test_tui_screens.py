@@ -36,6 +36,7 @@ from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
 from lilbee.services import set_services
+from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -592,7 +593,7 @@ async def test_settings_exposes_wiki_fields():
             "wiki",
             "wiki_dir",
             "wiki_prune_raw",
-            "wiki_faithfulness_threshold",
+            "wiki_embedding_faithfulness_threshold",
             "wiki_stale_citation_threshold",
             "wiki_drift_threshold",
             "wiki_clusterer",
@@ -5633,6 +5634,614 @@ class TestWikiViewRegistration:
 
         cfg.wiki = False
         assert "Wiki" not in get_nav_views()
+
+
+class WikiDraftsTestApp(App[None]):
+    """Bare app that pushes the drafts screen directly for isolated tests."""
+
+    CSS = ""
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Footer
+
+        yield Footer()
+
+    def on_mount(self) -> None:
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        self.push_screen(WikiDraftsScreen())
+
+
+def _write_draft(
+    wiki_root,
+    slug: str,
+    *,
+    drift_pct: int | None = 42,
+    pending_marker: str = "",
+    faithfulness: float = 0.8,
+) -> None:
+    """Create a draft markdown file with optional drift / pending markers."""
+    draft_dir = wiki_root / "drafts"
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    drift_line = ""
+    if drift_pct is not None:
+        drift_line = f"<!-- DRIFT: {drift_pct}% content changed - flagged for human review -->\n\n"
+    body = (
+        f"{drift_line}{pending_marker}"
+        f"---\nfaithfulness_score: {faithfulness}\n---\n\n"
+        f"Draft body for {slug}.\n"
+    )
+    (draft_dir / f"{slug}.md").write_text(body, encoding="utf-8")
+
+
+def _write_published(wiki_root, slug: str, body: str) -> None:
+    """Create a published summary page for pairing in diff tests."""
+    summaries = wiki_root / "summaries"
+    summaries.mkdir(parents=True, exist_ok=True)
+    (summaries / f"{slug}.md").write_text(f"---\n---\n\n{body}\n", encoding="utf-8")
+
+
+class TestWikiDraftsScreen:
+    """Phase D drafts review screen: list, diff, accept, reject."""
+
+    async def test_opens_from_wiki_screen_via_D(self, tmp_path):
+        """Pressing capital D on the wiki screen pushes WikiDraftsScreen."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "hello")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("D")
+            await pilot.pause()
+            assert isinstance(app.screen, WikiDraftsScreen)
+
+    async def test_list_renders_drafts(self, tmp_path):
+        """The drafts table shows one row per pending draft."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha", drift_pct=30, faithfulness=0.9)
+        _write_draft(wiki_root, "beta", drift_pct=50, faithfulness=0.7)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            table = app.screen.query_one("#wiki-drafts-table", DataTable)
+            assert table.row_count == 2
+
+    async def test_list_carries_pending_kind(self, tmp_path):
+        """PENDING-COLLISION drafts render with the ``collision`` kind label."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(
+            wiki_root,
+            "collide",
+            drift_pct=None,
+            pending_marker=f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} for slot foo -->\n\n",
+        )
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            table = app.screen.query_one("#wiki-drafts-table", DataTable)
+            # Kind column is index 1 in the row.
+            row = table.get_row_at(0)
+            assert row[0] == "collide"
+            assert row[1] == "collision"
+
+    async def test_diff_appears_on_select(self, tmp_path):
+        """Highlighting a row renders the unified diff against the published page."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "pairable", drift_pct=20)
+        _write_published(wiki_root, "pairable", "original published body")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            # Calling _display_diff directly is the hermetic route: the
+            # RowHighlighted signal is covered by the list-render tests
+            # above and by the accept/reject cursor paths.
+            screen._display_diff("pairable")
+            await pilot.pause()
+            diff_widget = screen.query_one("#wiki-drafts-diff", Static)
+            assert "Draft body for pairable" in diff_widget.content
+
+    async def test_diff_missing_draft_resets_pane(self, tmp_path):
+        """Selecting a slug with no draft file returns to the empty state."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        wiki_root.mkdir(parents=True, exist_ok=True)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            screen._display_diff("does-not-exist")
+            await pilot.pause()
+            diff_widget = screen.query_one("#wiki-drafts-diff", Static)
+            assert diff_widget.content == msg.WIKI_DRAFTS_DIFF_EMPTY
+
+    async def test_accept_calls_accept_draft(self, tmp_path, monkeypatch):
+        """Pressing ``a`` then ``y`` invokes accept_draft with the highlighted slug."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+        from lilbee.wiki.drafts import AcceptResult
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "to-accept")
+
+        captured: dict[str, object] = {}
+
+        def _fake_accept(slug, root, store):
+            captured["slug"] = slug
+            return AcceptResult(
+                slug=slug,
+                requested_slug=slug,
+                moved_to=root / f"{slug}.md",
+                reindexed_chunks=1,
+            )
+
+        monkeypatch.setattr(drafts_screen_mod, "accept_draft", _fake_accept)
+        # get_services is called by _do_accept; stub it to avoid touching real services.
+        monkeypatch.setattr(
+            drafts_screen_mod, "get_services", lambda: SimpleNamespace(store=MagicMock())
+        )
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+        assert captured.get("slug") == "to-accept"
+
+    async def test_accept_cancel_does_nothing(self, tmp_path, monkeypatch):
+        """Dismissing the confirm dialog with ``n`` does not call accept_draft."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "keep-me")
+
+        called = {"accept": False}
+
+        def _fake_accept(slug, root, store):
+            called["accept"] = True
+            raise AssertionError("accept_draft should not be invoked on cancel")
+
+        monkeypatch.setattr(drafts_screen_mod, "accept_draft", _fake_accept)
+        monkeypatch.setattr(
+            drafts_screen_mod, "get_services", lambda: SimpleNamespace(store=MagicMock())
+        )
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+        assert called["accept"] is False
+
+    async def test_reject_calls_reject_draft(self, tmp_path, monkeypatch):
+        """Pressing ``r`` then ``y`` invokes reject_draft with the highlighted slug."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "to-reject")
+
+        captured: dict[str, object] = {}
+
+        def _fake_reject(slug, root):
+            captured["slug"] = slug
+
+        monkeypatch.setattr(drafts_screen_mod, "reject_draft", _fake_reject)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+        assert captured.get("slug") == "to-reject"
+
+    async def test_q_goes_back(self, tmp_path):
+        """Pressing ``q`` pops the drafts screen."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "anything")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("q")
+            await pilot.pause()
+            assert not isinstance(app.screen, WikiDraftsScreen)
+
+    async def test_search_filters_drafts(self, tmp_path):
+        """Typing in the search input filters visible rows by slug substring."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+        _write_draft(wiki_root, "beta")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            search = screen.query_one("#wiki-drafts-search", TextualInput)
+            search.value = "alpha"
+            await pilot.pause()
+            table = screen.query_one("#wiki-drafts-table", DataTable)
+            assert table.row_count == 1
+            row = table.get_row_at(0)
+            assert row[0] == "alpha"
+
+    async def test_escape_clears_search_then_backs_out(self, tmp_path):
+        """Escape first clears the search, second press pops the screen."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            search = app.screen.query_one("#wiki-drafts-search", TextualInput)
+            search.value = "alp"
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert search.value == ""
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, WikiDraftsScreen)
+
+    async def test_load_failure_surfaces_in_diff_pane(self, tmp_path, monkeypatch):
+        """list_drafts raising is caught and the failure message reaches the diff pane."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+
+        def _boom(_root):
+            raise RuntimeError("disk gone")
+
+        monkeypatch.setattr(drafts_screen_mod, "list_drafts", _boom)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            diff_widget = app.screen.query_one("#wiki-drafts-diff", Static)
+            assert msg.WIKI_DRAFTS_LOAD_FAILED.split("{")[0] in diff_widget.content
+
+    async def test_diff_failure_surfaces_in_diff_pane(self, tmp_path, monkeypatch):
+        """diff_draft raising a non-FileNotFound error renders the failure message."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "boomed")
+
+        def _boom(_slug, _root):
+            raise RuntimeError("diff engine broke")
+
+        monkeypatch.setattr(drafts_screen_mod, "diff_draft", _boom)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            screen._display_diff("boomed")
+            await pilot.pause()
+            diff_widget = screen.query_one("#wiki-drafts-diff", Static)
+            assert msg.WIKI_DRAFTS_DIFF_FAILED.split("{")[0] in diff_widget.content
+
+    async def test_accept_failure_notifies(self, tmp_path, monkeypatch):
+        """If accept_draft raises, _do_accept catches and notifies without crashing."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "to-accept")
+
+        def _missing(*_args, **_kw):
+            raise FileNotFoundError("vanished")
+
+        def _boom(*_args, **_kw):
+            raise RuntimeError("reindex down")
+
+        monkeypatch.setattr(
+            drafts_screen_mod, "get_services", lambda: SimpleNamespace(store=MagicMock())
+        )
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            monkeypatch.setattr(drafts_screen_mod, "accept_draft", _missing)
+            screen._do_accept("to-accept")
+            await pilot.pause()
+            monkeypatch.setattr(drafts_screen_mod, "accept_draft", _boom)
+            screen._do_accept("to-accept")
+            await pilot.pause()
+
+    async def test_reject_failure_notifies(self, tmp_path, monkeypatch):
+        """If reject_draft raises, _do_reject catches and notifies without crashing."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "to-reject")
+
+        def _missing(*_args, **_kw):
+            raise FileNotFoundError("vanished")
+
+        def _boom(*_args, **_kw):
+            raise RuntimeError("disk full")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            monkeypatch.setattr(drafts_screen_mod, "reject_draft", _missing)
+            screen._do_reject("to-reject")
+            await pilot.pause()
+            monkeypatch.setattr(drafts_screen_mod, "reject_draft", _boom)
+            screen._do_reject("to-reject")
+            await pilot.pause()
+
+    async def test_accept_without_highlight_is_noop(self, tmp_path, monkeypatch):
+        """Pressing ``a`` with no rows does not push the confirm dialog."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        # No drafts written.
+
+        called: dict[str, bool] = {"pushed": False}
+
+        def _never(*_args, **_kw):
+            called["pushed"] = True
+
+        monkeypatch.setattr(drafts_screen_mod, "accept_draft", _never)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("a")
+            await pilot.pause()
+        assert called["pushed"] is False
+
+    async def test_reject_without_highlight_is_noop(self, tmp_path, monkeypatch):
+        """Pressing ``r`` with no rows does not push the confirm dialog."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+
+        called: dict[str, bool] = {"pushed": False}
+
+        def _never(*_args, **_kw):
+            called["pushed"] = True
+
+        monkeypatch.setattr(drafts_screen_mod, "reject_draft", _never)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("r")
+            await pilot.pause()
+        assert called["pushed"] is False
+
+    async def test_focus_search_and_vim_keys(self, tmp_path):
+        """/ focuses the input; j/k/g/G navigate the table without crashing."""
+        from textual.widgets import Input as TextualInput
+
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+        _write_draft(wiki_root, "beta")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            await pilot.press("slash")
+            await pilot.pause()
+            assert screen.query_one("#wiki-drafts-search", TextualInput).has_focus
+            # Drive the cursor actions directly: with the Input focused,
+            # ``_table_or_none`` returns None and the action bodies skip the
+            # table call. We then swap to the table to exercise the other
+            # branch.
+            screen.action_cursor_down()
+            screen.action_cursor_up()
+            screen.action_jump_top()
+            screen.action_jump_bottom()
+            screen.query_one("#wiki-drafts-table", DataTable).focus()
+            await pilot.pause()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
+            screen.action_jump_bottom()
+            screen.action_jump_top()
+            await pilot.pause()
+
+    async def test_highlighted_slug_handles_coordinate_error(self, tmp_path, monkeypatch):
+        """``_highlighted_slug`` swallows ``coordinate_to_cell_key`` errors."""
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            table = screen.query_one("#wiki-drafts-table", DataTable)
+
+            def _boom(_coord):
+                raise RuntimeError("no coord")
+
+            monkeypatch.setattr(table, "coordinate_to_cell_key", _boom)
+            await pilot.pause()
+            assert screen._highlighted_slug() is None
+
+    async def test_highlighted_slug_handles_null_row_key(self, tmp_path, monkeypatch):
+        """``_highlighted_slug`` returns ``None`` when the row key value is null."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            table = screen.query_one("#wiki-drafts-table", DataTable)
+            # Return a row-key whose .value is None — matches the defensive
+            # branch protecting against DataTable giving us a sentinel key.
+            monkeypatch.setattr(
+                table,
+                "coordinate_to_cell_key",
+                lambda _coord: (SimpleNamespace(value=None), None),
+            )
+            await pilot.pause()
+            assert screen._highlighted_slug() is None
+
+    async def test_on_row_highlighted_ignores_null_key(self, tmp_path):
+        """``_on_row_highlighted`` returns early when the event has no row key."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "alpha")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            # Build a fake event whose row_key carries a null value; must not
+            # crash and must not attempt to load a diff.
+            event = SimpleNamespace(row_key=SimpleNamespace(value=None))
+            screen._on_row_highlighted(event)  # type: ignore[arg-type]
+            await pilot.pause()
+
+    async def test_reject_cancel_does_nothing(self, tmp_path, monkeypatch):
+        """Dismissing the reject confirm dialog with ``n`` does not call reject_draft."""
+        from lilbee.cli.tui.screens import wiki_drafts as drafts_screen_mod
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "keep-me")
+
+        called = {"reject": False}
+
+        def _fake_reject(_slug, _root):
+            called["reject"] = True
+            raise AssertionError("reject_draft should not be invoked on cancel")
+
+        monkeypatch.setattr(drafts_screen_mod, "reject_draft", _fake_reject)
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+        assert called["reject"] is False
+
+
+class TestWikiDraftsFormatters:
+    """Unit tests on the small rendering helpers."""
+
+    def test_format_drift_none(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _format_drift
+
+        assert _format_drift(None) == "-"
+
+    def test_format_drift_percent(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _format_drift
+
+        assert _format_drift(0.42) == "42%"
+
+    def test_format_faithfulness_none(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _format_faithfulness
+
+        assert _format_faithfulness(None) == "-"
+
+    def test_format_faithfulness_two_decimals(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _format_faithfulness
+
+        assert _format_faithfulness(0.876) == "0.88"
+
+    def test_format_published_yes(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _format_published
+
+        assert _format_published(True) == "yes"
+
+    def test_format_published_no(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _format_published
+
+        assert _format_published(False) == "no"
+
+    def test_kind_label_maps_none_to_drift(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _kind_label
+
+        assert _kind_label(None) == "drift"
+
+    def test_kind_label_passes_through_known_kinds(self):
+        from lilbee.cli.tui.screens.wiki_drafts import _kind_label
+
+        assert _kind_label("parse") == "parse"
+        assert _kind_label("collision") == "collision"
 
 
 class TestWikiFormatPageHeader:

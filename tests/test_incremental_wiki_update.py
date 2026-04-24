@@ -141,7 +141,7 @@ class TestIncrementalWikiUpdate:
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:
         cfg.wiki_ingest_update_cap = 10
-        touched = _entity("braking", EntityKind.CONCEPT, ["changed.txt"])
+        touched = _entity("braking", EntityKind.ENTITY, ["changed.txt"])
         _install_service_stubs(monkeypatch, [touched])
         page = _isolated_wiki / "wiki" / "concepts" / "braking.md"
         with patch("lilbee.wiki.build_wiki", return_value=[page]):
@@ -150,3 +150,19 @@ class TestIncrementalWikiUpdate:
         assert log_path.exists()
         assert "ingest" in log_path.read_text()
         assert "changed.txt" in log_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_build_wiki_extract_concepts_false_on_incremental(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        """Phase D: the incremental hook passes ``extract_concepts=False``
+        so a sync does not churn LLM-curated concept slugs per source
+        touch.
+        """
+        cfg.wiki_ingest_update_cap = 10
+        touched = _entity("braking", EntityKind.ENTITY, ["changed.txt"])
+        _install_service_stubs(monkeypatch, [touched])
+        with patch("lilbee.wiki.build_wiki", return_value=[]) as build:
+            await _incremental_wiki_update({"changed.txt"})
+        build.assert_called_once()
+        assert build.call_args.kwargs.get("extract_concepts") is False
