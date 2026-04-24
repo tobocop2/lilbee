@@ -7,3 +7,11 @@
 [[IgnoredVulns]]
 id = "CVE-2025-69872"
 reason = "diskcache 5.6.3 pulled in transitively by llama-cpp-python. No upstream fix published. Exploitation requires write access to the user's own cache directory, which is already a post-compromise scenario. Revisit when llama-cpp-python drops or patches diskcache."
+
+[[IgnoredVulns]]
+id = "PYSEC-2022-42969"
+reason = "py 1.11.0 (unmaintained) pulled in transitively by pytest-forked>=1.6.0, which the `make test-ci-forked` target uses. The advisory is a ReDoS in py.path.svnwc that requires attacker-controlled Subversion repository paths; lilbee and pytest-forked never call py.path.svnwc, and it is not exposed to untrusted input. No upstream fix will ship. Revisit if pytest-forked drops the py dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-vfmq-68hx-4jfw"
+reason = "lxml 5.4.0 pinned transitively by crawl4ai 0.8.6 (latest release), which requires `lxml~=5.3`. The fix lands in lxml 6.1.0 (defaults `resolve_entities` to 'internal' for iterparse/ETCompatXMLParser). lxml is only installed when users opt into the `crawler` extra, and crawl4ai uses lxml primarily for HTML scraping, not untrusted XML parsing with iterparse. Revisit when crawl4ai loosens its lxml pin."
