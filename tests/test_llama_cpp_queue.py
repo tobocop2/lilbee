@@ -561,7 +561,7 @@ class TestLoadLlamaNCtx:
 
 
 class TestSuppressStderrThreadSafety:
-    def test_concurrentsuppress_native_stderr_no_corruption(self) -> None:
+    def test_concurrent_suppress_native_stderr_no_corruption(self) -> None:
         """B3: suppress_native_stderr serializes fd 2 manipulation via _STDERR_LOCK."""
         from lilbee.providers.llama_cpp_provider import suppress_native_stderr
 
@@ -586,7 +586,7 @@ class TestSuppressStderrThreadSafety:
         assert not errors, f"Errors during concurrent suppress_native_stderr: {errors}"
         assert sorted(results) == [0, 2, 4, 6]
 
-    def testsuppress_native_stderr_uses_lock(self) -> None:
+    def test_suppress_native_stderr_uses_lock(self) -> None:
         """B3: Verify suppress_native_stderr acquires _STDERR_LOCK."""
         from lilbee.providers.llama_cpp_provider import _STDERR_LOCK, suppress_native_stderr
 
