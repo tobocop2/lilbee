@@ -201,6 +201,13 @@ class TestAsk:
         with pytest.raises(ValueError, match="question must not be empty"):
             await handlers.ask("   ")
 
+    async def test_forwards_chunk_type_to_searcher(self, mock_svc):
+        from lilbee.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
+        await handlers.ask("q", chunk_type="wiki")
+        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
+
 
 class TestAskStream:
     async def test_no_results_yields_error(self, mock_svc):
@@ -221,6 +228,12 @@ class TestAskStream:
         assert "token" in event_types
         assert "sources" in event_types
         assert "done" in event_types
+
+    async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = None
+        async for _ in handlers.ask_stream("q", chunk_type="wiki"):
+            pass
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
 
     async def test_provider_error_yields_error_event(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -303,8 +316,15 @@ class TestChat:
         result = await handlers.chat("follow up", history)
         assert result.answer == "ok"
         mock_svc.searcher.ask_raw.assert_called_once_with(
-            "follow up", top_k=0, history=history, options=None
+            "follow up", top_k=0, history=history, options=None, chunk_type=None
         )
+
+    async def test_forwards_chunk_type(self, mock_svc):
+        from lilbee.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+        await handlers.chat("q", [], chunk_type="raw")
+        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "raw"
 
 
 class TestChatStream:
@@ -324,6 +344,12 @@ class TestChatStream:
         event_types = [e.split("\n")[0].replace("event: ", "") for e in non_empty]
         assert "token" in event_types
         assert "done" in event_types
+
+    async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = None
+        async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
+            pass
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
     async def test_provider_error_yields_error_event(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -1153,6 +1179,22 @@ class TestUpdateConfig:
         # Verify it's excluded from GET /api/config
         config = await handlers.get_config()
         assert "llm_api_key" not in config.model_dump()
+
+    async def test_wiki_toggle_via_patch(self, tmp_path):
+        """The wiki feature flag must round-trip through PATCH /api/config.
+
+        settings_map exposes it under /settings and docs advertise
+        LILBEE_WIKI as a supported override; the HTTP surface has to
+        accept it too or the three entry points drift out of parity.
+        """
+        cfg.wiki = True
+        result = await handlers.update_config({"wiki": False})
+        assert result.updated == ["wiki"]
+        assert cfg.wiki is False
+        # And back on.
+        result = await handlers.update_config({"wiki": True})
+        assert result.updated == ["wiki"]
+        assert cfg.wiki is True
 
     async def test_multi_field_bad_second_no_partial_apply(self):
         """If second field is invalid, first field should NOT be applied."""

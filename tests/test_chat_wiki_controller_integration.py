@@ -1,9 +1,8 @@
 """Coverage for chat + wiki flows after migration to TaskBarController.start_task.
 
 These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
-``_run_sync``, wiki regen) and the worker bodies (``_do_add``, ``_do_crawl``,
-``_do_sync``, ``generate_wiki_pages``, ``_process_source``) that the
-old screen-owned @work paths no longer cover.
+``_run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
+``_do_sync``) that the old screen-owned @work paths no longer cover.
 """
 
 from __future__ import annotations
@@ -483,105 +482,6 @@ def test_do_sync_translates_cancellation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wiki_worker_process_source_returns_true_on_result(tmp_path: Path) -> None:
-    """_process_source returns True when generate_summary_page produces a page."""
-    from lilbee.cli.tui.wiki_worker import _process_source
-
-    reporter = MagicMock(spec=ProgressReporter)
-    svc = MagicMock()
-    svc.store.get_chunks_by_source.return_value = [MagicMock()]
-    with (
-        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc),
-        patch("lilbee.wiki.gen.generate_summary_page", return_value=tmp_path / "out.md"),
-    ):
-        assert _process_source("src.pdf", 0, 1, reporter, []) is True
-
-
-@pytest.mark.asyncio
-async def test_wiki_worker_process_source_returns_false_with_no_chunks() -> None:
-    """_process_source short-circuits when a source has no chunks."""
-    from lilbee.cli.tui.wiki_worker import _process_source
-
-    reporter = MagicMock(spec=ProgressReporter)
-    svc = MagicMock()
-    svc.store.get_chunks_by_source.return_value = []
-    with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc):
-        assert _process_source("src.pdf", 0, 1, reporter, []) is False
-
-
-@pytest.mark.asyncio
-async def test_wiki_worker_process_source_records_stage_errors(tmp_path: Path) -> None:
-    """The stage callback appends ``failed`` stages to the errors list."""
-    from lilbee.cli.tui.wiki_worker import _process_source
-
-    reporter = MagicMock(spec=ProgressReporter)
-    svc = MagicMock()
-    svc.store.get_chunks_by_source.return_value = [MagicMock()]
-    errors: list[str] = []
-
-    def fake_generate(source, chunks, provider, store, *, on_progress):
-        on_progress("failed", {"error": "nope"})
-        return None
-
-    with (
-        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc),
-        patch("lilbee.wiki.gen.generate_summary_page", side_effect=fake_generate),
-    ):
-        assert _process_source("src.pdf", 0, 1, reporter, errors) is False
-    assert errors == ["nope"]
-
-
-@pytest.mark.asyncio
-async def test_wiki_worker_process_source_reports_other_stages(tmp_path: Path) -> None:
-    """Non-failure stages call reporter.update with a progress fraction."""
-    from lilbee.cli.tui.wiki_worker import _process_source
-
-    reporter = MagicMock(spec=ProgressReporter)
-    svc = MagicMock()
-    svc.store.get_chunks_by_source.return_value = [MagicMock()]
-
-    def fake_generate(source, chunks, provider, store, *, on_progress):
-        on_progress("generating", {})
-        return tmp_path / "out.md"
-
-    with (
-        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=svc),
-        patch("lilbee.wiki.gen.generate_summary_page", side_effect=fake_generate),
-    ):
-        _process_source("src.pdf", 0, 2, reporter, [])
-    # At least: initial preparing + generating stage.
-    assert reporter.update.call_count >= 2
-
-
-@pytest.mark.asyncio
-async def test_generate_wiki_pages_counts_successes() -> None:
-    """generate_wiki_pages returns the number of pages produced."""
-    from lilbee.cli.tui.wiki_worker import generate_wiki_pages
-
-    reporter = MagicMock(spec=ProgressReporter)
-    with patch("lilbee.cli.tui.wiki_worker._process_source", side_effect=[True, True, False]):
-        assert generate_wiki_pages(["a", "b", "c"], reporter) == 2
-
-
-@pytest.mark.asyncio
-async def test_generate_wiki_pages_raises_when_all_fail() -> None:
-    """generate_wiki_pages surfaces the last error when zero pages are produced."""
-    from lilbee.cli.tui.wiki_worker import generate_wiki_pages
-
-    reporter = MagicMock(spec=ProgressReporter)
-    with (
-        patch(
-            "lilbee.cli.tui.wiki_worker._process_source",
-            side_effect=lambda *a, **kw: (
-                (_ for _ in a[4].append("boom")).__next__() if False else False
-            ),
-        ),
-        pytest.raises(RuntimeError),
-    ):
-        generate_wiki_pages(["a"], reporter)
-
-
-@pytest.mark.asyncio
 async def test_cmd_add_missing_path_notifies(tmp_path: Path) -> None:
     """_cmd_add on a non-existent path shows an error."""
     from lilbee.cli.tui.screens.chat import ChatScreen
@@ -776,24 +676,6 @@ async def test_run_sync_rejects_when_already_active() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wiki_submit_wiki_task_calls_controller() -> None:
-    """_submit_wiki_task wires generate_wiki_pages via start_task."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    app = LilbeeApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(WikiScreen())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, WikiScreen)
-        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
-            screen._submit_wiki_task(["src.pdf"])
-        assert mock_start.called
-        assert mock_start.call_args.args[1] == TaskType.WIKI
-
-
-@pytest.mark.asyncio
 async def test_catalog_enqueue_download_calls_start_download_and_notifies() -> None:
     """Inside a LilbeeApp, _enqueue_download calls start_download + notifies."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -904,77 +786,6 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wiki_action_regenerate_submits_task() -> None:
-    """action_regenerate with wiki enabled + targets → submits task."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-    from lilbee.config import cfg
-
-    original_wiki = cfg.wiki
-    cfg.wiki = True
-    try:
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.push_screen(WikiScreen())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, WikiScreen)
-            with (
-                patch(
-                    "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
-                    return_value=["s.pdf"],
-                ),
-                patch.object(app.task_bar, "start_task", return_value="tid") as mock_start,
-            ):
-                screen.action_regenerate()
-            mock_start.assert_called_once()
-    finally:
-        cfg.wiki = original_wiki
-
-
-@pytest.mark.asyncio
-async def test_wiki_submit_target_calls_generate_and_notifies() -> None:
-    """The _target closure inside _submit_wiki_task calls generate_wiki_pages."""
-    import threading
-
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    captured_target: dict[str, object] = {}
-
-    def _capture(name, task_type, target, **kwargs):
-        captured_target["fn"] = target
-        return "tid"
-
-    app = LilbeeApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(WikiScreen())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, WikiScreen)
-        with patch.object(app.task_bar, "start_task", side_effect=_capture):
-            screen._submit_wiki_task(["s.pdf"])
-    assert "fn" in captured_target
-
-    reporter = MagicMock(spec=ProgressReporter)
-
-    exc: list[BaseException] = []
-
-    def _worker() -> None:
-        try:
-            with patch("lilbee.cli.tui.screens.wiki.generate_wiki_pages", return_value=1):
-                captured_target["fn"](reporter)  # type: ignore[operator]
-        except BaseException as e:  # pragma: no cover
-            exc.append(e)
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=5)
-    # Either completed or dropped via call_from_thread after the app shut down;
-    # either way the target function itself ran without raising.
-
-
-@pytest.mark.asyncio
 async def test_run_task_worker_noop_when_target_popped_before_start() -> None:
     """Race guard: _run_task_worker returns silently if the entry is gone."""
     app = LilbeeApp()
@@ -984,24 +795,3 @@ async def test_run_task_worker_noop_when_target_popped_before_start() -> None:
         # Simulate the race: entry popped before worker body runs.
         controller._task_targets.pop(task_id, None)
         controller._run_task_worker(task_id)  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_wiki_submit_wiki_task_noop_outside_lilbee_app() -> None:
-    """_submit_wiki_task is a no-op when the host is not a LilbeeApp."""
-    from textual.app import App, ComposeResult
-    from textual.widgets import Footer
-
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _PlainApp(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-    app = _PlainApp()
-    async with app.run_test() as pilot:
-        app.push_screen(WikiScreen())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, WikiScreen)
-        screen._submit_wiki_task(["s.pdf"])  # must not raise

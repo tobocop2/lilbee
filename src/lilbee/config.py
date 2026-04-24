@@ -22,6 +22,20 @@ class ClustererBackend(StrEnum):
     CONCEPTS = "concepts"
 
 
+class WikiEntityMode(StrEnum):
+    """Strategy used to extract entities for the wiki.
+
+    Phase D: the extractor no longer emits concepts — concept pages
+    are proposed by the LLM inside the per-source batched call in
+    ``wiki.gen``. The enum values reflect the extractor's current
+    responsibility (typed NER entities only).
+    """
+
+    NER_ENTITIES = "ner_entities"
+    NER_CONCEPTS_PLUS_LLM_TYPES = "ner_concepts_plus_llm_types"
+    LLM_TAGGED = "llm_tagged"
+
+
 def ConfigField(
     *args: Any,
     writable: bool = False,
@@ -135,6 +149,16 @@ DEFAULT_IGNORE_DIRS = frozenset(
         "coverage",
         "htmlcov",
     }
+)
+
+# spaCy NER labels that map onto something wiki-shaped. Excludes
+# QUANTITY / ORDINAL / CARDINAL / DATE / TIME / MONEY / PERCENT /
+# LANGUAGE / LAW because pages for "42" or "2021" are never useful.
+# FAC (buildings / airports) and NORP (nationalities / political /
+# religious groups) are included because corpora routinely surface
+# them as wiki-worthy topics.
+DEFAULT_ALLOWED_NER_LABELS = frozenset(
+    {"PERSON", "ORG", "GPE", "LOC", "EVENT", "WORK_OF_ART", "PRODUCT", "FAC", "NORP"}
 )
 
 # Timeout for backend catalog / management HTTP calls.
@@ -502,11 +526,38 @@ class Config(BaseSettings):
     # Per-model generation defaults set via apply_model_defaults().
     _model_defaults: Any = None
 
-    # Wiki layer — LLM-maintained synthesis pages with citation provenance.
-    wiki: bool = True
+    # Wiki layer. LLM-maintained synthesis pages with citation provenance.
+    # On by default, no extras required. Set to False to hide the Wiki view
+    # and disable wiki generation/sync. Writable so the HTTP /api/config
+    # route, TUI /settings, and LILBEE_WIKI env var all round-trip.
+    wiki: bool = ConfigField(default=True, writable=True)
     wiki_dir: str = "wiki"
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
-    wiki_faithfulness_threshold: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
+
+    # Minimum cosine similarity between a page body and the mean of its
+    # source chunk vectors before a page is published (below → drafts).
+    # Replaces the old LLM-based faithfulness score: mean-of-chunks is a
+    # deterministic, zero-LLM-call signal that routes topic-drifted
+    # pages to drafts without the 0.0 to 1.0 ambiguity of a model-emitted
+    # number. Tuning knob: swap to per-chunk max or top-K-mean if the
+    # default 0.5 produces false drafts.
+    wiki_embedding_faithfulness_threshold: float = ConfigField(
+        default=0.5, ge=0.0, le=1.0, writable=True
+    )
+
+    # Per-call output token cap for wiki generation. Without this a
+    # reasoning model (Qwen3, DeepSeek-R1) can burn the full context
+    # window emitting <think> tokens before the actual answer, taking
+    # minutes per page. Default leaves headroom for a typical reasoning
+    # budget plus a real response (~1000 output + ~1000 slack).
+    wiki_summary_max_tokens: int = ConfigField(default=2048, ge=256, writable=True)
+
+    # Wiki generation is a structured-output task: the model must emit the
+    # block separators, the citation footnotes, and verbatim quotes. The
+    # usual chat default (~0.8) is too creative for that. Lowering the
+    # sampling temperature makes the model stick to the template and quote
+    # more faithfully. 0.1 leaves just enough slack to avoid hard loops.
+    wiki_temperature: float = ConfigField(default=0.1, ge=0.0, le=2.0, writable=True)
 
     # Fraction of citations that must be stale before a wiki page is flagged.
     wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -514,58 +565,56 @@ class Config(BaseSettings):
     # Fraction of content changed that triggers human-review drift guard.
     wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
 
-    # Wiki LLM prompts. Overridable via LILBEE_WIKI_{SUMMARY,FAITHFULNESS,SYNTHESIS}_PROMPT.
-    # Must contain the expected {placeholders}.
-    wiki_summary_prompt: str = (
-        "You are a knowledge compiler. Given the source chunks below from a single "
-        "document, write a concise wiki summary page in markdown.\n\n"
-        "Rules:\n"
-        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
-        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
-        "3. For interpretations or connections not directly stated in the source, "
-        "mark with [*inference*].\n"
-        "4. Use blockquotes (>) for directly cited facts.\n"
-        "5. End with a citation block in this format:\n\n"
-        "---\n"
-        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-        '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
-        '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
-        "Source document: {source_name}\n\n"
-        "Chunks:\n{chunks_text}\n\n"
-        "Write the wiki summary page now. Start with a heading."
+    # LLM prompt templates for wiki page generation. Writable so advanced
+    # users can override them from /settings, config.toml, or
+    # ``LILBEE_WIKI_*_PROMPT`` env vars. Templates must keep the expected
+    # ``{placeholders}``. If you remove one the generator will crash on
+    # first use. The defaults below are the only reason the pipeline
+    # works out of the box.
+    wiki_summary_prompt: str = ConfigField(
+        writable=True,
+        default=(
+            "You are a knowledge compiler. Given the source chunks below from a single "
+            "document, write a concise wiki summary page in markdown.\n\n"
+            "Rules:\n"
+            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+            "3. For interpretations or connections not directly stated in the source, "
+            "mark with [*inference*].\n"
+            "4. Use blockquotes (>) for directly cited facts.\n"
+            "5. End with a citation block in this format:\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
+            '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
+            "Source document: {source_name}\n\n"
+            "Chunks:\n{chunks_text}\n\n"
+            "Write the wiki summary page now. Start with a heading."
+        ),
     )
-    wiki_faithfulness_prompt: str = (
-        "You are a fact-checker. Given source chunks and a wiki summary page generated "
-        "from them, score the summary's faithfulness to the sources on a scale of 0.0 "
-        "to 1.0.\n\n"
-        "Criteria:\n"
-        "- 1.0 = every claim is directly supported by the source chunks\n"
-        "- 0.5 = some claims are supported, some are unsupported extrapolations\n"
-        "- 0.0 = the summary contains fabricated information\n\n"
-        "Source chunks:\n{chunks_text}\n\n"
-        "Wiki summary:\n{wiki_text}\n\n"
-        "Respond with ONLY a number between 0.0 and 1.0. Nothing else."
-    )
-    wiki_synthesis_prompt: str = (
-        "You are a knowledge compiler. Given source chunks from MULTIPLE documents "
-        "about related concepts, write a synthesis wiki page in markdown that connects "
-        "ideas across sources.\n\n"
-        "Rules:\n"
-        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
-        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
-        "3. For connections, interpretations, or patterns you identify across sources, "
-        "mark with [*inference*].\n"
-        "4. Use blockquotes (>) for directly cited facts.\n"
-        "5. Reference each source by its filename when drawing connections.\n"
-        "6. End with a citation block in this format:\n\n"
-        "---\n"
-        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-        '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
-        '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
-        "Topic: {topic}\n\n"
-        "Sources:\n{source_list}\n\n"
-        "Chunks:\n{chunks_text}\n\n"
-        "Write the synthesis page now. Start with a heading."
+    wiki_synthesis_prompt: str = ConfigField(
+        writable=True,
+        default=(
+            "You are a knowledge compiler. Given source chunks from MULTIPLE documents "
+            "about related concepts, write a synthesis wiki page in markdown that connects "
+            "ideas across sources.\n\n"
+            "Rules:\n"
+            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+            "3. For connections, interpretations, or patterns you identify across sources, "
+            "mark with [*inference*].\n"
+            "4. Use blockquotes (>) for directly cited facts.\n"
+            "5. Reference each source by its filename when drawing connections.\n"
+            "6. End with a citation block in this format:\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+            '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+            "Topic: {topic}\n\n"
+            "Sources:\n{source_list}\n\n"
+            "Chunks:\n{chunks_text}\n\n"
+            "Write the synthesis page now. Start with a heading."
+        ),
     )
 
     # Wiki synthesis clusterer backend. CONCEPTS requires the [graph] extra
@@ -589,6 +638,84 @@ class Config(BaseSettings):
     # Max noun-phrase concepts extracted per chunk.
     concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
 
+    # spaCy NER labels kept by the wiki entity extractor. Anything not
+    # in this set (QUANTITY, CARDINAL, DATE, TIME, MONEY, PERCENT,
+    # ORDINAL, ...) is dropped before aggregation. Override via
+    # LILBEE_CONCEPT_ALLOWED_ENT_TYPES as a comma-separated list.
+    concept_allowed_ent_types: frozenset[str] = Field(default=DEFAULT_ALLOWED_NER_LABELS)
+
+    # Strategy used to extract entities for the concept/entity wiki.
+    # NER_ENTITIES (default) pulls typed NER entities with spaCy; concept
+    # pages are proposed by the LLM inside the per-source batched call,
+    # not by the extractor. NER_CONCEPTS_PLUS_LLM_TYPES layers an
+    # LLM-proposed domain schema on top. LLM_TAGGED asks the LLM to tag
+    # every chunk (most expensive). Unimplemented modes fall back to
+    # NER_ENTITIES.
+    wiki_entity_mode: WikiEntityMode = ConfigField(
+        default=WikiEntityMode.NER_ENTITIES, writable=True
+    )
+
+    # Minimum distinct chunk mentions before an entity or concept earns
+    # its own wiki page. Filters one-off noise.
+    wiki_entity_min_mentions: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Maximum chunks passed into each concept or entity page generation
+    # call. Caps context size so one page does not blow the context
+    # window on a prolific topic.
+    wiki_concept_max_chunks_per_page: int = ConfigField(default=25, ge=1, writable=True)
+
+    # Maximum number of related concepts the model is asked to list in
+    # the `## Related` section of each page.
+    wiki_related_max: int = ConfigField(default=8, ge=0, writable=True)
+
+    # Auto-update cap: if a single sync touches more than this many
+    # concept or entity pages, skip the per-slug regeneration and tell
+    # the user to run `lilbee wiki update` explicitly. Keeps a surprise
+    # bulk import from firing hundreds of LLM calls.
+    wiki_ingest_update_cap: int = ConfigField(default=20, ge=1, writable=True)
+
+    # Whether the per-source batched call asks the LLM to curate
+    # concept pages alongside the pre-extracted entity list. False →
+    # entity sections only, no concept curation (incremental ingest
+    # path uses this to avoid churning concept slugs per source-touch).
+    wiki_extract_concepts: bool = ConfigField(default=True, writable=True)
+
+    # Minimum chunk count a source must contribute before it is eligible
+    # for concept curation. Sources below the floor still get a batched
+    # call when they have entities (the prompt writes entity-only
+    # sections); sources below the floor with zero entities are skipped
+    # entirely. Prevents boilerplate / TOC / appendix documents from
+    # burning an LLM call to invent "concepts".
+    wiki_batch_min_chunks: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Prompt template for the per-source batched call. Placeholders:
+    # {source}, {entity_list}, {chunks_text}, {concept_instruction}.
+    # {concept_instruction} is filled with a concept-curation paragraph
+    # when concepts are requested, or the empty string otherwise.
+    wiki_entity_batch_prompt: str = ConfigField(
+        writable=True,
+        default=(
+            "You are writing wiki sections based on these chunks from {source}.\n\n"
+            "{concept_instruction}"
+            "Write a wiki section for each of these NER ENTITIES: {entity_list}\n\n"
+            "Format each section exactly as:\n"
+            "## Name\n"
+            "{{content with [^src1]-style citations}}\n\n"
+            "Rules:\n"
+            "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+            "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+            "3. For interpretations or connections not directly stated, mark with [*inference*].\n"
+            "4. Use blockquotes (>) for directly cited facts.\n"
+            "5. End the response with a citation block in this format:\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+            '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+            "Source chunks:\n{chunks_text}\n"
+        ),
+    )
+
+    # Class variable — not a settings field
     _toml_cache: ClassVar[dict[str, Any]] = {}
 
     @field_validator(
@@ -706,6 +833,24 @@ class Config(BaseSettings):
             return DEFAULT_IGNORE_DIRS | frozenset(v)
         return DEFAULT_IGNORE_DIRS
 
+    @field_validator("concept_allowed_ent_types", mode="before")
+    @classmethod
+    def _parse_ent_types(cls, v: Any) -> frozenset[str]:
+        """Replace-semantics override: a narrowed set is used as-is,
+        not unioned with defaults. A user asking for ``PERSON,ORG``
+        wants exactly those kinds. Accepts comma-separated strings
+        from env and list / set / frozenset from code. Empty input
+        falls back to :data:`DEFAULT_ALLOWED_NER_LABELS` so an empty
+        env var does not silently disable the gate.
+        """
+        if isinstance(v, str):
+            parts = frozenset(name.strip().upper() for name in v.split(",") if name.strip())
+            return parts or DEFAULT_ALLOWED_NER_LABELS
+        if isinstance(v, (set, frozenset, list)):
+            parts = frozenset(str(x).upper() for x in v)
+            return parts or DEFAULT_ALLOWED_NER_LABELS
+        return DEFAULT_ALLOWED_NER_LABELS
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
@@ -732,11 +877,6 @@ class Config(BaseSettings):
             data["lancedb_dir"] = root / "data" / "lancedb"
         if data.get("models_dir") in (None, _UNSET):
             data["models_dir"] = canonical_models_dir()
-
-        if "LILBEE_REMOTE_BASE_URL" not in os.environ:
-            ollama_host = os.environ.get("OLLAMA_HOST")
-            if ollama_host:
-                data["remote_base_url"] = ollama_host
 
         return data
 
@@ -850,10 +990,10 @@ class _TomlSource:
         try:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
-            return {k: str(v) for k, v in data.items()}
         except (ValueError, OSError):
             log.warning("Failed to read %s, ignoring", self._path)
             return {}
+        return {k: str(v) for k, v in data.items()}
 
 
 cfg = Config()

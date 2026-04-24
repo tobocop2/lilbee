@@ -9,7 +9,7 @@ from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
 from lilbee.server import auth as _auth_mod
-from tests.server.conftest import parse_sse_events as _parse_sse_events
+from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
 
 def _h() -> dict[str, str]:
@@ -77,6 +77,21 @@ class TestWikiDisabled:
             resp = await client.get("/api/wiki/drafts", headers=_h())
         assert resp.status_code == 404
 
+    async def test_drafts_diff_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/anything", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_drafts_accept_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/anything", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_drafts_reject_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/anything", headers=_h())
+        assert resp.status_code == 404
+
     async def test_citations_reverse_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/citations", params={"source": "x"}, headers=_h())
@@ -90,11 +105,6 @@ class TestWikiDisabled:
     async def test_lint_status_returns_404(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/lint/abc123", headers=_h())
-        assert resp.status_code == 404
-
-    async def test_generate_returns_404(self):
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
         assert resp.status_code == 404
 
     async def test_prune_returns_404(self):
@@ -243,7 +253,12 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         drafts = resp.json()
         assert len(drafts) == 1
-        assert drafts[0]["slug"] == "drafts/failed-page"
+        # The Phase D DraftInfo slug is relative to the drafts subdir, not
+        # the wiki root — matches the CLI / service-layer contract.
+        assert drafts[0]["slug"] == "failed-page"
+        assert drafts[0]["pending_kind"] is None
+        assert drafts[0]["faithfulness_score"] == 0.9
+        assert drafts[0]["published_exists"] is False
 
     async def test_lint_returns_report(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
@@ -268,47 +283,6 @@ class TestWikiEnabled:
             resp = await client.get("/api/wiki/lint/task-abc", headers=_h())
         assert resp.status_code == 404
 
-    async def test_generate_returns_sse_stream_failed(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from conftest import make_mock_services
-        from lilbee.wiki import gen as gen_mod
-
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
-        assert resp.status_code == 201
-        assert "text/event-stream" in resp.headers.get("content-type", "")
-        events = _parse_sse_events(resp.content)
-        done_events = [e for e in events if e[0] == "done"]
-        assert len(done_events) == 1
-        assert done_events[0][1]["status"] == "failed"
-
-    async def test_generate_returns_sse_stream_success(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from conftest import make_mock_services
-        from lilbee.wiki import gen as gen_mod
-
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        page_path = isolated_env / "wiki" / "summaries" / "test.md"
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
-        assert resp.status_code == 201
-        assert "text/event-stream" in resp.headers.get("content-type", "")
-        events = _parse_sse_events(resp.content)
-        done_events = [e for e in events if e[0] == "done"]
-        assert len(done_events) == 1
-        assert done_events[0][1]["status"] == "generated"
-        assert done_events[0][1]["source"] == "test.txt"
-
-    async def test_generate_path_traversal_blocked(self):
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/generate/../../etc/passwd", headers=_h())
-        assert resp.status_code == 404
-
     async def test_prune_returns_report(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
@@ -317,6 +291,134 @@ class TestWikiEnabled:
         assert "records" in body
         assert body["archived"] == 0
         assert body["flagged"] == 0
+
+
+def _make_draft(
+    wiki_root: Path,
+    slug: str,
+    *,
+    drift_pct: int | None = 42,
+    pending_marker: str = "",
+    faithfulness: float = 0.7,
+) -> Path:
+    """Write a draft markdown file with optional drift / pending markers."""
+    draft_dir = wiki_root / "drafts"
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    path = draft_dir / f"{slug}.md"
+    drift_line = ""
+    if drift_pct is not None:
+        drift_line = f"<!-- DRIFT: {drift_pct}% content changed - flagged for human review -->\n\n"
+    body = (
+        f"{drift_line}{pending_marker}"
+        f"---\nfaithfulness_score: {faithfulness}\n---\n\n"
+        "Draft body text.\n"
+    )
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class TestWikiDraftsEndpoints:
+    """Phase D draft review endpoints: list (upgraded), diff, accept, reject."""
+
+    @pytest.fixture(autouse=True)
+    def enable_wiki(self):
+        cfg.wiki = True
+
+    async def test_list_carries_pending_kind(self, isolated_env: Path):
+        wiki_root = isolated_env / "wiki"
+        _make_draft(
+            wiki_root,
+            "parse-fail",
+            drift_pct=None,
+            pending_marker=(f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for section foo -->\n\n"),
+        )
+        _make_draft(wiki_root, "drifted", drift_pct=55, faithfulness=0.8)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts", headers=_h())
+        assert resp.status_code == 200
+        drafts = {d["slug"]: d for d in resp.json()}
+        assert drafts["parse-fail"]["pending_kind"] == "parse"
+        assert drafts["parse-fail"]["drift_ratio"] is None
+        assert drafts["drifted"]["pending_kind"] is None
+        assert drafts["drifted"]["drift_ratio"] == pytest.approx(0.55)
+        assert drafts["drifted"]["faithfulness_score"] == pytest.approx(0.8)
+
+    async def test_diff_happy(self, isolated_env: Path):
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=30, faithfulness=0.9)
+        # Published counterpart to diff against.
+        _make_wiki_page(wiki_root, "summaries", "cv-manual")
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/cv-manual", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["slug"] == "cv-manual"
+        assert "Draft body text" in body["diff"]
+
+    async def test_diff_missing_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/nope", headers=_h())
+        assert resp.status_code == 404
+        assert "draft not found" in resp.json()["detail"]
+
+    async def test_accept_happy(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.server import wiki as server_wiki_mod
+        from lilbee.wiki.drafts import AcceptResult
+
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=20)
+
+        captured: dict[str, object] = {}
+
+        def _fake_accept(slug: str, root: Path, store: object) -> AcceptResult:
+            captured["slug"] = slug
+            captured["root"] = root
+            return AcceptResult(
+                slug=slug,
+                requested_slug=slug,
+                moved_to=root / "summaries" / f"{slug}.md",
+                reindexed_chunks=3,
+            )
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["slug"] == "cv-manual"
+        assert body["requested_slug"] == "cv-manual"
+        assert body["reindexed_chunks"] == 3
+        assert body["moved_to"].endswith("summaries/cv-manual.md")
+        assert captured["slug"] == "cv-manual"
+
+    async def test_accept_missing_404(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        def _fake_accept(slug: str, root: Path, store: object) -> None:
+            raise FileNotFoundError(f"draft not found: {slug}")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/nope", headers=_h())
+        assert resp.status_code == 404
+        assert "draft not found" in resp.json()["detail"]
+
+    async def test_reject_happy(self, isolated_env: Path):
+        wiki_root = isolated_env / "wiki"
+        draft_path = _make_draft(wiki_root, "doomed", drift_pct=25)
+        assert draft_path.is_file()
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/doomed", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["slug"] == "doomed"
+        assert not draft_path.exists()
+
+    async def test_reject_missing_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/nope", headers=_h())
+        assert resp.status_code == 404
+        assert "draft not found" in resp.json()["detail"]
 
 
 class TestFrontmatterParsing:
@@ -396,7 +498,9 @@ class TestHelpers:
         page = subdir / "my-doc.md"
         page.write_text("# Just a heading\n")
         info = build_page_info(page, tmp_path)
-        assert info.title == "My Doc"
+        # build_page_info prefers the first H1 when frontmatter has no title;
+        # the filename stem is the last fallback.
+        assert info.title == "Just a heading"
         assert info.source_count == 0
         assert info.created_at == ""
 
@@ -426,23 +530,6 @@ class TestHelpers:
         assert _find_page("summaries/../../../etc/passwd") is None
 
 
-class TestGeneratePathTraversalDirect:
-    """Test the path validation inside wiki_generate_route directly."""
-
-    async def test_generate_invalid_source_path_returns_404(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Ensure validate_path_within ValueError is caught and returns 404."""
-        cfg.wiki = True
-        monkeypatch.setattr(
-            "lilbee.server.wiki.validate_path_within",
-            lambda *a: (_ for _ in ()).throw(ValueError("path traversal")),
-        )
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.post("/api/wiki/generate/legit-source.txt", headers=_h())
-        assert resp.status_code == 404
-
-
 class TestPydanticModels:
     def test_wiki_page_summary_defaults(self):
         from lilbee.server.models import WikiPageSummary
@@ -463,117 +550,3 @@ class TestPydanticModels:
         assert c.excerpt == ""
         assert c.wiki_chunk_index == 0
         assert c.created_at == ""
-
-
-class TestWikiGenerateStream:
-    """Unit tests for the wiki_generate_stream SSE handler."""
-
-    async def test_stream_emits_done_on_success(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from conftest import make_mock_services
-        from lilbee.server.handlers import wiki_generate_stream
-        from lilbee.wiki import gen as gen_mod
-
-        page_path = isolated_env / "wiki" / "summaries" / "test.md"
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
-        cfg.wiki = True
-        events = []
-        async for chunk in wiki_generate_stream("test.txt"):
-            if chunk.strip():
-                events.append(chunk)
-        sse = _parse_sse_events(b"".join(e.encode() for e in events))
-        done_events = [e for e in sse if e[0] == "done"]
-        assert len(done_events) == 1
-        assert done_events[0][1]["status"] == "generated"
-
-    async def test_stream_emits_done_failed_on_none(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from conftest import make_mock_services
-        from lilbee.server.handlers import wiki_generate_stream
-        from lilbee.wiki import gen as gen_mod
-
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
-        cfg.wiki = True
-        events = []
-        async for chunk in wiki_generate_stream("test.txt"):
-            if chunk.strip():
-                events.append(chunk)
-        sse = _parse_sse_events(b"".join(e.encode() for e in events))
-        done_events = [e for e in sse if e[0] == "done"]
-        assert len(done_events) == 1
-        assert done_events[0][1]["status"] == "failed"
-
-    async def test_stream_error_on_no_chunks(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from conftest import make_mock_services
-        from lilbee.server.handlers import wiki_generate_stream
-
-        mock_svc = make_mock_services()
-        mock_svc.store.get_chunks_by_source.return_value = []
-        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
-        cfg.wiki = True
-        events = []
-        async for chunk in wiki_generate_stream("empty.txt"):
-            if chunk.strip():
-                events.append(chunk)
-        sse = _parse_sse_events(b"".join(e.encode() for e in events))
-        error_events = [e for e in sse if e[0] == "error"]
-        assert len(error_events) == 1
-        assert "No indexed chunks" in error_events[0][1]["message"]
-
-    async def test_stream_emits_progress_events(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Progress callback fires and emits SSE progress events."""
-        from conftest import make_mock_services
-        from lilbee.server.handlers import wiki_generate_stream
-        from lilbee.wiki import gen as gen_mod
-
-        def _fake_generate(*args, **kwargs):
-            cb = kwargs.get("on_progress")
-            if cb:
-                cb("preparing", {"chunks": 5, "source": "test.txt"})
-                cb("generating", {"source": "test.txt"})
-            return Path(isolated_env / "wiki" / "summaries" / "test.md")
-
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", _fake_generate)
-        cfg.wiki = True
-        events = []
-        async for chunk in wiki_generate_stream("test.txt"):
-            if chunk.strip():
-                events.append(chunk)
-        sse = _parse_sse_events(b"".join(e.encode() for e in events))
-        progress_events = [e for e in sse if e[0] == "progress"]
-        assert len(progress_events) >= 2
-        stages = [e[1]["stage"] for e in progress_events]
-        assert "preparing" in stages
-        assert "generating" in stages
-
-    async def test_stream_handles_exception(
-        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Exception in generate_summary_page emits error event."""
-        from conftest import make_mock_services
-        from lilbee.server.handlers import wiki_generate_stream
-        from lilbee.wiki import gen as gen_mod
-
-        def _boom(*args, **kwargs):
-            raise RuntimeError("LLM exploded")
-
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
-        monkeypatch.setattr(gen_mod, "generate_summary_page", _boom)
-        cfg.wiki = True
-        events = []
-        async for chunk in wiki_generate_stream("test.txt"):
-            if chunk.strip():
-                events.append(chunk)
-        sse = _parse_sse_events(b"".join(e.encode() for e in events))
-        error_events = [e for e in sse if e[0] == "error"]
-        assert len(error_events) >= 1
-        assert "LLM exploded" in error_events[0][1]["message"]

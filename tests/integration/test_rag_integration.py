@@ -9,7 +9,6 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
 from collections import Counter
 
 import pytest
@@ -61,7 +60,7 @@ class TestPipelineBasics:
         assert len(vec) == cfg.embedding_dim
         assert any(v != 0.0 for v in vec)
 
-    def test_ingest_realistic_length_document(self, rag_pipeline):
+    def test_ingest_realistic_length_document(self, rag_pipeline, run_async):
         """Verify embedding works with realistic text lengths, not just short strings.
         Regression test: llama-cpp-python defaults n_batch=512, silently
         truncating embeddings. With multiple chunks exceeding this limit,
@@ -84,7 +83,7 @@ class TestPipelineBasics:
         ) * 10  # Repeat to ensure multiple chunks
 
         (docs_dir / "maintenance_guide.md").write_text(content)
-        result = asyncio.run(sync(quiet=True))
+        result = run_async(sync(quiet=True))
         assert len(result.failed) == 0, f"Ingest failed: {result}"
         assert len(result.added) > 0 or len(result.updated) > 0
 
@@ -210,7 +209,7 @@ class TestRegressionGuards:
                     # High distance = low relevance for cosine distance
                     assert r.distance > 0.1, "Unexpectedly close match for nonsense query"
 
-    def test_delete_removes_from_search(self, rag_pipeline):
+    def test_delete_removes_from_search(self, rag_pipeline, run_async):
         """Removing specs.md makes it unfindable."""
         s = get_services().store
         # Verify it's currently findable
@@ -226,17 +225,17 @@ class TestRegressionGuards:
         assert "specs.md" not in _source_names(after)
 
         # Re-add it for subsequent tests by re-syncing
-        asyncio.run(sync(quiet=True))
+        run_async(sync(quiet=True))
         s.ensure_fts_index()
 
-    def test_sync_idempotent(self, rag_pipeline):
+    def test_sync_idempotent(self, rag_pipeline, run_async):
         """Running sync twice produces the same chunk count."""
         s = get_services().store
         table = s.open_table("chunks")
         assert table is not None
         count_before = len(table.to_arrow().to_pylist())
 
-        asyncio.run(sync(quiet=True))
+        run_async(sync(quiet=True))
 
         table = s.open_table("chunks")
         assert table is not None
@@ -301,7 +300,7 @@ class TestConceptGraph:
     """Tests with concept_graph enabled — requires spacy and graspologic."""
 
     @pytest.fixture(autouse=True)
-    def _enable_concepts(self, rag_pipeline):
+    def _enable_concepts(self, rag_pipeline, run_async):
         spacy = pytest.importorskip("spacy")
         pytest.importorskip("graspologic_native")
         # Ensure the en_core_web_sm model is available
@@ -316,14 +315,14 @@ class TestConceptGraph:
 
         # Force rebuild so concept indexing runs for all files
         # (a plain sync skips unchanged files and never calls _index_concepts)
-        asyncio.run(sync(quiet=True, force_rebuild=True))
+        run_async(sync(quiet=True, force_rebuild=True))
 
         yield
 
         cfg.concept_graph = original
         reset_provider()
         # Re-sync without concepts to restore tables for subsequent tests
-        asyncio.run(sync(quiet=True, force_rebuild=True))
+        run_async(sync(quiet=True, force_rebuild=True))
 
     def test_concept_tables_exist(self, rag_pipeline):
         """After sync with concept_graph=True, concept tables exist in LanceDB."""

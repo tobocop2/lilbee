@@ -72,7 +72,12 @@ def mock_svc():
     svc_mod.set_services(None)
 
 
-def _make_kreuzberg_result(text="Some extracted text. " * 20, num_chunks=1, has_pages=False):
+def _make_kreuzberg_result(
+    text="Some extracted text. " * 20,
+    num_chunks=1,
+    has_pages=False,
+    document=None,
+):
     """Build a mock kreuzberg ExtractionResult."""
     chunks = []
     for i in range(num_chunks):
@@ -95,6 +100,7 @@ def _make_kreuzberg_result(text="Some extracted text. " * 20, num_chunks=1, has_
     result = mock.MagicMock()
     result.chunks = chunks
     result.content = text
+    result.document = document
     return result
 
 
@@ -103,6 +109,7 @@ def _make_empty_result():
     result = mock.MagicMock()
     result.chunks = []
     result.content = ""
+    result.document = None
     return result
 
 

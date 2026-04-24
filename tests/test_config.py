@@ -18,16 +18,14 @@ from lilbee.config import (
 
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
-    """Return os.environ with all LILBEE_* and OLLAMA_HOST vars removed.
+    """Return os.environ with all LILBEE_* vars removed.
 
     If tmp_path is given, sets LILBEE_DATA to it so no existing config.toml
     is accidentally picked up. Sets ``LILBEE_SKIP_MODEL_TASK_VALIDATION=1``
     so tests using placeholder model names don't trip the per-role
     catalog-task validator; pop it explicitly to exercise that validator.
     """
-    env = {
-        k: v for k, v in os.environ.items() if not k.startswith("LILBEE_") and k != "OLLAMA_HOST"
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
     env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
     if tmp_path is not None:
         env["LILBEE_DATA"] = str(tmp_path)
@@ -769,6 +767,49 @@ class TestIgnoreDirs:
             assert "bar" in c.ignore_dirs
 
 
+class TestConceptAllowedEntTypes:
+    """A3 entity-type filter: spaCy NER labels kept by the wiki extractor."""
+
+    def test_default_includes_core_wiki_types(self):
+        c = Config()
+        for label in ("PERSON", "ORG", "GPE", "PRODUCT", "FAC", "NORP"):
+            assert label in c.concept_allowed_ent_types
+
+    def test_default_excludes_quantitative_types(self):
+        c = Config()
+        for label in ("QUANTITY", "CARDINAL", "DATE", "TIME", "MONEY", "PERCENT"):
+            assert label not in c.concept_allowed_ent_types
+
+    def test_env_override_replaces_defaults(self):
+        # Replace-semantics: narrowing the set should NOT re-union with
+        # the defaults the way ``ignore_dirs`` does.
+        with mock.patch.dict(os.environ, {"LILBEE_CONCEPT_ALLOWED_ENT_TYPES": "PERSON,ORG"}):
+            c = Config()
+            assert c.concept_allowed_ent_types == frozenset({"PERSON", "ORG"})
+
+    def test_env_override_is_case_insensitive(self):
+        with mock.patch.dict(os.environ, {"LILBEE_CONCEPT_ALLOWED_ENT_TYPES": "person,Org"}):
+            c = Config()
+            assert c.concept_allowed_ent_types == frozenset({"PERSON", "ORG"})
+
+    def test_empty_env_falls_back_to_default(self):
+        # Empty override should not silently deactivate the gate.
+        env = _clean_env()
+        env["LILBEE_CONCEPT_ALLOWED_ENT_TYPES"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert "PERSON" in c.concept_allowed_ent_types
+
+    def test_non_string_non_collection_input_falls_back_to_default(self):
+        """A programmatic override with an unsupported type keeps defaults.
+
+        The validator accepts str/set/frozenset/list. Anything else (None,
+        int, bytes) hits the trailing fallback branch instead of raising.
+        """
+        c = Config(concept_allowed_ent_types=None)  # type: ignore[arg-type]
+        assert "PERSON" in c.concept_allowed_ent_types
+
+
 class TestEmptyStringValidation:
     def test_empty_chat_model_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
@@ -875,15 +916,6 @@ class TestIgnoreDirsFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config(ignore_dirs=42)  # type: ignore[arg-type]
         assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
-
-
-class TestOllamaHostFallback:
-    def test_ollama_host_sets_remote_base_url(self, tmp_path):
-        env = _clean_env(tmp_path)
-        env["OLLAMA_HOST"] = "http://custom:11434"
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-        assert c.remote_base_url == "http://custom:11434"
 
 
 class TestParseEnableOcrFallback:

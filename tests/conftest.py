@@ -249,9 +249,8 @@ def make_citation(
 
 def write_wiki_page(tmp_path: Path, subdir: str, slug: str, content: str) -> Path:
     """Write a wiki page and return its path."""
-    wiki_root = tmp_path / "wiki" / subdir
-    wiki_root.mkdir(parents=True, exist_ok=True)
-    path = wiki_root / f"{slug}.md"
+    path = tmp_path / "wiki" / subdir / f"{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
 
@@ -280,7 +279,7 @@ def wiki_isolated_env(tmp_path: Path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.wiki = True
     cfg.wiki_dir = "wiki"
-    cfg.wiki_faithfulness_threshold = 0.7
+    cfg.wiki_embedding_faithfulness_threshold = 0.5
     cfg.wiki_prune_raw = False
     cfg.chat_model = "test-model"
     yield tmp_path

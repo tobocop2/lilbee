@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.config import ClustererBackend, cfg
+from lilbee.config import ClustererBackend, WikiEntityMode, cfg
 
 
 class RenderStyle(StrEnum):
@@ -173,11 +173,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text="Delete raw chunks after summarizing into the wiki",
     ),
-    "wiki_faithfulness_threshold": SettingDef(
+    "wiki_embedding_faithfulness_threshold": SettingDef(
         float,
         nullable=False,
         group="Wiki",
-        help_text="Minimum faithfulness score (0-1) to accept a generated page",
+        help_text=(
+            "Minimum cosine similarity (0-1) between a generated page and "
+            "the mean of its source chunk vectors before publishing. "
+            "Pages below the threshold route to drafts/."
+        ),
     ),
     "wiki_stale_citation_threshold": SettingDef(
         float,
@@ -197,6 +201,94 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text="Synthesis clusterer backend (embedding or concepts)",
         choices=tuple(b.value for b in ClustererBackend),
+    ),
+    "wiki_entity_mode": SettingDef(
+        str,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Entity extraction strategy "
+            "(ner_entities = default, typed NER entities; "
+            "plus_llm_types = NER + LLM-proposed schema; "
+            "llm_tagged = LLM tags every chunk)"
+        ),
+        choices=tuple(m.value for m in WikiEntityMode),
+    ),
+    "wiki_entity_min_mentions": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Minimum chunk mentions before an entity or concept gets its own page",
+    ),
+    "wiki_concept_max_chunks_per_page": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Maximum chunks passed into each concept or entity page generation call",
+    ),
+    "wiki_related_max": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Maximum related concepts listed in the `## Related` section of each page",
+    ),
+    "wiki_ingest_update_cap": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Touched-page cap for auto-update after sync. "
+            "Beyond this count, run `lilbee wiki update` manually."
+        ),
+    ),
+    "wiki_summary_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt for per-source summary pages. "
+            "Must keep the {source_name} and {chunks_text} placeholders."
+        ),
+    ),
+    "wiki_synthesis_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt for cross-source synthesis pages. "
+            "Must keep {topic}, {source_list}, and {chunks_text}."
+        ),
+    ),
+    "wiki_entity_batch_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Wiki",
+        help_text=(
+            "Prompt for the per-source batched call. "
+            "Must keep {source}, {entity_list}, {chunks_text}, and {concept_instruction}."
+        ),
+    ),
+    "wiki_extract_concepts": SettingDef(
+        bool,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Whether the per-source batched call asks the LLM to curate concept pages "
+            "alongside the pre-extracted entity list."
+        ),
+    ),
+    "wiki_batch_min_chunks": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text=(
+            "Minimum chunks a source must contribute before its batched call includes "
+            "concept curation. Sources below the floor skip the concept-curation "
+            "instruction; sources with zero entities AND below the floor are skipped entirely."
+        ),
     ),
     "wiki_clusterer_k": SettingDef(
         int,

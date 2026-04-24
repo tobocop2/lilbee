@@ -19,7 +19,11 @@ from lilbee.wiki.citation import (
     strip_citation_block,
     verify_citation,
 )
-from lilbee.wiki.gen import WikiProgressCallback, generate_summary_page, generate_synthesis_pages
+from lilbee.wiki.gen import (
+    WikiProgressCallback,
+    build_wiki,
+    generate_synthesis_pages,
+)
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import lint_all, lint_wiki_page
 from lilbee.wiki.prune import prune_wiki
@@ -42,9 +46,9 @@ __all__ = [
     "WikiProgressCallback",
     "append_wiki_log",
     "build_page_info",
+    "build_wiki",
     "find_page",
     "find_unmarked_claims",
-    "generate_summary_page",
     "generate_synthesis_pages",
     "lint_all",
     "lint_wiki_page",

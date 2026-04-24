@@ -15,13 +15,11 @@ from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.services import get_services, reset_services
+from lilbee.store import SearchScope, scope_to_chunk_type
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
     WIKI_DISABLED_ERROR,
-    WIKI_EMPTY_SOURCE_ERROR,
-    WIKI_STATUS_FAILED,
-    WIKI_STATUS_GENERATED,
 )
 
 log = logging.getLogger(__name__)
@@ -30,14 +28,23 @@ mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed d
 
 
 @mcp.tool()
-def search(query: str, top_k: int = 5) -> list[dict[str, Any]] | dict[str, Any]:
+def search(
+    query: str, top_k: int = 5, scope: str = SearchScope.BOTH.value
+) -> list[dict[str, Any]] | dict[str, Any]:
     """Search the knowledge base for relevant document chunks.
-    Returns chunks sorted by relevance. No LLM call -- uses pre-computed embeddings.
+
+    ``scope`` picks the pool: ``"raw"`` (source chunks), ``"wiki"`` (wiki
+    page bodies), or ``"both"`` (default, unfiltered). Returns chunks
+    sorted by relevance. No LLM call -- uses pre-computed embeddings.
     """
     if not query or not query.strip():
         return {"error": "query must not be empty"}
     try:
-        results = get_services().searcher.search(query, top_k=top_k)
+        chunk_type = scope_to_chunk_type(scope)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    try:
+        results = get_services().searcher.search(query, top_k=top_k, chunk_type=chunk_type)
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean_result(r) for r in results]
     except Exception as exc:
@@ -371,6 +378,28 @@ def wiki_read(slug: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def wiki_synthesize() -> dict[str, Any]:
+    """Generate synthesis pages for concept clusters spanning three or more sources.
+
+    Returns the list of synthesis page paths written to disk. When no
+    cluster meets the 3+ source threshold, returns an empty list and
+    ``count: 0``.
+    """
+    if not cfg.wiki:
+        return {"error": WIKI_DISABLED_ERROR}
+
+    from lilbee.wiki.gen import generate_synthesis_pages
+
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
+    return {
+        "command": "wiki_synthesize",
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
+    }
+
+
+@mcp.tool()
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
     Archives pages whose sources are all deleted or whose concept cluster
@@ -385,45 +414,6 @@ def wiki_prune() -> dict[str, Any]:
         "records": [r.to_dict() for r in report.records],
         "archived": report.archived_count,
         "flagged": report.flagged_count,
-    }
-
-
-@mcp.tool()
-def wiki_generate(source: str) -> dict[str, Any]:
-    """Generate a wiki summary page for a source document.
-
-    Args:
-        source: Source filename as indexed (e.g. 'cv-manual.pdf').
-
-    Returns {"command", "source", "status", "paths"} on success,
-    or {"error": "..."} when the source has no indexed chunks,
-    wiki is disabled, or the input is empty.
-    """
-    from lilbee.wiki.gen import generate_summary_page
-
-    if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
-    if not source or not source.strip():
-        return {"error": WIKI_EMPTY_SOURCE_ERROR}
-
-    services = get_services()
-    chunks = services.store.get_chunks_by_source(source)
-    if not chunks:
-        return {"error": f"No indexed chunks for source: {source}"}
-
-    result_path = generate_summary_page(source, chunks, services.provider, services.store)
-    if result_path is None:
-        return {
-            "command": "wiki_generate",
-            "source": source,
-            "status": WIKI_STATUS_FAILED,
-            "paths": [],
-        }
-    return {
-        "command": "wiki_generate",
-        "source": source,
-        "status": WIKI_STATUS_GENERATED,
-        "paths": [str(result_path)],
     }
 
 
@@ -524,6 +514,40 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
     except ValueError as exc:
         return {"error": str(exc)}
     return remove_model_data(model, source=src).model_dump()
+
+
+@mcp.tool()
+def wiki_drafts_list() -> dict[str, Any]:
+    """List pending wiki drafts with drift, faithfulness, and pairing info.
+
+    Read-only. Accept and reject are CLI-only (destructive, explicit).
+    """
+    from lilbee.wiki.drafts import list_drafts
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    drafts = list_drafts(wiki_root)
+    return {
+        "command": "wiki_drafts_list",
+        "drafts": [d.to_dict() for d in drafts],
+        "total": len(drafts),
+    }
+
+
+@mcp.tool()
+def wiki_drafts_diff(slug: str) -> dict[str, Any]:
+    """Return a unified diff of the draft against its published counterpart.
+
+    Args:
+        slug: Draft slug (e.g. ``"chevrolet"``).
+    """
+    from lilbee.wiki.drafts import diff_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        diff = diff_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        return {"error": str(exc)}
+    return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
 
 
 def main() -> None:

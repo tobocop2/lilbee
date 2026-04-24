@@ -3,25 +3,17 @@
 Pure functions — no LLM dependency. Operates on markdown text and citation records.
 """
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 
 from lilbee.store import CitationRecord
-
-# Pattern for inline citation anchors: [^src1], [^src2], etc.
-_CITE_RE = re.compile(r"\[\^(src\d+)\]")
-
-# Pattern for footnote definitions in the citation block:
-#   [^src1]: python-docs/typing.md, lines 12-45
-_FOOTNOTE_RE = re.compile(r"^\[\^(src\d+)\]:\s*(.+)$", re.MULTILINE)
-
-# Pattern for inference markers: [*inference*]
-_INFERENCE_RE = re.compile(r"\[\*inference\*\]")
-
-# Separator line that precedes the auto-generated citation block
-_CITATION_BLOCK_SEP = "---"
-_CITATION_BLOCK_COMMENT = "<!-- citations (auto-generated from _citations table -- do not edit) -->"
+from lilbee.wiki.grammar import (
+    CITATION_BLOCK_COMMENT,
+    CITATION_BLOCK_SEP,
+    CITE_RE,
+    FOOTNOTE_RE,
+    INFERENCE_RE,
+)
 
 
 class CitationStatus(Enum):
@@ -43,18 +35,21 @@ class ParsedCitation:
 
 
 def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
-    """Extract citation footnote definitions from the auto-generated citation block.
-    Returns a ParsedCitation for each ``[^srcN]: ...`` line found after the
-    citation block separator.
+    """Extract citation footnote definitions from wiki markdown.
+
+    When the auto-generated block comment is present, scans from that
+    line onward. When a looser model leaves the comment out, falls back
+    to scanning the whole document for ``[^srcN]: ...`` definition lines.
+    That pattern unambiguously identifies a citation footnote and only
+    appears at the block level.
     """
     block_start = _find_citation_block_start(markdown)
-    if block_start is None:
-        return []
+    start = block_start if block_start is not None else 0
 
     lines = markdown.splitlines()
     citations: list[ParsedCitation] = []
-    for line_idx in range(block_start, len(lines)):
-        match = _FOOTNOTE_RE.match(lines[line_idx])
+    for line_idx in range(start, len(lines)):
+        match = FOOTNOTE_RE.match(lines[line_idx])
         if match:
             citations.append(
                 ParsedCitation(
@@ -73,7 +68,7 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
     """
     if not citations:
         return ""
-    lines = [_CITATION_BLOCK_SEP, _CITATION_BLOCK_COMMENT]
+    lines = [CITATION_BLOCK_SEP, CITATION_BLOCK_COMMENT]
     for rec in citations:
         lines.append(f"[^{rec['citation_key']}]: {_format_source_ref(rec)}")
     return "\n".join(lines) + "\n"
@@ -97,14 +92,14 @@ def find_unmarked_claims(markdown: str) -> list[str]:
     Scans non-empty, non-metadata lines in the body (before the citation block).
     Returns the text of each unmarked line.
     """
-    body = _extract_body(markdown)
+    body = extract_body(markdown)
     lines = body.splitlines()
     unmarked: list[str] = []
     for line in lines:
         stripped = line.strip()
         if not _is_content_line(stripped):
             continue
-        if _CITE_RE.search(stripped) or _INFERENCE_RE.search(stripped):
+        if CITE_RE.search(stripped) or INFERENCE_RE.search(stripped):
             continue
         unmarked.append(stripped)
     return unmarked
@@ -124,7 +119,7 @@ def _find_citation_block_start(markdown: str) -> int | None:
     """Return the 0-based line index where the citation block begins, or None."""
     lines = markdown.splitlines()
     for i, line in enumerate(lines):
-        if line.strip() == _CITATION_BLOCK_COMMENT:
+        if line.strip() == CITATION_BLOCK_COMMENT:
             return i
     return None
 
@@ -132,12 +127,12 @@ def _find_citation_block_start(markdown: str) -> int | None:
 def _body_end_before_citations(lines: list[str], block_start: int) -> int:
     """Return the line index to truncate at, stripping the --- separator if present."""
     body_end = block_start
-    if body_end > 0 and lines[body_end - 1].strip() == _CITATION_BLOCK_SEP:
+    if body_end > 0 and lines[body_end - 1].strip() == CITATION_BLOCK_SEP:
         body_end -= 1
     return body_end
 
 
-def _extract_body(markdown: str) -> str:
+def extract_body(markdown: str) -> str:
     """Return markdown body: strip YAML frontmatter and citation block."""
     text = _strip_frontmatter(markdown)
     block_start = _find_citation_block_start(text)
@@ -165,7 +160,7 @@ def _is_content_line(stripped: str) -> bool:
         return False
     if stripped.startswith("#"):
         return False
-    return stripped != _CITATION_BLOCK_SEP
+    return stripped != CITATION_BLOCK_SEP
 
 
 def _format_source_ref(rec: CitationRecord) -> str:

@@ -28,10 +28,10 @@ from lilbee.config import (
     Config,
 )
 from lilbee.store import Store, escape_sql_string
+from lilbee.wiki.shared import is_valid_label
 
 log = logging.getLogger(__name__)
 
-_MIN_CONCEPT_LEN = 2
 _MIN_LEIDEN_WEIGHT = 0.01
 
 
@@ -76,13 +76,34 @@ def _ensure_spacy_model() -> Any:
             ) from exc
 
 
+def load_spacy_pipeline() -> Any:
+    """Public wrapper around the shared spaCy NER + noun-chunk pipeline.
+
+    Raises ``ImportError`` if spaCy or the ``en_core_web_sm`` model cannot
+    be installed.
+    """
+    return _ensure_spacy_model()
+
+
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
-    """Extract deduplicated, filtered noun chunks from a spaCy doc."""
+    """Extract deduplicated, filtered noun chunks from a spaCy doc.
+
+    Applies the same :func:`is_valid_label` gate the wiki entity
+    extractor uses, so structural-noise concepts (markdown table
+    delimiters, page-number-prefixed tokens, sub-three-char fragments)
+    never enter the co-occurrence graph and therefore never become a
+    synthesis-page cluster label.
+
+    The gate runs on the lowercased form here while the NER extractor
+    gates on the original-cased surface; the two decisions match
+    because ``is_valid_label`` is case-agnostic today. Any future
+    case-sensitive rule must land in both call sites together.
+    """
     seen: set[str] = set()
     concepts: list[str] = []
     for chunk in doc.noun_chunks:
         concept = chunk.text.lower().strip()
-        if len(concept) < _MIN_CONCEPT_LEN:
+        if not is_valid_label(concept):
             continue
         if concept in seen:
             continue

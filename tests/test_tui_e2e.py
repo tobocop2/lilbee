@@ -201,7 +201,19 @@ class TestModelSwitchSafety:
             bar = screen.query_one("#model-bar", ModelBar)
             bar._populating = False
 
-            # Simulate model change
+            # Simulate model change — set sel.value synchronously so that
+            # _extract_value's stale-event check (event.value must match
+            # sel.value) is satisfied. In production, Textual posts the
+            # Changed event from the value reactive, so the two always
+            # match when the handler runs.
+            from textual.widgets import Select
+
+            from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+            chat_sel = bar.query_one("#chat-model-select", Select)
+            chat_sel.set_options([ModelOption("new-model.gguf", "new-model.gguf")])
+            chat_sel.value = "new-model.gguf"
+
             event = mock.MagicMock()
             event.value = "new-model.gguf"
             event.select = mock.MagicMock()
@@ -1342,9 +1354,14 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await search.action_submit()
                 await app.workers.wait_for_complete()
-                await pilot.pause()
+                for _ in range(20):
+                    if "no-such-model-anywhere" in call_log:
+                        break
+                    await pilot.pause()
 
-                assert "no-such-model-anywhere" in call_log
+                assert "no-such-model-anywhere" in call_log, (
+                    f"search term never reached catalog after polling: {call_log}"
+                )
 
     async def test_trigger_remote_search_blocked_while_in_flight(self, _mock_resolve):
         """A second _trigger_remote_search while one is in flight is a no-op."""

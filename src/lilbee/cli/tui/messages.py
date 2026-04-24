@@ -8,7 +8,7 @@ and ensures consistent messaging.
 from __future__ import annotations
 
 from lilbee.config import cfg
-from lilbee.wiki.shared import WikiPageType
+from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
@@ -50,20 +50,7 @@ CMD_CANCEL = "Cancelled active operations"
 CMD_CLEAR = "Conversation cleared"
 CMD_THEME_LIST = "Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
-CMD_WIKI_NO_SOURCES = "No indexed documents. Use /add first."
-CMD_WIKI_NOT_FOUND = "Source not found: {name}"
-CMD_WIKI_STARTED = "Generating wiki for {count} source(s)..."
-CMD_WIKI_PROGRESS = "{name}: {stage}"
-CMD_WIKI_SUCCESS = "Generated {generated}/{total} wiki page(s)"
-CMD_WIKI_FAILED = "Wiki generation failed: {error}"
 TASK_NAME_CRAWL = "Crawl {url}"
-TASK_NAME_WIKI = "Wiki ({count})"
-CMD_WIKI_NO_PAGES = "No pages generated"
-CMD_WIKI_UNKNOWN_ERROR = "Unknown error"
-CMD_WIKI_NONE_GENERATED = (
-    "Wiki generation produced no pages for {total} source(s). "
-    "The model may not support structured output."
-)
 STREAM_ERROR = "\n\n*Error: {error}*"
 SYNC_STATUS_SYNCING = "Syncing..."
 SYNC_STATUS_DONE = "Synced ({count} docs)"
@@ -137,11 +124,37 @@ SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
 WIKI_EMPTY_STATE = "No wiki pages found"
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
-# Keyed by the WikiPageType value (a ``str`` via StrEnum) so callers can
-# look up a heading from a raw ``page_type`` string without coercion.
+WIKI_INDEX_LABEL = "Index"
+WIKI_LOG_LABEL = "Log"
+WIKI_DRAFTS_TITLE = "Wiki Drafts"
+WIKI_DRAFTS_EMPTY = "No drafts pending review"
+WIKI_DRAFTS_LOAD_FAILED = "Failed to load drafts: {error}"
+WIKI_DRAFTS_COLUMN_SLUG = "Slug"
+WIKI_DRAFTS_COLUMN_KIND = "Kind"
+WIKI_DRAFTS_COLUMN_DRIFT = "Drift"
+WIKI_DRAFTS_COLUMN_FAITHFULNESS = "Faithfulness"
+WIKI_DRAFTS_COLUMN_PUBLISHED = "Published?"
+WIKI_DRAFTS_KIND_DRIFT = "drift"
+WIKI_DRAFTS_DIFF_EMPTY = "Select a draft to view its diff"
+WIKI_DRAFTS_DIFF_NONE = "(no differences)"
+WIKI_DRAFTS_DIFF_FAILED = "Failed to load diff: {error}"
+WIKI_DRAFTS_ACCEPT_CONFIRM_TITLE = "Accept draft?"
+WIKI_DRAFTS_ACCEPT_CONFIRM_MESSAGE = (
+    "Overwrite the published page with {slug} and re-index? This cannot be undone."
+)
+WIKI_DRAFTS_REJECT_CONFIRM_TITLE = "Reject draft?"
+WIKI_DRAFTS_REJECT_CONFIRM_MESSAGE = "Delete draft {slug}? The published page will not change."
+WIKI_DRAFTS_ACCEPTED = "Accepted {slug}"
+WIKI_DRAFTS_REJECTED = "Rejected {slug}"
+WIKI_DRAFTS_ACCEPT_FAILED = "Accept failed: {error}"
+WIKI_DRAFTS_REJECT_FAILED = "Reject failed: {error}"
+WIKI_DRAFTS_PUBLISHED_YES = "yes"
+WIKI_DRAFTS_PUBLISHED_NO = "no"
+WIKI_DRAFTS_SEARCH_PLACEHOLDER = "Filter drafts..."
+# Re-export the shared heading map with string keys so callers can
+# look up by raw ``page_type`` string without coercion.
 WIKI_TYPE_HEADINGS: dict[str, str] = {
-    WikiPageType.SUMMARY: "Summaries",
-    WikiPageType.SYNTHESIS: "Synthesis",
+    kind.value: label for kind, label in _WIKI_TYPE_HEADINGS.items()
 }
 APP_CANCELLED = "Cancelled"
 SETUP_WELCOME = "Welcome to lilbee"

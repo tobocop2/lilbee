@@ -159,11 +159,34 @@ class TestExtractConcepts:
 
     @patch("lilbee.concepts._ensure_spacy_model")
     def test_filters_short_concepts(self, mock_spacy, cg):
-        mock_spacy.return_value = _make_mock_nlp({"text": ["a", "ok", "good concept"]})
+        """Sub-three-char fragments are rejected by ``is_valid_label``.
+
+        Three-char and longer PDF-split noise (``cro``, ``fus``) is
+        intentionally NOT caught by the length gate; A3's entity-type
+        filter and the ``wiki_entity_min_mentions`` threshold catch it
+        downstream, and tightening the length gate further would reject
+        legitimate short labels like ``CPU`` or ``API``.
+        """
+        mock_spacy.return_value = _make_mock_nlp(
+            {"text": ["a", "ok", "good concept", "brake pads"]}
+        )
         result = cg.extract_concepts("text")
         assert "a" not in result
-        assert "ok" in result
+        assert "ok" not in result
         assert "good concept" in result
+        assert "brake pads" in result
+
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_filters_structural_noise_concepts(self, mock_spacy, cg):
+        """QA-driven (bb-8b7s): markdown table, page-number, and
+        pipe-prefixed concepts never enter the graph."""
+        mock_spacy.return_value = _make_mock_nlp(
+            {"text": ["| | body", "158 vehicle", "chevrolet caprice"]}
+        )
+        result = cg.extract_concepts("text")
+        assert "| | body" not in result
+        assert "158 vehicle" not in result
+        assert "chevrolet caprice" in result
 
 
 class TestExtractConceptsBatch:
@@ -187,7 +210,7 @@ class TestExtractConceptsBatch:
     def test_batch_filters_short_concepts(self, mock_spacy, cg):
         mock_spacy.return_value = _make_mock_nlp({"text": ["a", "ok", "good"]})
         result = cg.extract_concepts_batch(["text"])
-        assert result == [["ok", "good"]]
+        assert result == [["good"]]
 
     @patch("lilbee.concepts._ensure_spacy_model")
     def test_batch_deduplicates(self, mock_spacy, cg):
@@ -198,7 +221,7 @@ class TestExtractConceptsBatch:
     @patch("lilbee.concepts._ensure_spacy_model")
     def test_batch_caps_at_max(self, mock_spacy, cg):
         cfg.concept_max_per_chunk = 2
-        mock_spacy.return_value = _make_mock_nlp({"text": ["aa", "bb", "cc", "dd"]})
+        mock_spacy.return_value = _make_mock_nlp({"text": ["alpha", "beta", "gamma", "delta"]})
         result = cg.extract_concepts_batch(["text"])
         assert len(result[0]) == 2
 
@@ -806,6 +829,26 @@ class TestFilterNounChunks:
     def test_filter_noun_chunks_max(self):
         from lilbee.concepts import _filter_noun_chunks
 
-        doc = _make_mock_doc(["aa", "bb", "cc"])
+        doc = _make_mock_doc(["alpha", "beta", "gamma"])
         result = _filter_noun_chunks(doc, max_concepts=2)
         assert len(result) == 2
+
+    def test_filter_noun_chunks_rejects_structural_noise(self):
+        """Direct coverage of the structural-rejection branch inside
+        ``_filter_noun_chunks`` (bb-8b7s). Asserts that the module's
+        own filter drops the table, page-number, and paren-prefix
+        patterns even without going through ``extract_concepts``.
+        """
+        from lilbee.concepts import _filter_noun_chunks
+
+        doc = _make_mock_doc(
+            [
+                "| | body",
+                "158 vehicle",
+                "(7.0 l)",
+                "-answers",
+                "chevrolet caprice",
+            ]
+        )
+        result = _filter_noun_chunks(doc, max_concepts=10)
+        assert result == ["chevrolet caprice"]

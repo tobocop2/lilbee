@@ -6,12 +6,14 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 if TYPE_CHECKING:
     import uvicorn
+
+    from lilbee.wiki.entity_extractor import ExtractedEntity
 from rich.table import Table
 
 from lilbee.cli import theme
@@ -48,13 +50,10 @@ from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_i
 from lilbee.progress import EventType, SetupProgressEvent
 from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
+from lilbee.store import SearchScope, scope_to_chunk_type
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
-    WIKI_DISABLED_ERROR,
-    WIKI_EMPTY_SOURCE_ERROR,
-    WIKI_STATUS_FAILED,
-    WIKI_STATUS_GENERATED,
 )
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
@@ -64,6 +63,13 @@ _ocr_timeout_option = typer.Option(
     None,
     "--ocr-timeout",
     help="Per-page timeout in seconds for vision OCR (default: 120, 0 = no limit).",
+)
+_scope_option = typer.Option(
+    SearchScope.BOTH,
+    "--scope",
+    "-s",
+    help="Restrict the pool to raw chunks, wiki pages, or both (default).",
+    case_sensitive=False,
 )
 
 
@@ -85,6 +91,7 @@ _paths_argument = typer.Argument(
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
+    scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -99,7 +106,11 @@ def search(
         raise SystemExit(1)
 
     try:
-        results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
+        results = get_services().searcher.search(
+            query,
+            top_k=top_k or cfg.top_k,
+            chunk_type=scope_to_chunk_type(scope),
+        )
     except Exception as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -529,6 +540,7 @@ def remove(
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="Question to ask"),
+    scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     use_global: bool = global_option,
@@ -564,8 +576,10 @@ def ask(
         else:
             auto_sync(console)
 
+        chunk_type = scope_to_chunk_type(scope)
+
         if cfg.json_mode:
-            result = get_services().searcher.ask_raw(question)
+            result = get_services().searcher.ask_raw(question, chunk_type=chunk_type)
             json_output(
                 {
                     "command": "ask",
@@ -576,7 +590,7 @@ def ask(
             )
             return
 
-        for token in get_services().searcher.ask_stream(question):
+        for token in get_services().searcher.ask_stream(question, chunk_type=chunk_type):
             console.print(token.content, end="")
         console.print()
     except (RuntimeError, ProviderError) as exc:
@@ -1099,86 +1113,38 @@ def wiki_status(
         console.print("  Lint: all clean")
 
 
-@wiki_app.command(name="generate")
-def wiki_generate(
-    source: str = typer.Argument(..., help="Source filename (e.g. cv-manual.pdf)."),
+@wiki_app.command(name="synthesize")
+def wiki_synthesize(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """Generate a wiki summary page for a source document."""
+    """Generate synthesis pages for concept clusters spanning 3+ sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-
     if not cfg.wiki:
-        _fail_wiki_generate(WIKI_DISABLED_ERROR)
-    if not source or not source.strip():
-        _fail_wiki_generate(WIKI_EMPTY_SOURCE_ERROR)
+        _fail_wiki_disabled()
+        return
+    from lilbee.wiki.gen import generate_synthesis_pages
 
-    from lilbee.wiki.gen import generate_summary_page
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
 
-    services = get_services()
-    chunks = services.store.get_chunks_by_source(source)
-    if not chunks:
-        _fail_wiki_generate(f"No indexed chunks for source: {source}")
-
-    on_progress = None if cfg.json_mode else _wiki_progress_to_stderr
-    result_path = generate_summary_page(
-        source, chunks, services.provider, services.store, on_progress=on_progress
-    )
-
-    if result_path is None:
-        _emit_wiki_generate_failure(source)
-    _emit_wiki_generate_success(source, str(result_path))
-
-
-def _fail_wiki_generate(error: str) -> NoReturn:
-    """Emit a wiki_generate validation error (pre-generation) as {"error": ...} and exit 1.
-
-    Distinct from _emit_wiki_generate_failure, which emits a soft-failure result
-    (generator ran but returned no page) in the full wiki_generate JSON shape.
-    """
-    if cfg.json_mode:
-        json_output({"error": error})
-    else:
-        typer.echo(error, err=True)
-    raise typer.Exit(1)
-
-
-def _emit_wiki_generate_success(source: str, path: str) -> None:
-    """Emit the wiki_generate success result in JSON or default mode."""
     if cfg.json_mode:
         json_output(
             {
-                "command": "wiki_generate",
-                "source": source,
-                "status": WIKI_STATUS_GENERATED,
-                "paths": [path],
+                "command": "wiki_synthesize",
+                "paths": [str(p) for p in paths],
+                "count": len(paths),
             }
         )
         return
-    console.print(f"Generated [{theme.ACCENT}]{path}[/{theme.ACCENT}]")
 
+    if not paths:
+        console.print("No synthesis pages generated (need 3+ sources per cluster).")
+        return
 
-def _emit_wiki_generate_failure(source: str) -> NoReturn:
-    """Emit the wiki_generate soft-failure (generator returned None) and exit non-zero."""
-    if cfg.json_mode:
-        json_output(
-            {
-                "command": "wiki_generate",
-                "source": source,
-                "status": WIKI_STATUS_FAILED,
-                "paths": [],
-            }
-        )
-    else:
-        typer.echo(f"Generation failed for {source}", err=True)
-    raise typer.Exit(1)
-
-
-def _wiki_progress_to_stderr(stage: str, data: dict[str, object]) -> None:
-    """Print wiki generation stage updates to stderr in default (non-JSON) mode."""
-    chunk_count = data.get("chunks")
-    detail = f" ({chunk_count} chunks)" if chunk_count is not None else ""
-    typer.echo(f"[{stage}]{detail}", err=True)
+    console.print(f"Generated [{theme.LABEL}]{len(paths)}[/{theme.LABEL}] synthesis pages:")
+    for path in paths:
+        console.print(f"  {path}")
 
 
 @wiki_app.command(name="prune")
@@ -1223,3 +1189,288 @@ def _count_md_files(directory: Path) -> int:
     if not directory.exists():
         return 0
     return len(list(directory.rglob("*.md")))
+
+
+def _fail_wiki_disabled() -> None:
+    """Emit the standard wiki-disabled message in the caller's output mode."""
+    if cfg.json_mode:
+        json_output({"error": msg.CMD_WIKI_DISABLED})
+        return
+    console.print(msg.CMD_WIKI_DISABLED)
+
+
+@wiki_app.command(name="build")
+def wiki_build(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Run extraction only; skip every LLM call. Prints the NER entity candidates. "
+            "LLM-curated concept pages require a build call and are not shown in dry-run."
+        ),
+    ),
+) -> None:
+    """Build the concept and entity wiki across all ingested sources."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if not cfg.wiki:
+        _fail_wiki_disabled()
+        return
+    from lilbee.store import SearchChunk
+    from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
+    from lilbee.wiki.entity_extractor import get_entity_extractor
+    from lilbee.wiki.shared import WIKI_LOG_ACTION_BUILD
+
+    svc = get_services()
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+
+    extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
+    entities = extractor.extract(chunks)
+
+    if dry_run:
+        _wiki_build_dry_run_output(entities)
+        return
+
+    pages = build_wiki(
+        entities,
+        svc.provider,
+        svc.store,
+        cfg,
+        extract_concepts=cfg.wiki_extract_concepts,
+    )
+    update_wiki_index()
+    append_wiki_log(
+        WIKI_LOG_ACTION_BUILD,
+        f"{len(pages)} pages from {len(entities)} records",
+    )
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_build",
+                "paths": [str(p) for p in pages],
+                "entities": len(entities),
+                "count": len(pages),
+            }
+        )
+        return
+
+    if not pages:
+        console.print("No concept or entity pages generated.")
+        return
+
+    console.print(
+        f"Generated [{theme.LABEL}]{len(pages)}[/{theme.LABEL}] "
+        f"wiki pages from {len(entities)} extracted records:"
+    )
+    for path in pages:
+        console.print(f"  {path}")
+
+
+_DRY_RUN_CONCEPT_NOTE = (
+    "Note: LLM-curated concepts are not shown in --dry-run. "
+    "Run `lilbee wiki build` to see which concepts the LLM proposes."
+)
+
+
+def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
+    """Render the extraction result as JSON or table without calling any LLM.
+
+    Phase D: concepts come from the per-source batched LLM call, so
+    listing them would require the call we are trying to avoid. The
+    dry-run surface is NER-entity only, with a trailing note so a
+    user who expected concepts in the output knows why they are
+    missing.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "slug": e.slug,
+            "label": e.label,
+            "kind": e.kind.value,
+            "type_hint": e.type_hint,
+            "mentions": len(e.chunk_refs),
+            "sources": sorted({r.source for r in e.chunk_refs}),
+        }
+        for e in entities
+    ]
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_build",
+                "dry_run": True,
+                "entities": rows,
+                "count": len(rows),
+                "note": _DRY_RUN_CONCEPT_NOTE,
+            }
+        )
+        return
+
+    if not rows:
+        console.print("No candidate entities extracted. Run sync first.")
+        console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+        return
+
+    table = Table(title=f"Wiki build dry-run ({len(rows)} NER entity candidates)")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Kind", style=theme.MUTED)
+    table.add_column("Type")
+    table.add_column("Mentions")
+    table.add_column("Sources")
+    for row in rows:
+        sources_list: list[str] = row["sources"]
+        table.add_row(
+            str(row["slug"]),
+            str(row["kind"]),
+            str(row["type_hint"]),
+            str(row["mentions"]),
+            ", ".join(sources_list[:3]) + (", ..." if len(sources_list) > 3 else ""),
+        )
+    console.print(table)
+    console.print(
+        f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
+        "No LLM calls were made."
+    )
+    console.print(f"[{theme.MUTED}]{_DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+
+
+@wiki_app.command(name="update")
+def wiki_update(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Refresh the concept and entity wiki after an ingest.
+
+    Currently a full rebuild. The incremental touched-slug regeneration
+    lands in the ingest-hook task and will re-route this command then.
+    """
+    wiki_build(data_dir=data_dir, use_global=use_global, dry_run=False)
+
+
+drafts_app = typer.Typer(help="Review wiki drafts: list, diff, accept, reject.")
+wiki_app.add_typer(drafts_app, name="drafts")
+
+
+@drafts_app.command(name="list")
+def wiki_drafts_list(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """List pending wiki drafts with drift, faithfulness, and pairing info."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import PENDING_KIND_DRIFT, list_drafts
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    drafts = list_drafts(wiki_root)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_drafts_list",
+                "drafts": [d.to_dict() for d in drafts],
+                "total": len(drafts),
+            }
+        )
+        return
+
+    if not drafts:
+        console.print("No drafts pending review.")
+        return
+
+    table = Table(title="Wiki Drafts")
+    table.add_column("Slug", style=theme.ACCENT)
+    table.add_column("Kind", style=theme.MUTED)
+    table.add_column("Drift")
+    table.add_column("Faithfulness")
+    table.add_column("Published?", style=theme.MUTED)
+    for d in drafts:
+        kind = d.pending_kind or PENDING_KIND_DRIFT
+        drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
+        faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
+        published = "yes" if d.published_exists else "no"
+        table.add_row(d.slug, kind, drift, faith, published)
+    console.print(table)
+
+
+@drafts_app.command(name="diff")
+def wiki_drafts_diff(
+    slug: str = typer.Argument(..., help="Draft slug (e.g. chevrolet)."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Show a unified diff of the draft against its published counterpart."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import diff_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        diff = diff_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
+        return
+    console.print(diff or "(no differences)")
+
+
+@drafts_app.command(name="accept")
+def wiki_drafts_accept(
+    slug: str = typer.Argument(..., help="Draft slug to accept."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Overwrite the published page with the draft and re-index its chunks."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import accept_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        result = accept_draft(slug, wiki_root, get_services().store)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_accept", **result.to_dict()})
+        return
+    console.print(
+        f"Accepted [{theme.ACCENT}]{slug}[/{theme.ACCENT}] -> "
+        f"{result.moved_to} ({result.reindexed_chunks} chunks re-indexed)"
+    )
+
+
+@drafts_app.command(name="reject")
+def wiki_drafts_reject(
+    slug: str = typer.Argument(..., help="Draft slug to reject."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Delete the draft file. Does not touch the published page or index."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.drafts import reject_draft
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    try:
+        reject_draft(slug, wiki_root)
+    except FileNotFoundError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
+
+    if cfg.json_mode:
+        json_output({"command": "wiki_drafts_reject", "slug": slug})
+        return
+    console.print(f"Rejected [{theme.ACCENT}]{slug}[/{theme.ACCENT}]")

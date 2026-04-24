@@ -5,18 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from litestar import get, post
+from litestar import delete, get, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
-from litestar.response import Stream
 
 from lilbee import services as svc_mod
 from lilbee.config import cfg
-from lilbee.security import validate_path_within
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
+    DraftInfoResponse,
     WikiCitationRecord,
     WikiCitationsResult,
+    WikiDraftAcceptResponse,
+    WikiDraftDiffResponse,
+    WikiDraftRejectResponse,
     WikiLintIssueItem,
     WikiLintResult,
     WikiPageDetail,
@@ -27,9 +29,14 @@ from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
 from lilbee.wiki.browse import (
     find_page,
-    list_draft_pages,
     list_pages,
     read_page,
+)
+from lilbee.wiki.drafts import (
+    accept_draft,
+    diff_draft,
+    list_drafts,
+    reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
@@ -71,10 +78,57 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 
 @get("/api/wiki/drafts")
 @read_only
-async def wiki_drafts_route() -> list[dict[str, Any]]:
-    """List draft pages that failed the quality gate."""
+async def wiki_drafts_route() -> list[DraftInfoResponse]:
+    """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
-    return [p.to_dict() for p in list_draft_pages(_wiki_root())]
+    return [DraftInfoResponse(**d.to_dict()) for d in list_drafts(_wiki_root())]
+
+
+@get("/api/wiki/drafts/diff/{slug:path}")
+@read_only
+async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
+    """Return the unified diff of a draft against its published counterpart.
+
+    The ``diff`` action prefix precedes the slug because Litestar's
+    ``{slug:path}`` parameter is greedy and does not support a fixed
+    trailing segment. Keeping the action as a literal prefix lets
+    nested slugs (``cars/caprice``) flow through unchanged.
+    """
+    _require_wiki()
+    slug = slug.lstrip("/")
+    try:
+        diff = diff_draft(slug, _wiki_root())
+    except FileNotFoundError as exc:
+        raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    return WikiDraftDiffResponse(slug=slug, diff=diff)
+
+
+@post("/api/wiki/drafts/accept/{slug:path}")
+async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
+    """Accept a draft: overwrite the published page and re-index its chunks.
+
+    See :func:`wiki_draft_diff_route` for the action-prefix rationale.
+    """
+    _require_wiki()
+    slug = slug.lstrip("/")
+    store = svc_mod.get_services().store
+    try:
+        result = accept_draft(slug, _wiki_root(), store)
+    except FileNotFoundError as exc:
+        raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    return WikiDraftAcceptResponse(**result.to_dict())
+
+
+@delete("/api/wiki/drafts/{slug:path}", status_code=200)
+async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
+    """Reject a draft: delete the draft file without touching the published page."""
+    _require_wiki()
+    slug = slug.lstrip("/")
+    try:
+        reject_draft(slug, _wiki_root())
+    except FileNotFoundError as exc:
+        raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    return WikiDraftRejectResponse(slug=slug)
 
 
 @get("/api/wiki/citations")
@@ -129,25 +183,6 @@ async def wiki_lint_route() -> WikiLintResult:
         errors=report.error_count,
         warnings=report.warning_count,
     )
-
-
-@post("/api/wiki/generate/{source:path}")
-async def wiki_generate_route(source: str) -> Stream:
-    """Trigger wiki generation for a source document (SSE stream).
-    Emits ``progress`` events for each pipeline stage and a final ``done``
-    event with the generation result.
-    """
-    from lilbee.server import handlers
-
-    _require_wiki()
-    source = source.lstrip("/")
-
-    try:
-        validate_path_within(cfg.documents_dir / source, cfg.documents_dir)
-    except ValueError:
-        raise NotFoundException(detail=f"invalid source path: {source}") from None
-
-    return Stream(handlers.wiki_generate_stream(source), media_type="text/event-stream")
 
 
 @post("/api/wiki/prune")

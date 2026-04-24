@@ -7,7 +7,27 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from lilbee.store import SearchScope
+
+_VALID_CHUNK_TYPES = frozenset({SearchScope.RAW.value, SearchScope.WIKI.value})
+
+
+def _validate_chunk_type(value: str | None) -> str | None:
+    """Reject unknown ``chunk_type`` values at the HTTP boundary.
+
+    Matches the CLI/MCP behaviour: only ``"raw"`` or ``"wiki"`` filter the
+    pool; everything else (including ``None`` and the UI-side ``"both"``)
+    means no filter.
+    """
+    if value is None or value == SearchScope.BOTH.value:
+        return None
+    if value not in _VALID_CHUNK_TYPES:
+        raise ValueError(
+            f"chunk_type must be one of 'raw', 'wiki', 'both', or omitted; got {value!r}"
+        )
+    return value
 
 
 class AskRequest(BaseModel):
@@ -16,6 +36,12 @@ class AskRequest(BaseModel):
     question: str
     top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
+    chunk_type: str | None = None
+
+    @field_validator("chunk_type")
+    @classmethod
+    def _check_chunk_type(cls, v: str | None) -> str | None:
+        return _validate_chunk_type(v)
 
 
 class ChatRequest(BaseModel):
@@ -25,6 +51,12 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
     top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
+    chunk_type: str | None = None
+
+    @field_validator("chunk_type")
+    @classmethod
+    def _check_chunk_type(cls, v: str | None) -> str | None:
+        return _validate_chunk_type(v)
 
 
 class SyncRequest(BaseModel):
@@ -343,3 +375,49 @@ class WikiPruneResult(BaseModel):
     records: list[WikiPruneRecordResponse] = []
     archived: int = 0
     flagged: int = 0
+
+
+class DraftInfoResponse(BaseModel):
+    """Metadata about a single wiki draft, mirroring ``DraftInfo.to_dict()``.
+
+    ``pending_kind`` distinguishes drift drafts (``None``) from the Phase D
+    batched-generation markers (``"parse"``, ``"collision"``).
+    """
+
+    slug: str
+    path: str
+    drift_ratio: float | None = None
+    faithfulness_score: float | None = None
+    bad_title: bool = False
+    published_path: str | None = None
+    published_exists: bool = False
+    mtime: float = 0.0
+    pending_kind: str | None = None
+
+
+class WikiDraftDiffResponse(BaseModel):
+    """Unified diff of a draft against its published counterpart."""
+
+    slug: str
+    diff: str
+
+
+class WikiDraftAcceptResponse(BaseModel):
+    """Outcome of accepting a draft: where it landed and how many chunks reindexed.
+
+    ``slug`` is the slug where the content was published.
+    ``requested_slug`` is the slug the client asked to accept. The two
+    differ for PENDING-COLLISION drafts, where the request slug carries
+    a ``-collision-<hash>`` suffix that is stripped on publish.
+    """
+
+    slug: str
+    requested_slug: str
+    moved_to: str
+    reindexed_chunks: int
+
+
+class WikiDraftRejectResponse(BaseModel):
+    """Outcome of rejecting a draft."""
+
+    slug: str

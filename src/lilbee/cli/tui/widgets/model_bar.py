@@ -26,6 +26,7 @@ from lilbee.providers.sdk_backend import (
     detect_backend_name,
 )
 from lilbee.services import reset_services
+from lilbee.store import SearchScope
 
 log = logging.getLogger(__name__)
 
@@ -218,6 +219,14 @@ def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> N
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 
+# Presentation labels for the scope toggle. Values match ``SearchScope``
+# so the widget's ``.value`` feeds directly into ``scope_to_chunk_type``.
+_SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Both", SearchScope.BOTH.value),
+    ("Wiki", SearchScope.WIKI.value),
+    ("Raw", SearchScope.RAW.value),
+)
+
 
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
@@ -263,6 +272,12 @@ class ModelBar(Widget, can_focus=False):
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
         self._populating = True  # Guard against change events during init
+        self._scope: SearchScope = SearchScope.BOTH
+
+    @property
+    def scope(self) -> SearchScope:
+        """Current scope selection; consumed by ChatScreen when building RAG context."""
+        return self._scope
 
     def compose(self) -> ComposeResult:
         chat_opts = [(cfg.chat_model, cfg.chat_model)] if cfg.chat_model else []
@@ -282,6 +297,18 @@ class ModelBar(Widget, can_focus=False):
                 id="embed-model-select",
                 allow_blank=False,
             )
+            # Scope picker only appears when the wiki layer is on. With wiki
+            # off, ``CHUNKS_TABLE`` contains only raw rows so a wiki/raw/both
+            # toggle has nothing to pick between; hiding it keeps the choice
+            # from implying a capability the user hasn't opted into.
+            if cfg.wiki:
+                yield Static(pill("Scope", "$accent", "$text"), classes="model-bar-pill")
+                yield Select[str](
+                    options=list(_SCOPE_OPTIONS),
+                    value=SearchScope.BOTH.value,
+                    id="scope-select",
+                    allow_blank=False,
+                )
         yield Static("", id=_CLOUD_WARNING_ID, classes=_CLOUD_WARNING_CLASS)
 
     def on_mount(self) -> None:
@@ -336,9 +363,10 @@ class ModelBar(Widget, can_focus=False):
 
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
-        """Handle chat model selection change."""
-        value = self._extract_value(event)
-        if value is None:
+        """Write the new chat model to cfg and settings."""
+        chat_sel = self.query_one("#chat-model-select", Select)
+        value = self._extract_value(event, chat_sel)
+        if value is None or value == cfg.chat_model:
             return
         cfg.chat_model = value
         settings.set_value(cfg.data_root, "chat_model", value)
@@ -357,19 +385,45 @@ class ModelBar(Widget, can_focus=False):
 
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:
-        """Handle embedding model selection change."""
-        value = self._extract_value(event)
-        if value is None:
+        """Write the new embedding model to cfg and settings."""
+        embed_sel = self.query_one("#embed-model-select", Select)
+        value = self._extract_value(event, embed_sel)
+        if value is None or value == cfg.embedding_model:
             return
         cfg.embedding_model = value
         settings.set_value(cfg.data_root, "embedding_model", value)
         self._after_model_change()
 
-    def _extract_value(self, event: Select.Changed) -> str | None:
-        """Extract a non-empty value from a Select.Changed event, or None to skip."""
+    @on(Select.Changed, "#scope-select")
+    def _on_scope_changed(self, event: Select.Changed) -> None:
+        """Track scope selection for the next ask_stream call.
+
+        Session-scoped on purpose; not written to settings so each new
+        session starts at "both" and the user opts into a narrower pool
+        explicitly each time.
+        """
+        scope_sel = self.query_one("#scope-select", Select)
+        value = self._extract_value(event, scope_sel)
+        if value is None:
+            return
+        self._scope = SearchScope(value)
+
+    def _extract_value(self, event: Select.Changed, sel: Select) -> str | None:
+        """Extract a non-empty value from a Select.Changed event, or None to skip.
+
+        Drops events whose payload no longer matches the widget's current
+        value. Textual posts Select.Changed asynchronously, so a prior
+        event carrying an intermediate auto-picked option can still be in
+        the queue after ``_populate`` reassigns ``sel.value`` to the
+        configured model. The stale-event check is deterministic across
+        platforms because it compares two synchronously-set values rather
+        than relying on event-loop ordering.
+        """
         if self._populating:
             return None
         if event.value is _DISABLED or event.value is None or str(event.value) == "":
+            return None
+        if str(event.value) != str(sel.value):
             return None
         return str(event.value)
 

@@ -369,9 +369,10 @@ class TestModelBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             selects = list(app.query(Select))
-            assert len(selects) == 2
+            # Chat + Embed + Scope
+            assert len(selects) == 3
 
-    async def test_widget_exists_with_2_selects(self) -> None:
+    async def test_widget_exists_with_3_selects(self) -> None:
         from textual.widgets import Select
 
         cfg.chat_model = "qwen3:8b"
@@ -381,11 +382,13 @@ class TestModelBar:
             await pilot.pause()
             chat_sel = app.query_one("#chat-model-select", Select)
             embed_sel = app.query_one("#embed-model-select", Select)
+            scope_sel = app.query_one("#scope-select", Select)
             assert chat_sel is not None
             assert embed_sel is not None
+            assert scope_sel is not None
 
     async def test_labels_rendered(self) -> None:
-        """bb-ec3q: Chat/Embed labels render as pills, not plain text.
+        """Chat/Embed/Scope labels render as pills, not plain text.
 
         Each pill is a Static carrying a pill() Content with half-block
         ends around the label text. Assert the text survives, wrapped
@@ -401,6 +404,57 @@ class TestModelBar:
             pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
             assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
             assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
+            assert any("Scope" in p and "▌" in p and "▐" in p for p in pills)
+
+    async def test_scope_defaults_to_both(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+        from lilbee.store import SearchScope
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            assert bar.scope is SearchScope.BOTH
+
+    async def test_scope_change_updates_bar_state(self) -> None:
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+        from lilbee.store import SearchScope
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scope_sel = app.query_one("#scope-select", Select)
+            scope_sel.value = SearchScope.WIKI.value
+            await pilot.pause()
+            assert app.query_one(ModelBar).scope is SearchScope.WIKI
+
+    async def test_scope_hidden_when_wiki_disabled(self) -> None:
+        """With ``cfg.wiki=False`` the scope pill+select are omitted entirely.
+
+        With wiki off the chunks table has only raw rows, so the choice
+        would imply a capability the user hasn't opted into.
+        """
+        from textual.css.query import NoMatches
+        from textual.widgets import Select
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        cfg.wiki = False
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Still shows chat + embed selects
+            assert app.query_one("#chat-model-select", Select) is not None
+            assert app.query_one("#embed-model-select", Select) is not None
+            # But no scope select
+            with pytest.raises(NoMatches):
+                app.query_one("#scope-select", Select)
 
     async def test_cloud_warning_hidden_for_local_model(self) -> None:
         cfg.chat_model = "qwen3:8b"
@@ -2388,6 +2442,105 @@ class TestModelBarAdditional:
                 embed_sel.value = "new-embed"
                 await pilot.pause()
             assert cfg.embedding_model == "new-embed:latest"
+
+    async def test_populate_survives_auto_pick_race(self) -> None:
+        """bb-zvrv primary regression: ``_populate`` must not let the
+        Textual auto-pick intermediate Changed event clobber cfg.
+
+        When ``set_options`` receives a multi-option list whose first
+        entry does NOT match ``cfg.chat_model``, Textual posts a Changed
+        event carrying the auto-picked value and then, after the caller
+        reassigns ``sel.value = cfg.chat_model``, posts a second Changed
+        with the configured value. The handler must reject the stale
+        intermediate event. The synchronous defense is
+        ``str(event.value) != str(sel.value)`` in ``_extract_value``.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic-embed-text:v1.5"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            write_tracker = mock.Mock()
+            with (
+                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                bar._populate(
+                    [
+                        ModelOption("auto-picked-alpha", "auto-picked-alpha"),
+                        ModelOption("qwen3:8b", "qwen3:8b"),
+                    ],
+                    [
+                        ModelOption("auto-embed-alpha", "auto-embed-alpha"),
+                        ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5"),
+                    ],
+                )
+                await pilot.pause()
+            assert cfg.chat_model == "qwen3:8b"
+            assert cfg.embedding_model == "nomic-embed-text:v1.5"
+            assert bar._populating is False
+            for call in write_tracker.call_args_list:
+                assert call.args[2] not in {"auto-picked-alpha", "auto-embed-alpha"}
+
+    async def test_chat_model_change_noop_when_value_matches_config(self) -> None:
+        """Secondary defense against duplicate same-value events.
+
+        The primary bb-zvrv fix is the async-drain guard exercised by
+        ``test_populate_survives_auto_pick_race``. This test covers the
+        equality short-circuit that handles duplicate-value events
+        (e.g. a user re-selecting the active model) without a round-trip
+        through settings.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "test-embed"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populating = False
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            chat_sel.set_options([ModelOption("qwen3:8b", "qwen3:8b")])
+            write_tracker = mock.Mock()
+            with (
+                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                chat_sel.value = "qwen3:8b"
+                await pilot.pause()
+            assert cfg.chat_model == "qwen3:8b"
+            write_tracker.assert_not_called()
+
+    async def test_embed_model_change_noop_when_value_matches_config(self) -> None:
+        """Same bb-zvrv guard for the embedding-model Select."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "nomic-embed-text:v1.5"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populating = False
+            from textual.widgets import Select
+
+            embed_sel = app.query_one("#embed-model-select", Select)
+            embed_sel.set_options([ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5")])
+            write_tracker = mock.Mock()
+            with (
+                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                embed_sel.value = "nomic-embed-text:v1.5"
+                await pilot.pause()
+            assert cfg.embedding_model == "nomic-embed-text:v1.5"
+            write_tracker.assert_not_called()
 
     async def test_populate_embed_model_in_scanned(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar

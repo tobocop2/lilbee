@@ -22,12 +22,14 @@ from lilbee.mcp import (
     status,
     sync,
     wiki_citations,
-    wiki_generate,
+    wiki_drafts_diff,
+    wiki_drafts_list,
     wiki_lint,
     wiki_list,
     wiki_prune,
     wiki_read,
     wiki_status,
+    wiki_synthesize,
 )
 from lilbee.store import SearchChunk
 
@@ -94,7 +96,7 @@ class TestSearch:
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3, chunk_type=None)
 
     def test_empty_results(self, mock_svc):
         mock_svc.searcher.search.return_value = []
@@ -115,6 +117,26 @@ class TestSearch:
         result = search("test", top_k=3)
         assert "error" in result
         assert "embed failed" in result["error"]
+
+    def test_scope_wiki_filters_to_wiki_chunks(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        search("q", top_k=3, scope="wiki")
+        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="wiki")
+
+    def test_scope_raw_filters_to_raw_chunks(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        search("q", top_k=3, scope="raw")
+        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="raw")
+
+    def test_scope_both_means_no_filter(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        search("q", top_k=3, scope="both")
+        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
+
+    def test_invalid_scope_returns_error(self, mock_svc):
+        result = search("q", top_k=3, scope="bogus")
+        assert "error" in result
+        mock_svc.searcher.search.assert_not_called()
 
     def test_filters_irrelevant_results(self, mock_svc):
         """Results with distance > max_distance are excluded."""
@@ -686,6 +708,28 @@ class TestWikiStatus:
         assert result["pages"] == 2
 
 
+class TestWikiSynthesizeTool:
+    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = False
+        assert wiki_synthesize() == {"error": "wiki not enabled"}
+
+    def test_returns_synthesis_paths(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        paths = [tmp_path / "wiki" / "synthesis" / "typing.md"]
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: paths)
+        result = wiki_synthesize()
+        assert result["command"] == "wiki_synthesize"
+        assert result["count"] == 1
+        assert result["paths"] == [str(paths[0])]
+
+    def test_no_clusters_returns_empty(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
+        result = wiki_synthesize()
+        assert result["count"] == 0
+        assert result["paths"] == []
+
+
 class TestWikiPrune:
     def test_prune_no_pages(self, mock_svc, tmp_path):
         cfg.wiki_dir = "wiki"
@@ -695,59 +739,6 @@ class TestWikiPrune:
         assert result["archived"] == 0
         assert result["flagged"] == 0
         assert result["records"] == []
-
-
-class TestWikiGenerate:
-    def test_generate_success(self, mock_svc, tmp_path):
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        out_path = tmp_path / "wiki" / "summaries" / "doc.md"
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=out_path):
-            result = wiki_generate("doc.pdf")
-        assert result["command"] == "wiki_generate"
-        assert result["source"] == "doc.pdf"
-        assert result["status"] == "generated"
-        assert result["paths"] == [str(out_path)]
-
-    def test_generate_no_chunks_returns_error(self, mock_svc, tmp_path):
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = []
-        result = wiki_generate("missing.pdf")
-        assert "error" in result
-        assert "missing.pdf" in result["error"]
-
-    def test_generate_returns_none_status_failed(self, mock_svc, tmp_path):
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        cfg.wiki_dir = "wiki"
-        mock_svc.store.get_chunks_by_source.return_value = [MagicMock()]
-        with mock.patch("lilbee.wiki.gen.generate_summary_page", return_value=None):
-            result = wiki_generate("doc.pdf")
-        assert result["status"] == "failed"
-        assert result["paths"] == []
-
-    def test_generate_wiki_disabled(self):
-        cfg.wiki = False
-        result = wiki_generate("doc.pdf")
-        assert result == {"error": "wiki not enabled"}
-
-    def test_generate_empty_source_returns_error(self, mock_svc, tmp_path):
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        cfg.wiki_dir = "wiki"
-        result = wiki_generate("")
-        assert "error" in result
-
-    def test_generate_whitespace_source_returns_error(self, mock_svc, tmp_path):
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        cfg.wiki_dir = "wiki"
-        result = wiki_generate("   ")
-        assert result == {"error": "source must not be empty"}
 
 
 class TestWikiList:
@@ -837,3 +828,43 @@ class TestMcpSubcommand:
         result = runner.invoke(app, ["mcp"])
         assert result.exit_code == 0
         mock_main.assert_called_once()
+
+
+class TestWikiDraftsMcp:
+    """Phase D: drafts MCP tools surface the same data as the CLI list/diff."""
+
+    def test_wiki_drafts_list_returns_entries(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        drafts_dir = isolated_env / "wiki" / "drafts"
+        drafts_dir.mkdir(parents=True)
+        (drafts_dir / "x.md").write_text(
+            "---\nfaithfulness_score: 0.7\n---\n\nbody\n", encoding="utf-8"
+        )
+        result = wiki_drafts_list()
+        assert result["command"] == "wiki_drafts_list"
+        assert result["total"] == 1
+        assert result["drafts"][0]["slug"] == "x"
+
+    def test_wiki_drafts_diff_returns_unified_diff(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        wiki_root = isolated_env / "wiki"
+        (wiki_root / "summaries").mkdir(parents=True)
+        (wiki_root / "summaries" / "x.md").write_text("old\n", encoding="utf-8")
+        (wiki_root / "drafts").mkdir(parents=True)
+        (wiki_root / "drafts" / "x.md").write_text("new\n", encoding="utf-8")
+        result = wiki_drafts_diff("x")
+        assert result["command"] == "wiki_drafts_diff"
+        assert result["slug"] == "x"
+        assert "-old" in result["diff"]
+        assert "+new" in result["diff"]
+
+    def test_wiki_drafts_diff_missing_returns_error(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        result = wiki_drafts_diff("missing")
+        assert "error" in result
