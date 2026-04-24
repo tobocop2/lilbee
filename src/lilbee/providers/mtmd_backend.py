@@ -80,8 +80,7 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
         )
     else:
         log.info(
-            "Vision chat handler: no GGUF-embedded chat template for %s; "
-            "using upstream default",
+            "Vision chat handler: no GGUF-embedded chat template for %s; using upstream default",
             model_path.name,
         )
 
