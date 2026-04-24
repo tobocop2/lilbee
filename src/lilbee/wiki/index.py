@@ -60,10 +60,6 @@ def _title_from_frontmatter(fm: dict[str, object], text: str) -> str:
     return ""
 
 
-# Backwards-compat alias for the former private name.
-_parse_title = parse_title
-
-
 def parse_source_count(text: str) -> int:
     """Count sources from frontmatter sources field."""
     return _source_count_from_frontmatter(parse_frontmatter(text))

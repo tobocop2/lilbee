@@ -9,9 +9,9 @@ import pytest
 from conftest import write_wiki_page
 from lilbee.config import cfg
 from lilbee.wiki.index import (
-    _parse_title,
     append_wiki_log,
     parse_source_count,
+    parse_title,
     update_wiki_index,
 )
 
@@ -36,19 +36,19 @@ _CONCEPT_PAGE = (
 
 class TestParseTitle:
     def test_from_frontmatter(self):
-        assert _parse_title("---\ntitle: Hello World\n---\n# Other") == "Hello World"
+        assert parse_title("---\ntitle: Hello World\n---\n# Other") == "Hello World"
 
     def test_from_heading(self):
-        assert _parse_title("# First Heading\nSome text.") == "First Heading"
+        assert parse_title("# First Heading\nSome text.") == "First Heading"
 
     def test_frontmatter_takes_precedence(self):
-        assert _parse_title("---\ntitle: FM Title\n---\n# Heading") == "FM Title"
+        assert parse_title("---\ntitle: FM Title\n---\n# Heading") == "FM Title"
 
     def test_no_title(self):
-        assert _parse_title("Just text, no heading.") == ""
+        assert parse_title("Just text, no heading.") == ""
 
     def test_empty_string(self):
-        assert _parse_title("") == ""
+        assert parse_title("") == ""
 
 
 class TestParseSourceCount:
