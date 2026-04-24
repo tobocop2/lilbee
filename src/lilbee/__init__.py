@@ -43,13 +43,18 @@ def _prestart_mp_resource_tracker() -> None:
     """Start the multiprocessing resource tracker before Textual swaps stderr.
 
     Later ``Process.start()`` calls reuse the cached tracker fd and
-    never hit the fork_exec with a bad fd.
+    never hit the fork_exec with a bad fd. No-op on Windows, which
+    doesn't use ``_posixsubprocess``.
     """
+    import sys as _sys
+
+    if _sys.platform == "win32":
+        return
     try:
         from multiprocessing import resource_tracker
 
         resource_tracker.ensure_running()
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError, ImportError):
         # Best-effort: if the tracker already crashed or cannot be started
         # in the current env, leave the state alone. The worker's own
         # spawn will surface a real error at call time.

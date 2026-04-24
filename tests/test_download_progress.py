@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -257,6 +258,56 @@ class TestBaseTqdmLockInstalled:
 
         lock = _vanilla.get_lock()
         assert lock is not None
+
+
+class TestInitDefensiveBranches:
+    """The package-init helpers each carry a swallow-and-continue branch.
+    Force each one so 100% coverage covers real behaviour, not pragmas.
+    """
+
+    def test_tqdm_lock_install_returns_on_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import builtins
+
+        from lilbee import _install_thread_only_tqdm_lock
+
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "tqdm.std" or name.startswith("tqdm."):
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)  # type: ignore[no-any-return]
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        _install_thread_only_tqdm_lock()  # must not raise
+
+    def test_prestart_resource_tracker_swallows_runtime_error(self) -> None:
+        from lilbee import _prestart_mp_resource_tracker
+
+        with mock.patch(
+            "multiprocessing.resource_tracker.ensure_running",
+            side_effect=RuntimeError("simulated crash"),
+        ):
+            _prestart_mp_resource_tracker()  # must not raise
+
+    def test_prestart_resource_tracker_noop_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows has no ``_posixsubprocess``; the prestart must short-circuit
+        so `import _posixsubprocess` inside multiprocessing is never reached.
+        """
+        import sys
+
+        from lilbee import _prestart_mp_resource_tracker
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        with mock.patch(
+            "multiprocessing.resource_tracker.ensure_running",
+            side_effect=AssertionError("must not be called on win32"),
+        ) as called:
+            _prestart_mp_resource_tracker()
+        called.assert_not_called()
 
 
 class TestDownloadModelProgressChain:
