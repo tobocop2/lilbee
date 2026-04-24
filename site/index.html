@@ -76,7 +76,7 @@
 <pre class="box-top">┌──────────────────────────────────────────────────────────────────┐</pre>
 <div class="box-mid">
   <span class="bar">│</span>
-  <span class="cmd"><span class="dollar">$</span><span id="install-cmd">pip install lilbee</span><span class="cursor"></span></span>
+  <span class="cmd"><span class="dollar">$</span><span id="install-cmd">pip install --pre lilbee</span><span class="cursor"></span></span>
   <button type="button" class="copy" id="copy-btn" aria-label="Copy install command">[ copy ]</button>
   <span class="bar">│</span>
 </div>
@@ -160,7 +160,7 @@
   if (!btn) return;
   var cmd = document.getElementById('install-cmd');
   btn.addEventListener('click', function () {
-    var text = cmd ? cmd.textContent : 'pip install lilbee';
+    var text = cmd ? cmd.textContent : 'pip install --pre lilbee';
     var done = function () {
       var original = btn.textContent;
       btn.textContent = '[ copied ]';

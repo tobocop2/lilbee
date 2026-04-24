@@ -170,7 +170,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ### Local-first, frontier-capable
 
-lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install lilbee[litellm]` away when a local model isn't enough, so the power is there when you need it.
+lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install --pre lilbee[litellm]` away when a local model isn't enough, so the power is there when you need it.
 
 ## TUI
 
@@ -189,7 +189,7 @@ Standalone mode runs entirely on your machine. No cloud required.
 | **Disk** | 2 GB (models + data) | 10+ GB if using multiple models |
 | **CPU** | Any modern x86_64 / ARM64 | same as minimum |
 
-lilbee uses llama-cpp-python for inference locally: Metal on macOS, CUDA on Linux/Windows when available, CPU otherwise (usable for embedding, slow for chat). Popular frontier models are optional; install with `pip install lilbee[litellm]`.
+lilbee uses llama-cpp-python for inference locally: Metal on macOS, CUDA on Linux/Windows when available, CPU otherwise (usable for embedding, slow for chat). Popular frontier models are optional; install with `pip install --pre lilbee[litellm]`.
 
 ## Install
 
@@ -203,12 +203,14 @@ No external services needed. lilbee downloads and runs GGUF models locally via l
 ### Install
 
 ```bash
-pip install lilbee                              # base install
-pip install lilbee[crawler]                     # + web crawling
-pip install lilbee[litellm]                     # + Ollama and frontier model support
-pip install lilbee[graph]                       # + concept-graph search boost
-pip install lilbee[graph,crawler,litellm]       # everything
+pip install --pre lilbee                              # base install
+pip install --pre lilbee[crawler]                     # + web crawling
+pip install --pre lilbee[litellm]                     # + Ollama and frontier model support
+pip install --pre lilbee[graph]                       # + concept-graph search boost
+pip install --pre lilbee[graph,crawler,litellm]       # everything
 ```
+
+> While 0.6.66 is in beta, the `--pre` flag is required. Once a stable release is cut, plain `pip install lilbee` will work.
 
 ### Optional extras
 
@@ -216,11 +218,11 @@ lilbee works out of the box. Extras unlock additional capabilities:
 
 | Extra | Install | What it adds |
 |-------|---------|-------------|
-| **Web crawling** | `pip install lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. |
-| **Ollama and frontier models** | `pip install lilbee[litellm]` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
-| **Concept graph** | `pip install lilbee[graph]` | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls. |
+| **Web crawling** | `pip install --pre lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. |
+| **Ollama and frontier models** | `pip install --pre lilbee[litellm]` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
+| **Concept graph** | `pip install --pre lilbee[graph]` | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls. |
 
-Install multiple: `pip install lilbee[graph,crawler,litellm]`
+Install multiple: `pip install --pre lilbee[graph,crawler,litellm]`
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration and details.
 
