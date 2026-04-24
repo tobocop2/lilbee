@@ -649,6 +649,34 @@ def version() -> None:
 
 _SELF_CHECK_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
 _SELF_CHECK_FILE = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+_SELF_CHECK_URL = f"https://huggingface.co/{_SELF_CHECK_REPO}/resolve/main/{_SELF_CHECK_FILE}"
+
+
+def _download_self_check_model() -> Path:
+    """Fetch the SmolLM2 GGUF via urllib (stdlib only).
+
+    Avoids huggingface_hub / httpx entirely. Inside the PyInstaller --onefile
+    bundle, huggingface_hub's retry path has re-entered a closed httpx client
+    after transient DNS failures on macOS runners. urllib is synchronous,
+    lives in the stdlib, and has no long-lived client to close.
+    """
+    import tempfile
+    import urllib.request
+
+    dest_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
+    dest = dest_dir / _SELF_CHECK_FILE
+    console.print(f"Downloading {_SELF_CHECK_URL}")
+    last_exc: BaseException | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(_SELF_CHECK_URL, timeout=60) as response:  # noqa: S310 — literal https url
+                dest.write_bytes(response.read())
+            return dest
+        except (OSError, urllib.error.URLError) as exc:
+            last_exc = exc
+            console.print(f"download attempt {attempt + 1} failed: {exc!r}")
+    raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
+
 
 _self_check_model_path_option = typer.Option(
     None,
@@ -673,10 +701,7 @@ def self_check_cmd(
     """
     try:
         if model_path is None:
-            from huggingface_hub import hf_hub_download
-
-            console.print(f"Downloading {_SELF_CHECK_REPO}/{_SELF_CHECK_FILE}...")
-            model_path = Path(hf_hub_download(_SELF_CHECK_REPO, _SELF_CHECK_FILE))
+            model_path = _download_self_check_model()
         console.print(f"Loading {model_path}")
 
         import llama_cpp
