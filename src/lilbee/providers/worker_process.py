@@ -408,13 +408,21 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 
 
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
-    """Process a single vision OCR request."""
+    """Process a single vision OCR request.
+
+    Caps generation at ``cfg.vision_max_tokens`` so a page that fails to
+    emit EOT (dense scanned art on some vision models) can't stall the
+    ingest. The cap is well above the token budget of any real page.
+    """
     try:
+        from lilbee.config import cfg
         from lilbee.vision import OCR_PROMPT, build_vision_messages
 
         prompt = request.prompt or OCR_PROMPT
         messages = build_vision_messages(prompt, request.png_bytes)
-        response = llm.create_chat_completion(messages=messages, stream=False)
+        response = llm.create_chat_completion(
+            messages=messages, stream=False, max_tokens=cfg.vision_max_tokens
+        )
         text: str = response["choices"][0]["message"]["content"] or ""
         return VisionResponse(text=text, request_id=request.request_id)
     except Exception as exc:

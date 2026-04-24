@@ -177,6 +177,21 @@ class TestHandleVision:
             _handle_vision(llm, req)
         assert mock_build.call_args[0][0] == "custom prompt"
 
+    def test_caps_generation_at_cfg_vision_max_tokens(self) -> None:
+        """Dense pages can push some vision models past EOT and into an
+        infinite emission loop. cfg.vision_max_tokens gives the worker a
+        hard stop so one page can't stall the whole ingest.
+        """
+        from lilbee.config import cfg
+
+        cfg.vision_max_tokens = 1024
+        llm = mock.MagicMock()
+        llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "t"}}]}
+        req = VisionRequest(png_bytes=b"png", model="v", prompt="", request_id=1)
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]):
+            _handle_vision(llm, req)
+        assert llm.create_chat_completion.call_args.kwargs["max_tokens"] == 1024
+
 
 class TestWorkerMain:
     """Test _worker_main loop handling of different request types."""

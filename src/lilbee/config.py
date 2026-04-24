@@ -388,6 +388,11 @@ class Config(BaseSettings):
     # (remote API, separate Ollama host). Local GPU models contend on a
     # single device and get slower with concurrency > 1.
     vision_concurrency: int = ConfigField(default=1, ge=1, writable=True)
+    # Hard cap on tokens generated per vision OCR page. Without a cap, some
+    # vision models hallucinate indefinitely on dense art pages and never
+    # emit an EOT, stalling the ingest. 2048 tokens (~8 KB of text) is well
+    # above any real scanned page.
+    vision_max_tokens: int = ConfigField(default=2048, ge=128, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
