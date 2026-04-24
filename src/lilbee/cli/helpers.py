@@ -109,7 +109,7 @@ class StatusResult(BaseModel):
 
 
 def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
-    """Ignore callback for shutil.copytree — filters ignored directories."""
+    """Ignore callback for shutil.copytree , filters ignored directories."""
     return {
         name
         for name in contents
@@ -130,8 +130,8 @@ def json_output(data: dict) -> None:
 def clean_result(result: SearchChunk) -> dict:
     """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores).
 
-    When ``cfg.vault_base`` is set, stamp ``vault_path`` — a vault-relative
-    path for the source file — so clients can deep-link into the native UI
+    When ``cfg.vault_base`` is set, stamp ``vault_path`` , a vault-relative
+    path for the source file , so clients can deep-link into the native UI
     instead of round-tripping through ``/api/source``. Best-effort: vault_path
     is ``None`` when the source filename cannot be located under vault_base.
     """
@@ -143,26 +143,28 @@ def clean_result(result: SearchChunk) -> dict:
 
 
 def resolve_vault_path(source_filename: str) -> str | None:
-    """Return ``source_filename`` as a vault-relative path, or ``None`` if unresolvable.
+    """Return *source_filename* as a vault-relative path, or None if unresolvable.
 
-    Returns a path when ``documents_dir`` is nested inside ``vault_base`` and
-    the source file actually exists on disk at the expected location. The
-    ``.is_file()`` check keeps clients from deep-linking into stale paths
-    left over from a deleted document or a mid-flight migration.
-
-    Sources ingested via ``/api/add`` that live outside ``documents_dir``
-    (e.g. a plugin pointing at a vault file in-place) still return ``None``
-    and fall back to the preview modal.
+    Resolves symlinks on both ``vault_base`` and ``documents_dir`` so
+    macOS setups where ``~/Documents`` is a symlink target still produce
+    the same deep-link. Rejects paths that escape ``documents_dir`` via
+    ``..`` segments. Returns None when the resolved source file does not
+    exist on disk, when ``documents_dir`` is not nested under
+    ``vault_base``, or when ``vault_base`` is unset.
     """
     if cfg.vault_base is None:
         return None
     try:
-        relative_docs_dir = cfg.documents_dir.relative_to(cfg.vault_base)
-    except ValueError:
+        vault_base = cfg.vault_base.resolve()
+        documents_dir = cfg.documents_dir.resolve()
+        source_path = (cfg.documents_dir / source_filename).resolve()
+        source_path.relative_to(documents_dir)
+        relative_docs_dir = documents_dir.relative_to(vault_base)
+    except (OSError, ValueError):
         return None
-    if not (cfg.documents_dir / source_filename).is_file():
+    if not source_path.is_file():
         return None
-    return str(relative_docs_dir / source_filename)
+    return (relative_docs_dir / source_path.relative_to(documents_dir)).as_posix()
 
 
 def gather_status() -> StatusResult:

@@ -12,6 +12,7 @@ import copy
 import functools
 import json
 import logging
+import mimetypes
 import threading
 import time
 import types
@@ -65,6 +66,11 @@ if TYPE_CHECKING:
     from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
+
+# Windows mimetypes reads from the registry, which may not define ``.md``
+# as ``text/markdown``. Pin the mapping at import time; ``add_type`` is
+# idempotent so repeated imports are safe.
+mimetypes.add_type("text/markdown", ".md")
 
 MAX_ADD_FILES = 100
 
@@ -745,16 +751,7 @@ async def get_source_content(
     ``markdown`` field for binary ones (the caller should re-request
     with ``raw=1`` in that case).
     """
-    import mimetypes
-
     from lilbee.wiki.index import parse_title
-
-    # Windows ships ``mimetypes`` without a registered type for ``.md``
-    # unless a markdown-aware editor has written one into the registry,
-    # so CI runners on Windows see ``guess_type('doc.md')`` return
-    # ``(None, None)`` and fall through to ``application/octet-stream``.
-    # Pin the mapping explicitly; ``add_type`` is idempotent.
-    mimetypes.add_type("text/markdown", ".md")
 
     if not source or not source.strip():
         raise ValueError("source must not be empty")
