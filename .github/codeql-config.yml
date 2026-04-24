@@ -1,0 +1,14 @@
+name: lilbee CodeQL config
+
+# Restrict CodeQL to lilbee's own source. Tests, docs, the vault fixture, and
+# any vendored or third-party content are excluded so findings are strictly
+# about code we ship.
+paths:
+  - src
+
+paths-ignore:
+  - tests
+  - docs
+  - examples
+  - vault
+  - "**/_vendor/**"

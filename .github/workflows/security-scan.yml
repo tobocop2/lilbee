@@ -15,40 +15,35 @@ permissions:
   actions: read
 
 jobs:
-  codeql:
-    name: CodeQL (Python SAST)
+  code-scan:
+    name: Code scan (SAST + secrets)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: python
           queries: security-and-quality
+          config-file: ./.github/codeql-config.yml
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: /language:python
 
-  gitleaks:
-    name: Gitleaks (secret scan)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - name: Run Gitleaks
+        if: always()
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  pip-audit:
-    name: pip-audit (dependency CVEs)
+  dependencies:
+    name: Dependency CVEs (pip-audit)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
