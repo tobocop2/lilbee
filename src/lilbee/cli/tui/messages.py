@@ -189,3 +189,12 @@ TASKBAR_FAILED = "[b]{count} task failed[/b]"
 TASKBAR_FAILED_PLURAL = "[b]{count} tasks failed[/b]"
 SYNC_EMBEDDING = "Embedding {file}"
 SYNC_FILE_DONE = "Done: {file}"
+
+SETTINGS_API_KEYS_WARNING = (
+    "These keys are stored in plain text at {path}. "
+    "Anything you send to these providers leaves your machine. "
+    "Do not route sensitive documents from lilbee through them."
+)
+MODEL_BAR_CLOUD_PROVIDER_WARNING = (
+    "Chat prompts are being sent to {provider}. Do not share sensitive data."
+)

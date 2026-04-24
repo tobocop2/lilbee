@@ -42,6 +42,12 @@ SettingsScreen {
         padding: 0 0 1 0;
     }
 
+    .api-keys-warning {
+        color: $warning;
+        text-style: italic;
+        padding: 0 0 1 1;
+    }
+
     .setting-group:focus-within .group-title {
         color: $primary;
     }
