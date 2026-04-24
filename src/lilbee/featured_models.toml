@@ -97,20 +97,20 @@ name = "embeddinggemma-300m"
 tag = "qat-q8_0"
 display_name = "EmbeddingGemma 300M"
 hf_repo = "ggml-org/embeddinggemma-300m-qat-q8_0-GGUF"
-gguf_filename = "*q8_0.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 0.3
 min_ram_gb = 2.0
-description = "Google Gemma embedder — strong multilingual + retrieval"
+description = "Google Gemma embedder, strong multilingual + retrieval"
 
 [[embedding]]
 name = "all-minilm-l6-v2"
 tag = "latest"
 display_name = "all-MiniLM-L6-v2"
 hf_repo = "second-state/All-MiniLM-L6-v2-Embedding-GGUF"
-gguf_filename = "*.gguf"
+gguf_filename = "*Q4_K_M.gguf"
 size_gb = 0.025
 min_ram_gb = 1.0
-description = "Tiny classic embedder — fits anywhere, 384 dims"
+description = "Tiny classic embedder, fits anywhere, 384 dims"
 
 [[vision]]
 name = "lightonocr"
