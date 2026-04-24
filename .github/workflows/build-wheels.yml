@@ -31,15 +31,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-13, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         include:
           - os: ubuntu-latest
-            llama-plat: manylinux2014_x86_64
+            llama-plat: linux_x86_64
             wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-          - os: macos-13
-            llama-plat: macosx_10_15_x86_64
-            wheel-plat: macosx_10_15_x86_64
           - os: macos-latest
             llama-plat: macosx_11_0_arm64
             wheel-plat: macosx_11_0_arm64
@@ -78,12 +75,33 @@ jobs:
       - name: Smoke test
         shell: bash
         run: |
-          pip install dist/*.whl
-          lilbee --version
+          set -euxo pipefail
+
+          # Install with --pre so pip mirrors user install flow for beta
+          # releases. This is what catches transitive pre-release deps like
+          # tree-sitter-language-pack 2.0.0a1 that break real imports.
+          pip install --pre dist/*.whl
+
+          # Exercise the import path that users hit on every invocation.
+          # lilbee --version alone only loads the launcher, so it misses
+          # breakage in code_chunker / ingest / cli modules.
           python -c "
+          import lilbee
+          from lilbee.cli import app
+          from lilbee import code_chunker, ingest, embedder, store, query, config, chunk
           import llama_cpp
           print('llama_cpp loaded from:', llama_cpp.__file__)
+          print('lilbee imports OK')
           "
+
+          # --version must match the version declared in pyproject.toml.
+          # This catches stale metadata (e.g. seeing '0.6.0' when the wheel
+          # is actually a newer version because an older lilbee leaked in).
+          expected=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          actual=$(lilbee --version)
+          echo "Expected: lilbee ${expected}"
+          echo "Actual:   ${actual}"
+          test "${actual}" = "lilbee ${expected}"
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
