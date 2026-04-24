@@ -67,3 +67,11 @@ jobs:
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
           inputs: .
+          # CVE-2025-69872: diskcache 5.6.3 uses pickle for serialization.
+          # Pulled in transitively by llama-cpp-python; no upstream fix
+          # published. Exploitation requires write access to the cache
+          # directory under the user's own data dir, which is already a
+          # post-compromise scenario. Revisit when llama-cpp-python drops
+          # or patches the diskcache dependency.
+          ignore-vulns: |
+            CVE-2025-69872
