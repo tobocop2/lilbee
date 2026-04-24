@@ -174,6 +174,43 @@ class TestAddEndpoint:
         # enable_ocr should be restored after the call
         assert cfg.enable_ocr == original_ocr
 
+    async def test_add_emits_heartbeat_during_slow_sync(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """Root-cause fix for obsidian-lilbee-v8y.
+
+        A long-running vision OCR pass can go >120s without emitting a
+        progress event. The plugin's STREAM_IDLE_TIMEOUT_MS (120s) then
+        aborts the stream. The server must emit 'heartbeat' SSE events at
+        cfg.sse_heartbeat_interval whenever the producer queue is idle so
+        the plugin's withIdleTimeout keeps resetting. This test drives a
+        sync that sleeps longer than the heartbeat interval and asserts
+        at least one heartbeat event was delivered to the HTTP client.
+        """
+        from lilbee.server.app import create_app
+
+        src = tmp_path / "slow.txt"
+        src.write_text("Slow sync content for heartbeat test.")
+        cfg.sse_heartbeat_interval = 0.2
+
+        async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            from lilbee.ingest import SyncResult
+
+            await asyncio.sleep(0.6)
+            return SyncResult(added=["slow.txt"])
+
+        with mock.patch("lilbee.ingest.sync", side_effect=slow_sync):
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
+                )
+
+        assert resp.status_code == 201
+        events = _parse_sse_events(resp.content)
+        heartbeats = [d for t, d in events if t == "heartbeat"]
+        assert heartbeats, f"expected heartbeat events during slow sync, got {events}"
+        assert "ts" in heartbeats[0]
+
 
 class TestAddValidation:
     async def test_empty_paths_returns_400(self, isolated_env):
