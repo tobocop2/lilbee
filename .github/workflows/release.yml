@@ -86,19 +86,33 @@ jobs:
           src/lilbee/__main__.py
 
       - name: Smoke test
+        # Prove the frozen binary actually works, not just that it starts.
+        # --version must match pyproject.toml; --help must succeed;
+        # the server must come up and /api/health must report the same
+        # version. This catches PyInstaller bundling regressions (missing
+        # data files like featured_models.toml, shadowed modules like
+        # python-multipart) that a bare --version would miss.
         run: |
-          ./dist/${{ matrix.asset_name }} --version
-          ./dist/${{ matrix.asset_name }} --help
-        shell: bash
+          set -euxo pipefail
+          EXE="./dist/${{ matrix.asset_name }}"
+          EXPECTED=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
 
-      - name: Verify server starts
-        # Catches the recurring python-multipart shadow import bug.
-        # Poll until the server responds or the process dies.
-        run: |
+          # --version matches pyproject.toml
+          ACTUAL=$("$EXE" --version)
+          echo "Expected: lilbee ${EXPECTED}"
+          echo "Actual:   ${ACTUAL}"
+          test "${ACTUAL}" = "lilbee ${EXPECTED}"
+
+          # --help succeeds
+          "$EXE" --help > /dev/null
+
+          # Server starts, /api/health reports matching version
           export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
           mkdir -p "$LILBEE_DATA"
-          ./dist/${{ matrix.asset_name }} serve --port 9123 &
+          "$EXE" serve --port 9123 &
           SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true' EXIT
+
           for i in $(seq 1 30); do
             if ! kill -0 $SERVER_PID 2>/dev/null; then
               echo "server process died"
@@ -106,15 +120,20 @@ jobs:
             fi
             if curl -sf http://127.0.0.1:9123/api/health > /dev/null 2>&1; then
               echo "server responded on attempt $i"
-              kill $SERVER_PID 2>/dev/null || true
-              wait $SERVER_PID 2>/dev/null || true
-              exit 0
+              break
             fi
             sleep 1
+            if [ "$i" = "30" ]; then
+              echo "server never responded after 30s"
+              exit 1
+            fi
           done
-          echo "server never responded after 30s"
-          kill $SERVER_PID 2>/dev/null || true
-          exit 1
+
+          HEALTH=$(curl -sf http://127.0.0.1:9123/api/health)
+          echo "Health payload: ${HEALTH}"
+          SERVER_VERSION=$(python -c "import json, sys; print(json.loads(sys.argv[1])['version'])" "${HEALTH}")
+          test "${SERVER_VERSION}" = "${EXPECTED}"
+          echo "SMOKE TEST PASSED: --version, --help, server, /api/health all match ${EXPECTED}"
         shell: bash
 
       - name: Upload to release

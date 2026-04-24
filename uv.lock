@@ -1585,7 +1585,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.6.66b421"
+version = "0.6.66b422"
 source = { editable = "." }
 dependencies = [
     { name = "diskcache" },
@@ -1662,7 +1662,7 @@ requires-dist = [
     { name = "spacy", marker = "extra == 'graph'", specifier = ">=3.8" },
     { name = "textual", specifier = ">=0.75" },
     { name = "tiktoken" },
-    { name = "tree-sitter-language-pack", specifier = ">=1.4.0,<2.0" },
+    { name = "tree-sitter-language-pack", specifier = ">=1.4.0,!=1.6.3,<2.0" },
     { name = "typer" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
