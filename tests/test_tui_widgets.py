@@ -456,6 +456,36 @@ class TestModelBar:
             with pytest.raises(NoMatches):
                 app.query_one("#scope-select", Select)
 
+    async def test_cloud_warning_hidden_for_local_model(self) -> None:
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            warning = app.query_one("#cloud-provider-warning", Static)
+            assert "-visible" not in warning.classes
+
+    async def test_cloud_warning_hidden_for_ollama_model(self) -> None:
+        cfg.chat_model = "ollama/qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            warning = app.query_one("#cloud-provider-warning", Static)
+            assert "-visible" not in warning.classes
+
+    async def test_cloud_warning_visible_and_names_provider(self) -> None:
+        cfg.chat_model = "openai/gpt-4o"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            warning = app.query_one("#cloud-provider-warning", Static)
+            assert "-visible" in warning.classes
+            rendered = str(warning.render())
+            assert "OpenAI" in rendered
+            assert "sensitive" in rendered.lower()
+
 
 class TestIsMmproj:
     def test_mmproj_detected(self) -> None:

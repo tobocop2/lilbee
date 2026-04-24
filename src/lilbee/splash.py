@@ -55,7 +55,9 @@ def start() -> SplashHandle | None:
     read_fd, write_fd = os.pipe()
     os.set_inheritable(read_fd, True)
 
-    proc = subprocess.Popen(
+    # Trusted: sys.executable is this interpreter, module path is static,
+    # the one runtime value (read_fd) is an int from os.pipe().
+    proc = subprocess.Popen(  # noqa: S603
         [sys.executable, "-m", "lilbee._splash_runner", str(read_fd)],
         close_fds=False,
         stderr=None,

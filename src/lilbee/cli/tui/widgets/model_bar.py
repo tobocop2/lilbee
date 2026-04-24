@@ -14,12 +14,17 @@ from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
-from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME, detect_backend_name
+from lilbee.providers.sdk_backend import (
+    OLLAMA_BACKEND_NAME,
+    PROVIDER_KEYS,
+    detect_backend_name,
+)
 from lilbee.services import reset_services
 from lilbee.store import SearchScope
 
@@ -28,6 +33,29 @@ log = logging.getLogger(__name__)
 _DISABLED = Select.NULL
 
 _MMPROJ_MARKER = "mmproj"
+
+_CLOUD_WARNING_ID = "cloud-provider-warning"
+_CLOUD_WARNING_CLASS = "cloud-warning"
+_CLOUD_WARNING_VISIBLE_CLASS = "-visible"
+
+# Routing-name -> display-label map derived from PROVIDER_KEYS. Any new
+# entry added there lights up the warning without further changes here.
+_CLOUD_PROVIDER_LABELS: dict[str, str] = {name: label for name, _, _, label in PROVIDER_KEYS}
+
+
+def _cloud_provider_label(chat_model: str) -> str | None:
+    """Return the provider display label for cloud-routed models, else None.
+
+    Local models and Ollama (remote but user-local) return None. Anything
+    classified as an API provider by ``parse_model_ref`` returns the
+    matching label from PROVIDER_KEYS.
+    """
+    if not chat_model:
+        return None
+    ref = parse_model_ref(chat_model)
+    if not ref.is_api:
+        return None
+    return _CLOUD_PROVIDER_LABELS.get(ref.provider)
 
 
 class ModelOption(NamedTuple):
@@ -211,7 +239,7 @@ class ModelBar(Widget, can_focus=False):
     DEFAULT_CSS = """
     ModelBar {
         dock: top;
-        height: 3;
+        height: auto;
         padding: 0 1;
     }
     ModelBar Horizontal {
@@ -229,6 +257,15 @@ class ModelBar(Widget, can_focus=False):
     ModelBar Select > SelectOverlay {
         max-height: 8;
         constrain: inside inside;
+    }
+    ModelBar .cloud-warning {
+        display: none;
+        color: $warning;
+        text-style: bold;
+        padding: 0 1;
+    }
+    ModelBar .cloud-warning.-visible {
+        display: block;
     }
     """
 
@@ -272,6 +309,7 @@ class ModelBar(Widget, can_focus=False):
                     id="scope-select",
                     allow_blank=False,
                 )
+        yield Static("", id=_CLOUD_WARNING_ID, classes=_CLOUD_WARNING_CLASS)
 
     def on_mount(self) -> None:
         chat_sel = self.query_one("#chat-model-select", Select)
@@ -285,6 +323,7 @@ class ModelBar(Widget, can_focus=False):
         self._watch_overlay_collapse(chat_sel)
         self._watch_overlay_collapse(embed_sel)
 
+        self._refresh_cloud_warning()
         self._scan_models()
 
     def _watch_overlay_collapse(self, sel: Select) -> None:
@@ -331,7 +370,18 @@ class ModelBar(Widget, can_focus=False):
             return
         cfg.chat_model = value
         settings.set_value(cfg.data_root, "chat_model", value)
+        self._refresh_cloud_warning()
         self._after_model_change()
+
+    def _refresh_cloud_warning(self) -> None:
+        """Show a warning if the active chat model routes to a cloud API."""
+        warning = self.query_one(f"#{_CLOUD_WARNING_ID}", Static)
+        label = _cloud_provider_label(cfg.chat_model)
+        if label is None:
+            warning.remove_class(_CLOUD_WARNING_VISIBLE_CLASS)
+            return
+        warning.update(msg.MODEL_BAR_CLOUD_PROVIDER_WARNING.format(provider=label))
+        warning.add_class(_CLOUD_WARNING_VISIBLE_CLASS)
 
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:

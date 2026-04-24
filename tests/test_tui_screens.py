@@ -498,6 +498,20 @@ async def test_settings_screen_mounts_grouped_sections():
         assert len(rows) > 0
 
 
+async def test_settings_api_keys_group_shows_plaintext_warning():
+    """API-Keys group renders a warning naming the config.toml path."""
+    from textual.widgets import Static
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 60)) as _pilot:
+        warnings = list(app.screen.query(".api-keys-warning").results(Static))
+        assert len(warnings) == 1
+        rendered = str(warnings[0].render())
+        assert "plain text" in rendered
+        assert "config.toml" in rendered
+        assert "sensitive" in rendered.lower()
+
+
 async def test_settings_search_filters_settings():
     """Search input filters visible setting rows."""
     app = SettingsTestApp()

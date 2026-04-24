@@ -47,6 +47,15 @@ _LIST_RESTORE_PREFIX = "list-restore-"
 _LIST_ERROR_ID_PREFIX = "err-"
 _LIST_ERROR_VISIBLE_CLASS = "-visible"
 
+_API_KEYS_GROUP = "API-Keys"
+_API_KEYS_WARNING_CLASS = "api-keys-warning"
+_CONFIG_TOML_FILENAME = "config.toml"
+
+
+def _config_toml_path() -> str:
+    """Effective path to the config.toml lilbee reads and writes."""
+    return str(cfg.data_dir / _CONFIG_TOML_FILENAME)
+
 
 def _effective_value(key: str) -> str:
     """Return the effective value for a setting, including model defaults."""
@@ -253,6 +262,11 @@ class SettingsScreen(Screen[None]):
         for group_name, items in _group_settings().items():
             with VerticalGroup(classes="setting-group", id=f"group-{group_name.lower()}"):
                 yield Static(group_name, classes="group-title")
+                if group_name == _API_KEYS_GROUP:
+                    yield Static(
+                        msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
+                        classes=_API_KEYS_WARNING_CLASS,
+                    )
                 for key, defn in items:
                     yield from self._compose_setting(key, defn)
 
@@ -407,7 +421,7 @@ class SettingsScreen(Screen[None]):
             return
         raw = ta.text
         parsed = self._parse_value(defn, raw)
-        assert isinstance(parsed, list)  # narrow for mypy; defn.type is list above
+        assert isinstance(parsed, list)  # noqa: S101 -- mypy narrowing, defn.type is list above
         err = self._validate_regex_list(parsed)
         error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:

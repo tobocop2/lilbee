@@ -28,7 +28,7 @@ class EventType(StrEnum):
 class SseEvent(StrEnum):
     """SSE event names used in the HTTP streaming protocol."""
 
-    TOKEN = "token"
+    TOKEN = "token"  # noqa: S105 -- SSE event name, not a credential
     REASONING = "reasoning"
     SOURCES = "sources"
     ERROR = "error"

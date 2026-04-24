@@ -128,7 +128,20 @@ select = [
     "B",     # flake8-bugbear
     "SIM",   # flake8-simplify
     "RUF",   # ruff-specific
+    "S",     # flake8-bandit: security antipatterns (eval, exec, pickle, unsafe subprocess, etc.)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Test-context S-rule noise. Each of these is either a test fixture
+# (hardcoded token/password literals, fake /tmp paths, 0.0.0.0 bind
+# assertions), or an intentional subprocess spawn for an e2e test:
+# - S101 assert (tests are built on it)
+# - S104 bind-all-interfaces (testing host parsing)
+# - S105/S106 hardcoded password string/arg (test fixtures)
+# - S108 /tmp paths (mocked, not actual temp-file usage)
+# - S603/S607 subprocess (e2e tests spawning sys.executable)
+"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S108", "S603", "S607"]
+"conftest.py" = ["S101"]
 
 [tool.mypy]
 python_version = "3.11"

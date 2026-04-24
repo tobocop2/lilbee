@@ -201,7 +201,10 @@ class ModelManager:
         url = f"{self._remote_base_url}/api/pull"
         try:
             with (
-                httpx.Client(timeout=None) as client,
+                # Model pulls stream progress over minutes; an overall
+                # timeout would cut the download. Connect/write timeouts
+                # still apply via httpx defaults when timeout=None.
+                httpx.Client(timeout=None) as client,  # noqa: S113
                 client.stream("POST", url, json={"name": model, "stream": True}) as resp,
             ):
                 resp.raise_for_status()

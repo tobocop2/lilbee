@@ -319,7 +319,9 @@ class LitellmSdkBackend:
         clean_base = base_url.rstrip("/")
         try:
             with (
-                httpx.Client(timeout=None) as client,
+                # Streaming Ollama /api/pull; unbounded read is intentional
+                # since model downloads can exceed any wall-clock timeout.
+                httpx.Client(timeout=None) as client,  # noqa: S113
                 client.stream(
                     "POST",
                     f"{clean_base}/api/pull",

@@ -96,14 +96,16 @@ def _try_nvidia_memory() -> int | None:
         info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         pynvml.nvmlShutdown()
         return int(info.total)
-    except Exception:
+    except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
         pass
 
     try:
         import subprocess
 
+        # nvidia-smi ships with the NVIDIA driver and is always on PATH when
+        # present; fully-qualifying it would break on every install layout.
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=5,
@@ -111,7 +113,7 @@ def _try_nvidia_memory() -> int | None:
         if result.returncode == 0:
             mib = int(result.stdout.strip().split("\n")[0])
             return mib * 1024 * 1024
-    except Exception:
+    except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
         pass
 
     return None
