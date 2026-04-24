@@ -28,6 +28,7 @@ docs/superpowers/
 .test_lancedb/
 beads/
 beads_bb/
+.beads/
 vault/
 plugins/
 .lilbee/
