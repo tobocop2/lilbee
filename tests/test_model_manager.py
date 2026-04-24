@@ -1,5 +1,6 @@
 """Tests for model_manager.py — model lifecycle management across sources."""
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -836,6 +837,22 @@ class TestHasProviderKey:
 
 
 class TestDiscoverApiModels:
+    @pytest.fixture(autouse=True)
+    def _force_auto_provider(self) -> Iterator[None]:
+        # discover_api_models() calls get_services().provider.list_chat_models.
+        # LlamaCppProvider.list_chat_models hard-codes []; only RoutingProvider
+        # (cfg.llm_provider == "auto") delegates to the SDK backend where the
+        # sys.modules["litellm"] patch these tests rely on can take effect.
+        # Developers whose config.toml pins llm_provider="llama-cpp" would
+        # otherwise see these tests fail locally while passing in CI.
+        from lilbee.config import cfg
+        from lilbee.services import reset_services
+
+        cfg.llm_provider = "auto"
+        reset_services()
+        yield
+        reset_services()
+
     def test_returns_empty_when_litellm_not_installed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
