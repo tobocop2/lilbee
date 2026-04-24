@@ -78,6 +78,15 @@ jobs:
       - name: Build llama-cpp-python from source (Linux)
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          # GGML_NATIVE defaults to ON, which bakes -march=native into the
+          # build. The wheel then won't run on any CPU lacking the
+          # build-runner's full instruction set (seen as "Illegal instruction
+          # (core dumped)" on verify-pypi runners that got a different CPU
+          # class from the pool). Force the build to target a baseline x86_64
+          # ABI. CUDA/Metal/BLAS stay off so the Linux CPU wheel is truly
+          # portable; we're the CPU lane by design.
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF"
         run: |
           mkdir -p /tmp/llama-build
           pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
@@ -177,9 +186,14 @@ jobs:
           # flavors are held to the same bar.
           export HF_HUB_DISABLE_PROGRESS_BARS=1
           SELF_CHECK_LOG=$(mktemp)
-          lilbee --json self-check > "$SELF_CHECK_LOG" 2>&1
-          echo "=== self-check output ==="
+          SELF_CHECK_RC=0
+          lilbee --json self-check > "$SELF_CHECK_LOG" 2>&1 || SELF_CHECK_RC=$?
+          echo "=== self-check output (exit=${SELF_CHECK_RC}) ==="
           cat "$SELF_CHECK_LOG"
+          if [ "${SELF_CHECK_RC}" != "0" ]; then
+            echo "FAIL: self-check exited ${SELF_CHECK_RC}"
+            exit 1
+          fi
           python -c "
           import json, pathlib, sys
           raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
@@ -319,9 +333,14 @@ jobs:
         run: |
           set -euxo pipefail
           OUT=$(mktemp)
-          lilbee --json self-check > "$OUT" 2>&1 || true
-          echo "=== self-check output ==="
+          RC=0
+          lilbee --json self-check > "$OUT" 2>&1 || RC=$?
+          echo "=== self-check output (exit=${RC}) ==="
           cat "$OUT"
+          if [ "${RC}" != "0" ]; then
+            echo "FAIL: self-check exited ${RC}"
+            exit 1
+          fi
           python -c "
           import json, pathlib, sys
           raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
