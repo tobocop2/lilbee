@@ -196,8 +196,10 @@ async def bootstrap_chromium(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    assert proc.stdout is not None
-    assert proc.stderr is not None
+    # mypy narrowing: asyncio.create_subprocess_exec with PIPE guarantees
+    # non-None streams at runtime; the asserts only satisfy the type checker.
+    assert proc.stdout is not None  # noqa: S101
+    assert proc.stderr is not None  # noqa: S101
 
     stderr_tail: list[str] = []
     await asyncio.gather(

@@ -363,7 +363,7 @@ class _LockedStreamIterator:
             try:
                 for _ in self._response:
                     pass
-            except Exception:
+            except Exception:  # noqa: S110 -- best-effort drain during release; ignore partial-read errors
                 pass
             self._release()
 

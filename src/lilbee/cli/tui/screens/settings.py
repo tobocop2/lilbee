@@ -407,7 +407,7 @@ class SettingsScreen(Screen[None]):
             return
         raw = ta.text
         parsed = self._parse_value(defn, raw)
-        assert isinstance(parsed, list)  # narrow for mypy; defn.type is list above
+        assert isinstance(parsed, list)  # noqa: S101 -- mypy narrowing, defn.type is list above
         err = self._validate_regex_list(parsed)
         error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
