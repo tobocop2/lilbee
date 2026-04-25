@@ -3112,3 +3112,336 @@ class TestSetupCrawlerCommand:
         assert result.exit_code == 1
         assert '"error"' in result.stdout
         assert "offline" in result.stdout
+
+
+class TestSelfCheck:
+    """`lilbee self-check` exercises llama_cpp.Llama end-to-end on two legs.
+
+    Leg 1: chat (`create_completion`) — proves the vendored shared libraries
+    load and decoder-style inference works.
+    Leg 2: embedding (`create_embedding`) — proves encoder-only models work,
+    which is what the "Memory is not initialized" assert in 0.3.18 broke.
+
+    Tests stub both the urllib download and the llama_cpp module so they
+    don't hit HuggingFace or load a real GGUF. Every branch — chat-load,
+    chat-empty, embed-load, embed-empty, --skip-embedding, both human and
+    --json output — gets a case.
+    """
+
+    @staticmethod
+    def _fake_llama_module(*, chat_text: str = " 4", embed_dims: int = 768):
+        chat_llm = MagicMock()
+        chat_llm.create_completion.return_value = {"choices": [{"text": chat_text}]}
+        embed_llm = MagicMock()
+        embed_llm.create_embedding.return_value = {"data": [{"embedding": [0.1] * embed_dims}]}
+        module = MagicMock()
+        # First Llama() call constructs the chat instance, second the embed.
+        module.Llama.side_effect = [chat_llm, embed_llm]
+        return module
+
+    def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        with (
+            mock.patch(
+                "lilbee.cli.commands._download_self_check_model",
+                side_effect=AssertionError("must not download when --model-path given"),
+            ),
+            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {
+            "ok": True,
+            "chat_response": " 4",
+            "chat_model": str(chat),
+            "embedding_dims": 768,
+        }
+
+    def test_downloads_when_paths_missing(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        # Two calls expected: chat first, embed second.
+        with (
+            mock.patch(
+                "lilbee.cli.commands._download_self_check_model",
+                side_effect=[chat, emb],
+            ),
+            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 0, result.output
+
+    def test_skip_embedding_short_circuits(self, tmp_path: Path) -> None:
+        """--skip-embedding must not download or load the embedding model."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        download = mock.Mock(return_value=chat)
+        with (
+            mock.patch("lilbee.cli.commands._download_self_check_model", download),
+            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
+        ):
+            result = runner.invoke(app, ["--json", "self-check", "--skip-embedding"])
+        assert result.exit_code == 0, result.output
+        # Only the chat download fires; embed leg is skipped.
+        assert download.call_count == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is True
+        assert "embedding_dims" not in payload
+
+    def test_chat_download_failure_emits_json_error(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands._download_self_check_model",
+            side_effect=RuntimeError("network is down"),
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "network is down" in payload["error"]
+
+    def test_chat_llama_load_failure_emits_json_error(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        bad_module = MagicMock()
+        bad_module.Llama.side_effect = RuntimeError("Shared library not found")
+        with mock.patch.dict("sys.modules", {"llama_cpp": bad_module}):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "Shared library not found" in payload["error"]
+
+    def test_empty_chat_response_emits_json_error(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        with mock.patch.dict(
+            "sys.modules", {"llama_cpp": self._fake_llama_module(chat_text="   ")}
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {"ok": False, "error": "empty inference response"}
+
+    def test_empty_chat_response_human_mode(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        with mock.patch.dict(
+            "sys.modules", {"llama_cpp": self._fake_llama_module(chat_text="   ")}
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "SELF-CHECK FAILED" in result.output
+        assert "empty inference response" in result.output
+
+    def test_embedding_load_failure_emits_json_error(self, tmp_path: Path) -> None:
+        """The Memory-is-not-initialized class of bug: embed-leg Llama() raises."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_llm = MagicMock()
+        chat_llm.create_completion.return_value = {"choices": [{"text": " 4"}]}
+        module = MagicMock()
+        # Chat construct ok; embed construct raises (the historical bug).
+        module.Llama.side_effect = [
+            chat_llm,
+            AssertionError("Memory is not initialized"),
+        ]
+        with mock.patch.dict("sys.modules", {"llama_cpp": module}):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "Memory is not initialized" in payload["error"]
+
+    def test_empty_embedding_emits_json_error(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_llm = MagicMock()
+        chat_llm.create_completion.return_value = {"choices": [{"text": " 4"}]}
+        embed_llm = MagicMock()
+        embed_llm.create_embedding.return_value = {"data": [{"embedding": []}]}
+        module = MagicMock()
+        module.Llama.side_effect = [chat_llm, embed_llm]
+        with mock.patch.dict("sys.modules", {"llama_cpp": module}):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {"ok": False, "error": "empty embedding vector"}
+
+    def test_human_mode_on_success_with_embedding(self, tmp_path: Path) -> None:
+        """Non-JSON mode prints chat response, embedding dims, and PASSED banner."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        with mock.patch.dict(
+            "sys.modules",
+            {"llama_cpp": self._fake_llama_module(chat_text=" hello", embed_dims=384)},
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "SELF-CHECK PASSED" in result.output
+        assert "hello" in result.output
+        assert "384" in result.output
+
+    def test_human_mode_on_failure(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        bad_module = MagicMock()
+        bad_module.Llama.side_effect = OSError("boom")
+        with mock.patch.dict("sys.modules", {"llama_cpp": bad_module}):
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "SELF-CHECK FAILED" in result.output
+
+
+class TestDownloadSelfCheckModel:
+    """`_download_self_check_model` retries URLError up to 3 times."""
+
+    def test_successful_download_returns_path(self, tmp_path: Path) -> None:
+        from lilbee.cli import commands as cmds
+
+        payload = b"gguf-bytes"
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload
+
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", return_value=_Resp()),
+        ):
+            path = cmds._download_self_check_model("repo/x", "tiny.gguf")
+
+        assert path == tmp_path / "tiny.gguf"
+        assert path.read_bytes() == payload
+
+    def test_retries_then_raises_after_three_attempts(self, tmp_path: Path) -> None:
+        import urllib.error
+
+        from lilbee.cli import commands as cmds
+
+        err = urllib.error.URLError("dns failed")
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", side_effect=err) as opened,
+            pytest.raises(RuntimeError, match="3 attempts"),
+        ):
+            cmds._download_self_check_model("repo/x", "tiny.gguf")
+
+        assert opened.call_count == 3
+
+    def test_retry_then_succeed(self, tmp_path: Path) -> None:
+        import urllib.error
+
+        from lilbee.cli import commands as cmds
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        urlopen = mock.Mock(
+            side_effect=[urllib.error.URLError("flaky"), _Resp()],
+        )
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", urlopen),
+        ):
+            path = cmds._download_self_check_model("repo/x", "tiny.gguf")
+
+        assert urlopen.call_count == 2
+        assert path.read_bytes() == b"ok"
