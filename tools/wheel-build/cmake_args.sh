@@ -31,8 +31,16 @@ runner_os="${RUNNER_OS:-$(uname -s)}"
 #                           plain AVX. With it, one wheel works on every
 #                           x86_64 CPU from 2008 forward.
 #
-# CPU_ALL_VARIANTS is x86 only; arm64 builds drop the flag.
-common_x86="-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON"
+# CPU_ALL_VARIANTS requires GGML_BACKEND_DL=ON: it builds each CPU variant
+# (sse42, sandybridge, haswell, skylake, icelake, ...) as a separately-
+# loadable .so, then dlopens the highest one the host CPU can run at
+# startup. Without GGML_BACKEND_DL, ALL_VARIANTS silently falls back to a
+# single-variant build matching the build host (CI runner = AVX2-capable),
+# which then SIGILLs on Sandy Bridge.
+#
+# arm64 builds drop both flags — NEON is mandatory in ARMv8 so a single
+# variant covers every aarch64 system.
+common_x86="-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON"
 common_arm="-DGGML_NATIVE=OFF"
 
 case "${backend}_${runner_os}" in
