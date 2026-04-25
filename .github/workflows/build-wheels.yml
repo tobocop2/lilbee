@@ -174,15 +174,15 @@ jobs:
           # Linux CUDA — toolkit installed via Jimver/cuda-toolkit action,
           # which handles network install of older CUDA versions that
           # NVIDIA's ubuntu2404 apt repo doesn't carry.
-          - {os: ubuntu-latest, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.1.0"}
-          - {os: ubuntu-latest, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.1.0"}
-          - {os: ubuntu-latest, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.1.0"}
-          - {os: ubuntu-latest, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.4.0"}
-          - {os: ubuntu-latest, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.4.0"}
-          - {os: ubuntu-latest, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.4.0"}
-          - {os: ubuntu-latest, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.5.0"}
-          - {os: ubuntu-latest, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.5.0"}
-          - {os: ubuntu-latest, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.5.0"}
+          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.1.0"}
+          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.1.0"}
+          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.1.0"}
+          - {os: ubuntu-22.04, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.4.0"}
+          - {os: ubuntu-22.04, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.4.0"}
+          - {os: ubuntu-22.04, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.4.0"}
+          - {os: ubuntu-22.04, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.5.0"}
+          - {os: ubuntu-22.04, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.5.0"}
+          - {os: ubuntu-22.04, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.5.0"}
           # Windows pure CPU
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.11"}
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.12"}
