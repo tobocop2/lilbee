@@ -694,6 +694,44 @@ class TestClassifyInstalledModels:
         assert "mistral:latest" in chat_refs
         assert "ollama/mistral:latest" in chat_refs
 
+    def test_remote_blank_name_dropped(self, tmp_path) -> None:
+        """Remote entries with an empty name are skipped before reaching the picker."""
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.model_manager import RemoteModel
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        cfg.remote_base_url = "http://localhost:11434"
+
+        blank = RemoteModel(
+            name="",
+            task="chat",
+            family="",
+            parameter_size="",
+            provider="Ollama",
+        )
+        good = RemoteModel(
+            name="qwen3:8b",
+            task="chat",
+            family="qwen3",
+            parameter_size="8B",
+            provider="Ollama",
+        )
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[blank, good],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = []
+            chat, _ = _classify_installed_models()
+
+        chat_labels = [label for label, _ in chat]
+        chat_refs = [ref for _, ref in chat]
+        assert chat_refs == ["ollama/qwen3:8b"]
+        assert all(lbl != " (Ollama)" and lbl.strip() != "(Ollama)" for lbl in chat_labels)
+
     def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
