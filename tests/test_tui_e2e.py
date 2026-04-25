@@ -149,8 +149,7 @@ class TestModelClassification:
             def fill_buckets(buckets, seen):
                 for m in mock_manifests:
                     ref = f"{m.name}:{m.tag}"
-                    label = m.display_name or ref
-                    buckets.get(m.task, buckets["chat"]).append(ModelOption(label, ref))
+                    buckets.get(m.task, buckets["chat"]).append(ModelOption(ref, ref))
                     seen.add(ref)
 
             mock_native.side_effect = fill_buckets
