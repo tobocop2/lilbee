@@ -96,17 +96,25 @@ jobs:
           # the real module.
           uv pip uninstall python-multipart
 
-      - name: Rebuild llama-cpp-python with GPU acceleration
+      # Build llama-cpp-python from source via the same script the wheel
+      # job uses. uv pip install --reinstall hit uv's package cache by
+      # version key (0.3.20) and reused a previously-built (AVX2-tuned)
+      # wheel regardless of CMAKE_ARGS, so the exe shipped with whatever
+      # the first cached build had baked in. Going through pip wheel +
+      # local-wheel install bypasses uv's cache entirely.
+      - name: Build llama-cpp-python from source (GPU + AVX baseline)
         shell: bash
         env:
           BACKEND: ${{ matrix.backend }}
+          LLAMA_BUILD_DIR: "/tmp/llama-build"
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: bash tools/wheel-build/build_llama_cpp.sh
+
+      - name: Install the freshly-built llama-cpp-python into the venv
+        shell: bash
         run: |
           set -euxo pipefail
-          eval "$(BACKEND=${BACKEND} bash tools/wheel-build/cmake_args.sh)"
-          export CMAKE_ARGS
-          uv pip install --reinstall --no-binary=llama-cpp-python --no-deps \
-            "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}"
+          uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
 
       - name: Build executable
         run: >
