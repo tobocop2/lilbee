@@ -219,18 +219,17 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      - name: Install CUDA Toolkit (Linux + Windows)
-        if: startsWith(matrix.backend, 'cu')
+      - name: Install CUDA Toolkit (Linux)
+        if: startsWith(matrix.backend, 'cu') && runner.os == 'Linux'
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
+
+      - name: Install CUDA Toolkit (Windows)
+        if: startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
           cuda: ${{ matrix.cuda }}
           method: network
-          # visual_studio_integration is required on Windows so cmake's
-          # CMakeDetermineCUDACompiler can find the MSBuild CUDA toolset.
-          # Linux ignores it. cudart_dev is not a separately-installable
-          # sub-package in the CUDA Windows installer — its headers ship
-          # with the cudart bundle. Listing it tripped exit code
-          # 3772776473 ("Invalid component") on b438.
           sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
       - name: Build llama-cpp-python from source

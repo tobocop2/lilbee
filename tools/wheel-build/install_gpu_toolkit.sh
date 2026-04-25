@@ -26,8 +26,24 @@ linux_install_cuda() {
   local apt_pkg="cuda-toolkit-${major}-${minor}"
   local cuda_home="/usr/local/cuda-${major}.${minor}"
 
+  # Pick the NVIDIA repo matching the runner's Ubuntu version. Ubuntu
+  # 24.04 (noble) only carries the latest CUDA toolkit; older 12.x
+  # versions live only in the ubuntu2204 repo. Detect via /etc/os-release.
+  local ubuntu_codename
+  ubuntu_codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+  local repo_id
+  case "${ubuntu_codename}" in
+    noble)  repo_id="ubuntu2404" ;;
+    jammy)  repo_id="ubuntu2204" ;;
+    focal)  repo_id="ubuntu2004" ;;
+    *)
+      echo "tools/wheel-build/install_gpu_toolkit.sh: unsupported Ubuntu codename '${ubuntu_codename}'" >&2
+      exit 1
+      ;;
+  esac
+
   if ! dpkg -s cuda-keyring >/dev/null 2>&1; then
-    wget -q "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb" \
+    wget -q "https://developer.download.nvidia.com/compute/cuda/repos/${repo_id}/x86_64/cuda-keyring_1.1-1_all.deb" \
       -O /tmp/cuda-keyring.deb
     sudo dpkg -i /tmp/cuda-keyring.deb
     sudo apt-get update
