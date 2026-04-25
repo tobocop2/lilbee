@@ -392,14 +392,27 @@ CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`,
 lilbee works out of the box with llama-cpp for local inference. These optional extras add capabilities that require heavier dependencies:
 
 ```bash
-pip install --pre lilbee[graph]      # concept graph: topic clustering + search boosting
-pip install --pre lilbee[crawler]    # web crawling: index websites alongside local docs
-pip install --pre lilbee[litellm]    # remote providers: connect to any SDK-backed provider
+# pip
+pip install --pre 'lilbee[graph]'      # concept graph: topic clustering + search boosting
+pip install --pre 'lilbee[crawler]'    # web crawling: index websites alongside local docs
+pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-backed provider
+
+# uv tool
+uv tool install --prerelease=allow 'lilbee[graph]'
+uv tool install --prerelease=allow 'lilbee[crawler]'
+uv tool install --prerelease=allow 'lilbee[litellm]'
 ```
 
-Install multiple at once: `pip install --pre lilbee[graph,crawler,litellm]`
+Install multiple at once:
 
-While 0.6.66 is in beta, the `--pre` flag is required.
+```bash
+pip install --pre 'lilbee[graph,crawler,litellm]'
+uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
+```
+
+For NVIDIA users wanting CUDA-native acceleration (default install already covers GPU via Vulkan), append `--extra-index-url https://tobocop2.github.io/lilbee/cu125/` (or `cu124/` for older drivers).
+
+While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is required on every install.
 
 Cross-encoder reranking is built in (no extra required); see
 [Cross-encoder reranking](#cross-encoder-reranking) below.
