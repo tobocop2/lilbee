@@ -69,7 +69,7 @@ For PDFs without embedded text, lilbee supports two OCR backends. When a vision 
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre lilbee[litellm]`) |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
 See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
@@ -91,7 +91,8 @@ lilbee runs vision OCR in one of two ways:
    (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
    directly. No Ollama, no extra services. This is the recommended path and
    supports an SSE heartbeat for long scans.
-2. **Remote vision model.** With `pip install --pre lilbee[litellm]`, set the vision
+2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
+   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
    model to any remote name your SDK backend understands (Ollama, OpenAI,
    Anthropic, Gemini, etc.). lilbee will route vision calls accordingly.
 
@@ -299,7 +300,7 @@ The ones most users set at least once.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Chat model. Native GGUF by default; with `pip install --pre lilbee[litellm]`, any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text:v1.5` | Embedding model. Changing this requires `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
@@ -427,7 +428,7 @@ Builds a topic map of your documents at index time. Related concepts are linked 
 
 **When to use it:** Large corpora (100+ documents) where the same topics appear across multiple files. The graph helps surface connections that pure vector similarity misses. For example, finding "deployment" documents when searching for "CI/CD" because those concepts co-occur frequently.
 
-**Install:** `pip install --pre lilbee[graph]`
+**Install:** `pip install --pre 'lilbee[graph]'` or `uv tool install --prerelease=allow 'lilbee[graph]'`
 
 **Configuration:**
 
@@ -451,7 +452,7 @@ Index web pages alongside your local documents. Crawl single pages or follow lin
 
 **When to use it:** When your corpus spans both local files and web content such as documentation sites, wikis, or internal tools. Crawled content is hash-tracked so re-crawling only re-indexes changed pages.
 
-**Install:** `pip install --pre lilbee[crawler]`
+**Install:** `pip install --pre 'lilbee[crawler]'` or `uv tool install --prerelease=allow 'lilbee[crawler]'`
 
 **Usage:**
 
@@ -506,7 +507,7 @@ Connect to hosted LLM providers instead of (or alongside) local llama-cpp infere
 
 **When to use it:** When you want to use your favorite frontier model for chat while keeping embeddings local for privacy, or when you're already running Ollama and want to use its models.
 
-**Install:** `pip install --pre lilbee[litellm]` (pip extra retains the adapter library name).
+**Install:** `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the adapter library name).
 
 **Configuration:**
 

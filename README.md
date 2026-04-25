@@ -3,7 +3,7 @@
 A terminal-first local search engine for your own files, websites, and scanned documents. One install, no sidecar services, fully offline by default.
 
 <p align="center">
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee" alt="PyPI"></a>
+  <a href="https://pypi.org/project/lilbee/#history"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=pypi%20%28beta%29" alt="PyPI (latest pre-release)"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
   <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://tobocop2.github.io/lilbee/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage"></a>
@@ -174,7 +174,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ### Local-first, frontier-capable
 
-lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install --pre lilbee[litellm]` away when a local model isn't enough, so the power is there when you need it.
+lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`) away when a local model isn't enough, so the power is there when you need it.
 
 ## TUI
 
@@ -195,7 +195,7 @@ Standalone mode runs entirely on your machine. No cloud required.
 
 The default PyPI wheel uses ggml's runtime CPU dispatch — it ships every CPU kernel variant (SSE4.2 / AVX / AVX2 / AVX-512) and picks the highest one your CPU supports at startup. On Linux/Windows it links Vulkan for GPU acceleration; on macOS it links Metal. NVIDIA users get GPU acceleration through the NVIDIA Vulkan driver automatically — no CUDA installation required. The opt-in CUDA wheels (above) buy 5–15% extra perf for users who specifically want CUDA-native kernels.
 
-Popular frontier models are optional; install with `pip install --pre lilbee[litellm]`.
+Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
 ## Install
 
@@ -237,13 +237,17 @@ The default wheel already uses your NVIDIA GPU through Vulkan. **You only need a
 CUDA wheels live on a per-CUDA-version index (because each is linked against a specific CUDA runtime). Pick the index that matches your installed CUDA toolkit:
 
 ```bash
-# CUDA 12.4
+# CUDA 12.4 — pip
 pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu124/
 
-# CUDA 12.5
+# CUDA 12.4 — uv tool
+uv tool install --prerelease=allow lilbee \
+  --extra-index-url https://tobocop2.github.io/lilbee/cu124/
+
+# CUDA 12.5 — pip
 pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/
 
-# uv equivalent
+# CUDA 12.5 — uv tool
 uv tool install --prerelease=allow lilbee \
   --extra-index-url https://tobocop2.github.io/lilbee/cu125/
 ```
