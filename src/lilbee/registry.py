@@ -1,20 +1,22 @@
 """Model registry -- manifest-based resolution over HuggingFace cache.
 
-Inspired by Ollama's model management. Model names (e.g., "nomic-embed-text")
-resolve through manifests to files in the HF cache.
+Identity is the HuggingFace repo plus the GGUF filename. Two distinct
+files in the same repo (different quantizations) are two distinct
+installations. The canonical ref string joins them with ``/``::
+
+    Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf
 
 Storage layout::
 
     models_dir/
     +-- manifests/
-    |   +-- nomic-embed-text/
-    |   |   +-- latest.json
-    |   +-- qwen3/
-    |       +-- latest.json
-    |       +-- 0.6b.json
+    |   +-- Qwen--Qwen3-0.6B-GGUF/
+    |   |   +-- Qwen3-0.6B-Q4_K_M.gguf.json
+    |   |   +-- Qwen3-0.6B-Q8_0.gguf.json
+    |   +-- nomic-ai--nomic-embed-text-v1.5-GGUF/
+    |       +-- nomic-embed-text-v1.5.Q4_K_M.gguf.json
     +-- models--ORG--NAME/blobs/
         +-- sha256-abc123...
-        +-- sha256-def456...
 """
 
 from __future__ import annotations
@@ -25,85 +27,83 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import NamedTuple
 
-from lilbee.models import ModelTask
 from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 
 _HASH_ALGORITHM = "sha256"
 _HASH_CHUNK_SIZE = 8192  # bytes read per iteration when hashing
-_REF_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9 ._/-]+$")
+_REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
+_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._-]+\.gguf$")
 
-DEFAULT_TAG = "latest"
+REPO_DIR_SEPARATOR = "--"
 
 
-def _validate_ref_segment(segment: str, label: str) -> str:
-    """Validate that a model ref segment contains only safe characters.
-    Allows alphanumeric, hyphens, dots, underscores, slashes (namespaced models),
-    and spaces (display names). Rejects path traversal sequences.
+def _validate_hf_repo(hf_repo: str) -> str:
+    """Validate that a HuggingFace repo id has the form ``org/name``."""
+    if not hf_repo or not _REPO_SEGMENT_RE.match(hf_repo) or ".." in hf_repo:
+        raise ValueError(f"Invalid hf_repo: {hf_repo!r}")
+    return hf_repo
+
+
+def _validate_gguf_filename(filename: str) -> str:
+    """Validate that a filename is a safe ``.gguf`` basename (no path separators)."""
+    if not filename or not _FILENAME_RE.match(filename) or ".." in filename:
+        raise ValueError(f"Invalid gguf_filename: {filename!r}")
+    return filename
+
+
+def parse_hf_ref(ref: str) -> tuple[str, str]:
+    """Split a stored ref string into ``(hf_repo, gguf_filename)``.
+
+    Accepts the canonical shape ``<org>/<repo>/<file>.gguf``. Rejects
+    legacy ``name:tag`` strings with a clear migration error so the user
+    can update their config rather than getting a silent miss.
     """
-    if not segment or not _REF_SEGMENT_RE.match(segment):
-        raise ValueError(f"Invalid model {label}: {segment!r}")
-    if ".." in segment:
-        raise ValueError(f"Invalid model {label}: {segment!r}")
-    return segment
+    if ":" in ref and "/" not in ref:
+        raise ValueError(
+            f"Legacy model ref {ref!r} is no longer supported. "
+            "Use the HuggingFace shape '<org>/<repo>/<filename>.gguf'. "
+            "See release notes for the upgrade path."
+        )
+    if not ref.endswith(".gguf"):
+        raise ValueError(
+            f"Model ref {ref!r} must end in .gguf "
+            "(canonical shape: '<org>/<repo>/<filename>.gguf')."
+        )
+    parts = ref.rsplit("/", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Model ref {ref!r} missing repo prefix")
+    hf_repo, gguf_filename = parts
+    return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
 
 
-@dataclass(frozen=True)
-class ModelRef:
-    """Parsed model reference like 'qwen3:8b' or 'nomic-embed-text:latest'."""
-
-    name: str
-    tag: str = DEFAULT_TAG
-
-    @classmethod
-    def parse(cls, s: str) -> ModelRef:
-        """Parse 'name:tag' string. Default tag is 'latest'."""
-        if ":" in s:
-            name, tag = s.rsplit(":", 1)
-            return cls(
-                name=_validate_ref_segment(name, "name"),
-                tag=_validate_ref_segment(tag, "tag"),
-            )
-        return cls(name=_validate_ref_segment(s, "name"))
-
-    def __str__(self) -> str:
-        return f"{self.name}:{self.tag}"
+def repo_to_dir(hf_repo: str) -> str:
+    """Encode an HF repo for use as a directory name (HF cache convention)."""
+    return hf_repo.replace("/", REPO_DIR_SEPARATOR)
 
 
 @dataclass
 class ModelManifest:
-    """Manifest for an installed model version.
+    """Manifest for an installed model.
 
-    Each manifest has a canonical ``name:tag`` identity plus optional aliases.
-    Aliases let users refer to the same model by multiple names (e.g. a
-    repo-derived name and a short featured name). ``resolve()`` and
-    ``is_installed()`` check both canonical names and aliases.
-    ``list_installed()`` returns only canonical entries.
+    Identity is ``(hf_repo, gguf_filename)``. The canonical ref string is
+    ``<hf_repo>/<gguf_filename>`` (see :py:meth:`ref`).
     """
 
-    name: str  # canonical family slug: "qwen3", "nomic-embed-text"
-    tag: str  # canonical variant: "0.6b", "v1.5", "latest"
+    hf_repo: str
+    gguf_filename: str
     size_bytes: int
-    task: str  # "chat", "embedding", "vision", or "rerank"; use TaskType constants
-    source_repo: str  # HuggingFace repo
-    source_filename: str  # original .gguf filename
-    downloaded_at: str  # ISO 8601 timestamp
-    blob: str = ""  # SHA-256 hash (filename in blobs/), set by install()
-    display_name: str = ""  # human-readable label: "Qwen3 0.6B"
-    aliases: list[str] = field(default_factory=list)
+    task: str  # use lilbee.models.ModelTask values
+    downloaded_at: str  # ISO 8601
+    blob: str = ""  # SHA-256 hex of the blob in the HF cache
 
-
-def _coerce_ref(ref: str | ModelRef) -> ModelRef:
-    """Normalize a string or ModelRef into a ModelRef."""
-    if isinstance(ref, str):
-        return ModelRef.parse(ref)
-    return ref
+    @property
+    def ref(self) -> str:
+        return f"{self.hf_repo}/{self.gguf_filename}"
 
 
 def _sha256_file(path: Path) -> str:
@@ -120,225 +120,125 @@ def _sha256_file(path: Path) -> str:
 
 class ModelRegistry:
     """Content-addressable model storage with manifest resolution.
-    Now references HF cache directly instead of copying files.
+
+    References the HF cache layout directly; the registry only manages
+    manifest metadata (``manifests/<repo--repo>/<filename>.json``).
     """
 
     def __init__(self, models_dir: Path) -> None:
         self._root = models_dir
         self._manifests_dir = models_dir / "manifests"
-        # Lazy alias -> manifest cache for _find_by_alias. Built on first
-        # alias miss, dropped on install()/remove(). Best-effort: a
-        # reader racing a concurrent invalidation can store a
-        # pre-mutation snapshot. Worst case is a single alias lookup
-        # miss until the next install/remove.
-        self._alias_cache: dict[str, ModelManifest] | None = None
 
-    def _invalidate_alias_cache(self) -> None:
-        self._alias_cache = None
+    def resolve(self, ref: str) -> Path:
+        """Resolve a ref string to its blob file in the HF cache.
 
-    def _build_alias_index(self) -> dict[str, ModelManifest]:
-        """Scan every manifest once and index its aliases."""
-        index: dict[str, ModelManifest] = {}
-        if not self._manifests_dir.exists():
-            return index
-        for name_dir in self._manifests_dir.iterdir():
-            if not name_dir.is_dir():
-                continue
-            for tag_file in name_dir.glob("*.json"):
-                manifest = self._load_manifest_file(tag_file)
-                if manifest is None:
-                    continue
-                for alias in manifest.aliases:
-                    index[alias] = manifest
-        return index
-
-    def resolve(self, ref: str | ModelRef) -> Path:
-        """Resolve model name to file path in HF cache.
-        Checks canonical names first, then aliases.
-        Raises ``KeyError`` if the model is not installed.
+        Raises :class:`KeyError` if the model is not installed.
         """
-        r = _coerce_ref(ref)
-        manifest = self._read_manifest(r)
+        hf_repo, gguf_filename = parse_hf_ref(ref)
+        manifest = self._read_manifest(hf_repo, gguf_filename)
         if manifest is None:
-            manifest = self._find_by_alias(str(r))
-        if manifest is None:
-            raise KeyError(f"Model {r} not installed")
-
-        # Find the file in HF cache structure: models--ORG--NAME/blobs/*
-        cache_path = self._root / f"models--{manifest.source_repo.replace('/', '--')}"
+            raise KeyError(f"Model {ref} not installed")
+        cache_path = self._root / f"models--{repo_to_dir(manifest.hf_repo)}"
         if not cache_path.exists():
-            raise KeyError(f"Cache folder missing for {r}: {cache_path.name}")
-
-        # Find the blobs directory
-        blobs_dir = cache_path / "blobs"
-        if not blobs_dir.exists():
-            raise KeyError(f"Blobs directory missing for {r}")
-
-        # Look for file matching the blob hash
-        blob_file = blobs_dir / manifest.blob
+            raise KeyError(f"Cache folder missing for {ref}: {cache_path.name}")
+        blob_file = cache_path / "blobs" / manifest.blob
         if not blob_file.exists():
-            raise KeyError(f"Blob file missing for {r}: {manifest.blob}")
-
+            raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
         return blob_file
 
-    def is_installed(self, ref: str | ModelRef) -> bool:
-        """Check if a model is installed (manifest exists and file is in cache)."""
+    def is_installed(self, ref: str) -> bool:
+        """Return True if a model is installed and its blob is present."""
         try:
             self.resolve(ref)
             return True
         except (KeyError, ValueError):
             return False
 
-    def install(self, ref: ModelRef, source_path: Path, manifest: ModelManifest) -> Path:
-        """Write manifest and ensure blob exists in cache.
-        If the source file is already at the expected cache location, just writes
-        the manifest.  Otherwise copies the source into the HF-style cache tree
-        so that ``resolve()`` can find it afterward.
+    def install(
+        self,
+        hf_repo: str,
+        gguf_filename: str,
+        source_path: Path,
+        manifest: ModelManifest,
+    ) -> Path:
+        """Write a manifest and ensure the blob exists in the cache.
+
+        If *source_path* already lives at the expected cache location
+        (e.g. populated by ``hf_hub_download``), only the manifest is
+        written; otherwise the file is copied into the HF-style cache
+        tree so subsequent ``resolve`` calls succeed.
         """
         import shutil
 
         digest = _sha256_file(source_path)
-
-        cache_path = self._root / f"models--{manifest.source_repo.replace('/', '--')}"
+        cache_path = self._root / f"models--{repo_to_dir(hf_repo)}"
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
-
         if not blob_path.exists():
             blobs_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, blob_path)
 
-        # Absorb aliases from any conflicting manifest that references the same blob.
-        merged_aliases = list(manifest.aliases)
-        self._absorb_conflicting_aliases(
-            manifest.source_repo, manifest.source_filename, ref, merged_aliases
-        )
-
         updated = ModelManifest(
-            name=manifest.name,
-            tag=manifest.tag,
+            hf_repo=hf_repo,
+            gguf_filename=gguf_filename,
             size_bytes=manifest.size_bytes,
             task=manifest.task,
-            source_repo=manifest.source_repo,
-            source_filename=manifest.source_filename,
             downloaded_at=manifest.downloaded_at,
             blob=digest,
-            display_name=manifest.display_name,
-            aliases=merged_aliases,
         )
-        self._write_manifest(ref, updated)
-        self._invalidate_alias_cache()
+        self._write_manifest(updated)
         return blob_path
 
-    def write_latest_alias(self, ref: ModelRef) -> None:
-        """Write a :latest manifest that mirrors the given ref.
-        Call after install() so the blob hash is already recorded.
-        """
-        manifest = self._read_manifest(ref)
-        if manifest is None:
-            return
-        latest = ModelManifest(
-            name=manifest.name,
-            tag=DEFAULT_TAG,
-            size_bytes=manifest.size_bytes,
-            task=manifest.task,
-            source_repo=manifest.source_repo,
-            source_filename=manifest.source_filename,
-            downloaded_at=manifest.downloaded_at,
-            blob=manifest.blob,
-            display_name=manifest.display_name,
-            aliases=manifest.aliases,
-        )
-        self._write_manifest(ModelRef(name=ref.name, tag=DEFAULT_TAG), latest)
-        self._invalidate_alias_cache()
-
-    def remove(self, ref: str | ModelRef) -> bool:
-        """Remove a model manifest. Does NOT delete cache files (managed by HF)."""
+    def remove(self, ref: str) -> bool:
+        """Remove a manifest. Does not delete the cached blob."""
         try:
-            r = _coerce_ref(ref)
-            manifest = self._read_manifest(r)
+            hf_repo, gguf_filename = parse_hf_ref(ref)
         except ValueError:
             return False
-        if manifest is None:
+        manifest_path = self._manifest_path(hf_repo, gguf_filename)
+        if not manifest_path.exists():
             return False
-        manifest_path = self._manifest_path(r)
         manifest_path.unlink()
-        # Remove empty name directory
-        name_dir = manifest_path.parent
-        if name_dir.exists() and not any(name_dir.iterdir()):
-            name_dir.rmdir()
-        self._invalidate_alias_cache()
-        log.info("Removed manifest for %s (cache file untouched)", r)
+        repo_dir = manifest_path.parent
+        if repo_dir.exists() and not any(repo_dir.iterdir()):
+            repo_dir.rmdir()
+        log.info("Removed manifest for %s (cache file untouched)", ref)
         return True
 
     def list_installed(self) -> list[ModelManifest]:
-        """List all installed models."""
+        """Return manifests for all installed models."""
         manifests: list[ModelManifest] = []
         if not self._manifests_dir.exists():
             return manifests
-        for name_dir in sorted(self._manifests_dir.iterdir()):
-            if not name_dir.is_dir():
+        for repo_dir in sorted(self._manifests_dir.iterdir()):
+            if not repo_dir.is_dir():
                 continue
-            for tag_file in sorted(name_dir.glob("*.json")):
+            for tag_file in sorted(repo_dir.glob("*.gguf.json")):
                 manifest = self._load_manifest_file(tag_file)
                 if manifest is not None:
                     manifests.append(manifest)
         return manifests
 
-    def migrate_legacy(self) -> int:
-        """Scan for .gguf files in root dir and register them.
-        On first run, finds existing .gguf files, moves them to HF cache
-        structure, and creates manifests. Returns the number of models migrated.
-        """
-        if not self._root.exists():
-            return 0
-        gguf_files = sorted(self._root.glob("*.gguf"))
-        if not gguf_files:
-            return 0
-        count = 0
-        for path in gguf_files:
-            name, tag, task, repo = _match_catalog_entry(path.name)
-            ref = ModelRef(name=name, tag=tag)
-            digest = _sha256_file(path)
+    def get_manifest(self, ref: str) -> ModelManifest | None:
+        """Return the manifest for *ref* or None if not installed."""
+        try:
+            hf_repo, gguf_filename = parse_hf_ref(ref)
+        except ValueError:
+            return None
+        return self._read_manifest(hf_repo, gguf_filename)
 
-            if repo:
-                cache_path = self._root / f"models--{repo.replace('/', '--')}"
-            else:
-                safe_name = name.replace(" ", "_").replace("/", "_")
-                cache_path = self._root / f"models--{safe_name}"
-            blobs_dir = cache_path / "blobs"
-            blobs_dir.mkdir(parents=True, exist_ok=True)
-            blob_path = blobs_dir / digest
-            path.rename(blob_path)
-
-            manifest = ModelManifest(
-                name=name,
-                tag=tag,
-                size_bytes=blob_path.stat().st_size,
-                task=task,
-                source_repo=repo,
-                source_filename=path.name,
-                downloaded_at=datetime.now(tz=UTC).isoformat(),
-                blob=digest,
-            )
-            self._write_manifest(ref, manifest)
-            # Also write :latest alias for legacy models
-            if tag != DEFAULT_TAG:
-                self.write_latest_alias(ref)
-            log.info("Migrated legacy model %s -> %s", path.name, ref)
-            count += 1
-        self._invalidate_alias_cache()
-        return count
-
-    def _manifest_path(self, ref: ModelRef) -> Path:
-        path = self._manifests_dir / ref.name / f"{ref.tag}.json"
+    def _manifest_path(self, hf_repo: str, gguf_filename: str) -> Path:
+        repo = _validate_hf_repo(hf_repo)
+        filename = _validate_gguf_filename(gguf_filename)
+        path = self._manifests_dir / repo_to_dir(repo) / f"{filename}.json"
         validate_path_within(path, self._manifests_dir)
         return path
 
-    def _read_manifest(self, ref: ModelRef) -> ModelManifest | None:
-        return self._load_manifest_file(self._manifest_path(ref))
+    def _read_manifest(self, hf_repo: str, gguf_filename: str) -> ModelManifest | None:
+        return self._load_manifest_file(self._manifest_path(hf_repo, gguf_filename))
 
-    def _write_manifest(self, ref: ModelRef, manifest: ModelManifest) -> None:
-        path = self._manifest_path(ref)
+    def _write_manifest(self, manifest: ModelManifest) -> None:
+        path = self._manifest_path(manifest.hf_repo, manifest.gguf_filename)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps(asdict(manifest), indent=2)
         tmp_path: str | None = None
@@ -354,88 +254,12 @@ class ModelRegistry:
                 Path(tmp_path).unlink(missing_ok=True)
             raise
 
-    def _find_by_alias(self, alias: str) -> ModelManifest | None:
-        """Look up *alias* via the cached alias index.
-
-        Amortized O(1) per lookup; index rebuild on first miss after
-        install/remove is O(total manifests).
-        """
-        if self._alias_cache is None:
-            self._alias_cache = self._build_alias_index()
-        return self._alias_cache.get(alias)
-
-    def _absorb_conflicting_aliases(
-        self,
-        source_repo: str,
-        source_filename: str,
-        keep: ModelRef,
-        aliases: list[str],
-    ) -> None:
-        """Find manifests with the same source and absorb them as aliases.
-
-        Deletes the conflicting manifest file and adds its ``name:tag`` to
-        the *aliases* list so the old name still resolves.
-        """
-        if not self._manifests_dir.exists():
-            return
-        keep_dir = self._manifests_dir / keep.name
-        for name_dir in list(self._manifests_dir.iterdir()):
-            if not name_dir.is_dir() or name_dir == keep_dir:
-                continue
-            for tag_file in list(name_dir.glob("*.json")):
-                manifest = self._load_manifest_file(tag_file)
-                if manifest is None:
-                    continue
-                if (
-                    manifest.source_repo != source_repo
-                    or manifest.source_filename != source_filename
-                ):
-                    continue
-                old_ref = f"{manifest.name}:{manifest.tag}"
-                if old_ref not in aliases:
-                    aliases.append(old_ref)
-                log.info("Absorbed %s as alias of %s", old_ref, keep)
-                tag_file.unlink()
-            if name_dir.exists() and not any(name_dir.iterdir()):
-                name_dir.rmdir()
-
     def _load_manifest_file(self, path: Path) -> ModelManifest | None:
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text())
-            data.setdefault("aliases", [])  # backwards compat with old manifests
             return ModelManifest(**data)
         except (json.JSONDecodeError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
-
-    def _blob_referenced(self, digest: str) -> bool:
-        """Check if any manifest still references the given blob digest."""
-        return any(manifest.blob == digest for manifest in self.list_installed())
-
-
-class CatalogMatch(NamedTuple):
-    """Result of matching a .gguf filename to a catalog entry."""
-
-    name: str  # family slug
-    tag: str  # variant tag
-    task: str
-    repo: str
-
-
-def _match_catalog_entry(filename: str) -> CatalogMatch:
-    """Match a .gguf filename to a catalog entry.
-    Falls back to deriving a name from the filename itself.
-    """
-    from lilbee.catalog import FEATURED_ALL
-
-    filename_lower = filename.lower()
-    for entry in FEATURED_ALL:
-        # Match on repo name fragment or exact filename
-        repo_stem = entry.hf_repo.split("/")[-1].lower()
-        if filename_lower.startswith(repo_stem) or entry.gguf_filename == filename:
-            return CatalogMatch(entry.name, entry.tag, entry.task, entry.hf_repo)
-    # Fallback: strip extension and quant suffix for a reasonable name
-    stem = filename.rsplit(".", 1)[0]
-    return CatalogMatch(stem, DEFAULT_TAG, ModelTask.CHAT, "")

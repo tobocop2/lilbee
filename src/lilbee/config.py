@@ -360,8 +360,13 @@ class Config(BaseSettings):
     # ``vault_path`` for native-UI deep-links.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
-    chat_model: str = Field(default="qwen3:0.6b", min_length=1)
-    embedding_model: str = Field(default="nomic-embed-text:v1.5", min_length=1)
+    chat_model: str = Field(
+        default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", min_length=1
+    )
+    embedding_model: str = Field(
+        default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
+        min_length=1,
+    )
     # Vision OCR model for scanned PDFs and image-only pages. Empty = disabled;
     # there is no cross-role fallback onto the chat model even if multimodal.
     vision_model: str = ConfigField(default="", public=True)

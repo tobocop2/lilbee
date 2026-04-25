@@ -71,12 +71,12 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     """Parse a model string into a ProviderModelRef.
 
     Classifies model strings by prefix:
-    - ``openai/gpt-4o`` -> API provider, no tag normalization
+    - ``openai/gpt-4o`` -> API provider
     - ``anthropic/claude-sonnet-4-20250514`` -> API provider
-    - ``ollama/qwen3:8b`` -> Ollama provider
-    - ``org/model-name`` -> local (HuggingFace-style), tag normalization applied
-    - ``qwen3:8b`` -> local, already has tag
-    - ``qwen3`` -> local, ``:latest`` appended
+    - ``ollama/qwen3:8b`` -> Ollama provider (keeps its own ``name:tag``)
+    - ``<org>/<repo>/<file>.gguf`` -> local HuggingFace native model
+    - ``<org>/<repo>`` -> local, repo-only ref (filename resolved later)
+    - Any other ``name:tag`` shape is rejected as a legacy ref.
     """
     if "/" in raw:
         prefix, rest = raw.split("/", 1)
@@ -85,12 +85,18 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
         if prefix == "ollama":
             name = rest if ":" in rest else f"{rest}:latest"
             return ProviderModelRef(raw=raw, provider="ollama", name=name)
-        # Unknown prefix (HuggingFace org/model). Treat as local.
-        name = raw if ":" in raw else f"{raw}:latest"
-        return ProviderModelRef(raw=raw, provider="local", name=name)
-    # No prefix = local model. Add :latest if no tag.
-    name = raw if ":" in raw else f"{raw}:latest"
-    return ProviderModelRef(raw=raw, provider="local", name=name)
+        return ProviderModelRef(raw=raw, provider="local", name=raw)
+    if ":" in raw:
+        raise ValueError(
+            f"Legacy model ref {raw!r} is no longer supported. "
+            "Use the HuggingFace shape '<org>/<repo>/<filename>.gguf'. "
+            "See release notes for the upgrade path."
+        )
+    raise ValueError(
+        f"Model ref {raw!r} is not recognized. Native models use "
+        "'<org>/<repo>/<filename>.gguf'; remote models use a provider "
+        "prefix like 'ollama/' or 'openai/'."
+    )
 
 
 def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[str, Any]:

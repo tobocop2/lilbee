@@ -30,7 +30,7 @@ from tqdm.auto import tqdm as _base_tqdm
 from lilbee.cancellation import TaskCancelled
 from lilbee.model_manager import ModelSource
 from lilbee.models import ModelTask
-from lilbee.registry import DEFAULT_TAG, ModelManifest, ModelRef, ModelRegistry
+from lilbee.registry import ModelManifest, ModelRegistry
 
 # circular: config.py -> catalog (via the per-role task validator). cfg is
 # imported lazily so this module can load before Config() finishes init.
@@ -208,14 +208,12 @@ _HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag",
 @dataclass(frozen=True)
 class CatalogModel:
     """A model entry in the catalog.
-    Identity follows Ollama conventions: name is a lowercase slug (model family),
-    tag is the variant (param count, version, etc.). The canonical reference is
-    ``name:tag`` (e.g. ``qwen3:0.6b``).  ``display_name`` is the human label.
+
+    Identity is the HuggingFace repo. ``gguf_filename`` may be a glob
+    (e.g. ``*Q4_K_M.gguf``) for featured entries; the concrete filename
+    is resolved at install time and recorded on the manifest.
     """
 
-    name: str  # family slug: "qwen3", "nomic-embed-text"
-    tag: str  # variant: "0.6b", "v1.5"
-    display_name: str  # UI label: "Qwen3 0.6B"
     hf_repo: str
     gguf_filename: str
     size_gb: float
@@ -224,12 +222,20 @@ class CatalogModel:
     featured: bool
     downloads: int
     task: str
-    recommended: bool = False  # :latest alias target for this family
+    recommended: bool = False
 
     @property
     def ref(self) -> str:
-        """Canonical ``name:tag`` identifier (e.g. ``qwen3:0.6b``)."""
-        return f"{self.name}:{self.tag}"
+        """Browse-time ref. For featured entries with glob filenames this
+        is the repo only; for ad-hoc and HF-search entries it is also the
+        repo (concrete filename is resolved when installing).
+        """
+        return self.hf_repo
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable label derived from the HuggingFace repo id."""
+        return clean_display_name(self.hf_repo)
 
 
 @dataclass(frozen=True)
@@ -253,12 +259,15 @@ class _HfPage:
 
 @dataclass(frozen=True)
 class ModelVariant:
-    """A specific quantization/size variant within a model family."""
+    """A specific quantization/size variant within a model family.
+
+    Identity is ``(hf_repo, filename)``. ``filename`` may be a glob for
+    featured entries; the concrete file is resolved at install time.
+    """
 
     hf_repo: str
     filename: str
     param_count: str
-    tag: str  # original CatalogModel tag for ref construction
     quant: str
     size_mb: int
     recommended: bool
@@ -292,9 +301,6 @@ def _load_featured() -> tuple[
     def _build(task: ModelTask) -> tuple[CatalogModel, ...]:
         return tuple(
             CatalogModel(
-                name=m["name"],
-                tag=m.get("tag", DEFAULT_TAG),
-                display_name=m.get("display_name", m["name"]),
                 hf_repo=m["hf_repo"],
                 gguf_filename=m["gguf_filename"],
                 size_gb=m["size_gb"],
@@ -358,11 +364,13 @@ def _extract_quant(filename: str) -> str:
 
 def _derive_param_count(model: CatalogModel) -> str:
     """Extract the parameter-count label (e.g. ``7B``) from a catalog model.
-    Falls back to ``model.tag`` when the display name has no numeric suffix
-    (useful for embedding models whose tag is a version like ``v1.5``).
+
+    Reads the count from the cleaned HF repo name. Returns an empty
+    string when the display has no numeric suffix (e.g. embedding models
+    like ``Nomic Embed Text v1.5``); callers fall back to ``"--"``.
     """
     match = PARAM_COUNT_RE.search(model.display_name)
-    return match.group(1) if match else model.tag
+    return match.group(1) if match else ""
 
 
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
@@ -371,31 +379,36 @@ def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
         hf_repo=model.hf_repo,
         filename=model.gguf_filename,
         param_count=_derive_param_count(model),
-        tag=model.tag,
         quant=_extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
         recommended=model.recommended,
     )
 
 
+def _family_slug(display_name: str) -> str:
+    """Stable slug for a family, derived from its display name."""
+    return _extract_family_name(display_name).lower().replace(" ", "-")
+
+
 def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFamily]:
-    """Group CatalogModels into families by name (slug)."""
+    """Group CatalogModels into families by display-derived family name."""
     groups: dict[str, list[CatalogModel]] = {}
     order: list[str] = []
     for m in models:
-        if m.name not in groups:
-            order.append(m.name)
-        groups.setdefault(m.name, []).append(m)
+        family = _extract_family_name(m.display_name)
+        if family not in groups:
+            order.append(family)
+        groups.setdefault(family, []).append(m)
 
     families: list[ModelFamily] = []
-    for slug in order:
-        members = groups[slug]
+    for family_name in order:
+        members = groups[family_name]
         representative = next((m for m in members if m.recommended), members[0])
         variants = [_catalog_to_variant(m) for m in members]
         families.append(
             ModelFamily(
-                slug=slug,
-                name=_extract_family_name(representative.display_name),
+                slug=_family_slug(representative.display_name),
+                name=family_name,
                 task=task,
                 description=representative.description,
                 variants=tuple(variants),
@@ -529,13 +542,8 @@ def _fetch_hf_models(
         else:
             size_gb = _estimate_size_from_siblings(item.siblings or [])
         task = _pipeline_to_task(item.pipeline_tag or "")
-        repo_name = item.id.split("/")[-1]
-        slug = repo_name.lower().replace(" ", "-")
         models.append(
             CatalogModel(
-                name=slug,
-                tag=DEFAULT_TAG,
-                display_name=clean_display_name(item.id),
                 hf_repo=item.id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
@@ -576,7 +584,7 @@ def _search_blob(m: CatalogModel) -> str:
 
     Null char joins the fields so a search term never straddles them.
     """
-    return f"{m.name}\0{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
+    return f"{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
 
 
 def get_catalog(
@@ -628,13 +636,15 @@ def get_catalog(
         lo, hi = _SIZE_RANGES[size]
         all_models = [m for m in all_models if lo <= m.size_gb < hi]
 
-    # Filter by installed status
+    # Filter by installed status. Installed manifests have refs of the
+    # form ``hf_repo/filename``; catalog entries identify by ``hf_repo``.
+    # A repo is "installed" if any quant of it has a manifest.
     if installed is not None and model_manager is not None:
-        installed_models = _get_installed_models(model_manager)
+        installed_repos = {ref.rsplit("/", 1)[0] for ref in _get_installed_models(model_manager)}
         if installed:
-            all_models = [m for m in all_models if m.ref in installed_models]
+            all_models = [m for m in all_models if m.hf_repo in installed_repos]
         else:
-            all_models = [m for m in all_models if m.ref not in installed_models]
+            all_models = [m for m in all_models if m.hf_repo not in installed_repos]
 
     # Filter by featured status
     if featured is not None:
@@ -697,6 +707,11 @@ _SORT_KEYS: dict[str, tuple] = {
     "featured": (lambda m: (not m.featured, -m.downloads), False),
 }
 
+# Note: ``_SORT_KEYS["name"]`` reads ``CatalogModel.display_name``, which
+# is now a property that calls ``clean_display_name(hf_repo)`` (defined
+# later in this module). The lambda is evaluated at sort time, so the
+# forward reference resolves fine despite the source-order ordering.
+
 
 def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     """Sort models according to the specified sort order."""
@@ -707,80 +722,41 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
 class CatalogIndex(NamedTuple):
     """Case-insensitive lookup indexes for find_catalog_entry."""
 
-    by_ref: dict[str, CatalogModel]
-    by_name: dict[str, CatalogModel]
-    by_display: dict[str, CatalogModel]
     by_hf_repo: dict[str, CatalogModel]
+    by_full_ref: dict[str, CatalogModel]  # repo + concrete filename
 
 
 @functools.cache
 def _build_catalog_index() -> CatalogIndex:
     """Build case-insensitive lookup indexes for find_catalog_entry."""
-    by_ref: dict[str, CatalogModel] = {}
-    by_name: dict[str, CatalogModel] = {}
-    by_display: dict[str, CatalogModel] = {}
     by_hf_repo: dict[str, CatalogModel] = {}
+    by_full_ref: dict[str, CatalogModel] = {}
     for m in FEATURED_ALL:
-        ref_key = m.ref.lower()
-        name_key = m.name.lower()
-        by_ref[ref_key] = m
-        if name_key not in by_name or m.recommended:
-            by_name[name_key] = m
-        by_display.setdefault(m.display_name.lower(), m)
         by_hf_repo.setdefault(m.hf_repo.lower(), m)
-    return CatalogIndex(by_ref, by_name, by_display, by_hf_repo)
-
-
-def _candidate_keys(q: str, idx: CatalogIndex) -> list[str]:
-    """Build the ordered lookup keys ``find_catalog_entry`` probes.
-
-    Keeps lookup strict: the bare-name fallback fires only for the
-    ``hf_repo:tag`` form (a slash in the pre-colon segment). A plain
-    ``name:tag`` query that doesn't match exactly returns ``None``
-    instead of silently collapsing onto the recommended variant.
-    """
-    candidates = [q]
-    # ``hf_repo`` keys in the index are stored without a tag; PUT handlers
-    # normalise input via ``ensure_tag`` which appends ``:latest``. Strip
-    # the tag only when the pre-colon part looks like an hf_repo id.
-    if ":" in q:
-        head = q.split(":", 1)[0]
-        if "/" in head:
-            candidates.append(head)
-    # Provider-prefixed refs like ``ollama/qwen3:0.6b`` or ``openai/...``
-    # carry the native model ref after the first slash. The hf_repo form
-    # (e.g. ``gpustack/bge-reranker-v2-m3-GGUF``) also has a slash, so we
-    # only strip when the prefix does not match any hf_repo owner.
-    if "/" in q:
-        prefix, rest = q.split("/", 1)
-        hf_owners = {r.split("/", 1)[0] for r in idx.by_hf_repo if "/" in r}
-        if prefix not in hf_owners:
-            candidates.append(rest)
-            if ":" in rest and "/" in rest.split(":", 1)[0]:
-                candidates.append(rest.split(":", 1)[0])
-    return candidates
+        if "*" not in m.gguf_filename:
+            by_full_ref[f"{m.hf_repo}/{m.gguf_filename}".lower()] = m
+    return CatalogIndex(by_hf_repo, by_full_ref)
 
 
 def find_catalog_entry(query: str) -> CatalogModel | None:
-    """Find a featured model by ref, name, display name, or hf_repo.
+    """Find a featured model by hf_repo or by full ``hf_repo/filename`` ref.
 
-    Accepts every ref variant callers actually produce: plain ``name``
-    or ``name:tag``, ``display_name``, plain ``hf_repo``, ``hf_repo:tag``
-    (PUT handlers append ``:latest`` via ``ensure_tag``), and any of
-    the above prefixed with a provider scheme like ``ollama/``.
-    Case-insensitive. Returns ``None`` if nothing matches.
+    Provider-prefixed refs like ``ollama/<name>``, ``openai/<name>`` are
+    stripped of their first segment when the prefix does not match a
+    known HF owner. Case-insensitive. Returns ``None`` on miss.
     """
     if not query:
         return None
     idx = _build_catalog_index()
     q = query.lower()
-    for c in _candidate_keys(q, idx):
-        hit = (
-            idx.by_ref.get(c)
-            or idx.by_name.get(c)
-            or idx.by_display.get(c)
-            or idx.by_hf_repo.get(c)
-        )
+    candidates = [q]
+    if "/" in q:
+        prefix, rest = q.split("/", 1)
+        hf_owners = {r.split("/", 1)[0] for r in idx.by_hf_repo if "/" in r}
+        if prefix not in hf_owners:
+            candidates.append(rest)
+    for c in candidates:
+        hit = idx.by_full_ref.get(c) or idx.by_hf_repo.get(c)
         if hit is not None:
             return hit
     return None
@@ -812,11 +788,7 @@ def _is_hf_repo_id(value: str) -> bool:
 
 def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
     """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
-    repo_name = hf_repo.split("/")[-1]
     return CatalogModel(
-        name=repo_name.lower().replace(" ", "-"),
-        tag=DEFAULT_TAG,
-        display_name=clean_display_name(hf_repo),
         hf_repo=hf_repo,
         gguf_filename="*.gguf",
         size_gb=0.0,
@@ -881,18 +853,18 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         raise
     except GatedRepoError:
         raise PermissionError(
-            f"{entry.name} requires HuggingFace authentication. "
+            f"{entry.hf_repo} requires HuggingFace authentication. "
             "Set HF_TOKEN env var or visit the repo page to request access."
         ) from None
     except RepositoryNotFoundError:
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
-        raise RuntimeError(f"Network error downloading {entry.display_name}: {exc}") from None
+        raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
-        raise RuntimeError(f"I/O error downloading {entry.display_name}: {exc}") from None
+        raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
         raise RuntimeError(
-            f"Failed to download {entry.display_name}: {type(exc).__name__}: {exc}"
+            f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
 
     if on_progress:
@@ -920,24 +892,18 @@ def _finalize_download(
 def _register_model(entry: CatalogModel, file_path: Path) -> None:
     """Create a registry manifest for a downloaded model."""
     registry = ModelRegistry(_cfg().models_dir)
-    ref = ModelRef(name=entry.name, tag=entry.tag)
     manifest = ModelManifest(
-        name=entry.name,
-        tag=entry.tag,
-        display_name=entry.display_name,
+        hf_repo=entry.hf_repo,
+        gguf_filename=file_path.name,
         size_bytes=file_path.stat().st_size,
         task=entry.task,
-        source_repo=entry.hf_repo,
-        source_filename=file_path.name,
         downloaded_at=datetime.now(UTC).isoformat(),
     )
     try:
-        registry.install(ref, file_path, manifest)
-        log.info("Registered %s in manifest", ref)
-        if entry.recommended:
-            registry.write_latest_alias(ref)
+        registry.install(entry.hf_repo, file_path.name, file_path, manifest)
+        log.info("Registered %s/%s in manifest", entry.hf_repo, file_path.name)
     except Exception:
-        log.warning("Failed to register manifest for %s", entry.name, exc_info=True)
+        log.warning("Failed to register manifest for %s", entry.hf_repo, exc_info=True)
 
 
 def _download_mmproj(
@@ -1017,18 +983,19 @@ def _mmproj_in_models_dir_matching(pattern: str) -> Path | None:
     return None
 
 
-def find_mmproj_file(model_name: str) -> Path | None:
+def find_mmproj_file(model_ref: str) -> Path | None:
     """Find the mmproj for a ``FEATURED_VISION`` entry under ``_cfg().models_dir``.
 
-    Returns ``None`` when ``model_name`` matches no featured entry. Never
-    falls back to an arbitrary mmproj: that cross-contaminates non-vision
-    chat models (e.g. ``qwen3:8b`` would inherit LightOn OCR2's mmproj and
+    *model_ref* is matched against each featured vision entry's
+    ``hf_repo``. Returns ``None`` when nothing matches. Never falls back
+    to an arbitrary mmproj: that cross-contaminates non-vision chat
+    models (e.g. a chat model would inherit a vision model's mmproj and
     be misreported as vision-capable).
     """
     if not _cfg().models_dir.exists():
         return None
     for entry in FEATURED_VISION:
-        if model_name not in entry.name and model_name not in entry.hf_repo:
+        if model_ref not in entry.hf_repo and entry.hf_repo not in model_ref:
             continue
         pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
         match = _mmproj_in_models_dir_matching(pattern)
@@ -1162,8 +1129,6 @@ def quant_tier(quant: str) -> str:
 class EnrichedModel:
     """A catalog model enriched with display metadata and install status."""
 
-    name: str
-    tag: str
     hf_repo: str
     gguf_filename: str
     size_gb: float
@@ -1179,15 +1144,18 @@ class EnrichedModel:
     source: str
 
 
-def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[EnrichedModel]:
-    """Enrich catalog models with display names, quality tiers, and install status."""
+def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[EnrichedModel]:
+    """Enrich catalog models with display names, quality tiers, and install status.
+
+    *installed_refs* contains the ``hf_repo/filename`` refs returned by
+    ``model_manager.list_installed()``. A repo is considered installed
+    when at least one of its quants has a manifest.
+    """
+    installed_repos = {ref.rsplit("/", 1)[0] for ref in installed_refs}
     enriched: list[EnrichedModel] = []
     for m in result.models:
-        is_installed = m.ref in installed_names
         enriched.append(
             EnrichedModel(
-                name=m.name,
-                tag=m.tag,
                 hf_repo=m.hf_repo,
                 gguf_filename=m.gguf_filename,
                 size_gb=m.size_gb,
@@ -1196,10 +1164,10 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
                 featured=m.featured,
                 downloads=m.downloads,
                 task=m.task,
-                display_name=m.display_name or clean_display_name(m.hf_repo),
+                display_name=m.display_name,
                 param_count=_derive_param_count(m),
                 quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
-                installed=is_installed,
+                installed=m.hf_repo in installed_repos,
                 source=ModelSource.NATIVE.value,
             )
         )

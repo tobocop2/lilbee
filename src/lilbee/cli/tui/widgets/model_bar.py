@@ -107,21 +107,45 @@ def _lookup_bucket(
     return buckets.get(key)
 
 
+def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
+    """Build the picker label for a native manifest.
+
+    When the same repo has multiple installed quants, the label appends
+    the quant suffix (e.g. ``Qwen3 0.6B (Q4_K_M)``) so the picker rows
+    are visually distinct. With one quant per repo the bare display
+    name suffices.
+    """
+    from lilbee.catalog import _extract_quant, clean_display_name
+
+    base = clean_display_name(hf_repo)
+    if repo_count <= 1:
+        return base
+    quant = _extract_quant(gguf_filename)
+    return f"{base} ({quant})" if quant else base
+
+
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
         from lilbee.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
-        for manifest in registry.list_installed():
-            ref = f"{manifest.name}:{manifest.tag}"
-            if _is_mmproj(ref) or ref in seen:
+        manifests = registry.list_installed()
+        repo_counts: dict[str, int] = {}
+        for m in manifests:
+            repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
+
+        for manifest in manifests:
+            ref = manifest.ref
+            if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
             bucket = _lookup_bucket(buckets, manifest.task, ref)
             if bucket is None:
                 continue
             seen.add(ref)
-            label = manifest.display_name or ref
+            label = _native_label(
+                manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
+            )
             bucket.append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
@@ -135,6 +159,11 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
+            # Skip backend rows that report a blank model name; otherwise
+            # the picker shows an empty " (Ollama)" stub at the top of
+            # the dropdown (see bb-qbwj).
+            if not model.name.strip():
+                continue
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
                 continue
