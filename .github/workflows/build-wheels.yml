@@ -188,15 +188,15 @@ jobs:
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.12"}
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.13"}
           # Windows CUDA — same Jimver action.
-          - {os: windows-latest, backend: cu121, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.1.0"}
-          - {os: windows-latest, backend: cu121, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.1.0"}
-          - {os: windows-latest, backend: cu121, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.1.0"}
-          - {os: windows-latest, backend: cu124, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.4.0"}
-          - {os: windows-latest, backend: cu124, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.4.0"}
-          - {os: windows-latest, backend: cu124, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.4.0"}
-          - {os: windows-latest, backend: cu125, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.5.0"}
-          - {os: windows-latest, backend: cu125, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.5.0"}
-          - {os: windows-latest, backend: cu125, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.5.0"}
+          - {os: windows-2022, backend: cu121, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.1.0"}
+          - {os: windows-2022, backend: cu121, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.1.0"}
+          - {os: windows-2022, backend: cu121, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.1.0"}
+          - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.4.0"}
+          - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.4.0"}
+          - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.4.0"}
+          - {os: windows-2022, backend: cu125, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.5.0"}
+          - {os: windows-2022, backend: cu125, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.5.0"}
+          - {os: windows-2022, backend: cu125, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.5.0"}
 
     runs-on: ${{ matrix.os }}
 
@@ -227,8 +227,11 @@ jobs:
           method: network
           # visual_studio_integration is required on Windows so cmake's
           # CMakeDetermineCUDACompiler can find the MSBuild CUDA toolset.
-          # Linux ignores it. Listing every dep we touch explicitly.
-          sub-packages: '["nvcc","cudart","cudart_dev","cublas","cublas_dev","thrust","visual_studio_integration"]'
+          # Linux ignores it. cudart_dev is not a separately-installable
+          # sub-package in the CUDA Windows installer — its headers ship
+          # with the cudart bundle. Listing it tripped exit code
+          # 3772776473 ("Invalid component") on b438.
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
       - name: Build llama-cpp-python from source
         shell: bash
