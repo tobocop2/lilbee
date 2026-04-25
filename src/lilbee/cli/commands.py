@@ -647,13 +647,14 @@ def version() -> None:
     console.print(f"lilbee {ver}")
 
 
-_SELF_CHECK_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
-_SELF_CHECK_FILE = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
-_SELF_CHECK_URL = f"https://huggingface.co/{_SELF_CHECK_REPO}/resolve/main/{_SELF_CHECK_FILE}"
+_SELF_CHECK_CHAT_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
+_SELF_CHECK_CHAT_FILE = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+_SELF_CHECK_EMBED_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+_SELF_CHECK_EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 
-def _download_self_check_model() -> Path:
-    """Fetch the SmolLM2 GGUF via urllib (stdlib only).
+def _download_self_check_model(repo: str, filename: str) -> Path:
+    """Fetch a GGUF from the HuggingFace CDN via urllib (stdlib only).
 
     Avoids huggingface_hub / httpx entirely. Inside the PyInstaller --onefile
     bundle, huggingface_hub's retry path has re-entered a closed httpx client
@@ -663,13 +664,14 @@ def _download_self_check_model() -> Path:
     import tempfile
     import urllib.request
 
+    url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
     dest_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
-    dest = dest_dir / _SELF_CHECK_FILE
-    console.print(f"Downloading {_SELF_CHECK_URL}")
+    dest = dest_dir / filename
+    console.print(f"Downloading {url}")
     last_exc: BaseException | None = None
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(_SELF_CHECK_URL, timeout=60) as response:  # noqa: S310 — literal https url
+            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 — literal https url
                 dest.write_bytes(response.read())
             return dest
         except (OSError, urllib.error.URLError) as exc:
@@ -678,62 +680,116 @@ def _download_self_check_model() -> Path:
     raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
 
 
-_self_check_model_path_option = typer.Option(
+_self_check_chat_path_option = typer.Option(
     None,
-    "--model-path",
-    help="Path to a GGUF file. Skips the HuggingFace download.",
+    "--chat-model-path",
+    help="Path to a chat GGUF file. Skips the HuggingFace download.",
+)
+_self_check_embed_path_option = typer.Option(
+    None,
+    "--embed-model-path",
+    help="Path to an embedding GGUF file. Skips the HuggingFace download.",
 )
 _self_check_max_tokens_option = typer.Option(5, "--max-tokens", help="Tokens to generate.")
+_self_check_skip_embedding_option = typer.Option(
+    False,
+    "--skip-embedding",
+    help="Skip the embedding-model leg of the self-check.",
+)
+
+
+def _self_check_emit_failure(error: str) -> None:
+    if cfg.json_mode:
+        json_output({"ok": False, "error": error})
+    else:
+        console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {error}")
 
 
 @app.command("self-check")
 def self_check_cmd(
-    model_path: Path | None = _self_check_model_path_option,
+    chat_model_path: Path | None = _self_check_chat_path_option,
+    embed_model_path: Path | None = _self_check_embed_path_option,
     max_tokens: int = _self_check_max_tokens_option,
+    skip_embedding: bool = _self_check_skip_embedding_option,
 ) -> None:
-    """Verify the installation can load llama.cpp and run inference.
+    """Verify the installation can load llama.cpp and run real inference.
 
-    Downloads ``SmolLM2-135M-Instruct-Q3_K_S.gguf`` (~90MB) from HuggingFace
-    if ``--model-path`` is not provided, then runs a tiny completion against
-    it. Exits 0 on success, 1 on any failure. Intended for post-install
-    verification ("does the vendored llama.cpp actually work on my box?")
-    and as the end-to-end gate in release CI.
+    Two legs:
+
+    1. **Chat**: downloads ``SmolLM2-135M-Instruct-Q3_K_S.gguf`` (~90MB) and
+       runs a tiny ``create_completion`` so we know decoder-style models work
+       end-to-end and the vendored shared libraries load.
+    2. **Embedding**: downloads ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB)
+       and runs ``create_embedding``. This is the leg that catches the
+       "Memory is not initialized" assert from llama-cpp-python <0.3.19, where
+       BERT-style encoders trip ``kv_cache_clear`` on a context that never
+       allocated memory.
+
+    Exits 0 on success, 1 on any failure. Intended for post-install
+    verification and as the end-to-end gate in release CI.
     """
+    from typing import Any, cast
+
     try:
-        if model_path is None:
-            model_path = _download_self_check_model()
-        console.print(f"Loading {model_path}")
+        chat_path = chat_model_path or _download_self_check_model(
+            _SELF_CHECK_CHAT_REPO, _SELF_CHECK_CHAT_FILE
+        )
+        console.print(f"Loading chat model {chat_path}")
 
         import llama_cpp
 
-        llm = llama_cpp.Llama(model_path=str(model_path), n_ctx=256, verbose=False)
+        llm = llama_cpp.Llama(model_path=str(chat_path), n_ctx=256, verbose=False)
         # stream=False (default) returns a dict, not an iterator, but
         # create_completion's return type is a union; cast to Any so the
         # indexing below type-checks without forcing llama_cpp to be a
         # typecheck-time dep of lilbee.
-        from typing import Any, cast
-
         out = cast(Any, llm.create_completion("2+2=", max_tokens=max_tokens))
         text: str = out["choices"][0]["text"]
     except Exception as exc:
-        if cfg.json_mode:
-            json_output({"ok": False, "error": repr(exc)})
-        else:
-            console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {exc!r}")
+        _self_check_emit_failure(repr(exc))
         raise typer.Exit(1) from exc
 
     if not text.strip():
-        msg = "empty inference response"
-        if cfg.json_mode:
-            json_output({"ok": False, "error": msg})
-        else:
-            console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {msg}")
+        _self_check_emit_failure("empty inference response")
         raise typer.Exit(1)
 
+    embedding_dims: int | None = None
+    if not skip_embedding:
+        try:
+            embed_path = embed_model_path or _download_self_check_model(
+                _SELF_CHECK_EMBED_REPO, _SELF_CHECK_EMBED_FILE
+            )
+            console.print(f"Loading embedding model {embed_path}")
+            enc = llama_cpp.Llama(
+                model_path=str(embed_path),
+                embedding=True,
+                n_ctx=512,
+                verbose=False,
+            )
+            emb = cast(Any, enc.create_embedding(input=["test"]))
+            vec = emb["data"][0]["embedding"]
+        except Exception as exc:
+            _self_check_emit_failure(repr(exc))
+            raise typer.Exit(1) from exc
+
+        if not vec:
+            _self_check_emit_failure("empty embedding vector")
+            raise typer.Exit(1)
+        embedding_dims = len(vec)
+
     if cfg.json_mode:
-        json_output({"ok": True, "response": text, "model": str(model_path)})
+        payload: dict[str, Any] = {
+            "ok": True,
+            "chat_response": text,
+            "chat_model": str(chat_path),
+        }
+        if embedding_dims is not None:
+            payload["embedding_dims"] = embedding_dims
+        json_output(payload)
     else:
-        console.print(f"Response: {text!r}")
+        console.print(f"Chat response: {text!r}")
+        if embedding_dims is not None:
+            console.print(f"Embedding dims: {embedding_dims}")
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
 
 

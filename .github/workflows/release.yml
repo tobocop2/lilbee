@@ -7,20 +7,35 @@ on:
 permissions:
   contents: write
 
+env:
+  LLAMA_CPP_VERSION: "0.3.20"
+
 jobs:
-  # TEMPORARY (iteration on e2e self-check smoke): lint and test
-  # short-circuited so the exe-build + inference matrix can iterate fast.
-  # Restore to full uv-sync + make lint/test-ci once the inference smoke
-  # is green across all three platforms.
   lint:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "lint temporarily skipped to iterate on exe self-check"
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync
+      - run: make lint
+      - run: make format-check
+      - run: make typecheck
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "test temporarily skipped to iterate on exe self-check"
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync
+      - run: make test-ci
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   build:
     needs: [lint, test]
@@ -31,12 +46,15 @@ jobs:
           - os: ubuntu-latest
             asset_name: lilbee-linux-x86_64
             pyinstaller: .venv/bin/pyinstaller
+            backend: vulkan
           - os: macos-latest
             asset_name: lilbee-macos-arm64
             pyinstaller: .venv/bin/pyinstaller
+            backend: metal
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             pyinstaller: .venv/Scripts/pyinstaller.exe
+            backend: vulkan
 
     runs-on: ${{ matrix.os }}
 
@@ -51,14 +69,44 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # GPU build SDK + GPU rebuild: same per-OS backend choices as the
+      # wheel build (Vulkan on Linux/Windows, Metal on macOS). All compile
+      # flags live in tools/wheel-build/cmake_args.sh — single source of
+      # truth so the wheel and the frozen exe ship matching builds.
+      - name: Install GPU build toolkit
+        if: matrix.backend != 'metal'
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
+
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
       - name: Install dependencies
         run: |
           uv sync && uv pip install pyinstaller
           # python-multipart ships a multipart/ shim that shadows the real
           # multipart.py in PyInstaller builds. Remove it so litestar gets
-          # the real module. We invoke pyinstaller via matrix.pyinstaller
-          # (not `uv run`) so uv doesn't re-install it.
+          # the real module.
           uv pip uninstall python-multipart
+
+      - name: Rebuild llama-cpp-python with GPU acceleration
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euxo pipefail
+          eval "$(BACKEND=${BACKEND} bash tools/wheel-build/cmake_args.sh)"
+          export CMAKE_ARGS
+          uv pip install --reinstall --no-binary=llama-cpp-python --no-deps \
+            "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}"
 
       - name: Build executable
         run: >
@@ -175,8 +223,10 @@ jobs:
           payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
           data = json.loads(payload)
           assert data.get('ok'), f'self-check failed: {data}'
-          assert data.get('response','').strip(), f'empty response: {data}'
-          print('self-check response:', repr(data['response']))
+          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
+          dims = data.get('embedding_dims')
+          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
+          print(f'self-check chat={data[\"chat_response\"]!r} embedding_dims={dims}')
           " "$SELF_CHECK_LOG"
 
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference all green"
