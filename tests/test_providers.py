@@ -35,28 +35,30 @@ def _reset_provider() -> None:
     lcp._registry = None
 
 
+TEST_MODEL_REPO = "org/test-model-GGUF"
+TEST_MODEL_FILE = "test-model.gguf"
+TEST_MODEL_REF = f"{TEST_MODEL_REPO}/{TEST_MODEL_FILE}"
+
+
 @pytest.fixture()
 def models_dir(tmp_path: Path) -> Path:
     """Create a temporary models directory with a registered test model."""
-    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+    from lilbee.registry import ModelManifest, ModelRegistry
 
     models = tmp_path / "models"
     models.mkdir()
     registry = ModelRegistry(models)
 
-    source = tmp_path / "test-model.gguf"
+    source = tmp_path / TEST_MODEL_FILE
     source.write_bytes(b"fake-gguf")
-    ref = ModelRef(name="test-model")
     manifest = ModelManifest(
-        name="test-model",
-        tag="latest",
+        hf_repo=TEST_MODEL_REPO,
+        gguf_filename=TEST_MODEL_FILE,
         size_bytes=9,
         task="chat",
-        source_repo="org/test-model-GGUF",
-        source_filename="test-model.gguf",
         downloaded_at="2026-01-01T00:00:00+00:00",
     )
-    registry.install(ref, source, manifest)
+    registry.install(TEST_MODEL_REPO, TEST_MODEL_FILE, source, manifest)
     return models
 
 
@@ -102,13 +104,13 @@ class TestLlamaCppProvider:
         doesn't block on registry lookups for test .gguf files.
         """
         cfg.models_dir = models_dir
-        cfg.embedding_model = "test-model"
-        cfg.chat_model = "test-model"
+        cfg.embedding_model = TEST_MODEL_REF
+        cfg.chat_model = TEST_MODEL_REF
         cfg.subprocess_embed = False
         self._providers: list = []
         self._resolve_patcher = mock.patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
-            side_effect=lambda m: models_dir / f"{m}.gguf",
+            side_effect=lambda m: models_dir / f"{m.rsplit('/', 1)[-1]}",
         )
         self._resolve_patcher.start()
         yield
@@ -205,7 +207,8 @@ class TestLlamaCppProvider:
         mock_llama_cpp.Llama.return_value = mock_llama_instance
 
         provider = self._make_provider()
-        provider.chat([{"role": "user", "content": "hi"}], model="other-model")
+        other_ref = "org/Other-Model-GGUF/other-model.gguf"
+        provider.chat([{"role": "user", "content": "hi"}], model=other_ref)
 
         # Llama should have been called with a path for other-model
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
@@ -214,7 +217,7 @@ class TestLlamaCppProvider:
     def test_list_models(self, models_dir: Path) -> None:
         provider = self._make_provider()
         result = provider.list_models()
-        assert result == ["test-model:latest"]
+        assert result == [TEST_MODEL_REF]
 
     def test_list_models_empty_dir(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty"
@@ -335,19 +338,21 @@ class TestLlamaCppProvider:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
-            path = resolve_model_path("test-model")
+            path = resolve_model_path(TEST_MODEL_REF)
             assert path.exists()
         finally:
             self._resolve_patcher.start()
 
-    def testresolve_model_path_registry_with_tag(self, models_dir: Path) -> None:
+    def testresolve_model_path_legacy_ref_rejected(self, models_dir: Path) -> None:
+        """Bare ``name:tag`` strings are no longer recognised by the registry."""
         self._resolve_patcher.stop()
         try:
+            from lilbee.providers.base import ProviderError
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
-            path = resolve_model_path("test-model:latest")
-            assert path.exists()
+            with pytest.raises(ProviderError, match="not found"):
+                resolve_model_path("test-model:latest")
         finally:
             self._resolve_patcher.start()
 
@@ -359,7 +364,7 @@ class TestLlamaCppProvider:
 
             cfg.models_dir = models_dir
             with pytest.raises(ProviderError, match="not found"):
-                resolve_model_path("missing-model")
+                resolve_model_path("org/Missing-GGUF/missing.gguf")
         finally:
             self._resolve_patcher.start()
 
@@ -543,12 +548,13 @@ class TestRoutingProvider:
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
 
-    def test_routes_chat_to_llama_cpp_for_bare_ref(self) -> None:
-        """Bare refs dispatch to llama-cpp regardless of registry contents.
+    def test_routes_chat_to_llama_cpp_for_local_ref(self) -> None:
+        """Local HF refs dispatch to llama-cpp regardless of registry contents.
 
-        The new routing is strict: no prefix means native. If the native
-        registry doesn't have the model, llama-cpp raises its own
-        'not installed' error; routing never falls through to litellm.
+        The routing is strict: a ``<org>/<repo>/<file>.gguf`` shape means
+        native. If the registry doesn't have the model, llama-cpp raises
+        its own 'not installed' error; routing never falls through to
+        litellm.
         """
         rp = self._make_provider()
 
@@ -556,7 +562,7 @@ class TestRoutingProvider:
         mock_llama.chat.return_value = "local"
         rp._llama_cpp = mock_llama
 
-        cfg.chat_model = "local-model:latest"
+        cfg.chat_model = "org/Local-GGUF/local-model.gguf"
         result = rp.chat([{"role": "user", "content": "hi"}])
         assert result == "local"
         mock_llama.chat.assert_called_once()
@@ -572,23 +578,25 @@ class TestRoutingProvider:
         assert result == [[0.1, 0.2]]
         mock_litellm.embed.assert_called_once()
 
-    def test_routes_embed_to_llama_cpp_for_bare_ref(self) -> None:
+    def test_routes_embed_to_llama_cpp_for_local_ref(self) -> None:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
         rp._llama_cpp = mock_llama
 
-        cfg.embedding_model = "nomic-embed-text:latest"
+        cfg.embedding_model = (
+            "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        )
         result = rp.embed(["test"])
         assert result == [[0.3, 0.4]]
 
-    def test_bare_ref_never_falls_through_to_litellm(self) -> None:
-        """Bare refs stay on llama-cpp even when litellm is installed.
+    def test_local_ref_never_falls_through_to_litellm(self) -> None:
+        """Local HF refs stay on llama-cpp even when litellm is installed.
 
-        This is the behaviour change from bb-0ud4's probe-based routing:
-        prefix is the single source of truth, so users who want Ollama
-        must say so explicitly with 'ollama/<name>'.
+        Prefix is the single source of truth: anything that parses as a
+        local HF ref dispatches to llama-cpp. Users who want Ollama say
+        so with 'ollama/<name>'.
         """
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
@@ -597,7 +605,7 @@ class TestRoutingProvider:
         rp._sdk_provider = mock_litellm
         rp._llama_cpp = mock_llama
 
-        cfg.embedding_model = "mistral:latest"
+        cfg.embedding_model = "org/Local-GGUF/embed.gguf"
         result = rp.embed(["test"])
         assert result == [[0.9, 1.0]]
         mock_llama.embed.assert_called_once()
@@ -704,16 +712,17 @@ class TestRoutingProvider:
         assert result == {"parameters": "temp 0.7"}
         mock_litellm.show_model.assert_called_once_with("ollama/qwen3:8b")
 
-    def test_show_model_bare_ref_uses_llama_cpp(self) -> None:
+    def test_show_model_local_ref_uses_llama_cpp(self) -> None:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
         mock_llama.show_model.return_value = None
         rp._llama_cpp = mock_llama
 
-        result = rp.show_model("local.gguf")
+        ref = "org/Local-GGUF/local.gguf"
+        result = rp.show_model(ref)
         assert result is None
-        mock_llama.show_model.assert_called_once_with("local.gguf")
+        mock_llama.show_model.assert_called_once_with(ref)
 
     def test_pull_model_raises_when_sdk_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
@@ -748,7 +757,7 @@ class TestRoutingProvider:
         mock_litellm.chat.return_value = "saw it"
         rp._sdk_provider = mock_litellm
 
-        cfg.chat_model = "local-model:latest"
+        cfg.chat_model = "org/Local-GGUF/local.gguf"
         result = rp.chat(
             [{"role": "user", "content": "describe"}],
             model="openai/gpt-4o",
@@ -1494,7 +1503,7 @@ class TestLlamaCppProviderMethods:
     def test_get_chat_llm_non_vision(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_get_chat_llm loads via cache for non-vision models."""
         provider = _make_provider_no_thread()
-        cfg.chat_model = "test-model"
+        cfg.chat_model = "org/Test-GGUF/test.gguf"
 
         mock_cache_model = mock.MagicMock()
         provider._cache.load_model.return_value = mock_cache_model
@@ -1513,7 +1522,7 @@ class TestLlamaCppProviderMethods:
     ) -> None:
         """_get_chat_llm loads the chat model directly; vision path is separate."""
         provider = _make_provider_no_thread()
-        cfg.chat_model = "vision-model"
+        cfg.chat_model = "org/Vision-GGUF/vision.gguf"
 
         mock_cache_model = mock.MagicMock()
         provider._cache.load_model.return_value = mock_cache_model
@@ -1530,13 +1539,13 @@ class TestLlamaCppProviderMethods:
     def test_get_chat_llm_with_override_model(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_get_chat_llm uses the override model when provided."""
         provider = _make_provider_no_thread()
-        cfg.chat_model = "default-model"
+        cfg.chat_model = "org/Default-GGUF/default.gguf"
 
         with mock.patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value=Path("/models/override.gguf"),
         ):
-            provider._get_chat_llm(model="override-model")
+            provider._get_chat_llm(model="org/Override-GGUF/override.gguf")
 
         provider._cache.load_model.assert_called_once_with(
             Path("/models/override.gguf"), mode="chat"
@@ -1545,7 +1554,7 @@ class TestLlamaCppProviderMethods:
     def test_get_embed_llm(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_get_embed_llm loads embedding model via cache."""
         provider = _make_provider_no_thread()
-        cfg.embedding_model = "embed-model"
+        cfg.embedding_model = "org/Embed-GGUF/embed.gguf"
 
         with mock.patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -1704,7 +1713,7 @@ class TestLlamaCppProviderMethods:
 
         provider = _make_provider_no_thread()
         assert FEATURED_RERANK, "catalog must have at least one rerank entry"
-        ref = FEATURED_RERANK[0].name
+        ref = FEATURED_RERANK[0].hf_repo
 
         with mock.patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -1749,15 +1758,13 @@ class TestLlamaCppProviderMethods:
         assert caps == ["completion"]
 
     def test_list_models(self) -> None:
-        """list_models returns sorted registry models."""
+        """list_models returns sorted registry refs."""
         provider = _make_provider_no_thread()
 
         mock_manifest1 = mock.MagicMock()
-        mock_manifest1.name = "beta"
-        mock_manifest1.tag = "latest"
+        mock_manifest1.ref = "org/Beta-GGUF/beta.gguf"
         mock_manifest2 = mock.MagicMock()
-        mock_manifest2.name = "alpha"
-        mock_manifest2.tag = "latest"
+        mock_manifest2.ref = "org/Alpha-GGUF/alpha.gguf"
 
         mock_registry = mock.MagicMock()
         mock_registry.list_installed.return_value = [mock_manifest1, mock_manifest2]
@@ -1769,7 +1776,7 @@ class TestLlamaCppProviderMethods:
         ):
             result = provider.list_models()
 
-        assert result == ["alpha:latest", "beta:latest"]
+        assert result == ["org/Alpha-GGUF/alpha.gguf", "org/Beta-GGUF/beta.gguf"]
 
     def test_shutdown(self) -> None:
         """shutdown stops embed thread, subprocess worker, and cache."""
@@ -1902,7 +1909,7 @@ class TestEmbedWorker:
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value=Path("/test.gguf"),
         ):
-            cfg.embedding_model = "test"
+            cfg.embedding_model = "org/Test-GGUF/test.gguf"
             fut: Future[list[list[float]]] = Future()
             batch = [_EmbedRequest(texts=["hello"], future=fut)]
             provider._dispatch_batch(batch)
@@ -1929,7 +1936,7 @@ class TestEmbedWorker:
                 side_effect=RuntimeError("embed broken"),
             ),
         ):
-            cfg.embedding_model = "test"
+            cfg.embedding_model = "org/Test-GGUF/test.gguf"
             fut: Future[list[list[float]]] = Future()
             batch = [_EmbedRequest(texts=["hello"], future=fut)]
             provider._dispatch_batch(batch)
@@ -2308,16 +2315,19 @@ class TestRouteModel:
         from lilbee.providers.litellm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
 
-        ref = parse_model_ref("qwen3:8b")
+        # Bare ollama refs are written with the prefix already; the helper
+        # double-prefixes only the rare case where the user typed a bare
+        # name on an Ollama base URL.
+        ref = parse_model_ref("ollama/qwen3:8b")
         assert _route_model(ref, "http://localhost:11434") == "ollama/qwen3:8b"
 
     def test_non_ollama_url_no_prefix(self) -> None:
         from lilbee.providers.litellm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
 
-        ref = parse_model_ref("gpt-4o")
-        # No Ollama hint and no API provider prefix: preserve raw name.
-        assert _route_model(ref, "https://api.openai.com") == "gpt-4o:latest"
+        # API-prefixed refs route as-is on non-Ollama base URLs.
+        ref = parse_model_ref("openai/gpt-4o")
+        assert _route_model(ref, "https://api.openai.com") == "openai/gpt-4o"
 
     def test_already_prefixed_passes_through(self) -> None:
         from lilbee.providers.litellm_sdk import _route_model
@@ -2436,10 +2446,10 @@ class TestNeedsApiBase:
 
         assert parse_model_ref("ollama/qwen3:8b").needs_api_base is True
 
-    def test_bare_model_needs_api_base(self) -> None:
+    def test_local_hf_model_needs_api_base(self) -> None:
         from lilbee.providers.model_ref import parse_model_ref
 
-        assert parse_model_ref("qwen3:8b").needs_api_base is True
+        assert parse_model_ref("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf").needs_api_base is True
 
     def test_openai_prefixed_model_skips_api_base(self) -> None:
         from lilbee.providers.model_ref import parse_model_ref
@@ -2476,7 +2486,7 @@ class TestChatApiBaseRouting:
         fake = self._make_fake_litellm()
 
         with mock.patch.dict("sys.modules", {"litellm": fake}):
-            provider.chat([{"role": "user", "content": "hi"}], model="qwen3:0.6b")
+            provider.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:0.6b")
 
         call_kwargs = fake.completion.call_args[1]
         assert call_kwargs["api_base"] == "http://localhost:11434"
@@ -2533,7 +2543,7 @@ class TestEmbedApiBaseRouting:
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         provider = SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
-        cfg.embedding_model = "nomic-embed-text"
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
         fake = mock.MagicMock()
         fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
 
@@ -2692,12 +2702,12 @@ class TestIsRerankModel:
         from lilbee.providers.llama_cpp_provider import _is_rerank_model
 
         assert FEATURED_RERANK, "catalog must have at least one rerank entry"
-        assert _is_rerank_model(FEATURED_RERANK[0].name) is True
+        assert _is_rerank_model(FEATURED_RERANK[0].hf_repo) is True
 
     def test_non_rerank_model_returns_false(self) -> None:
         from lilbee.providers.llama_cpp_provider import _is_rerank_model
 
-        assert _is_rerank_model("definitely-not-a-rerank-model") is False
+        assert _is_rerank_model("org/Definitely-Not-Rerank-GGUF") is False
 
     def test_substring_of_catalog_name_does_not_match(self) -> None:
         from lilbee.providers.llama_cpp_provider import _is_rerank_model
@@ -2705,13 +2715,13 @@ class TestIsRerankModel:
         assert _is_rerank_model("base") is False
         assert _is_rerank_model("reranker") is False
 
-    def test_hf_repo_with_tag_suffix_matches(self) -> None:
+    def test_full_hf_ref_matches(self) -> None:
+        """A full ``hf_repo/filename`` rerank ref also resolves."""
         from lilbee.catalog import FEATURED_RERANK
         from lilbee.providers.llama_cpp_provider import _is_rerank_model
 
         assert FEATURED_RERANK, "catalog must have at least one rerank entry"
         entry = FEATURED_RERANK[0]
-        assert _is_rerank_model(f"{entry.hf_repo}:latest") is True
         assert _is_rerank_model(entry.hf_repo) is True
 
 
@@ -2807,7 +2817,7 @@ class TestRoutingProviderRerank:
         mock_llama.supports_rerank.return_value = True
         rp._llama_cpp = mock_llama
 
-        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
         assert rp.supports_rerank() is True
         mock_llama.supports_rerank.assert_called_once()
 
@@ -2830,7 +2840,7 @@ class TestRoutingProviderRerank:
         rp._llama_cpp = mock_llama
         rp._sdk_provider = mock_sdk
 
-        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
         scores = rp.rerank("q", ["a", "b"])
         assert scores == [0.5, 0.5]
         mock_llama.rerank.assert_called_once_with("q", ["a", "b"])
@@ -2859,7 +2869,7 @@ class TestLlamaCppRerankDispatchError:
         """A failure inside ``compute_rerank_scores`` resolves the future with the error."""
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        cfg.reranker_model = "test-model"
+        cfg.reranker_model = TEST_MODEL_REF
         instance = mock.MagicMock()
         instance.create_embedding.side_effect = RuntimeError("boom")
         mock_llama_cpp.Llama.return_value = instance

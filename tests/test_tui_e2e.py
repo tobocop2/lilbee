@@ -13,6 +13,7 @@ from unittest import mock
 import pytest
 from textual.app import App, ComposeResult
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.config import cfg
 
 
@@ -25,8 +26,8 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir = tmp_path / "documents"
     cfg.models_dir = tmp_path / "models"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.chat_model = "test-chat-model.gguf"
-    cfg.embedding_model = "test-embed-model"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     cfg.subprocess_embed = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -82,16 +83,14 @@ class TestEmbeddingAvailable:
         files with hyphens when registry resolution fails."""
         from lilbee.embedder import Embedder
 
+        ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
         mock_provider = mock.MagicMock()
-        mock_provider.list_models.return_value = [
-            "nomic-embed-text-v1.5.Q4_K_M.gguf",
-            "other-model.gguf",
-        ]
-        cfg.embedding_model = "Nomic Embed Text v1.5:latest"
+        mock_provider.list_models.return_value = [ref, "other-model.gguf"]
+        cfg.embedding_model = ref
 
         embedder = Embedder(cfg, mock_provider)
-        # Registry resolution fails (no manifests in tmp dir), so falls through
-        # to list_models fallback which must normalize spaces to hyphens
+        # Registry resolution fails (no manifests in tmp dir); falls through
+        # to list_models fallback which matches the configured ref directly.
         assert embedder.embedding_available() is True
 
     def test_resolves_via_registry(self):
@@ -99,7 +98,7 @@ class TestEmbeddingAvailable:
         from lilbee.embedder import Embedder
 
         mock_provider = mock.MagicMock()
-        cfg.embedding_model = "test-embed"
+        cfg.embedding_model = TEST_EMBED_REF
 
         embedder = Embedder(cfg, mock_provider)
         with mock.patch(
@@ -113,8 +112,8 @@ class TestEmbeddingAvailable:
         from lilbee.embedder import Embedder
 
         mock_provider = mock.MagicMock()
-        mock_provider.list_models.return_value = ["other-model.gguf"]
-        cfg.embedding_model = "nonexistent-model"
+        mock_provider.list_models.return_value = ["org/Other-GGUF/other.gguf"]
+        cfg.embedding_model = "org/Nonexistent-GGUF/none.gguf"
         embedder = Embedder(cfg, mock_provider)
         assert embedder.embedding_available() is False
 
@@ -131,16 +130,16 @@ class TestModelClassification:
         """Models classified by registry manifest task field."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
-        # Mock registry with proper manifests
+        # Mock registry manifests by task. Each carries a canonical
+        # ``hf_repo/filename`` ref since that's the new identity.
+        chat_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-Q4_K_M.gguf"
+        vision_ref = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         mock_manifests = [
-            mock.MagicMock(name="Qwen3", tag="latest", task="chat"),
-            mock.MagicMock(name="Nomic Embed", tag="latest", task="embedding"),
-            mock.MagicMock(name="LightOnOCR", tag="latest", task="vision"),
+            mock.MagicMock(ref=chat_ref, task="chat"),
+            mock.MagicMock(ref=embed_ref, task="embedding"),
+            mock.MagicMock(ref=vision_ref, task="vision"),
         ]
-        # Set .name properly (MagicMock uses name for repr)
-        mock_manifests[0].name = "Qwen3"
-        mock_manifests[1].name = "Nomic Embed"
-        mock_manifests[2].name = "LightOnOCR"
 
         from lilbee.cli.tui.widgets.model_bar import ModelOption
 
@@ -148,8 +147,8 @@ class TestModelClassification:
 
             def fill_buckets(buckets, seen):
                 for m in mock_manifests:
-                    ref = f"{m.name}:{m.tag}"
-                    label = m.display_name or ref
+                    ref = m.ref
+                    label = ref
                     buckets.get(m.task, buckets["chat"]).append(ModelOption(label, ref))
                     seen.add(ref)
 
@@ -162,8 +161,8 @@ class TestModelClassification:
 
         chat_refs = [o.ref for o in chat]
         embed_refs = [o.ref for o in embed]
-        assert "Qwen3:latest" in chat_refs
-        assert "Nomic Embed:latest" in embed_refs
+        assert chat_ref in chat_refs
+        assert embed_ref in embed_refs
 
     def test_no_loose_gguf_scanning(self):
         """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
@@ -210,12 +209,13 @@ class TestModelSwitchSafety:
 
             from lilbee.cli.tui.widgets.model_bar import ModelOption
 
+            ref = "ollama/new-model:latest"
             chat_sel = bar.query_one("#chat-model-select", Select)
-            chat_sel.set_options([ModelOption("new-model.gguf", "new-model.gguf")])
-            chat_sel.value = "new-model.gguf"
+            chat_sel.set_options([ModelOption(ref, ref)])
+            chat_sel.value = ref
 
             event = mock.MagicMock()
-            event.value = "new-model.gguf"
+            event.value = ref
             event.select = mock.MagicMock()
             event.select.id = "chat-model-select"
 
@@ -345,9 +345,6 @@ class TestDownloadProgressSlow:
             reset_model_manager()
 
             entry = CatalogModel(
-                name="mistral",
-                tag="7b",
-                display_name="Mistral 7B",
                 hf_repo="MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
                 gguf_filename="*Q4_K_M.gguf",
                 size_gb=4.2,
@@ -412,7 +409,6 @@ def _mock_catalog_deps():
                     hf_repo="test/chat-repo",
                     filename="chat-Q4.gguf",
                     param_count="7B",
-                    tag="7b",
                     quant="Q4_K_M",
                     size_mb=4000,
                     recommended=True,
@@ -429,7 +425,6 @@ def _mock_catalog_deps():
                     hf_repo="test/embed-repo",
                     filename="embed-Q8.gguf",
                     param_count="0.5B",
-                    tag="0.5b",
                     quant="Q8_0",
                     size_mb=500,
                     recommended=True,
@@ -1273,9 +1268,6 @@ class TestCatalogInteractions:
         from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 
         hf_hit = CatalogModel(
-            name="zzz_remote",
-            tag="latest",
-            display_name="zzz_remote",
             hf_repo="some/zzz_remote-GGUF",
             gguf_filename="*.gguf",
             size_gb=1.0,
@@ -2207,9 +2199,9 @@ class TestChatSlashCommands:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._handle_slash("/model slash-test-model")
+            app.screen._handle_slash("/model ollama/slash-test:latest")
             await pilot.pause()
-            assert "slash-test-model" in cfg.chat_model
+            assert "slash-test" in cfg.chat_model
 
     async def test_cmd_model_cancels_stream_when_streaming(self, _mock_resolve):
         """/model <name> cancels stream and resets services when streaming."""
@@ -2218,7 +2210,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen.streaming = True
             with mock.patch.object(app.screen, "_apply_model_change") as mock_apply:
-                app.screen._handle_slash("/model stream-switch-model")
+                app.screen._handle_slash("/model ollama/stream-switch:latest")
                 await pilot.pause()
                 mock_apply.assert_called()
 

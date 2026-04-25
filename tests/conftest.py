@@ -281,10 +281,20 @@ def wiki_isolated_env(tmp_path: Path):
     cfg.wiki_dir = "wiki"
     cfg.wiki_embedding_faithfulness_threshold = 0.5
     cfg.wiki_prune_raw = False
-    cfg.chat_model = "test-model"
+    cfg.chat_model = TEST_LOCAL_REF
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+# Reusable canonical-shape refs for tests. Anything that needs a concrete
+# native ref string can pull these so the shape stays in one place.
+TEST_LOCAL_REPO = "test/Test-Model-GGUF"
+TEST_LOCAL_FILE = "test-Q4_K_M.gguf"
+TEST_LOCAL_REF = f"{TEST_LOCAL_REPO}/{TEST_LOCAL_FILE}"
+TEST_EMBED_REPO = "test/Test-Embed-GGUF"
+TEST_EMBED_FILE = "test-embed-Q4_K_M.gguf"
+TEST_EMBED_REF = f"{TEST_EMBED_REPO}/{TEST_EMBED_FILE}"
 
 
 def make_test_catalog_model(
@@ -293,17 +303,14 @@ def make_test_catalog_model(
     featured: bool = False,
     size_gb: float = 2.0,
     description: str = "A test model",
-    tag: str = "latest",
-    display_name: str = "",
     min_ram_gb: float = 4,
+    hf_repo: str | None = None,
+    gguf_filename: str = "*.gguf",
 ) -> CatalogModel:
     """Build a CatalogModel with sensible test defaults."""
     return CatalogModel(
-        name=name.lower().replace(" ", "-"),
-        tag=tag,
-        display_name=display_name or name,
-        hf_repo=f"test/{name.lower().replace(' ', '-')}",
-        gguf_filename="*.gguf",
+        hf_repo=hf_repo or f"test/{name.replace(' ', '-')}",
+        gguf_filename=gguf_filename,
         size_gb=size_gb,
         min_ram_gb=min_ram_gb,
         description=description,

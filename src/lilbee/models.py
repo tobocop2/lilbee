@@ -14,7 +14,6 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from rich.table import Table
 
 from lilbee import settings
-from lilbee.providers.model_ref import parse_model_ref
 
 # circular: config -> models via ModelTask. cfg is imported lazily.
 
@@ -36,13 +35,6 @@ FEATURED_STAR = "★"
 _DISK_HEADROOM_GB = 2
 
 MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
-
-
-def ensure_tag(name: str) -> str:
-    """Ensure a model name has an explicit tag and canonical prefix."""
-    if not name:
-        return name
-    return parse_model_ref(name).for_openai_prefix()
 
 
 @dataclass(frozen=True)

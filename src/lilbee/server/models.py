@@ -229,9 +229,8 @@ class ModelsShowResponse(BaseModel):
 class CatalogEntryResponse(BaseModel):
     """A single model in the catalog browser."""
 
-    name: str
-    tag: str
     hf_repo: str
+    gguf_filename: str
     task: str
     display_name: str
     param_count: str

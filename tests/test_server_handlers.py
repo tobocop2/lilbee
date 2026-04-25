@@ -720,17 +720,19 @@ class TestDrainHeartbeat:
 class TestListModels:
     @patch("lilbee.server.handlers.get_model_manager")
     async def test_returns_catalogs(self, mock_get_mm):
-        mock_get_mm.return_value.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
+        installed = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        mock_get_mm.return_value.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         assert result.chat.active == cfg.chat_model
         assert isinstance(result.chat.catalog, list)
         assert len(result.chat.catalog) > 0
-        assert "qwen3:8b" in result.chat.installed
+        assert installed in result.chat.installed
 
     @patch("lilbee.server.handlers.get_model_manager")
     async def test_installed_flag_in_catalog(self, mock_get_mm):
-        mock_get_mm.return_value.list_installed.return_value = ["qwen3:0.6b"]
+        installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        mock_get_mm.return_value.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
@@ -780,74 +782,54 @@ class TestListModels:
 
 class TestSetChatModel:
     async def test_updates_config_and_persists(self, tmp_path, mock_svc):
-        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
-        result = await handlers.set_chat_model("qwen3:0.6b")
-        assert result.model == "qwen3:0.6b"
-        assert cfg.chat_model == "qwen3:0.6b"
-
-    async def test_preserves_existing_tag(self, tmp_path, mock_svc):
-        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
-        result = await handlers.set_chat_model("qwen3:0.6b")
-        assert result.model == "qwen3:0.6b"
-        assert cfg.chat_model == "qwen3:0.6b"
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        result = await handlers.set_chat_model(_CHAT_REF)
+        assert result.model == _CHAT_REF
+        assert cfg.chat_model == _CHAT_REF
 
     async def test_rejects_unavailable_model(self, tmp_path, mock_svc):
-        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(ValueError, match="not available"):
-            await handlers.set_chat_model("nonexistent:7b")
+            await handlers.set_chat_model("org/Nonexistent-GGUF/none.gguf")
 
-    async def test_accepts_ollama_prefixed_ref_matching_bare_list(self, tmp_path, mock_svc):
-        """ollama/ refs match against bare /api/tags entries returned by list_models.
-
-        Without this path, every Ollama pick via the server API would be
-        rejected as unavailable even when the backend reports the tag.
-        The stored form is the catalog's canonical ``name:tag`` ref so
-        ``resolve_model_path`` can locate the on-disk blob without relying
-        on the registry's alias-fallback.
-        """
-        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+    async def test_accepts_ollama_prefixed_ref(self, tmp_path, mock_svc):
+        """``ollama/<name>:tag`` is accepted verbatim when the backend reports it."""
+        mock_svc.provider.list_models.return_value = ["ollama/qwen3:0.6b"]
         result = await handlers.set_chat_model("ollama/qwen3:0.6b")
-        assert result.model == "qwen3:0.6b"
-        assert cfg.chat_model == "qwen3:0.6b"
+        assert result.model == "ollama/qwen3:0.6b"
+        assert cfg.chat_model == "ollama/qwen3:0.6b"
 
-    async def test_accepts_bare_ref_matching_remote_only_list(self, tmp_path, mock_svc):
-        """Bare refs still validate against the remote list for legacy callers.
-
-        The server API takes verbatim user input. A user who posts a bare
-        tag that happens to match only a remote entry must still be
-        accepted so clients that never learned the ollama/ prefix keep
-        working.
-        """
-        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
-        result = await handlers.set_chat_model("qwen3:0.6b")
-        assert result.model == "qwen3:0.6b"
-        assert cfg.chat_model == "qwen3:0.6b"
+    async def test_resolves_bare_repo_to_installed_quant(self, tmp_path, mock_svc):
+        """Bare ``hf_repo`` resolves to whichever quant of that repo is installed."""
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        result = await handlers.set_chat_model("Qwen/Qwen3-0.6B-GGUF")
+        assert result.model == _CHAT_REF
+        assert cfg.chat_model == _CHAT_REF
 
     async def test_rejects_out_of_catalog_model(self, tmp_path, mock_svc):
         """Out-of-catalog installed models cannot be assigned to any role."""
-        mock_svc.provider.list_models.return_value = ["llama3:7b"]
+        custom = "org/Custom-GGUF/custom.gguf"
+        mock_svc.provider.list_models.return_value = [custom]
         with pytest.raises(ValueError, match="featured catalog"):
-            await handlers.set_chat_model("llama3:7b")
+            await handlers.set_chat_model(custom)
 
     async def test_rejects_vision_model_on_chat_endpoint(self, tmp_path, mock_svc):
         """Setting a vision-task model on the chat endpoint returns 422 semantics."""
-        mock_svc.provider.list_models.return_value = ["lightonocr:2-1b"]
+        mock_svc.provider.list_models.return_value = [_VISION_REF]
         with pytest.raises(ValueError, match="not chat"):
-            await handlers.set_chat_model("lightonocr:2-1b")
+            await handlers.set_chat_model(_VISION_REF)
 
 
 class TestModelsCatalog:
     @staticmethod
-    def _manifest(name: str, tag: str, task: str = "chat"):
+    def _manifest(hf_repo: str, gguf_filename: str, task: str = "chat"):
         from lilbee.registry import ModelManifest
 
         return ModelManifest(
-            name=name,
-            tag=tag,
+            hf_repo=hf_repo,
+            gguf_filename=gguf_filename,
             size_bytes=1,
             task=task,
-            source_repo=f"org/{name}-GGUF",
-            source_filename=f"{name}.gguf",
             downloaded_at="2026-01-01T00:00:00+00:00",
         )
 
@@ -861,9 +843,6 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="qwen3",
-                    tag="8b",
-                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
@@ -875,15 +854,15 @@ class TestModelsCatalog:
                 )
             ],
         )
-        mock_svc.registry.list_installed.return_value = [self._manifest("qwen3", "8b")]
+        mock_svc.registry.list_installed.return_value = [
+            self._manifest("Qwen/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf")
+        ]
         result = await handlers.models_catalog()
 
         assert result.total == 1
         assert result.has_more is False
         assert len(result.models) == 1
         m = result.models[0]
-        assert m.name == "qwen3"
-        assert m.tag == "8b"
         assert m.hf_repo == "Qwen/Qwen3-8B-GGUF"
         assert m.task == "chat"
         assert m.featured is True
@@ -929,9 +908,6 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="qwen3",
-                    tag="8b",
-                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
@@ -943,7 +919,9 @@ class TestModelsCatalog:
                 )
             ],
         )
-        mock_svc.registry.list_installed.return_value = [self._manifest("qwen3", "8b")]
+        mock_svc.registry.list_installed.return_value = [
+            self._manifest("Qwen/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf")
+        ]
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
 
@@ -978,9 +956,6 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="qwen3",
-                    tag="8b",
-                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
@@ -991,9 +966,6 @@ class TestModelsCatalog:
                     task="chat",
                 ),
                 CatalogModel(
-                    name="mistral",
-                    tag="7b",
-                    display_name="Mistral 7B",
                     hf_repo="TheBloke/Mistral-7B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=4.0,
@@ -1008,24 +980,25 @@ class TestModelsCatalog:
         # Registry has only qwen3 on disk.
         mock_svc.registry.list_installed.return_value = [
             ModelManifest(
-                name="qwen3",
-                tag="8b",
+                hf_repo="Qwen/Qwen3-8B-GGUF",
+                gguf_filename="Qwen3-8B-Q4_K_M.gguf",
                 size_bytes=1,
                 task="chat",
-                source_repo="Qwen/Qwen3-8B-GGUF",
-                source_filename="qwen3.gguf",
                 downloaded_at="2026-01-01T00:00:00+00:00",
             )
         ]
         # Routing provider also claims mistral is routable (litellm proxy),
         # but its GGUF is not on disk.
-        mock_svc.provider.list_models.return_value = ["qwen3:8b", "mistral:7b"]
+        mock_svc.provider.list_models.return_value = [
+            "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+            "ollama/mistral:7b",
+        ]
 
         result = await handlers.models_catalog()
 
-        by_ref = {f"{m.name}:{m.tag}": m for m in result.models}
-        assert by_ref["qwen3:8b"].installed is True
-        assert by_ref["mistral:7b"].installed is False
+        by_repo = {m.hf_repo: m for m in result.models}
+        assert by_repo["Qwen/Qwen3-8B-GGUF"].installed is True
+        assert by_repo["TheBloke/Mistral-7B-GGUF"].installed is False
 
 
 class TestModelsInstalled:
@@ -1313,17 +1286,21 @@ class TestUpdateConfig:
             await handlers.update_config({"reranker_model": "bge-reranker-v2-m3:latest"})
 
 
+_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+
+
 class TestSetEmbeddingModel:
     @patch("lilbee.server.handlers.get_services")
     async def test_updates_config_and_persists(self, mock_svc, tmp_path):
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
-        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
-        assert result.model == "nomic-embed-text:v1.5"
-        assert cfg.embedding_model == "nomic-embed-text:v1.5"
+        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
+        result = await handlers.set_embedding_model(_EMBED_REF)
+        assert result.model == _EMBED_REF
+        assert cfg.embedding_model == _EMBED_REF
         from lilbee import settings as s
 
         stored = s.load(cfg.data_root)
-        assert stored["embedding_model"] == "nomic-embed-text:v1.5"
+        assert stored["embedding_model"] == _EMBED_REF
 
     @patch("lilbee.server.handlers.get_services")
     async def test_empty_string_rejected(self, mock_svc):
@@ -1332,32 +1309,36 @@ class TestSetEmbeddingModel:
             await handlers.set_embedding_model("")
 
     @patch("lilbee.server.handlers.get_services")
-    async def test_embedding_model_bare_name_resolves_to_recommended(self, mock_svc, tmp_path):
-        """Setting embedding model by bare family name resolves via catalog."""
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
-        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
-        assert result.model == "nomic-embed-text:v1.5"
-        assert cfg.embedding_model == "nomic-embed-text:v1.5"
+    async def test_embedding_model_bare_repo_resolves_to_installed_quant(self, mock_svc, tmp_path):
+        """Setting an embedding by bare ``hf_repo`` resolves to whichever
+        quant of that repo is currently installed.
+        """
+        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
+        repo = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+        result = await handlers.set_embedding_model(repo)
+        assert result.model == _EMBED_REF
+        assert cfg.embedding_model == _EMBED_REF
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_unavailable_embedding_model(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         with pytest.raises(ValueError, match="not available"):
-            await handlers.set_embedding_model("bogus-embed")
+            await handlers.set_embedding_model("org/Bogus-GGUF/bogus.gguf")
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_out_of_catalog_model(self, mock_svc):
         """Non-catalog installed model cannot be assigned to the embedding role."""
-        mock_svc.return_value.provider.list_models.return_value = ["custom-embed:latest"]
+        custom = "org/Custom-Embed-GGUF/custom.gguf"
+        mock_svc.return_value.provider.list_models.return_value = [custom]
         with pytest.raises(ValueError, match="featured catalog"):
-            await handlers.set_embedding_model("custom-embed:latest")
+            await handlers.set_embedding_model(custom)
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_chat_model_on_embedding_endpoint(self, mock_svc):
         """Setting a chat-task model as embedding returns a task-mismatch error."""
-        mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
+        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(ValueError, match="not embedding"):
-            await handlers.set_embedding_model("qwen3:0.6b")
+            await handlers.set_embedding_model(_CHAT_REF)
 
 
 class TestGetConfig:
@@ -1500,8 +1481,8 @@ class TestGetConfigDefaults:
         """
         result = await handlers.get_config_defaults()
         dumped = result.model_dump()
-        assert dumped["chat_model"] == "qwen3:0.6b"
-        assert dumped["embedding_model"] == "nomic-embed-text:v1.5"
+        assert dumped["chat_model"] == _CHAT_REF
+        assert dumped["embedding_model"] == _EMBED_REF
         assert dumped["vision_model"] == ""
         assert dumped["reranker_model"] == ""
 
@@ -1513,129 +1494,117 @@ class TestGetConfigDefaults:
         assert "temperature" in dumped
 
 
+_VISION_REF = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
+
+
 class TestSetVisionModel:
     @patch("lilbee.server.handlers.get_services")
     async def test_sets_vision_model(self, mock_svc, tmp_path):
-        mock_svc.return_value.provider.list_models.return_value = ["lightonocr:2-1b"]
-        result = await handlers.set_vision_model("lightonocr:2-1b")
-        assert result.model == "lightonocr:2-1b"
-        assert cfg.vision_model == "lightonocr:2-1b"
+        mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
+        result = await handlers.set_vision_model(_VISION_REF)
+        assert result.model == _VISION_REF
+        assert cfg.vision_model == _VISION_REF
 
     @patch("lilbee.server.handlers.settings.set_value")
     @patch("lilbee.server.handlers.get_services")
     async def test_empty_string_unsets(self, mock_svc, mock_set_value):
-        cfg.vision_model = "lightonocr:2-1b"
+        cfg.vision_model = _VISION_REF
         result = await handlers.set_vision_model("")
         assert result.model == ""
         assert cfg.vision_model == ""
-        # Persistence boundary: the empty value must be written to disk so
-        # the setting survives a restart. Asserting on the in-memory cfg
-        # alone can't tell "unset" from "silently dropped".
         mock_set_value.assert_called_once_with(cfg.data_root, "vision_model", "")
 
     @patch("lilbee.server.handlers.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):
         """Whitespace-only strings must not bypass the empty-check guard."""
-        cfg.vision_model = "lightonocr:2-1b"
+        cfg.vision_model = _VISION_REF
         result = await handlers.set_vision_model("   ")
         assert result.model == ""
         assert cfg.vision_model == ""
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_chat_model(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
+        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(ValueError, match="not vision") as exc:
-            await handlers.set_vision_model("qwen3:0.6b")
-        # A chat model redirected to PUT /api/models/chat (the actual route).
+            await handlers.set_vision_model(_CHAT_REF)
         assert "PUT /api/models/chat" in str(exc.value)
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_out_of_catalog(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = ["custom-vision:1b"]
+        custom = "org/Custom-Vision-GGUF/custom.gguf"
+        mock_svc.return_value.provider.list_models.return_value = [custom]
         with pytest.raises(ValueError, match="featured catalog"):
-            await handlers.set_vision_model("custom-vision:1b")
+            await handlers.set_vision_model(custom)
+
+
+_RERANK_REF = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
 
 
 class TestSetRerankerModel:
     @patch("lilbee.server.handlers.get_services")
     async def test_sets_reranker_model(self, mock_svc, tmp_path):
-        mock_svc.return_value.provider.list_models.return_value = ["bge-reranker-v2-m3:latest"]
-        result = await handlers.set_reranker_model("bge-reranker-v2-m3:latest")
-        assert result.model == "bge-reranker-v2-m3:latest"
-        assert cfg.reranker_model == "bge-reranker-v2-m3:latest"
+        mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
+        result = await handlers.set_reranker_model(_RERANK_REF)
+        assert result.model == _RERANK_REF
+        assert cfg.reranker_model == _RERANK_REF
 
     @patch("lilbee.server.handlers.settings.set_value")
     @patch("lilbee.server.handlers.get_services")
     async def test_empty_string_unsets(self, mock_svc, mock_set_value):
-        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        cfg.reranker_model = _RERANK_REF
         result = await handlers.set_reranker_model("")
         assert result.model == ""
         assert cfg.reranker_model == ""
-        # Persistence boundary: disable must survive process restart.
         mock_set_value.assert_called_once_with(cfg.data_root, "reranker_model", "")
 
     @patch("lilbee.server.handlers.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):
         """Whitespace-only strings must not bypass the empty-check guard."""
-        cfg.reranker_model = "bge-reranker-v2-m3:latest"
+        cfg.reranker_model = _RERANK_REF
         result = await handlers.set_reranker_model("   ")
         assert result.model == ""
         assert cfg.reranker_model == ""
 
     @patch("lilbee.server.handlers.get_services")
-    async def test_canonicalises_hf_repo_to_name_tag(self, mock_svc, tmp_path):
-        """PUT with ``hf_repo`` (or ``hf_repo:tag``) stores canonical ``name:tag``.
+    async def test_resolves_bare_repo_to_installed_quant(self, mock_svc, tmp_path):
+        """PUT with bare ``hf_repo`` resolves to whichever quant is installed.
 
-        Regression guard: registry keys on the short ``name:tag`` slug, so
-        storing ``gpustack/bge-reranker-v2-m3-GGUF:latest`` would force
-        ``resolve_model_path`` through the alias fallback. The handler
-        canonicalises via the catalog entry's ``ref`` so the on-disk lookup
-        hits the primary index.
+        The handler matches against installed refs of the form
+        ``hf_repo/filename`` and returns the canonical full ref.
         """
-        mock_svc.return_value.provider.list_models.return_value = [
-            "gpustack/bge-reranker-v2-m3-GGUF:latest"
-        ]
+        mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
         result = await handlers.set_reranker_model("gpustack/bge-reranker-v2-m3-GGUF")
-        assert result.model == "bge-reranker-v2-m3:latest"
-        assert cfg.reranker_model == "bge-reranker-v2-m3:latest"
+        assert result.model == _RERANK_REF
+        assert cfg.reranker_model == _RERANK_REF
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_chat_model(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
+        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(ValueError, match="not rerank") as exc:
-            await handlers.set_reranker_model("qwen3:0.6b")
-        # Chat model redirected to the PUT /api/models/chat route (exact path).
+            await handlers.set_reranker_model(_CHAT_REF)
         assert "PUT /api/models/chat" in str(exc.value)
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_vision_model(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = ["lightonocr:2-1b"]
+        mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
         with pytest.raises(ValueError, match="not rerank") as exc:
-            await handlers.set_reranker_model("lightonocr:2-1b")
-        # Vision model redirected to /api/models/vision (not "rerank").
-        # This asserts the RERANK task doesn't leak into the redirect URL.
+            await handlers.set_reranker_model(_VISION_REF)
         assert "PUT /api/models/vision" in str(exc.value)
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_embedding_model_in_vision_slot(self, mock_svc):
-        """Embedding model in the reranker slot redirects to the embedding endpoint.
-
-        Regression test: before the TASK_ENDPOINT_PATH mapping, wrong-role
-        redirects for a RERANK task referred to PUT /api/models/rerank,
-        which is a 404 -- the actual route is /api/models/reranker. This
-        also exercises the reverse direction (rerank slot, chat model).
-        """
-        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        """Embedding model in the reranker slot redirects to the embedding endpoint."""
+        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         with pytest.raises(ValueError, match="not rerank") as exc:
-            await handlers.set_reranker_model("nomic-embed-text:v1.5")
+            await handlers.set_reranker_model(_EMBED_REF)
         assert "PUT /api/models/embedding" in str(exc.value)
 
     @patch("lilbee.server.handlers.get_services")
     async def test_rejects_reranker_in_vision_slot(self, mock_svc):
         """Reranker in the vision slot: redirect must use /reranker (not /rerank)."""
-        mock_svc.return_value.provider.list_models.return_value = ["bge-reranker-v2-m3:latest"]
+        mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
         with pytest.raises(ValueError, match="not vision") as exc:
-            await handlers.set_vision_model("bge-reranker-v2-m3:latest")
+            await handlers.set_vision_model(_RERANK_REF)
         assert "PUT /api/models/reranker" in str(exc.value)
 
 

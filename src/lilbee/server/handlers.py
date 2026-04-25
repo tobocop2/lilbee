@@ -612,7 +612,15 @@ def _catalog_section(
     active: str,
     installed: set[str],
 ) -> ModelCatalogSection:
-    """Build a ModelCatalogSection from a featured-catalog tuple."""
+    """Build a ModelCatalogSection from a featured-catalog tuple.
+
+    A featured row is "installed" when at least one quant of its
+    ``hf_repo`` has a manifest. Installed refs are full
+    ``hf_repo/filename`` strings, so the membership test compares the
+    leading ``hf_repo`` segment. Bare ``hf_repo`` entries are accepted
+    too (e.g. older clients that report just the repo).
+    """
+    installed_repos = {ref.rsplit("/", 1)[0] if ref.endswith(".gguf") else ref for ref in installed}
     return ModelCatalogSection(
         active=active,
         catalog=[
@@ -621,7 +629,7 @@ def _catalog_section(
                 size_gb=m.size_gb,
                 min_ram_gb=m.min_ram_gb,
                 description=m.description,
-                installed=m.ref in installed,
+                installed=m.hf_repo in installed_repos,
             )
             for m in featured
         ],
@@ -671,6 +679,8 @@ def _require_model_available(model: str) -> str:
     """
     from lilbee.catalog import find_catalog_entry
 
+    if not model:
+        raise ValueError(f"Model '{model}' is not available. Pull it first or check the name.")
     available = set(get_services().provider.list_models())
     if model in available:
         return model
@@ -681,7 +691,12 @@ def _require_model_available(model: str) -> str:
             if ref.startswith(f"{entry.hf_repo}/"):
                 return ref
     # Provider-prefixed ref bare form.
-    parsed = parse_model_ref(model)
+    try:
+        parsed = parse_model_ref(model)
+    except ValueError:
+        raise ValueError(
+            f"Model '{model}' is not available. Pull it first or check the name."
+        ) from None
     if parsed.name in available:
         return parsed.name
     raise ValueError(f"Model '{model}' is not available. Pull it first or check the name.")
@@ -946,8 +961,8 @@ async def models_catalog(
     )
 
     registry = get_services().registry
-    installed_names = {f"{m.name}:{m.tag}" for m in registry.list_installed()}
-    enriched = enrich_catalog(result, installed_names)
+    installed_refs = {m.ref for m in registry.list_installed()}
+    enriched = enrich_catalog(result, installed_refs)
 
     return ModelsCatalogResponse(
         total=result.total,
@@ -956,9 +971,8 @@ async def models_catalog(
         has_more=result.has_more,
         models=[
             CatalogEntryResponse(
-                name=e.name,
-                tag=e.tag,
                 hf_repo=e.hf_repo,
+                gguf_filename=e.gguf_filename,
                 task=e.task,
                 display_name=e.display_name,
                 param_count=e.param_count,

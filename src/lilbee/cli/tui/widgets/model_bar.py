@@ -211,8 +211,13 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     default for a working model. Select still allows picking it for
     backward compatibility, but the UI makes the real state obvious.
     """
-    ref = parse_model_ref(default) if default else None
-    default = ref.for_openai_prefix() if ref else default
+    if default:
+        try:
+            ref = parse_model_ref(default)
+        except ValueError:
+            ref = None
+        if ref is not None:
+            default = ref.for_openai_prefix()
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)

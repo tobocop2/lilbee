@@ -363,9 +363,7 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for fam in self._families:
             for v in fam.variants:
-                installed = self._is_installed(
-                    v.hf_repo, repo=v.hf_repo, filename=v.filename
-                )
+                installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
                 row = variant_to_row(v, fam, installed)
                 if matches_search(row, search):
                     rows.append(row)

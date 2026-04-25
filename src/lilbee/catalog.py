@@ -741,15 +741,25 @@ def _build_catalog_index() -> CatalogIndex:
 def find_catalog_entry(query: str) -> CatalogModel | None:
     """Find a featured model by hf_repo or by full ``hf_repo/filename`` ref.
 
-    Provider-prefixed refs like ``ollama/<name>``, ``openai/<name>`` are
-    stripped of their first segment when the prefix does not match a
-    known HF owner. Case-insensitive. Returns ``None`` on miss.
+    Lookups, in order:
+    1. Full canonical ref ``<repo>/<filename>`` (only featured entries
+       with a concrete, non-glob filename live in this index).
+    2. Bare ``<repo>``: strip the trailing ``.gguf`` segment if present.
+    3. Provider-prefixed refs (``ollama/...``, ``openai/...``): strip
+       the first segment when it is not itself a known HF owner.
+
+    Case-insensitive. Returns ``None`` on miss.
     """
     if not query:
         return None
     idx = _build_catalog_index()
     q = query.lower()
     candidates = [q]
+    # Strip the filename for ``<repo>/<filename>.gguf`` queries so the
+    # bare-repo index catches featured entries whose gguf_filename is a
+    # glob (most are).
+    if q.endswith(".gguf") and q.count("/") >= 2:
+        candidates.append(q.rsplit("/", 1)[0])
     if "/" in q:
         prefix, rest = q.split("/", 1)
         hf_owners = {r.split("/", 1)[0] for r in idx.by_hf_repo if "/" in r}

@@ -66,7 +66,7 @@ class TestParseHfRef:
             parse_hf_ref("qwen3:0.6b")
 
     def test_missing_gguf_suffix_rejected(self) -> None:
-        with pytest.raises(ValueError, match="must end in .gguf"):
+        with pytest.raises(ValueError, match=r"must end in \.gguf"):
             parse_hf_ref("Qwen/Qwen3-0.6B-GGUF")
 
     def test_missing_repo_prefix_rejected(self) -> None:
@@ -145,9 +145,7 @@ class TestModelRegistryInstall:
         blob_path = registry.install(_REPO, _FILENAME, src, manifest)
 
         assert blob_path.exists()
-        manifest_file = (
-            tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
-        )
+        manifest_file = tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
         assert manifest_file.exists()
         data = json.loads(manifest_file.read_text())
         assert data["hf_repo"] == _REPO

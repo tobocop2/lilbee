@@ -99,7 +99,16 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
 
 
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
-    """Return the catalog's canonical ref for *ref*, or raise ValueError.
+    """Validate *ref* belongs to the featured catalog AND its task matches.
+
+    Returns the input ref unchanged on success when it is a full
+    ``hf_repo/filename`` form (preserving the user's chosen quant), or
+    the catalog entry's canonical ref when only ``hf_repo`` was given.
+
+    Provider-prefixed refs (``ollama/``, ``openai/``, ``anthropic/``,
+    ``gemini/``) bypass the featured-catalog check: those models are
+    never in the native featured table and the task taxonomy is
+    enforced at the routing layer instead.
 
     ``allow_bypass=True`` (default) honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION``
     so unrelated tests can set model refs without populating the catalog.
@@ -110,6 +119,8 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
         return ref
     if allow_bypass and _model_task_validation_bypassed():
         return ref
+    if ref.split("/", 1)[0] in {"ollama", "openai", "anthropic", "gemini"}:
+        return ref
     entry = _find_model_catalog_entry(ref)
     if entry is None:
         raise ValueError(
@@ -118,6 +129,11 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
             "POST /api/models/pull with a known catalog ref."
         )
     _enforce_role_match(ref, entry, field_name)
+    # Preserve the user's full ref (with filename) so downstream
+    # ``resolve_model_path`` can locate the exact installed quant. Fall
+    # back to the catalog entry's ref only for bare ``hf_repo`` input.
+    if ref.endswith(".gguf") and ref.count("/") >= 2:
+        return ref
     canonical: str = entry.ref
     return canonical
 
@@ -360,9 +376,7 @@ class Config(BaseSettings):
     # ``vault_path`` for native-UI deep-links.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
-    chat_model: str = Field(
-        default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", min_length=1
-    )
+    chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", min_length=1)
     embedding_model: str = Field(
         default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
         min_length=1,
