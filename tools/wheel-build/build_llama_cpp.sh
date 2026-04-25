@@ -18,11 +18,21 @@ version="${LLAMA_CPP_VERSION:?LLAMA_CPP_VERSION is required}"
 backend="${BACKEND:?BACKEND is required}"
 build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+target_arch="${TARGET_ARCH:-}"
 
 mkdir -p "${build_dir}"
 
+# Cross-compile setup: macOS arm64 host -> x86_64 wheel. Setuptools picks
+# up ARCHFLAGS for native sub-extensions; _PYTHON_HOST_PLATFORM overrides
+# the wheel's platform tag so it lands as macosx_*_x86_64 instead of arm64.
+# CMAKE_OSX_ARCHITECTURES is set inside cmake_args.sh.
+if [ -n "${target_arch}" ] && [ "$(uname -s)" = "Darwin" ] && [ "${target_arch}" != "$(uname -m)" ]; then
+  export ARCHFLAGS="-arch ${target_arch}"
+  export _PYTHON_HOST_PLATFORM="macosx-${MACOSX_DEPLOYMENT_TARGET:-11.0}-${target_arch}"
+fi
+
 # shellcheck source=/dev/null
-eval "$(BACKEND="${backend}" "${script_dir}/cmake_args.sh")"
+eval "$(BACKEND="${backend}" TARGET_ARCH="${target_arch}" "${script_dir}/cmake_args.sh")"
 export CMAKE_ARGS
 
 echo "Building llama-cpp-python==${version} (${backend}) with CMAKE_ARGS=${CMAKE_ARGS}"
