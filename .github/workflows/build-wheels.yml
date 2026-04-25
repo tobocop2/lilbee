@@ -188,9 +188,10 @@ jobs:
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.12"}
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.13"}
           # Windows CUDA — same Jimver action.
-          - {os: windows-2022, backend: cu121, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.1.0"}
-          - {os: windows-2022, backend: cu121, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.1.0"}
-          - {os: windows-2022, backend: cu121, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.1.0"}
+          # Windows cu121 dropped: MSVC 14.44 on windows-2022 emits
+          # static_assert "Unexpected compiler version, expected CUDA 12.4
+          # or newer." Older CUDA versions are incompatible with the
+          # Visual Studio shipped on the runner; cu124+ are fine.
           - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.4.0"}
           - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.4.0"}
           - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.4.0"}
@@ -199,6 +200,11 @@ jobs:
           - {os: windows-2022, backend: cu125, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.5.0"}
 
     runs-on: ${{ matrix.os }}
+
+    # Cap each extra-backend build. Windows CUDA-from-source has hung
+    # indefinitely on MSBuild in past iterations; this kills clear
+    # hangs without consuming CI hours forever.
+    timeout-minutes: 90
 
     env:
       BACKEND: ${{ matrix.backend }}
@@ -243,38 +249,41 @@ jobs:
           --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
           --wheel-platform ${{ matrix.wheel-plat }}
 
-      # Non-default backends (cu*, cpu) can't run inference here — the
-      # build runner has no matching GPU, and a CUDA-built wheel won't
-      # initialize on a CPU-only host. Structural smoke only: install
-      # the wheel, confirm libllama is bundled.
-      - name: Smoke test (install + import)
+      # CUDA-built wheels can't be imported on a CPU-only CI runner —
+      # the build host has no NVIDIA driver, so libcuda.so / nvcuda.dll
+      # is missing and `import llama_cpp` raises RuntimeError. CPU and
+      # Vulkan wheels are tested in the build-default-wheels job's full
+      # self-check; non-default extras get a *structural* smoke instead:
+      # unzip the wheel, confirm the vendored llama_cpp/lib/ contains a
+      # libllama.* shim of plausible size. This is the same gate
+      # abetlen, torch, etc. apply for GPU wheels — don't try to import
+      # a wheel whose runtime deps aren't present.
+      - name: Smoke test (structural, no import)
         shell: bash
         run: |
           set -euxo pipefail
-          pip install --pre dist/*.whl || true
           python -c "
-          import pathlib
-          try:
-              import llama_cpp
-              lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
-              libs = sorted(p.name for p in lib_dir.glob('*'))
-              print(f'llama_cpp/lib: {libs}')
-              assert any('llama' in n.lower() for n in libs), f'libllama missing: {libs}'
-              print('non-default smoke OK')
-          except OSError as exc:
-              # CUDA wheel may fail to dlopen on a CPU-only runner — that
-              # is expected; the wheel structure is what matters here.
-              print(f'(expected) cannot import llama_cpp on CI runner: {exc!r}')
-              # Still verify the wheel has libs by inspecting site-packages.
-              import sys, glob
-              for sp in sys.path:
-                  candidates = glob.glob(f'{sp}/llama_cpp/lib/*')
-                  if candidates:
-                      print(f'wheel libs: {[c.split(\"/\")[-1] for c in candidates]}')
-                      assert any('llama' in c.lower() for c in candidates)
-                      break
-              else:
-                  raise AssertionError('no llama_cpp/lib/ found on sys.path')
+          import pathlib, sys, zipfile
+          whls = sorted(pathlib.Path('dist').glob('lilbee-*.whl'))
+          assert len(whls) == 1, f'expected exactly one lilbee wheel: {whls}'
+          whl = whls[0]
+          print(f'inspecting {whl.name} ({whl.stat().st_size:,} bytes)')
+          with zipfile.ZipFile(whl) as zf:
+              members = zf.namelist()
+              libs = [n for n in members if n.startswith('llama_cpp/lib/')]
+              print(f'llama_cpp/lib entries: {len(libs)}')
+              for lib in libs:
+                  size = zf.getinfo(lib).file_size
+                  print(f'  {lib} ({size:,} bytes)')
+              llama_libs = [n for n in libs if 'llama' in pathlib.Path(n).name.lower()]
+              assert llama_libs, f'wheel ships no libllama.* in llama_cpp/lib/: {libs}'
+              # libllama on every backend is at least 500 KB compressed —
+              # a near-empty stub would mean cmake silently produced nothing.
+              for lib in llama_libs:
+                  size = zf.getinfo(lib).file_size
+                  if size < 50_000:
+                      raise AssertionError(f'{lib} is suspiciously small ({size} bytes)')
+              print(f'structural smoke OK: {len(llama_libs)} libllama variants present')
           "
 
       - name: Upload extra-backend wheel
