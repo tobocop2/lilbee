@@ -18,11 +18,18 @@ version="${LLAMA_CPP_VERSION:?LLAMA_CPP_VERSION is required}"
 backend="${BACKEND:?BACKEND is required}"
 build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+target_arch="${TARGET_ARCH:-}"
 
 mkdir -p "${build_dir}"
 
+# Cross-compile: ARCHFLAGS drives clang, _PYTHON_HOST_PLATFORM drives the wheel tag.
+if [ -n "${target_arch}" ] && [ "$(uname -s)" = "Darwin" ] && [ "${target_arch}" != "$(uname -m)" ]; then
+  export ARCHFLAGS="-arch ${target_arch}"
+  export _PYTHON_HOST_PLATFORM="macosx-${MACOSX_DEPLOYMENT_TARGET:-11.0}-${target_arch}"
+fi
+
 # shellcheck source=/dev/null
-eval "$(BACKEND="${backend}" "${script_dir}/cmake_args.sh")"
+eval "$(BACKEND="${backend}" TARGET_ARCH="${target_arch}" "${script_dir}/cmake_args.sh")"
 export CMAKE_ARGS
 
 echo "Building llama-cpp-python==${version} (${backend}) with CMAKE_ARGS=${CMAKE_ARGS}"
