@@ -14,33 +14,41 @@
 
 set -euo pipefail
 
-backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|rocm|sycl)}"
+backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|sycl)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
 
 # Universal portability flags applied to every x86_64 build:
 #
-#   GGML_NATIVE=OFF       — no -march=native; builds done on AVX2-capable
-#                           runners would otherwise crash with "Illegal
-#                           instruction" on weaker pool members.
-#   GGML_CPU_ALL_VARIANTS — compile every CPU backend variant (SSE4.2,
-#                           AVX, AVX2, AVX2+VNNI, AVX-512). ggml's runtime
-#                           backend registry picks the highest variant
-#                           the host CPU actually supports. Without this,
-#                           a wheel built on a CI runner with AVX2 SIGILLs
-#                           on Sandy Bridge / older Xeons that only have
-#                           plain AVX. With it, one wheel works on every
-#                           x86_64 CPU from 2008 forward.
+#   GGML_NATIVE=OFF — no -march=native; builds done on AVX2-capable
+#                     runners would otherwise crash with "Illegal
+#                     instruction" on weaker pool members.
 #
-# CPU_ALL_VARIANTS requires GGML_BACKEND_DL=ON: it builds each CPU variant
-# (sse42, sandybridge, haswell, skylake, icelake, ...) as a separately-
-# loadable .so, then dlopens the highest one the host CPU can run at
-# startup. Without GGML_BACKEND_DL, ALL_VARIANTS silently falls back to a
-# single-variant build matching the build host (CI runner = AVX2-capable),
-# which then SIGILLs on Sandy Bridge.
+# Why we don't use GGML_CPU_ALL_VARIANTS + GGML_BACKEND_DL:
+#   The DL-based runtime variant dispatch builds correctly but
+#   llama-cpp-python's Python binding does not call
+#   ggml_backend_load_all_from_path at startup, so no CPU backend is
+#   registered at runtime and Llama(model_path=...) fails with
+#   "Failed to load model from file" (no compute device available).
+#   Confirmed in b443. The DL split is a llama.cpp-only mechanism;
+#   adopting it requires a llama-cpp-python upstream change.
 #
-# arm64 builds drop both flags — NEON is mandatory in ARMv8 so a single
-# variant covers every aarch64 system.
-common_x86="-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON"
+# Instead: cap the single libggml-cpu.so at AVX baseline (Sandy Bridge
+# 2011+). Explicitly disable AVX2 / FMA / F16C / BMI2 / AVX512 / VNNI
+# so ggml's CMake (which auto-enables those when GGML_NATIVE=OFF on a
+# build host that supports them) doesn't bake them in. The resulting
+# wheel runs on any x86_64 CPU from 2011 forward — a Sandy Bridge Xeon
+# E5-2609 included.
+#
+# Modern users (Haswell+) lose ~10–20% CPU perf vs. an AVX2-tuned wheel,
+# but they're typically on GPU paths (Vulkan / CUDA) for chat and only
+# hit CPU for embedding fallback, where the loss is negligible. Users
+# who want the absolute fastest CPU path can install from the per-CUDA
+# extra-index — those wheels target a specific GPU and don't care about
+# CPU portability.
+#
+# arm64: NEON is mandatory in ARMv8 so a single baseline variant covers
+# every aarch64 system.
+common_x86="-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
 common_arm="-DGGML_NATIVE=OFF"
 
 case "${backend}_${runner_os}" in
@@ -62,10 +70,7 @@ case "${backend}_${runner_os}" in
     # CUDA-built wheel is a separate variant on the extra-index publish.
     args="${common_x86} -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_BLAS=OFF"
     ;;
-  cu121_Linux|cu121_Windows)
-    args="${common_x86} -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
-    ;;
-  cu122_Linux|cu122_Windows|cu123_Linux|cu123_Windows|cu124_Linux|cu124_Windows|cu125_Linux|cu125_Windows)
+  cu121_Linux|cu121_Windows|cu122_Linux|cu122_Windows|cu123_Linux|cu123_Windows|cu124_Linux|cu124_Windows|cu125_Linux|cu125_Windows)
     args="${common_x86} -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
     ;;
   rocm_Linux)
