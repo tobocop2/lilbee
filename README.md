@@ -14,7 +14,11 @@ A terminal-first local search engine for your own files, websites, and scanned d
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/dm/lilbee" alt="Downloads"></a>
 </p>
 
-> **In active development.** Moving fast toward a 0.6.66 final release. Interfaces may shift between beta versions. Feedback and issues are welcome.
+> ## ⚠️ Beta software
+>
+> lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome — that's the whole point of the beta.
+>
+> Latest pre-release (always): [lilbee on PyPI →](https://pypi.org/project/lilbee/#history)
 
 ---
 
@@ -184,47 +188,123 @@ Standalone mode runs entirely on your machine. No cloud required.
 
 | Resource | Minimum | Recommended |
 |----------|---------|-------------|
+| **CPU** | x86_64 (Sandy Bridge / 2011+) or ARM64 (any) | x86_64 with AVX2 / FMA, or Apple Silicon |
 | **RAM** | 8 GB | 16 to 32 GB |
-| **GPU / Accelerator** | none required | Apple Metal (M-series), NVIDIA GPU (6+ GB VRAM) |
+| **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (CUDA-native, see [Install](#install)) |
 | **Disk** | 2 GB (models + data) | 10+ GB if using multiple models |
-| **CPU** | Any modern x86_64 / ARM64 | same as minimum |
 
-lilbee uses llama-cpp-python for inference locally: Metal on macOS, CUDA on Linux/Windows when available, CPU otherwise (usable for embedding, slow for chat). Popular frontier models are optional; install with `pip install --pre lilbee[litellm]`.
+The default PyPI wheel uses ggml's runtime CPU dispatch — it ships every CPU kernel variant (SSE4.2 / AVX / AVX2 / AVX-512) and picks the highest one your CPU supports at startup. On Linux/Windows it links Vulkan for GPU acceleration; on macOS it links Metal. NVIDIA users get GPU acceleration through the NVIDIA Vulkan driver automatically — no CUDA installation required. The opt-in CUDA wheels (above) buy 5–15% extra perf for users who specifically want CUDA-native kernels.
+
+Popular frontier models are optional; install with `pip install --pre lilbee[litellm]`.
 
 ## Install
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11, 3.12, 3.13, or 3.14
 - **Optional** (for scanned PDF / image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a GGUF vision model (see [vision OCR](docs/usage.md#vision-models))
 
-No external services needed. lilbee downloads and runs GGUF models locally via llama-cpp.
+No external services needed. lilbee downloads and runs GGUF models locally via llama-cpp-python.
 
-### Install
+### Default install (recommended for almost everyone)
+
+The default wheel ships with **runtime CPU dispatch** (works on every x86_64 CPU from Sandy Bridge / 2011 forward) and **GPU acceleration via Vulkan on Linux/Windows** (covers NVIDIA / AMD / Intel Arc) or **Metal on macOS arm64**. If you have *any* modern GPU, this gets you GPU-accelerated inference with zero opt-in.
+
+**pip:**
 
 ```bash
-pip install --pre lilbee                              # base install
-pip install --pre lilbee[crawler]                     # + web crawling
-pip install --pre lilbee[litellm]                     # + Ollama and frontier model support
-pip install --pre lilbee[graph]                       # + concept-graph search boost
-pip install --pre lilbee[graph,crawler,litellm]       # everything
+pip install --pre lilbee
 ```
 
-> While 0.6.66 is in beta, the `--pre` flag is required. Once a stable release is cut, plain `pip install lilbee` will work.
+**uv:**
+
+```bash
+uv tool install --prerelease=allow lilbee
+```
+
+Verify the install works on your hardware:
+
+```bash
+lilbee self-check
+```
+
+This downloads a tiny model (~90 MB), runs an inference, and an embedding. Exits 0 with `SELF-CHECK PASSED` on success.
+
+### NVIDIA users wanting CUDA-native (5–15% faster than Vulkan)
+
+The default wheel already uses your NVIDIA GPU through Vulkan. **You only need a CUDA wheel if you want the absolute last bit of performance** out of CUDA-native kernels.
+
+CUDA wheels live on a per-CUDA-version index (because each is linked against a specific CUDA runtime). Pick the index that matches your installed CUDA toolkit:
+
+```bash
+# CUDA 12.4
+pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu124/
+
+# CUDA 12.5
+pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/
+
+# uv equivalent
+uv tool install --prerelease=allow lilbee \
+  --extra-index-url https://tobocop2.github.io/lilbee/cu125/
+```
+
+Don't know your CUDA version? `nvidia-smi` (look at the top-right corner). NVIDIA driver 555+ supports CUDA 12.5; older drivers may need cu124.
+
+### Pre-built executables (no Python required)
+
+Download a single binary that bundles its own Python runtime — no `pip` needed:
+
+| Platform | Download |
+|---|---|
+| **Linux x86_64** | [lilbee-linux-x86_64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64) |
+| **macOS arm64** | [lilbee-macos-arm64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-macos-arm64) |
+| **Windows x86_64** | [lilbee-windows-x86_64.exe](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64.exe) |
+
+Make executable and run:
+
+```bash
+chmod +x lilbee-linux-x86_64
+./lilbee-linux-x86_64 self-check
+```
+
+Always points at the latest pre-release.
 
 ### Optional extras
 
-lilbee works out of the box. Extras unlock additional capabilities:
+lilbee works out of the box. Extras unlock additional capabilities. Both `pip` and `uv tool install` syntax shown:
 
-| Extra | Install | What it adds |
-|-------|---------|-------------|
-| **Web crawling** | `pip install --pre lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. |
-| **Ollama and frontier models** | `pip install --pre lilbee[litellm]` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
-| **Concept graph** | `pip install --pre lilbee[graph]` | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls. |
+| Extra | What it adds |
+|---|---|
+| **Web crawling** — `pip install --pre 'lilbee[crawler]'` / `uv tool install --prerelease=allow 'lilbee[crawler]'` | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. |
+| **Ollama and frontier models** — `pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
+| **Concept graph** — `pip install --pre 'lilbee[graph]'` / `uv tool install --prerelease=allow 'lilbee[graph]'` | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls. |
 
-Install multiple: `pip install --pre lilbee[graph,crawler,litellm]`
+Install multiple at once:
+
+```bash
+pip install --pre 'lilbee[graph,crawler,litellm]'
+# or
+uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
+```
+
+Combine with `--extra-index-url` for CUDA:
+
+```bash
+uv tool install --prerelease=allow 'lilbee[graph,crawler]' \
+  --extra-index-url https://tobocop2.github.io/lilbee/cu125/
+```
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration and details.
+
+### Upgrading to the latest pre-release
+
+```bash
+# pip
+pip install --upgrade --pre lilbee
+
+# uv (force reinstall)
+uv tool install --reinstall --prerelease=allow lilbee
+```
 
 ### Development (run from source)
 
