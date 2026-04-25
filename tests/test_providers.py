@@ -407,6 +407,47 @@ class TestLlamaCppProvider:
             logger.removeHandler(handler)
         assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
 
+    def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
+        """ggml emits multi-part log lines as ``LEVEL <chunk>``+``CONT
+        <chunk>``+...; the dispatcher buffers continuations and flushes
+        the joined record once a newline lands. Flush also fires when a
+        new non-CONT line arrives, releasing whatever was buffered.
+        """
+        import logging
+
+        from lilbee.providers import llama_cpp_provider as prov
+
+        prov._llama_log_pending.clear()
+        logger = logging.getLogger("lilbee.llama_cpp")
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger.addHandler(handler)
+        prior_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            # WARN starts a record
+            prov._llama_log_dispatch(2, b"loading model:", None)
+            # CONT extends it (no newline yet -> still buffered)
+            prov._llama_log_dispatch(5, b" qwen3-0.6b", None)
+            assert records == []
+            # CONT with newline -> flush
+            prov._llama_log_dispatch(5, b" Q4_K_M\n", None)
+            assert records, "newline should have flushed buffer"
+            assert "loading model: qwen3-0.6b Q4_K_M" in records[-1].message
+            records.clear()
+
+            # Buffered chunk without newline; a new non-CONT message must
+            # flush the prior buffer before starting fresh.
+            prov._llama_log_dispatch(2, b"first line", None)
+            prov._llama_log_dispatch(2, b"second line\n", None)
+            messages = [r.message for r in records]
+            assert "first line" in messages
+            assert "second line" in messages
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(prior_level)
+
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:

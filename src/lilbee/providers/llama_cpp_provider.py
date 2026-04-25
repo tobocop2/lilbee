@@ -599,7 +599,7 @@ def _wrap_llama_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueE
         return exc
     try:
         size_gb = model_path.stat().st_size / (1024**3) if model_path.exists() else 0.0
-    except OSError:
+    except OSError:  # pragma: no cover -- defensive: never mask the real load error
         size_gb = 0.0
     n_ctx = kwargs.get("n_ctx", 0)
     n_ctx_label = n_ctx or "model default"
