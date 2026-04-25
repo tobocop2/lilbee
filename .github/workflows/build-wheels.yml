@@ -88,7 +88,7 @@ jobs:
 
     env:
       BACKEND: ${{ matrix.backend }}
-      LLAMA_BUILD_DIR: ${{ runner.temp }}/llama-build
+      LLAMA_BUILD_DIR: "/tmp/llama-build"
       MACOSX_DEPLOYMENT_TARGET: "11.0"
 
     steps:
@@ -260,21 +260,37 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
         include:
           - os: ubuntu-latest
             backend: vulkan
+            python-version: "3.11"
+          - os: ubuntu-latest
+            backend: vulkan
+            python-version: "3.12"
+          - os: ubuntu-latest
+            backend: vulkan
+            python-version: "3.13"
+          - os: ubuntu-latest
+            backend: vulkan
+            python-version: "3.14"
           - os: macos-latest
             backend: metal
+            python-version: "3.11"
+          - os: macos-latest
+            backend: metal
+            python-version: "3.12"
+          - os: macos-latest
+            backend: metal
+            python-version: "3.13"
           - os: windows-latest
             backend: vulkan
-        # 3.14 is Linux-only on the default index for this release.
-        exclude:
-          - os: macos-latest
-            python-version: "3.14"
+            python-version: "3.11"
           - os: windows-latest
-            python-version: "3.14"
+            backend: vulkan
+            python-version: "3.12"
+          - os: windows-latest
+            backend: vulkan
+            python-version: "3.13"
     runs-on: ${{ matrix.os }}
     env:
       BACKEND: ${{ matrix.backend }}
