@@ -424,6 +424,27 @@ _INGEST_LOCKS: dict[str, asyncio.Lock] = {}
 _INGEST_LOCK_REGISTRY: asyncio.Lock | None = None
 
 
+# Types that can carry script even within an "inline-rendered" category.
+# Keep the deny narrow and explicit — broadening it requires a security review.
+_RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset({"text/html", "image/svg+xml"})
+
+
+def _is_safe_for_inline_render(content_type: str) -> bool:
+    """Whether ``raw=1`` may serve this Content-Type as-is.
+
+    Trusted categories (``text/*``, ``image/*``, ``application/pdf``) pass
+    through, with named exceptions for types that embed executable script.
+    Everything else degrades to ``application/octet-stream`` so an attacker-
+    renamed file (e.g. ``evil.html``) cannot trick a browser into rendering
+    it inline within the plugin origin.
+    """
+    if content_type in _RAW_INLINE_RENDER_DENY:
+        return False
+    if content_type == "application/pdf":
+        return True
+    return content_type.startswith("text/") or content_type.startswith("image/")
+
+
 def _get_registry_lock() -> asyncio.Lock:
     """Return the registry lock, creating it on the running loop if needed."""
     global _INGEST_LOCK_REGISTRY
@@ -874,7 +895,14 @@ async def get_source_content(
         content_type = "application/octet-stream"
 
     if raw:
-        return resolved.read_bytes(), content_type
+        # Cap raw responses to inline-render-safe categories; anything else
+        # degrades to a binary download so attacker-renamed files (e.g.
+        # evil.html) can't trick the embedding browser into running script
+        # under our origin.
+        served_type = (
+            content_type if _is_safe_for_inline_render(content_type) else "application/octet-stream"
+        )
+        return resolved.read_bytes(), served_type
 
     if not content_type.startswith("text/"):
         return SourceContentResponse(markdown="", content_type=content_type, title=None)
