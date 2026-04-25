@@ -17,9 +17,7 @@ set -euo pipefail
 backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|sycl)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
 
-# TARGET_ARCH lets a macOS arm64 host cross-compile an x86_64 wheel for
-# Intel Macs (no free GitHub-hosted Intel runner exists since macos-13
-# was retired). Default: host architecture.
+# TARGET_ARCH: cross-compile target. Defaults to host arch.
 target_arch="${TARGET_ARCH:-$(uname -m)}"
 case "${target_arch}" in
   arm64|aarch64) target_arch=arm64 ;;
@@ -66,10 +64,6 @@ case "${backend}_${runner_os}" in
     ;;
   cpu_macOS)
     if [ "${target_arch}" = "x86_64" ]; then
-      # Intel Mac wheel cross-compiled from arm64 host. AVX baseline
-      # (Sandy Bridge+) so the wheel runs on every Intel Mac that can
-      # boot macOS 11. CMAKE_OSX_ARCHITECTURES forces ggml's CMake to
-      # emit x86_64 object code instead of inheriting the host arch.
       args="${common_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF"
     else
       args="${common_arm} -DGGML_METAL=OFF -DGGML_BLAS=OFF"
@@ -80,7 +74,7 @@ case "${backend}_${runner_os}" in
     ;;
   metal_macOS)
     if [ "${target_arch}" = "x86_64" ]; then
-      echo "tools/wheel-build/cmake_args.sh: metal backend not shipped for Intel Mac (use cpu)" >&2
+      echo "metal backend is arm64-only; use cpu for Intel Mac" >&2
       exit 1
     fi
     args="${common_arm} -DGGML_METAL=ON -DGGML_BLAS=OFF"

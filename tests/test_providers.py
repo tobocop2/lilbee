@@ -319,10 +319,7 @@ class TestLlamaCppProvider:
     def testload_llama_wraps_context_failure_with_diagnostic(
         self, models_dir: Path, tmp_path: Path
     ) -> None:
-        """Opaque ``Failed to create llama_context`` from llama.cpp gets
-        rewrapped with model name, size, n_ctx, and free RAM so users see
-        what went wrong instead of the upstream stub message.
-        """
+        """Opaque ``Failed to create llama_context`` is rewrapped with diagnostic context."""
         from unittest.mock import patch
 
         from lilbee.providers.llama_cpp_provider import load_llama
@@ -342,10 +339,7 @@ class TestLlamaCppProvider:
         assert "Failed to create llama_context" in msg
 
     def testload_llama_does_not_wrap_unrelated_value_errors(self, models_dir: Path) -> None:
-        """Only the two known opaque-failure messages get rewrapped; any
-        other ValueError passes through unchanged so we don't bury real
-        bugs under a misleading diagnostic.
-        """
+        """ValueErrors that aren't the two known load-failure messages pass through unchanged."""
         from unittest.mock import patch
 
         from lilbee.providers.llama_cpp_provider import load_llama
@@ -359,10 +353,7 @@ class TestLlamaCppProvider:
     def testload_llama_routes_llama_logs_through_python_logger(
         self, models_dir: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """load_llama installs the llama_log_set callback once; calling the
-        installed callback routes ggml WARN to Python INFO (demoted because
-        most are auto-corrections like the embeddings-required flood).
-        """
+        """load_llama installs the llama_log callback; ggml WARN demotes to Python INFO."""
         import logging
         from unittest.mock import patch
 
@@ -388,9 +379,7 @@ class TestLlamaCppProvider:
         assert "embeddings required" in records[-1].message
 
     def testllama_log_dispatch_promotes_errors(self) -> None:
-        """ggml ERROR stays ERROR so real failures still surface at the
-        default WARNING level.
-        """
+        """ggml ERROR maps to Python ERROR so real failures surface at the default level."""
         import logging
 
         from lilbee.providers import llama_cpp_provider as prov
@@ -408,11 +397,7 @@ class TestLlamaCppProvider:
         assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
 
     def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
-        """ggml emits multi-part log lines as ``LEVEL <chunk>``+``CONT
-        <chunk>``+...; the dispatcher buffers continuations and flushes
-        the joined record once a newline lands. Flush also fires when a
-        new non-CONT line arrives, releasing whatever was buffered.
-        """
+        """CONT chunks buffer until a newline; a new non-CONT line also flushes the buffer."""
         import logging
 
         from lilbee.providers import llama_cpp_provider as prov

@@ -32,25 +32,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Dedicated logger for llama.cpp C-side messages routed via llama_log_set
-# (see _install_llama_log_handler). Emits through the standard lilbee
-# logger hierarchy so LILBEE_LOG_LEVEL / --log-level controls verbosity.
 _llama_log = logging.getLogger("lilbee.llama_cpp")
 
-# ggml.h log levels. Not exposed by llama-cpp-python; defined here so the
-# callback doesn't depend on private upstream constants.
+# ggml.h log levels (not exposed by llama-cpp-python).
 _GGML_LOG_LEVEL_NONE = 0
 _GGML_LOG_LEVEL_INFO = 1
 _GGML_LOG_LEVEL_WARN = 2
 _GGML_LOG_LEVEL_ERROR = 3
 _GGML_LOG_LEVEL_DEBUG = 4
-_GGML_LOG_LEVEL_CONT = 5  # continuation of the previous line
+_GGML_LOG_LEVEL_CONT = 5
 
-# Map ggml severities to Python log levels. WARN is demoted to INFO
-# because most llama.cpp warnings are auto-corrections that aren't
-# actionable for the user (the noisiest example is "embeddings required
-# but some input tokens were not marked as outputs -> overriding"). Real
-# errors stay at ERROR so they surface at lilbee's default WARNING level.
+# WARN demotes to INFO so noisy auto-corrections stay silent at the default WARNING level.
 _GGML_TO_PY_LEVEL = {
     _GGML_LOG_LEVEL_INFO: logging.DEBUG,
     _GGML_LOG_LEVEL_WARN: logging.INFO,
@@ -388,26 +380,20 @@ class _LockedStreamIterator:
 
 _STDERR_LOCK = threading.Lock()
 
-# Holds the ctypes-wrapped log callback. ctypes does not retain a Python
-# reference to the wrapped object, so without a module-level handle the
-# wrapper would be garbage collected and llama.cpp would call into freed
-# memory the next time it logged.
+# ctypes does not retain a Python reference to the wrapped callback;
+# this module-level handle keeps it alive for the process lifetime.
 _llama_log_callback: Any = None
 _llama_log_installed = False
-# Buffer for GGML_LOG_LEVEL_CONT (continuation) lines so multi-write
-# log messages reach the Python logger as one record.
 _llama_log_pending: dict[int, str] = {}
 _llama_log_pending_level: int = _GGML_LOG_LEVEL_INFO
 
 
 def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
-    """Route a single llama.cpp log message at *level* into the
-    `lilbee.llama_cpp` Python logger. Continuation lines are coalesced.
-    """
+    """Dispatch one llama.cpp log message; CONT chunks are coalesced on newline."""
     global _llama_log_pending_level
     try:
         text = text_bytes.decode("utf-8", errors="replace") if text_bytes else ""
-    except Exception:  # pragma: no cover -- defensive against malformed bytes
+    except Exception:  # pragma: no cover
         return
 
     if level == _GGML_LOG_LEVEL_CONT:
@@ -422,8 +408,6 @@ def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
         _llama_log_pending_level = level
         _llama_log_pending[0] = text
 
-    # Flush whenever the buffered text contains a newline -- llama.cpp
-    # emits messages chunk-by-chunk and the boundary marker is the \n.
     if "\n" in _llama_log_pending.get(0, ""):
         full = _llama_log_pending.pop(0).rstrip()
         if full:
@@ -431,10 +415,7 @@ def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
 
 
 def _install_llama_log_handler() -> None:
-    """Replace llama.cpp's default fd-2 log writer with a callback that
-    routes messages through Python's `logging`. Idempotent — safe to call
-    on every Llama() construction.
-    """
+    """Route llama.cpp logs through Python logging. Idempotent."""
     global _llama_log_callback, _llama_log_installed
     if _llama_log_installed:
         return
@@ -588,18 +569,13 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
 
 def _wrap_llama_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueError) -> ValueError:
-    """Convert llama.cpp's opaque ``ValueError("Failed to create llama_context")``
-    (or the matching "Failed to load model from file" variant) into a
-    diagnostic that names the model, its on-disk size, the requested
-    context window, and the host's free RAM. Two friends hit the bare
-    upstream message with no clue why; this lets them act on it.
-    """
+    """Add model name, size, n_ctx, and free RAM context to opaque llama.cpp load failures."""
     err = str(exc)
     if "llama_context" not in err and "load model from file" not in err:
         return exc
     try:
         size_gb = model_path.stat().st_size / (1024**3) if model_path.exists() else 0.0
-    except OSError:  # pragma: no cover -- defensive: never mask the real load error
+    except OSError:  # pragma: no cover
         size_gb = 0.0
     n_ctx = kwargs.get("n_ctx", 0)
     n_ctx_label = n_ctx or "model default"
@@ -611,8 +587,8 @@ def _wrap_llama_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueE
 
         free_gb = psutil.virtual_memory().available / (1024**3)
         parts.append(f"Host has {free_gb:.1f} GB free RAM.")
-    except Exception as psu_exc:  # pragma: no cover -- never mask the real failure
-        log.debug("psutil unavailable while building load-error diagnostic: %s", psu_exc)
+    except Exception as psu_exc:  # pragma: no cover
+        log.debug("psutil unavailable: %s", psu_exc)
     parts.append(
         "Try a smaller model, lower LILBEE_NUM_CTX, or close other processes to free RAM. "
         f"(llama.cpp: {err})"

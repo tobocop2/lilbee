@@ -124,12 +124,7 @@ def pipe_closed(pipe_fd: int) -> bool:
         try:
             handle = msvcrt.get_osfhandle(pipe_fd)
         except OSError:
-            # Bad file descriptor — the parent already closed the pipe
-            # and the OS retired our end. The non-Windows branch below
-            # treats this exact situation as "pipe closed"; mirror it
-            # so the splash subprocess exits cleanly instead of dumping
-            # an uncaught traceback to the user's terminal.
-            return True
+            return True  # bad fd, pipe is gone
         avail = ctypes.c_ulong(0)
         if not ctypes.windll.kernel32.PeekNamedPipe(
             handle, None, 0, None, ctypes.byref(avail), None

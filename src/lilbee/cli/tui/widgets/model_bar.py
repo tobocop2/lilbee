@@ -108,10 +108,7 @@ def _lookup_bucket(
 
 
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add native registry models to buckets. Native rows label as the
-    bare ref (``name:tag``); we don't curate display names anymore so two
-    quants of the same base model can never collapse to the same label.
-    """
+    """Add native registry models to buckets, labeled by ref."""
     try:
         from lilbee.registry import ModelRegistry
 

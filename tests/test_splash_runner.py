@@ -103,11 +103,7 @@ def test_pipe_closed_with_data_available():
 
 
 def test_pipe_closed_returns_true_on_bad_fd():
-    """pipe_closed returns True when called with an already-closed fd
-    instead of raising OSError(EBADF). Exercises the path that crashed the
-    Windows splash subprocess on shutdown (msvcrt.get_osfhandle on a
-    retired fd) and is symmetric with the POSIX select.select path.
-    """
+    """A closed fd returns True instead of raising EBADF (matches POSIX branch)."""
     r, w = os.pipe()
     os.close(w)
     os.close(r)

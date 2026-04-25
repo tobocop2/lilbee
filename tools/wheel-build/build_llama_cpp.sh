@@ -22,10 +22,7 @@ target_arch="${TARGET_ARCH:-}"
 
 mkdir -p "${build_dir}"
 
-# Cross-compile setup: macOS arm64 host -> x86_64 wheel. Setuptools picks
-# up ARCHFLAGS for native sub-extensions; _PYTHON_HOST_PLATFORM overrides
-# the wheel's platform tag so it lands as macosx_*_x86_64 instead of arm64.
-# CMAKE_OSX_ARCHITECTURES is set inside cmake_args.sh.
+# Cross-compile: ARCHFLAGS drives clang, _PYTHON_HOST_PLATFORM drives the wheel tag.
 if [ -n "${target_arch}" ] && [ "$(uname -s)" = "Darwin" ] && [ "${target_arch}" != "$(uname -m)" ]; then
   export ARCHFLAGS="-arch ${target_arch}"
   export _PYTHON_HOST_PLATFORM="macosx-${MACOSX_DEPLOYMENT_TARGET:-11.0}-${target_arch}"

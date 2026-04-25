@@ -695,11 +695,7 @@ class TestClassifyInstalledModels:
         assert "ollama/mistral:latest" in chat_refs
 
     def test_remote_blank_name_dropped(self, tmp_path) -> None:
-        """A friend's screenshot showed an empty "(Ollama)" row in the
-        chat picker. Trace: the Ollama API returned a model entry with
-        an empty `name`, which slipped through formatting as `f"{model.name}
-        ({model.provider})"` -> "(Ollama)". Skip blank-name entries.
-        """
+        """Remote entries with an empty name are skipped before reaching the picker."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.model_manager import RemoteModel
 

@@ -1,13 +1,4 @@
-"""Parse `lilbee --json self-check` output and assert the payload reports
-a real chat response and a positive embedding-dimension count.
-
-The CLI prints log lines before the final JSON line; we walk the lines
-in reverse and pick the first one that starts with '{' so log noise
-doesn't break parsing. Used by build-wheels.yml's wheel smoke, the
-verify-pypi lane, and release.yml's exe smoke.
-
-Usage: python tools/wheel-build/parse_self_check.py <output-file>
-"""
+"""Assert lilbee --json self-check output reports a chat response + embedding dims."""
 
 from __future__ import annotations
 
@@ -21,6 +12,7 @@ def main() -> int:
         print(f"usage: {sys.argv[0]} <self-check-output-file>", file=sys.stderr)
         return 2
     raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
+    # walk in reverse so log lines before the final JSON payload don't break parsing
     payload = next(line for line in reversed(raw) if line.strip().startswith("{"))
     data = json.loads(payload)
     assert data.get("ok"), f"self-check failed: {data}"

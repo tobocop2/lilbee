@@ -1,25 +1,13 @@
 #!/usr/bin/env bash
-# Full wheel smoke test: install lilbee from a wheel directory, exercise
-# `lilbee --version`, `lilbee --help`, and `lilbee --json self-check`,
-# and assert the JSON payload reports a real chat response and embedding
-# dimensions. Used by build-wheels.yml's native build lane and (without
-# the local-wheel install) by the verify-pypi lane via parse_self_check.py.
-#
-# Usage:
-#   bash tools/wheel-build/smoke_wheel_full.sh <wheel-glob>
-#
-# Example:
-#   bash tools/wheel-build/smoke_wheel_full.sh 'dist/*.whl'
+# Install a lilbee wheel and run --version, --help, and --json self-check.
+# Usage: bash smoke_wheel_full.sh <wheel-glob>
 
 set -euxo pipefail
 
 wheel_glob="${1:?wheel glob required (e.g. 'dist/*.whl')}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Re-installing typer first guarantees we end up with the pinned >=0.12;
-# uv-tool installs in CI sometimes pre-seed an older typer that survives
-# pip-install of the wheel. The wheel's own pin would normally upgrade it,
-# but we test the upgrade path explicitly to catch regressions.
+# Pre-seed an old typer to verify the wheel's >=0.12 pin actually upgrades it.
 pip install 'typer==0.9.4'
 # shellcheck disable=SC2086 -- wheel_glob must expand
 pip install --pre ${wheel_glob}

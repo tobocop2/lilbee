@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# Structural wheel smoke: unzip the lilbee wheel, confirm the vendored
-# llama_cpp/lib/ contains a libllama.* shim of plausible size, and
-# optionally assert the bundled binary targets a specific architecture
-# (used for cross-compiled wheels where the build host can't import
-# the foreign-arch library).
-#
-# Usage:
-#   bash tools/wheel-build/smoke_wheel_structural.sh [--expect-arch ARCH]
-#
-# Example (cross-compiled Intel Mac wheel verified on arm64 host):
-#   bash tools/wheel-build/smoke_wheel_structural.sh --expect-arch x86_64
+# Structural wheel smoke: verify llama_cpp/lib/libllama.* presence + size.
+# --expect-arch ARCH also asserts the bundled binary targets that arch.
+# Usage: bash smoke_wheel_structural.sh [--expect-arch ARCH]
 
 set -euxo pipefail
 
