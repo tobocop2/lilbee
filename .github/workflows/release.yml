@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  LLAMA_CPP_VERSION: "0.3.19"
+  LLAMA_CPP_VERSION: "0.3.20"
 
 jobs:
   lint:

@@ -27,16 +27,11 @@ case "${backend}_${runner_os}" in
   vulkan_Windows)
     echo "Vulkan runtime on Windows is installed by jakoch/install-vulkan-sdk-action with install_runtime: true."
     ;;
-  cu121_Linux|cu122_Linux|cu123_Linux|cu124_Linux)
-    # The CUDA driver itself isn't installed (we don't have a GPU on the
-    # runner), but the cuda-compat shim package provides the libcuda.so
-    # stub a CUDA-built wheel needs to dlopen at import time. Without a
-    # real GPU the wheel imports but no device is available — call sites
-    # see the error gracefully instead of refusing to load entirely.
+  cu121_Linux|cu122_Linux|cu123_Linux|cu124_Linux|cu125_Linux)
     sudo apt-get update
     sudo apt-get install -y "cuda-compat-${backend#cu}" || true
     ;;
-  cu121_Windows|cu122_Windows|cu123_Windows|cu124_Windows)
+  cu121_Windows|cu122_Windows|cu123_Windows|cu124_Windows|cu125_Windows)
     echo "CUDA runtime on Windows is provided by the Jimver/cuda-toolkit action; nothing to install here."
     ;;
   rocm_Linux)

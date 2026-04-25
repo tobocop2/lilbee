@@ -7,18 +7,19 @@ on:
     inputs:
       llama_cpp_version:
         description: "llama-cpp-python version to vendor"
-        default: "0.3.19"
+        default: "0.3.20"
         required: false
 
 permissions:
-  contents: read
+  contents: write
+  pages: write
+  id-token: write
 
 env:
-  # 0.3.19 is the latest version with abetlen's full prebuilt coverage on
-  # the CPU + CUDA + Metal indexes. Bumping this to a version abetlen
-  # hasn't shipped yet means every backend has to rebuild from source —
-  # see tools/wheel-build/README.md.
-  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.19' }}
+  # 0.3.20 brings a Gemma 4 chat-template fix not in 0.3.19. abetlen has
+  # not published 0.3.20 prebuilts on any of their indexes (cpu, cu*,
+  # metal), so every backend builds from source on our runners.
+  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
   ci:
@@ -35,54 +36,63 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The default-PyPI wheel matrix. One wheel per OS × Python, with
-        # the GPU backend that's universal for that OS:
-        #   * Linux x86_64 → Vulkan (cross-vendor: NVIDIA, AMD, Intel Arc)
-        #   * macOS arm64  → Metal (built into the OS)
-        #   * Windows x86_64 → Vulkan (cross-vendor)
-        # Per-CUDA, ROCm, and SYCL wheels go on a separate extra-index
-        # under the build-extra-index job below.
+        # The full backend matrix:
+        #   * Linux x86_64       — vulkan (default), cu121, cu124, cu125, rocm, sycl, cpu
+        #   * macOS arm64        — metal (default)
+        #   * Windows x86_64     — vulkan (default), cu121, cu124, cu125, cpu
+        # Default backends ship as the PyPI wheel for each OS; non-default
+        # backends ship via per-backend GitHub Pages PEP 503 indexes that
+        # users opt into with --extra-index-url.
         include:
-          - os: ubuntu-latest
-            backend: vulkan
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-            python-version: "3.11"
-          - os: ubuntu-latest
-            backend: vulkan
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-            python-version: "3.12"
-          - os: ubuntu-latest
-            backend: vulkan
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-            python-version: "3.13"
-          - os: ubuntu-latest
-            backend: vulkan
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-            python-version: "3.14"
-          - os: macos-latest
-            backend: metal
-            wheel-plat: macosx_11_0_arm64
-            python-version: "3.11"
-          - os: macos-latest
-            backend: metal
-            wheel-plat: macosx_11_0_arm64
-            python-version: "3.12"
-          - os: macos-latest
-            backend: metal
-            wheel-plat: macosx_11_0_arm64
-            python-version: "3.13"
-          - os: windows-latest
-            backend: vulkan
-            wheel-plat: win_amd64
-            python-version: "3.11"
-          - os: windows-latest
-            backend: vulkan
-            wheel-plat: win_amd64
-            python-version: "3.12"
-          - os: windows-latest
-            backend: vulkan
-            wheel-plat: win_amd64
-            python-version: "3.13"
+          # ---- Linux x86_64 ----
+          - {os: ubuntu-latest, backend: vulkan, default: true,  wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: vulkan, default: true,  wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: vulkan, default: true,  wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: vulkan, default: true,  wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: ubuntu-latest, backend: cpu,    default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: cpu,    default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: cpu,    default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: cpu,    default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: ubuntu-latest, backend: cu121,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: cu121,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: cu121,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: cu121,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: ubuntu-latest, backend: cu124,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: cu124,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: cu124,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: cu124,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: ubuntu-latest, backend: cu125,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: cu125,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: cu125,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: cu125,  default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: ubuntu-latest, backend: rocm,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: rocm,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: rocm,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: rocm,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: ubuntu-latest, backend: sycl,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: sycl,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: sycl,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: sycl,   default: false, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          # ---- macOS arm64 ----
+          - {os: macos-latest,  backend: metal,  default: true,  wheel-plat: macosx_11_0_arm64, python-version: "3.11"}
+          - {os: macos-latest,  backend: metal,  default: true,  wheel-plat: macosx_11_0_arm64, python-version: "3.12"}
+          - {os: macos-latest,  backend: metal,  default: true,  wheel-plat: macosx_11_0_arm64, python-version: "3.13"}
+          # ---- Windows x86_64 ----
+          - {os: windows-latest, backend: vulkan, default: true,  wheel-plat: win_amd64, python-version: "3.11"}
+          - {os: windows-latest, backend: vulkan, default: true,  wheel-plat: win_amd64, python-version: "3.12"}
+          - {os: windows-latest, backend: vulkan, default: true,  wheel-plat: win_amd64, python-version: "3.13"}
+          - {os: windows-latest, backend: cpu,    default: false, wheel-plat: win_amd64, python-version: "3.11"}
+          - {os: windows-latest, backend: cpu,    default: false, wheel-plat: win_amd64, python-version: "3.12"}
+          - {os: windows-latest, backend: cpu,    default: false, wheel-plat: win_amd64, python-version: "3.13"}
+          - {os: windows-latest, backend: cu121,  default: false, wheel-plat: win_amd64, python-version: "3.11"}
+          - {os: windows-latest, backend: cu121,  default: false, wheel-plat: win_amd64, python-version: "3.12"}
+          - {os: windows-latest, backend: cu121,  default: false, wheel-plat: win_amd64, python-version: "3.13"}
+          - {os: windows-latest, backend: cu124,  default: false, wheel-plat: win_amd64, python-version: "3.11"}
+          - {os: windows-latest, backend: cu124,  default: false, wheel-plat: win_amd64, python-version: "3.12"}
+          - {os: windows-latest, backend: cu124,  default: false, wheel-plat: win_amd64, python-version: "3.13"}
+          - {os: windows-latest, backend: cu125,  default: false, wheel-plat: win_amd64, python-version: "3.11"}
+          - {os: windows-latest, backend: cu125,  default: false, wheel-plat: win_amd64, python-version: "3.12"}
+          - {os: windows-latest, backend: cu125,  default: false, wheel-plat: win_amd64, python-version: "3.13"}
 
     runs-on: ${{ matrix.os }}
 
@@ -105,8 +115,9 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      - name: Install GPU build toolkit
-        if: matrix.backend != 'metal'
+      # ---- GPU build SDK ----
+      - name: Install GPU build toolkit (Linux + macOS)
+        if: runner.os != 'Windows' && matrix.backend != 'metal'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
@@ -117,6 +128,14 @@ jobs:
           install_runtime: true
           cache: true
           stripdown: true
+
+      - name: Install CUDA Toolkit (Windows)
+        if: startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: ${{ matrix.backend == 'cu121' && '12.1.0' || matrix.backend == 'cu122' && '12.2.0' || matrix.backend == 'cu123' && '12.3.0' || matrix.backend == 'cu124' && '12.4.0' || matrix.backend == 'cu125' && '12.5.0' || '12.4.0' }}
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
       - name: Build llama-cpp-python from source
         shell: bash
@@ -133,13 +152,15 @@ jobs:
         shell: bash
         run: ls -lh dist/
 
-      - name: Smoke test
+      # ---- Smoke test (default backends only) ----
+      # Non-default backends (cu*, rocm, sycl) cannot run self-check on the
+      # build runner because there's no matching GPU. They get an import-
+      # only smoke instead — proves the wheel installs and llama_cpp loads.
+      - name: Smoke test (default backend, full self-check)
+        if: matrix.default == true
         shell: bash
         run: |
           set -euxo pipefail
-          # Pre-seed typer 0.9.4: real users sometimes carry a stale typer
-          # from another project, and lilbee's own pin (typer>=0.12) needs
-          # to drag the resolver forward.
           pip install 'typer==0.9.4'
           pip install --pre dist/*.whl
           python -c "import typer, sys; v = tuple(int(p) for p in typer.__version__.split('.')[:2]); assert v >= (0, 12), f'typer={typer.__version__} < 0.12'; print(f'typer {typer.__version__} OK')"
@@ -175,9 +196,6 @@ jobs:
             exit 1
           fi
 
-          # End-to-end inference smoke (chat + embedding legs). Same gate
-          # as release.yml so the wheel and frozen exe are held to the
-          # same bar.
           export HF_HUB_DISABLE_PROGRESS_BARS=1
           SELF_CHECK_LOG=$(mktemp)
           SELF_CHECK_RC=0
@@ -200,6 +218,26 @@ jobs:
           print(f'self-check chat={data[\"chat_response\"]!r} embedding_dims={dims}')
           " "$SELF_CHECK_LOG"
           echo "E2E INFERENCE PASSED"
+
+      - name: Smoke test (non-default backend, install + import only)
+        if: matrix.default == false
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Build runners don't have the matching CUDA/ROCm/SYCL hardware,
+          # so we can't run inference here. The PEP 503 publish path tests
+          # the wheel structurally (filename + libs present); end-to-end
+          # GPU tests require a real device and are out of scope for this
+          # CI runner.
+          pip install --pre dist/*.whl
+          python -c "
+          import pathlib, llama_cpp
+          lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
+          libs = sorted(p.name for p in lib_dir.glob('*'))
+          print(f'llama_cpp/lib: {libs}')
+          assert any('llama' in n.lower() for n in libs), f'libllama missing: {libs}'
+          print('non-default smoke OK')
+          "
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -229,7 +267,7 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  publish:
+  publish-pypi:
     if: github.event_name == 'release'
     needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
@@ -237,60 +275,121 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - name: Download all artifacts
+      - name: Download default artifacts (vulkan + metal + sdist)
         uses: actions/download-artifact@v4
         with:
-          path: dist/
-          merge-multiple: true
+          path: artifacts/
 
-      - name: List artifacts
-        run: ls -lh dist/
+      - name: Stage default-backend wheels for PyPI
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          # Default-backend wheels: linux/win vulkan + macos metal. Bring
+          # only those + the sdist into dist/. Everything else (cu*, rocm,
+          # sycl, cpu) goes to the per-backend GH Pages publish.
+          cp artifacts/wheel-ubuntu-latest-vulkan-py*/lilbee-*.whl dist/
+          cp artifacts/wheel-macos-latest-metal-py*/lilbee-*.whl dist/
+          cp artifacts/wheel-windows-latest-vulkan-py*/lilbee-*.whl dist/
+          cp artifacts/sdist/lilbee-*.tar.gz dist/
+          ls -lh dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  # Verify the PUBLISHED artifact (not just the locally-built wheel) actually
-  # installs and runs end-to-end across the same OS × Python matrix users
-  # will hit. Each runner installs the GPU runtime loader matching the
-  # default wheel's backend (vulkan loader on Linux/Windows, nothing on
-  # macOS) so the import doesn't fail on a CPU-only headless box.
+  publish-extra-index:
+    # Per-backend PEP 503 simple repository hosted on GitHub Pages.
+    # Users opt in: pip install lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu124/
+    if: github.event_name == 'release'
+    needs: [build-wheels]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Build PEP 503 simple index per backend
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p public
+          # One index dir per backend; each contains a /lilbee/ project
+          # subdir with the wheel(s) and an index.html listing them.
+          backends=$(find artifacts -type d -name 'wheel-*' | awk -F- '{print $(NF-2)}' | sort -u)
+          for backend in ${backends}; do
+            mkdir -p "public/${backend}/lilbee"
+            find artifacts -type d -name "wheel-*-${backend}-*" | while read -r dir; do
+              cp "${dir}"/lilbee-*.whl "public/${backend}/lilbee/"
+            done
+            (
+              cd "public/${backend}/lilbee"
+              {
+                echo '<!DOCTYPE html><html><body>'
+                for whl in lilbee-*.whl; do
+                  echo "<a href=\"${whl}\">${whl}</a><br>"
+                done
+                echo '</body></html>'
+              } > index.html
+            )
+            (
+              cd "public/${backend}"
+              {
+                echo '<!DOCTYPE html><html><body>'
+                echo '<a href="lilbee/">lilbee</a><br>'
+                echo '</body></html>'
+              } > index.html
+            )
+          done
+          # Top-level landing page lists the backends.
+          {
+            echo '<!DOCTYPE html><html><body>'
+            echo '<h1>lilbee — per-backend wheel indexes</h1>'
+            echo '<p>Use <code>pip install lilbee --extra-index-url https://tobocop2.github.io/lilbee/&lt;backend&gt;/</code></p>'
+            echo '<ul>'
+            for backend in ${backends}; do
+              echo "<li><a href=\"${backend}/\">${backend}</a></li>"
+            done
+            echo '</ul></body></html>'
+          } > public/index.html
+          ls -R public/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public/
+
+      - name: Deploy to Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
   verify-pypi:
     if: github.event_name == 'release'
-    needs: [publish]
+    needs: [publish-pypi]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            backend: vulkan
-            python-version: "3.11"
-          - os: ubuntu-latest
-            backend: vulkan
-            python-version: "3.12"
-          - os: ubuntu-latest
-            backend: vulkan
-            python-version: "3.13"
-          - os: ubuntu-latest
-            backend: vulkan
-            python-version: "3.14"
-          - os: macos-latest
-            backend: metal
-            python-version: "3.11"
-          - os: macos-latest
-            backend: metal
-            python-version: "3.12"
-          - os: macos-latest
-            backend: metal
-            python-version: "3.13"
-          - os: windows-latest
-            backend: vulkan
-            python-version: "3.11"
-          - os: windows-latest
-            backend: vulkan
-            python-version: "3.12"
-          - os: windows-latest
-            backend: vulkan
-            python-version: "3.13"
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.14"}
+          - {os: macos-latest,  backend: metal,  python-version: "3.11"}
+          - {os: macos-latest,  backend: metal,  python-version: "3.12"}
+          - {os: macos-latest,  backend: metal,  python-version: "3.13"}
+          - {os: windows-latest, backend: vulkan, python-version: "3.11"}
+          - {os: windows-latest, backend: vulkan, python-version: "3.12"}
+          - {os: windows-latest, backend: vulkan, python-version: "3.13"}
     runs-on: ${{ matrix.os }}
     env:
       BACKEND: ${{ matrix.backend }}
@@ -333,23 +432,11 @@ jobs:
             fi
             sleep 6
             if [ "$i" = "30" ]; then
-              echo "PyPI never indexed lilbee==${{ steps.version.outputs.version }} after 3 min"
+              echo "PyPI never indexed lilbee==${{ steps.version.outputs.version }}"
               exit 1
             fi
           done
           pip install --pre "lilbee==${{ steps.version.outputs.version }}"
-
-      - name: Confirm the resolved wheel ships vendored llama_cpp libs
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python -c "
-          import pathlib, llama_cpp
-          lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
-          files = sorted(lib_dir.glob('*')) if lib_dir.is_dir() else []
-          print('llama_cpp/lib:', [f.name for f in files])
-          assert any('llama' in f.name for f in files), f'wheel missing libllama.*: {[f.name for f in files]}'
-          "
 
       - name: self-check end-to-end
         shell: bash

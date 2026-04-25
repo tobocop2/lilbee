@@ -18,23 +18,31 @@ linux_install_vulkan() {
 }
 
 linux_install_cuda() {
+  # cu121 -> apt cuda-toolkit-12-1, /usr/local/cuda-12.1, etc.
   local cu="$1"
-  # Map cu121 -> 12-1, cu124 -> 12-4, etc.
-  local apt_pkg="cuda-toolkit-${cu#cu}"
-  apt_pkg="${apt_pkg/12/12-}"
-  apt_pkg="${apt_pkg/cuda-toolkit-12-1/cuda-toolkit-12-1}"
+  local cu_ver="${cu#cu}"           # 121, 124, 125
+  local major="${cu_ver:0:2}"       # 12
+  local minor="${cu_ver:2:1}"       # 1, 4, 5
+  local apt_pkg="cuda-toolkit-${major}-${minor}"
+  local cuda_home="/usr/local/cuda-${major}.${minor}"
 
-  # NVIDIA's keyring + apt repo. Ubuntu 24.04 (ubuntu-latest 2026).
   if ! dpkg -s cuda-keyring >/dev/null 2>&1; then
-    wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
+    wget -q "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb" \
       -O /tmp/cuda-keyring.deb
     sudo dpkg -i /tmp/cuda-keyring.deb
     sudo apt-get update
   fi
   sudo apt-get install -y "${apt_pkg}"
 
-  echo "/usr/local/cuda-${cu#cu}/bin" >> "$GITHUB_PATH"
-  echo "CUDA_HOME=/usr/local/cuda-${cu#cu}" >> "$GITHUB_ENV"
+  if [ -n "${GITHUB_PATH:-}" ]; then
+    echo "${cuda_home}/bin" >> "$GITHUB_PATH"
+  fi
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "CUDA_HOME=${cuda_home}"
+      echo "CUDACXX=${cuda_home}/bin/nvcc"
+    } >> "$GITHUB_ENV"
+  fi
 }
 
 linux_install_rocm() {
@@ -83,10 +91,10 @@ case "${backend}_${runner_os}" in
     echo "Vulkan SDK on Windows is installed via the jakoch/install-vulkan-sdk-action step in CI."
     echo "This script is a no-op on Windows for vulkan; run that action instead."
     ;;
-  cu121_Linux|cu122_Linux|cu123_Linux|cu124_Linux)
+  cu121_Linux|cu122_Linux|cu123_Linux|cu124_Linux|cu125_Linux)
     linux_install_cuda "${backend}"
     ;;
-  cu121_Windows|cu122_Windows|cu123_Windows|cu124_Windows)
+  cu121_Windows|cu122_Windows|cu123_Windows|cu124_Windows|cu125_Windows)
     echo "CUDA Toolkit on Windows is installed via the Jimver/cuda-toolkit action in CI."
     echo "This script is a no-op on Windows for CUDA; run that action instead."
     ;;
