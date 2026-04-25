@@ -32,6 +32,23 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_llama_log = logging.getLogger("lilbee.llama_cpp")
+
+# ggml.h log levels (not exposed by llama-cpp-python).
+_GGML_LOG_LEVEL_INFO = 1
+_GGML_LOG_LEVEL_WARN = 2
+_GGML_LOG_LEVEL_ERROR = 3
+_GGML_LOG_LEVEL_DEBUG = 4
+_GGML_LOG_LEVEL_CONT = 5
+
+# WARN demotes to INFO so noisy auto-corrections stay silent at the default WARNING level.
+_GGML_TO_PY_LEVEL = {
+    _GGML_LOG_LEVEL_INFO: logging.DEBUG,
+    _GGML_LOG_LEVEL_WARN: logging.INFO,
+    _GGML_LOG_LEVEL_ERROR: logging.ERROR,
+    _GGML_LOG_LEVEL_DEBUG: logging.DEBUG,
+}
+
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
@@ -362,6 +379,51 @@ class _LockedStreamIterator:
 
 _STDERR_LOCK = threading.Lock()
 
+# ctypes does not retain a Python reference to the wrapped callback;
+# this module-level handle keeps it alive for the process lifetime.
+_llama_log_callback: Any = None
+_llama_log_installed = False
+_llama_log_pending: dict[int, str] = {}
+_llama_log_pending_level: int = _GGML_LOG_LEVEL_INFO
+
+
+def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
+    """Dispatch one llama.cpp log message; CONT chunks are coalesced on newline."""
+    global _llama_log_pending_level
+    try:
+        text = text_bytes.decode("utf-8", errors="replace") if text_bytes else ""
+    except Exception:  # pragma: no cover
+        return
+
+    if level == _GGML_LOG_LEVEL_CONT:
+        _llama_log_pending[0] = _llama_log_pending.get(0, "") + text
+    else:
+        if 0 in _llama_log_pending:
+            buffered = _llama_log_pending.pop(0).rstrip()
+            if buffered:
+                _llama_log.log(
+                    _GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), buffered
+                )
+        _llama_log_pending_level = level
+        _llama_log_pending[0] = text
+
+    if "\n" in _llama_log_pending.get(0, ""):
+        full = _llama_log_pending.pop(0).rstrip()
+        if full:
+            _llama_log.log(_GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), full)
+
+
+def install_llama_log_handler() -> None:
+    """Route llama.cpp logs through Python logging. Idempotent."""
+    global _llama_log_callback, _llama_log_installed
+    if _llama_log_installed:
+        return
+    import llama_cpp
+
+    _llama_log_callback = llama_cpp.llama_log_callback(_llama_log_dispatch)
+    llama_cpp.llama_log_set(_llama_log_callback, None)
+    _llama_log_installed = True
+
 
 def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call *fn* with C-level stderr suppressed.
@@ -396,6 +458,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """
     from llama_cpp import Llama
 
+    install_llama_log_handler()
     llm = suppress_native_stderr(
         Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
     )
@@ -465,6 +528,7 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """
     from llama_cpp import Llama
 
+    install_llama_log_handler()
     embedding = mode in (MODE_EMBED, MODE_RERANK)
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
@@ -497,7 +561,43 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
 
-    return suppress_native_stderr(Llama, **kwargs)
+    try:
+        return suppress_native_stderr(Llama, **kwargs)
+    except ValueError as exc:
+        wrapped = _wrap_llama_load_error(model_path, kwargs, exc)
+        if wrapped is None:
+            raise
+        raise wrapped from exc
+
+
+def _wrap_llama_load_error(
+    model_path: Path, kwargs: dict[str, Any], exc: ValueError
+) -> ValueError | None:
+    """Diagnostic ValueError for opaque llama.cpp load failures, or None to pass through."""
+    err = str(exc)
+    if "llama_context" not in err and "load model from file" not in err:
+        return None
+    try:
+        size_gb = model_path.stat().st_size / (1024**3) if model_path.exists() else 0.0
+    except OSError:  # pragma: no cover
+        size_gb = 0.0
+    n_ctx = kwargs.get("n_ctx", 0)
+    n_ctx_label = n_ctx or "model default"
+    parts = [
+        f"Failed to load {model_path.name} ({size_gb:.1f} GB) with n_ctx={n_ctx_label}.",
+    ]
+    try:
+        import psutil
+
+        free_gb = psutil.virtual_memory().available / (1024**3)
+        parts.append(f"Host has {free_gb:.1f} GB free RAM.")
+    except Exception as psu_exc:  # pragma: no cover
+        log.debug("psutil unavailable: %s", psu_exc)
+    parts.append(
+        "Try a smaller model, lower LILBEE_NUM_CTX, or close other processes to free RAM. "
+        f"(llama.cpp: {err})"
+    )
+    return ValueError(" ".join(parts))
 
 
 def _is_rerank_model(model: str) -> bool:

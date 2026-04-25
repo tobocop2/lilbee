@@ -135,6 +135,8 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
+            if not model.name:
+                continue
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
                 continue

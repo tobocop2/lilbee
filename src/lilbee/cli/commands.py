@@ -738,6 +738,9 @@ def self_check_cmd(
 
         import llama_cpp
 
+        from lilbee.providers.llama_cpp_provider import install_llama_log_handler
+
+        install_llama_log_handler()
         llm = llama_cpp.Llama(model_path=str(chat_path), n_ctx=256, verbose=False)
         # stream=False (default) returns a dict, not an iterator, but
         # create_completion's return type is a union; cast to Any so the

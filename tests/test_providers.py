@@ -316,6 +316,143 @@ class TestLlamaCppProvider:
             call_kwargs = llama_cpp.Llama.call_args[1]
             assert "n_batch" not in call_kwargs
 
+    def testload_llama_wraps_context_failure_with_diagnostic(
+        self, models_dir: Path, tmp_path: Path
+    ) -> None:
+        """Opaque ``Failed to create llama_context`` is rewrapped with diagnostic context."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import load_llama
+
+        model = models_dir / "tiny.gguf"
+        model.write_bytes(b"x" * 1024)
+
+        with (
+            patch("llama_cpp.Llama", side_effect=ValueError("Failed to create llama_context")),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            load_llama(model, mode="chat")
+
+        msg = str(exc_info.value)
+        assert "tiny.gguf" in msg
+        assert "n_ctx=" in msg
+        assert "Failed to create llama_context" in msg
+
+    def testload_llama_does_not_wrap_unrelated_value_errors(self, models_dir: Path) -> None:
+        """ValueErrors that aren't the two known load-failure messages pass through unchanged."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import load_llama
+
+        with (
+            patch("llama_cpp.Llama", side_effect=ValueError("totally unrelated")),
+            pytest.raises(ValueError, match="totally unrelated") as exc_info,
+        ):
+            load_llama(models_dir / "test-model.gguf", mode="chat")
+        # bare re-raise preserves the original chain; the exception isn't its own cause
+        assert exc_info.value.__cause__ is None
+
+    def testload_llama_routes_llama_logs_through_python_logger(
+        self, models_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """load_llama installs the llama_log callback; ggml WARN demotes to Python INFO."""
+        import logging
+        from unittest.mock import patch
+
+        from lilbee.providers import llama_cpp_provider as prov
+
+        prior_installed = prov._llama_log_installed
+        prior_callback = prov._llama_log_callback
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
+        prov._llama_log_installed = False
+        prov._llama_log_callback = None
+        prov._llama_log_pending.clear()
+        try:
+            with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
+                load_llama_fn = prov.load_llama
+                load_llama_fn(models_dir / "test-model.gguf", mode="chat")
+                assert prov._llama_log_installed is True
+                mock_set.assert_called_once()
+
+            with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
+                prov._llama_log_dispatch(2, b"init: embeddings required\n", None)
+            records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
+            assert records, "no lilbee.llama_cpp records captured"
+            assert records[-1].levelno == logging.INFO
+            assert "embeddings required" in records[-1].message
+        finally:
+            prov._llama_log_installed = prior_installed
+            prov._llama_log_callback = prior_callback
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
+
+    def testllama_log_dispatch_promotes_errors(self) -> None:
+        """ggml ERROR maps to Python ERROR so real failures surface at the default level."""
+        import logging
+
+        from lilbee.providers import llama_cpp_provider as prov
+
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
+        prov._llama_log_pending.clear()
+        logger = logging.getLogger("lilbee.llama_cpp")
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger.addHandler(handler)
+        try:
+            prov._llama_log_dispatch(3, b"fatal: out of memory\n", None)
+        finally:
+            logger.removeHandler(handler)
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
+        assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
+
+    def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
+        """CONT chunks buffer until a newline; a new non-CONT line also flushes the buffer."""
+        import logging
+
+        from lilbee.providers import llama_cpp_provider as prov
+
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
+        prov._llama_log_pending.clear()
+        logger = logging.getLogger("lilbee.llama_cpp")
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger.addHandler(handler)
+        prior_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            # WARN starts a record
+            prov._llama_log_dispatch(2, b"loading model:", None)
+            # CONT extends it (no newline yet -> still buffered)
+            prov._llama_log_dispatch(5, b" qwen3-0.6b", None)
+            assert records == []
+            # CONT with newline -> flush
+            prov._llama_log_dispatch(5, b" Q4_K_M\n", None)
+            assert records, "newline should have flushed buffer"
+            assert "loading model: qwen3-0.6b Q4_K_M" in records[-1].message
+            records.clear()
+
+            # Buffered chunk without newline; a new non-CONT message must
+            # flush the prior buffer before starting fresh.
+            prov._llama_log_dispatch(2, b"first line", None)
+            prov._llama_log_dispatch(2, b"second line\n", None)
+            messages = [r.message for r in records]
+            assert "first line" in messages
+            assert "second line" in messages
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(prior_level)
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
+
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
