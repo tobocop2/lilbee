@@ -734,10 +734,10 @@ class TestListModels:
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
-        qwen_entry = next(m for m in catalog if "Qwen3 0.6B" in m.name)
+        qwen_entry = next(m for m in catalog if m.name == "qwen3:0.6b")
         assert qwen_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if "Mistral" in m.name)
+        mistral_entry = next(m for m in catalog if m.name.startswith("mistral:"))
         assert mistral_entry.installed is False
 
     @patch("lilbee.server.handlers.get_model_manager")

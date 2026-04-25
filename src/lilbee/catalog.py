@@ -276,6 +276,28 @@ class ModelFamily:
     variants: tuple[ModelVariant, ...]
 
 
+_DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECASE)
+_DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
+_DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
+
+
+def clean_display_name(repo_id: str) -> str:
+    """Derive a human-friendly display name from a HuggingFace repo ID.
+    Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
+    and Meta- prefix. Replaces hyphens with spaces.
+
+    Examples:
+        "Qwen/Qwen2.5-7B-Instruct-GGUF" -> "Qwen2.5 7B"
+        "meta-llama/Meta-Llama-3-8B"     -> "Llama 3 8B"
+    """
+    name = repo_id.split("/")[-1]
+    name = _DISPLAY_NAME_SUFFIXES.sub("", name)
+    name = _DISPLAY_NAME_DATE_SUFFIX.sub("", name)
+    name = _DISPLAY_NAME_META_PREFIX.sub("", name)
+    name = name.replace("-", " ").strip()
+    return re.sub(r"\s+", " ", name)
+
+
 def _load_featured() -> tuple[
     tuple[CatalogModel, ...],
     tuple[CatalogModel, ...],
@@ -294,7 +316,7 @@ def _load_featured() -> tuple[
             CatalogModel(
                 name=m["name"],
                 tag=m.get("tag", DEFAULT_TAG),
-                display_name=m.get("display_name", m["name"]),
+                display_name=f"{m['name']}:{m.get('tag', DEFAULT_TAG)}",
                 hf_repo=m["hf_repo"],
                 gguf_filename=m["gguf_filename"],
                 size_gb=m["size_gb"],
@@ -361,8 +383,8 @@ def _derive_param_count(model: CatalogModel) -> str:
     Falls back to ``model.tag`` when the display name has no numeric suffix
     (useful for embedding models whose tag is a version like ``v1.5``).
     """
-    match = PARAM_COUNT_RE.search(model.display_name)
-    return match.group(1) if match else model.tag
+    match = PARAM_COUNT_RE.search(model.hf_repo)
+    return match.group(1).upper() if match else model.tag
 
 
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
@@ -395,7 +417,7 @@ def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFa
         families.append(
             ModelFamily(
                 slug=slug,
-                name=_extract_family_name(representative.display_name),
+                name=_extract_family_name(representative.hf_repo),
                 task=task,
                 description=representative.description,
                 variants=tuple(variants),
@@ -691,7 +713,7 @@ def _get_installed_models(model_manager: Any) -> set[str]:
 
 _SORT_KEYS: dict[str, tuple] = {
     "downloads": (lambda m: m.downloads, True),
-    "name": (lambda m: m.display_name.lower(), False),
+    "name": (lambda m: m.name.lower(), False),
     "size_asc": (lambda m: m.size_gb, False),
     "size_desc": (lambda m: m.size_gb, True),
     "featured": (lambda m: (not m.featured, -m.downloads), False),
@@ -1110,28 +1132,6 @@ def fetch_model_file_size(hf_repo: str) -> float:
     best_name = _pick_best_gguf([name for name, _ in gguf_files])
     size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
     return round(size_bytes / (1024**3), 1) if size_bytes else 0.0
-
-
-_DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECASE)
-_DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
-_DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
-
-
-def clean_display_name(repo_id: str) -> str:
-    """Derive a human-friendly display name from a HuggingFace repo ID.
-    Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
-    and Meta- prefix. Replaces hyphens with spaces.
-
-    Examples:
-        "Qwen/Qwen2.5-7B-Instruct-GGUF" -> "Qwen2.5 7B"
-        "meta-llama/Meta-Llama-3-8B"     -> "Llama 3 8B"
-    """
-    name = repo_id.split("/")[-1]
-    name = _DISPLAY_NAME_SUFFIXES.sub("", name)
-    name = _DISPLAY_NAME_DATE_SUFFIX.sub("", name)
-    name = _DISPLAY_NAME_META_PREFIX.sub("", name)
-    name = name.replace("-", " ").strip()
-    return re.sub(r"\s+", " ", name)
 
 
 QUANT_TIERS: dict[str, str] = {

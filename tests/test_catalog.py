@@ -655,17 +655,6 @@ class TestGetCatalog:
 
 
 class TestFindCatalogEntry:
-    def test_exact_match_by_display_name(self) -> None:
-        result = find_catalog_entry("Qwen3 8B")
-        assert result is not None
-        assert result.display_name == "Qwen3 8B"
-        assert result.name == "qwen3"
-
-    def test_case_insensitive(self) -> None:
-        result = find_catalog_entry("qwen3 8b")
-        assert result is not None
-        assert result.display_name == "Qwen3 8B"
-
     def test_exact_ref_match(self) -> None:
         result = find_catalog_entry("qwen3:0.6b")
         assert result is not None
@@ -1113,7 +1102,7 @@ class TestPipelineToTask:
 class TestFeaturedVisionModel:
     def test_featured_vision_is_lightonocr(self) -> None:
         assert len(FEATURED_VISION) == 1
-        assert "LightOnOCR" in FEATURED_VISION[0].display_name
+        assert FEATURED_VISION[0].name == "lightonocr"
 
     def test_featured_vision_is_small(self) -> None:
         assert FEATURED_VISION[0].size_gb <= 2.0

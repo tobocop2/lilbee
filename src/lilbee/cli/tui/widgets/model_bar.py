@@ -108,7 +108,10 @@ def _lookup_bucket(
 
 
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add native registry models to buckets."""
+    """Add native registry models to buckets. Native rows label as the
+    bare ref (``name:tag``); we don't curate display names anymore so two
+    quants of the same base model can never collapse to the same label.
+    """
     try:
         from lilbee.registry import ModelRegistry
 
@@ -121,8 +124,7 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             if bucket is None:
                 continue
             seen.add(ref)
-            label = manifest.display_name or ref
-            bucket.append(ModelOption(label=label, ref=ref))
+            bucket.append(ModelOption(label=ref, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 
@@ -135,6 +137,8 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
+            if not model.name:
+                continue
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
                 continue
