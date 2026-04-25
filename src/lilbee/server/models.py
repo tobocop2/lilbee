@@ -377,6 +377,25 @@ class WikiPruneResult(BaseModel):
     flagged: int = 0
 
 
+class WikiBuildResult(BaseModel):
+    """Result of a full wiki build/update."""
+
+    paths: list[str] = []
+    entities: int = 0
+    count: int = 0
+
+
+class WikiStatusResult(BaseModel):
+    """Wiki layer status counters."""
+
+    wiki_enabled: bool
+    summaries: int = 0
+    drafts: int = 0
+    pages: int = 0
+    lint_errors: int = 0
+    lint_warnings: int = 0
+
+
 class DraftInfoResponse(BaseModel):
     """Metadata about a single wiki draft, mirroring ``DraftInfo.to_dict()``.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from litestar import delete, get, post
+from litestar import delete, get, patch, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 
@@ -14,6 +14,7 @@ from lilbee.config import cfg
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,
+    WikiBuildResult,
     WikiCitationRecord,
     WikiCitationsResult,
     WikiDraftAcceptResponse,
@@ -24,9 +25,11 @@ from lilbee.server.models import (
     WikiPageDetail,
     WikiPruneRecordResponse,
     WikiPruneResult,
+    WikiStatusResult,
 )
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
+from lilbee.wiki import run_full_build
 from lilbee.wiki.browse import (
     find_page,
     list_pages,
@@ -39,7 +42,7 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.shared import WIKI_DISABLED_ERROR
+from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, WIKI_DISABLED_ERROR
 
 
 def _wiki_root() -> Path:
@@ -194,4 +197,44 @@ async def wiki_prune_route() -> WikiPruneResult:
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
         flagged=report.flagged_count,
+    )
+
+
+@post("/api/wiki/build")
+async def wiki_build_route() -> WikiBuildResult:
+    """Build the concept and entity wiki across all ingested sources."""
+    _require_wiki()
+    result = run_full_build(cfg)
+    return WikiBuildResult(**result)
+
+
+@patch("/api/wiki/update")
+async def wiki_update_route() -> WikiBuildResult:
+    """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
+    _require_wiki()
+    result = run_full_build(cfg)
+    return WikiBuildResult(**result)
+
+
+@get("/api/wiki/status")
+@read_only
+async def wiki_status_route() -> WikiStatusResult:
+    """Wiki layer status: page counts and recent lint counts."""
+    root = _wiki_root()
+    if not root.exists():
+        return WikiStatusResult(wiki_enabled=cfg.wiki)
+
+    summaries_dir = root / SUMMARIES_SUBDIR
+    drafts_dir = root / DRAFTS_SUBDIR
+    summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
+    drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
+
+    report = lint_mod.lint_all(svc_mod.get_services().store)
+    return WikiStatusResult(
+        wiki_enabled=cfg.wiki,
+        summaries=len(summaries),
+        drafts=len(drafts),
+        pages=len(summaries) + len(drafts),
+        lint_errors=report.error_count,
+        lint_warnings=report.warning_count,
     )

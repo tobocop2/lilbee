@@ -1426,3 +1426,35 @@ class TestUnwrapArchivedLinks:
         (wiki_root / "entities" / "henry.md").write_text("body")
         _unwrap_archived_links(wiki_root, [])
         assert (wiki_root / "entities" / "henry.md").read_text() == "body"
+
+
+class TestRunFullBuild:
+    def test_defaults_to_global_cfg_when_called_with_no_args(self, monkeypatch):
+        """run_full_build() with no arg falls back to lilbee.config.cfg."""
+        from lilbee.wiki.gen import run_full_build
+
+        captured: dict[str, object] = {}
+
+        def fake_get_services():
+            svc = MagicMock()
+            svc.store.get_sources.return_value = []
+            return svc
+
+        def fake_extractor(*a, **kw):
+            ext = MagicMock()
+            ext.extract.return_value = []
+            return ext
+
+        def fake_build_wiki(entities, provider, store, config, *, extract_concepts):
+            captured["config"] = config
+            return []
+
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", fake_get_services)
+        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", fake_build_wiki)
+        monkeypatch.setattr("lilbee.wiki.gen.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.gen.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
+
+        result = run_full_build()
+        assert captured["config"] is cfg
+        assert result == {"paths": [], "entities": 0, "count": 0}

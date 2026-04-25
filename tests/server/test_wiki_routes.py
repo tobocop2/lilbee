@@ -112,6 +112,24 @@ class TestWikiDisabled:
             resp = await client.post("/api/wiki/prune", headers=_h())
         assert resp.status_code == 404
 
+    async def test_build_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_update_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.patch("/api/wiki/update", headers=_h())
+        assert resp.status_code == 404
+
+    async def test_status_returns_disabled_marker(self):
+        # Status is intentionally readable when wiki is off so the plugin
+        # can render a disabled-state hint without polling /api/config.
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["wiki_enabled"] is False
+
 
 class TestWikiEnabled:
     """Wiki endpoints with wiki=True."""
@@ -291,6 +309,71 @@ class TestWikiEnabled:
         assert "records" in body
         assert body["archived"] == 0
         assert body["flagged"] == 0
+
+    async def test_build_returns_summary(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.server.wiki.run_full_build",
+            lambda *a, **kw: {"paths": ["wiki/concepts/x.md"], "entities": 3, "count": 1},
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["count"] == 1
+        assert body["entities"] == 3
+        assert body["paths"] == ["wiki/concepts/x.md"]
+
+    async def test_update_returns_summary(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.server.wiki.run_full_build",
+            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.patch("/api/wiki/update", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 0
+
+    async def test_status_empty_wiki(self, monkeypatch, tmp_path):
+        from lilbee.wiki import lint as lint_mod
+
+        def make_mock_services():
+            services = type("S", (), {})()
+            services.store = None
+            return services
+
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.wiki.svc_mod.get_services", make_mock_services)
+        monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["wiki_enabled"] is True
+        assert body["pages"] == 0
+
+    async def test_status_counts_summaries_and_drafts(self, monkeypatch, tmp_path):
+        from lilbee.wiki import lint as lint_mod
+
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _make_wiki_page(wiki_root, "summaries", "alpha")
+        _make_wiki_page(wiki_root, "summaries", "beta")
+        _make_wiki_page(wiki_root, "drafts", "gamma")
+
+        def make_mock_services():
+            services = type("S", (), {})()
+            services.store = None
+            return services
+
+        monkeypatch.setattr("lilbee.server.wiki.svc_mod.get_services", make_mock_services)
+        monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["summaries"] == 2
+        assert body["drafts"] == 1
+        assert body["pages"] == 3
 
 
 def _make_draft(

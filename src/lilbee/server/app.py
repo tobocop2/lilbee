@@ -55,6 +55,7 @@ from lilbee.server.routes.setup import (
     setup_crawler_status_route,
 )
 from lilbee.server.wiki import (
+    wiki_build_route,
     wiki_citations_reverse_route,
     wiki_draft_accept_route,
     wiki_draft_diff_route,
@@ -64,6 +65,8 @@ from lilbee.server.wiki import (
     wiki_list_route,
     wiki_prune_route,
     wiki_read_route,
+    wiki_status_route,
+    wiki_update_route,
 )
 from lilbee.services import get_services
 
@@ -143,6 +146,9 @@ def create_app() -> Litestar:
             wiki_citations_reverse_route,
             wiki_lint_route,
             wiki_prune_route,
+            wiki_build_route,
+            wiki_update_route,
+            wiki_status_route,
         ],
         request_max_body_size=10 * 1024 * 1024,
         cors_config=cors,

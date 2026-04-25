@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 import numpy as np
 import yaml
@@ -1709,3 +1709,46 @@ def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) 
             rewritten = apply_rewriter(original, rewriter, skip_slug=owning_slug)
             if rewritten != original:
                 md_path.write_text(rewritten, encoding="utf-8")
+
+
+class WikiBuildSummary(TypedDict):
+    """Result of a full wiki build/update."""
+
+    paths: list[str]
+    entities: int
+    count: int
+
+
+def run_full_build(config: Config | None = None) -> WikiBuildSummary:
+    """Extract entities + build wiki across every ingested source.
+
+    Shared entry point for CLI ``wiki build`` / ``wiki update``, MCP
+    ``wiki_build`` / ``wiki_update``, and ``POST /api/wiki/build`` /
+    ``PATCH /api/wiki/update``.
+    """
+    if config is None:
+        config = cfg
+    from lilbee.wiki.entity_extractor import get_entity_extractor
+    from lilbee.wiki.shared import WIKI_LOG_ACTION_BUILD
+
+    svc = get_services()
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+
+    extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
+    entities = extractor.extract(chunks)
+    pages = build_wiki(
+        entities,
+        svc.provider,
+        svc.store,
+        config,
+        extract_concepts=config.wiki_extract_concepts,
+    )
+    update_wiki_index()
+    append_wiki_log(WIKI_LOG_ACTION_BUILD, f"{len(pages)} pages from {len(entities)} records")
+    return {
+        "paths": [str(p) for p in pages],
+        "entities": len(entities),
+        "count": len(pages),
+    }
