@@ -7,55 +7,61 @@ on:
     inputs:
       llama_cpp_version:
         description: "llama-cpp-python version to vendor"
-        default: "0.3.18"
+        default: "0.3.20"
         required: false
 
 permissions:
-  contents: read
+  contents: write
+  pages: write
+  id-token: write
 
 env:
-  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.18' }}
+  # 0.3.20 brings the Gemma 4 chat-template fix not in 0.3.19. abetlen
+  # has not published 0.3.20 prebuilts on any of their indexes, so every
+  # wheel builds from source on our runners.
+  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
-  # TEMPORARY (e2e self-check iteration): the cross-OS/cross-Python lint+test
-  # matrix in ci.yml is short-circuited so the wheel + publish + verify-pypi
-  # path can iterate fast. Restore to `uses: ./.github/workflows/ci.yml`
-  # once self-check is green on every platform.
   ci:
     if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "ci temporarily skipped to iterate on e2e self-check"
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
 
-  build-wheels:
+  # Default-backend wheels for PyPI:
+  #   * Linux x86_64       → vulkan
+  #   * macOS arm64        → metal
+  #   * Windows x86_64     → vulkan
+  # `pip install lilbee` (no flags) gets these. The build runner can run
+  # the full self-check inference here because Vulkan/Metal fall back to
+  # CPU when no GPU is present, so we test BOTH the GPU path's import
+  # surface AND end-to-end inference.
+  build-default-wheels:
     needs: [ci]
-    if: always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped' || github.event_name == 'workflow_dispatch')
+    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-        exclude:
-          # abetlen has no cp314 prebuilts for macos-arm64 or win-amd64 on the
-          # CPU wheel index as of 2026-04. Linux 3.14 still works because we
-          # build llama-cpp-python from source on Linux runners anyway.
-          # Re-enable when upstream ships cp314 wheels for these platforms.
-          - os: macos-latest
-            python-version: "3.14"
-          - os: windows-latest
-            python-version: "3.14"
         include:
-          - os: ubuntu-latest
-            llama-plat: linux_x86_64
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-          - os: macos-latest
-            llama-plat: macosx_11_0_arm64
-            wheel-plat: macosx_11_0_arm64
-          - os: windows-latest
-            llama-plat: win_amd64
-            wheel-plat: win_amd64
+          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.11"}
+          - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.12"}
+          - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.13"}
+          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.11"}
+          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.12"}
+          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.13"}
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      BACKEND: ${{ matrix.backend }}
+      LLAMA_BUILD_DIR: "/tmp/llama-build"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
 
     steps:
       - uses: actions/checkout@v6
@@ -71,73 +77,38 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      # Linux: abetlen only publishes musl-linked linux_x86_64 wheels, which
-      # won't load on glibc systems (every mainstream distro). Build from the
-      # PyPI sdist against the runner's glibc instead. PyPI only ships sdist
-      # for llama-cpp-python, so --no-binary forces the compile path.
-      - name: Build llama-cpp-python from source (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Vulkan loader (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
         shell: bash
-        env:
-          # GGML_NATIVE defaults to ON, which bakes -march=native into the
-          # build. The wheel then won't run on any CPU lacking the
-          # build-runner's full instruction set (seen as "Illegal instruction
-          # (core dumped)" on verify-pypi runners that got a different CPU
-          # class from the pool). Force the build to target a baseline x86_64
-          # ABI. CUDA/Metal/BLAS stay off so the Linux CPU wheel is truly
-          # portable; we're the CPU lane by design.
-          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF"
-        run: |
-          mkdir -p /tmp/llama-build
-          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
-            --no-deps --no-binary=llama-cpp-python \
-            -w /tmp/llama-build
-          ls -lh /tmp/llama-build/
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
 
-      - name: Vendor llama-cpp-python and retag wheel (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Build llama-cpp-python from source
+        shell: bash
+        run: bash tools/wheel-build/build_llama_cpp.sh
+
+      - name: Vendor llama-cpp-python and retag wheel
         shell: bash
         run: >
           python -m tools.vendor.llama_cpp dist/*.whl
-          --local-wheel /tmp/llama-build/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
+          --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
           --wheel-platform ${{ matrix.wheel-plat }}
-
-      - name: Vendor llama-cpp-python and retag wheel (macOS/Windows)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: >
-          python -m tools.vendor.llama_cpp dist/*.whl
-          --version ${{ env.LLAMA_CPP_VERSION }}
-          --platform ${{ matrix.llama-plat }}
-          --wheel-platform ${{ matrix.wheel-plat }}
-
-      - name: List output
-        shell: bash
-        run: ls -lh dist/
 
       - name: Smoke test
         shell: bash
         run: |
           set -euxo pipefail
-
-          # Pre-seed typer 0.9.4 to reproduce the stale-env case that bit a
-          # real user: they had old typer from another project, and the lilbee
-          # wheel didn't force an upgrade, so `lilbee --version` crashed with
-          # "Type not yet supported: pathlib.Path | None". The wheel must
-          # declare typer>=0.12 so pip upgrades it during install.
           pip install 'typer==0.9.4'
-
-          # Install with --pre so pip mirrors user install flow for beta
-          # releases. This is what catches transitive pre-release deps like
-          # tree-sitter-language-pack 2.0.0a1 that break real imports.
           pip install --pre dist/*.whl
+          python -c "import typer, sys; v = tuple(int(p) for p in typer.__version__.split('.')[:2]); assert v >= (0, 12), f'typer={typer.__version__} < 0.12'; print(f'typer {typer.__version__} OK')"
 
-          # Verify the install actually upgraded typer past the 0.12 cutoff.
-          python -c "import typer, sys; v = tuple(int(p) for p in typer.__version__.split('.')[:2]); assert v >= (0, 12), f'typer={typer.__version__} < 0.12 — wheel missing pin'; print(f'typer {typer.__version__} OK')"
-
-          # Exercise the import path that users hit on every invocation.
-          # lilbee --version alone only loads the launcher, so it misses
-          # breakage in code_chunker / ingest / cli modules.
           python -c "
           import lilbee
           from lilbee.cli import app
@@ -147,71 +118,166 @@ jobs:
           print('lilbee imports OK')
           "
 
-          # --version must match the version declared in pyproject.toml.
-          # Capture stdout AND stderr: a flood of '-B: no such option' on
-          # stderr means the exe is caught in a multiprocessing-spawn loop
-          # even though stdout shows the right version. --help similarly
-          # must not emit typer usage errors — that means a Path | None or
-          # other unsupported annotation slipped through.
           expected=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           stdout_file=$(mktemp)
           stderr_file=$(mktemp)
           lilbee --version >"$stdout_file" 2>"$stderr_file"
-          actual=$(cat "$stdout_file")
-          echo "Expected: lilbee ${expected}"
-          echo "Actual:   ${actual}"
-          echo "Stderr:"
-          cat "$stderr_file"
-          test "${actual}" = "lilbee ${expected}"
+          test "$(cat "$stdout_file")" = "lilbee ${expected}"
           if grep -qE "No such option|Type not yet supported|RuntimeError" "$stderr_file"; then
-            echo "FAIL: typer or runtime error on --version stderr"
-            exit 1
+            cat "$stderr_file"; exit 1
           fi
-
           lilbee --help >/dev/null 2>"$stderr_file"
           if grep -qE "No such option|Type not yet supported|RuntimeError" "$stderr_file"; then
-            echo "FAIL: typer or runtime error on --help stderr"
-            cat "$stderr_file"
-            exit 1
+            cat "$stderr_file"; exit 1
           fi
 
-          # END-TO-END INFERENCE SMOKE: download a ~90MB SmolLM2 135M GGUF
-          # through the self-check command and run a tiny completion against
-          # it. This is the exact failure mode that bit a user in b426:
-          # "Shared library with base name 'llama' not found" fires from
-          # llama_cpp/_ctypes_extensions.py when the vendored
-          # llama_cpp/lib/ is missing or unreadable. self-check exits 1
-          # on any failure (download, library load, empty response). The
-          # same command runs in the PyInstaller exe smoke so both artifact
-          # flavors are held to the same bar.
           export HF_HUB_DISABLE_PROGRESS_BARS=1
-          SELF_CHECK_LOG=$(mktemp)
-          SELF_CHECK_RC=0
-          lilbee --json self-check > "$SELF_CHECK_LOG" 2>&1 || SELF_CHECK_RC=$?
-          echo "=== self-check output (exit=${SELF_CHECK_RC}) ==="
-          cat "$SELF_CHECK_LOG"
-          if [ "${SELF_CHECK_RC}" != "0" ]; then
-            echo "FAIL: self-check exited ${SELF_CHECK_RC}"
-            exit 1
-          fi
+          OUT=$(mktemp); RC=0
+          lilbee --json self-check > "$OUT" 2>&1 || RC=$?
+          echo "=== self-check (exit=${RC}) ==="
+          cat "$OUT"
+          [ "${RC}" = "0" ]
           python -c "
           import json, pathlib, sys
           raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
           payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
           data = json.loads(payload)
           assert data.get('ok'), f'self-check failed: {data}'
-          assert data.get('response','').strip(), f'empty response: {data}'
-          print('self-check response:', repr(data['response']))
-          " "$SELF_CHECK_LOG"
-          echo "E2E INFERENCE PASSED"
+          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
+          dims = data.get('embedding_dims')
+          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
+          print(f'self-check chat={data[\"chat_response\"]!r} embedding_dims={dims}')
+          " "$OUT"
 
-      - name: Upload wheel
+      - name: Upload default-backend wheel
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
-  # Pure sdist for pip install from source (users provide llama-cpp-python).
+  # Extra-backend wheels: per-CUDA-version + pure CPU. Distributed via
+  # GitHub Pages PEP 503 simple repos; users opt in with --extra-index-url.
+  # These lanes can fail individually without blocking the PyPI publish
+  # of the default-backend wheels.
+  build-extra-wheels:
+    needs: [ci]
+    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux pure CPU (no Vulkan dep — for headless containers)
+          - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          # Linux CUDA — toolkit installed via Jimver/cuda-toolkit action,
+          # which handles network install of older CUDA versions that
+          # NVIDIA's ubuntu2404 apt repo doesn't carry.
+          - {os: ubuntu-latest, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.1.0"}
+          - {os: ubuntu-latest, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.1.0"}
+          - {os: ubuntu-latest, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.1.0"}
+          - {os: ubuntu-latest, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.4.0"}
+          - {os: ubuntu-latest, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.4.0"}
+          - {os: ubuntu-latest, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.4.0"}
+          - {os: ubuntu-latest, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.5.0"}
+          - {os: ubuntu-latest, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.5.0"}
+          - {os: ubuntu-latest, backend: cu125, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.5.0"}
+          # Windows pure CPU
+          - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.11"}
+          - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.12"}
+          - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.13"}
+          # Windows CUDA — same Jimver action.
+          - {os: windows-latest, backend: cu121, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.1.0"}
+          - {os: windows-latest, backend: cu121, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.1.0"}
+          - {os: windows-latest, backend: cu121, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.1.0"}
+          - {os: windows-latest, backend: cu124, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.4.0"}
+          - {os: windows-latest, backend: cu124, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.4.0"}
+          - {os: windows-latest, backend: cu124, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.4.0"}
+          - {os: windows-latest, backend: cu125, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.5.0"}
+          - {os: windows-latest, backend: cu125, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.5.0"}
+          - {os: windows-latest, backend: cu125, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.5.0"}
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      BACKEND: ${{ matrix.backend }}
+      LLAMA_BUILD_DIR: "/tmp/llama-build"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build pure wheel
+        run: python -m build --wheel
+
+      - name: Install CUDA Toolkit (Linux + Windows)
+        if: startsWith(matrix.backend, 'cu')
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust"]'
+
+      - name: Build llama-cpp-python from source
+        shell: bash
+        run: bash tools/wheel-build/build_llama_cpp.sh
+
+      - name: Vendor llama-cpp-python and retag wheel
+        shell: bash
+        run: >
+          python -m tools.vendor.llama_cpp dist/*.whl
+          --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
+          --wheel-platform ${{ matrix.wheel-plat }}
+
+      # Non-default backends (cu*, cpu) can't run inference here — the
+      # build runner has no matching GPU, and a CUDA-built wheel won't
+      # initialize on a CPU-only host. Structural smoke only: install
+      # the wheel, confirm libllama is bundled.
+      - name: Smoke test (install + import)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pip install --pre dist/*.whl || true
+          python -c "
+          import pathlib
+          try:
+              import llama_cpp
+              lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
+              libs = sorted(p.name for p in lib_dir.glob('*'))
+              print(f'llama_cpp/lib: {libs}')
+              assert any('llama' in n.lower() for n in libs), f'libllama missing: {libs}'
+              print('non-default smoke OK')
+          except OSError as exc:
+              # CUDA wheel may fail to dlopen on a CPU-only runner — that
+              # is expected; the wheel structure is what matters here.
+              print(f'(expected) cannot import llama_cpp on CI runner: {exc!r}')
+              # Still verify the wheel has libs by inspecting site-packages.
+              import sys, glob
+              for sp in sys.path:
+                  candidates = glob.glob(f'{sp}/llama_cpp/lib/*')
+                  if candidates:
+                      print(f'wheel libs: {[c.split(\"/\")[-1] for c in candidates]}')
+                      assert any('llama' in c.lower() for c in candidates)
+                      break
+              else:
+                  raise AssertionError('no llama_cpp/lib/ found on sys.path')
+          "
+
+      - name: Upload extra-backend wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-extra-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+
   build-sdist:
     runs-on: ubuntu-latest
     steps:
@@ -234,54 +300,164 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  publish:
+  publish-pypi:
     if: github.event_name == 'release'
-    needs: [build-wheels, build-sdist]
+    needs: [build-default-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - name: Download all artifacts
+      - name: Download default artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist/
-          merge-multiple: true
+          path: artifacts/
+          pattern: "wheel-default-*"
 
-      - name: List artifacts
-        run: ls -lh dist/
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: "sdist"
+
+      - name: Stage default wheels + sdist for PyPI
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          find artifacts -name "lilbee-*.whl" -exec cp {} dist/ \;
+          find artifacts -name "lilbee-*.tar.gz" -exec cp {} dist/ \;
+          ls -lh dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  # Verify the PUBLISHED artifact (not just the locally-built wheel) actually
-  # installs and runs end-to-end across the same OS × Python matrix users
-  # will hit. The in-build smoke tests locally-built dist/*.whl; this one
-  # exercises the exact pip resolution, wheel selection, and install flow a
-  # real user gets, including any way PyPI may have mangled the upload. If
-  # this stage fails, the release is broken for users even though everything
-  # upstream looked green.
+  # PEP 503 simple repository hosted on GitHub Pages. Users opt in with
+  # `--extra-index-url`. Always runs even if some extra-backend lanes
+  # failed — `if: always()` + filtering in the artifact step.
+  publish-extra-index:
+    if: github.event_name == 'release' && always()
+    needs: [build-extra-wheels, build-default-wheels]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: "wheel-*"
+
+      - name: Build PEP 503 simple index per backend
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p public
+          # Each artifact dir name is wheel-default-<os>-<backend>-pyX.YZ
+          # or wheel-extra-<os>-<backend>-pyX.YZ. Group by backend.
+          backends=$(find artifacts -mindepth 1 -maxdepth 1 -type d -name "wheel-*" | \
+                     awk -F'-' '{print $(NF-2)}' | sort -u)
+          for backend in ${backends}; do
+            mkdir -p "public/${backend}/lilbee"
+            for dir in artifacts/wheel-*-${backend}-*; do
+              [ -d "${dir}" ] || continue
+              cp "${dir}"/lilbee-*.whl "public/${backend}/lilbee/" 2>/dev/null || true
+            done
+            count=$(ls "public/${backend}/lilbee/"*.whl 2>/dev/null | wc -l)
+            echo "backend=${backend} wheels=${count}"
+            if [ "${count}" = "0" ]; then
+              rm -rf "public/${backend}"
+              continue
+            fi
+            (
+              cd "public/${backend}/lilbee"
+              {
+                echo '<!DOCTYPE html><html><body>'
+                for whl in lilbee-*.whl; do
+                  echo "<a href=\"${whl}\">${whl}</a><br>"
+                done
+                echo '</body></html>'
+              } > index.html
+            )
+            (
+              cd "public/${backend}"
+              {
+                echo '<!DOCTYPE html><html><body>'
+                echo '<a href="lilbee/">lilbee</a><br>'
+                echo '</body></html>'
+              } > index.html
+            )
+          done
+          {
+            echo '<!DOCTYPE html><html><body>'
+            echo '<h1>lilbee — per-backend wheel indexes</h1>'
+            echo '<p><code>pip install lilbee --extra-index-url https://tobocop2.github.io/lilbee/&lt;backend&gt;/</code></p>'
+            echo '<ul>'
+            for d in public/*/; do
+              [ -d "${d}" ] || continue
+              name=$(basename "${d}")
+              echo "<li><a href=\"${name}/\">${name}</a></li>"
+            done
+            echo '</ul></body></html>'
+          } > public/index.html
+          ls -R public/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public/
+
+      - name: Deploy to Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
   verify-pypi:
     if: github.event_name == 'release'
-    needs: [publish]
+    needs: [publish-pypi]
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-        exclude:
-          # 3.14 wheels for these platforms aren't produced upstream; see the
-          # matching exclude in build-wheels above. Nothing to verify.
-          - os: macos-latest
-            python-version: "3.14"
-          - os: windows-latest
-            python-version: "3.14"
+        include:
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.11"}
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.12"}
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.13"}
+          - {os: ubuntu-latest, backend: vulkan, python-version: "3.14"}
+          - {os: macos-latest,  backend: metal,  python-version: "3.11"}
+          - {os: macos-latest,  backend: metal,  python-version: "3.12"}
+          - {os: macos-latest,  backend: metal,  python-version: "3.13"}
+          - {os: windows-latest, backend: vulkan, python-version: "3.11"}
+          - {os: windows-latest, backend: vulkan, python-version: "3.12"}
+          - {os: windows-latest, backend: vulkan, python-version: "3.13"}
     runs-on: ${{ matrix.os }}
+    env:
+      BACKEND: ${{ matrix.backend }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Install GPU runtime loader
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_runtime.sh
+
+      - name: Install Vulkan runtime (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
 
       - name: Resolve release version
         id: version
@@ -295,8 +471,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # PyPI warehouse indexes new uploads with a short lag. Poll up to
-          # ~3 min so the verify lane isn't flaky on the wait.
           for i in $(seq 1 30); do
             if pip install --pre --dry-run "lilbee==${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
               echo "PyPI indexed on attempt ${i}"
@@ -304,29 +478,11 @@ jobs:
             fi
             sleep 6
             if [ "$i" = "30" ]; then
-              echo "PyPI never indexed lilbee==${{ steps.version.outputs.version }} after 3 min"
+              echo "PyPI never indexed lilbee==${{ steps.version.outputs.version }}"
               exit 1
             fi
           done
           pip install --pre "lilbee==${{ steps.version.outputs.version }}"
-
-      - name: Confirm the resolved wheel actually has vendored llama_cpp libs
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # Fail loudly if pip fell through to sdist or picked a wheel that
-          # doesn't ship libllama. This is the specific failure mode a real
-          # Arch user hit — pip picked something, lilbee imported, but the
-          # shared library wasn't on disk.
-          python -c "
-          import pathlib, llama_cpp
-          lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
-          files = sorted(lib_dir.glob('*')) if lib_dir.is_dir() else []
-          print('llama_cpp/lib:', [f.name for f in files])
-          assert any('llama' in f.name for f in files), (
-              f'PyPI-resolved wheel is missing libllama.*: {[f.name for f in files]}'
-          )
-          "
 
       - name: self-check end-to-end
         shell: bash
@@ -335,18 +491,17 @@ jobs:
           OUT=$(mktemp)
           RC=0
           lilbee --json self-check > "$OUT" 2>&1 || RC=$?
-          echo "=== self-check output (exit=${RC}) ==="
+          echo "=== self-check (exit=${RC}) ==="
           cat "$OUT"
-          if [ "${RC}" != "0" ]; then
-            echo "FAIL: self-check exited ${RC}"
-            exit 1
-          fi
+          [ "${RC}" = "0" ]
           python -c "
           import json, pathlib, sys
           raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
           payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
           data = json.loads(payload)
           assert data.get('ok'), f'PyPI install self-check failed: {data}'
-          assert data.get('response','').strip(), f'empty response: {data}'
-          print('PyPI install self-check PASSED:', repr(data['response']))
+          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
+          dims = data.get('embedding_dims')
+          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
+          print(f'PyPI install self-check PASSED chat={data[\"chat_response\"]!r} embedding_dims={dims}')
           " "$OUT"
