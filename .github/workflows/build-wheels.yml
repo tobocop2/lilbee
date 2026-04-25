@@ -120,7 +120,7 @@ jobs:
       - name: Smoke test (cross-compile, structural)
         if: matrix.target-arch == 'x86_64' && runner.arch == 'ARM64'
         shell: bash
-        run: bash tools/wheel-build/smoke_wheel_structural.sh --expect-arch x86_64
+        run: python tools/wheel-build/smoke_wheel_structural.py --expect-arch x86_64
 
       - name: Upload default-backend wheel
         uses: actions/upload-artifact@v4
@@ -233,7 +233,7 @@ jobs:
       # a wheel whose runtime deps aren't present.
       - name: Smoke test (structural, no import)
         shell: bash
-        run: bash tools/wheel-build/smoke_wheel_structural.sh
+        run: python tools/wheel-build/smoke_wheel_structural.py
 
       - name: Upload extra-backend wheel
         uses: actions/upload-artifact@v4
