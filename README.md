@@ -203,8 +203,6 @@ Standalone mode runs entirely on your machine. No cloud required.
 | **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
 | **Disk** | 2 GB (models + data) | 10+ GB if you load multiple models |
 
-> **Pre-2013 x86_64 CPUs are not currently supported.** That includes Intel Sandy Bridge / Ivy Bridge (1st–3rd gen Core, Xeon E5-26xx v1/v2, etc.). The constraint comes from one of lilbee's underlying libraries; a permanent upstream fix is being tracked. If this matters to you, [open an issue](https://github.com/tobocop2/lilbee/issues) and we can prioritize.
-
 Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
 ## Install
