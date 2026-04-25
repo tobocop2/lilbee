@@ -1,0 +1,4 @@
+[gd_resource type="ProjectSettings" format=3]
+
+config/name="lilbee-demo"
+config/features=PackedStringArray("4.4")
