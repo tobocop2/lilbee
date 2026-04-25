@@ -210,12 +210,12 @@ class CatalogModel:
     """A model entry in the catalog.
     Identity follows Ollama conventions: name is a lowercase slug (model family),
     tag is the variant (param count, version, etc.). The canonical reference is
-    ``name:tag`` (e.g. ``qwen3:0.6b``).  ``display_name`` is the human label.
+    ``name:tag`` (e.g. ``qwen3:0.6b``).
     """
 
     name: str  # family slug: "qwen3", "nomic-embed-text"
     tag: str  # variant: "0.6b", "v1.5"
-    display_name: str  # UI label: "Qwen3 0.6B"
+    display_name: str  # UI label, ref-style: "qwen3:0.6b"
     hf_repo: str
     gguf_filename: str
     size_gb: float
@@ -358,14 +358,12 @@ _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
 
-def _extract_family_name(model_name: str) -> str:
-    """Extract the family name by stripping the trailing parameter count.
-    Applies clean_display_name first to strip -GGUF, -Instruct, etc.
+def _extract_family_name(hf_repo: str) -> str:
+    """Family name from a HuggingFace repo id, stripping trailing parameter count.
 
-    "Qwen3 8B" -> "Qwen3", "Qwen3-Coder 30B A3B" -> "Qwen3-Coder",
-    "Nomic Embed Text v1.5" -> "Nomic Embed Text v1.5" (no trailing number pattern).
+    "Qwen/Qwen3-8B-GGUF" -> "Qwen3", "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF" -> "Qwen3-Coder".
     """
-    cleaned = clean_display_name(model_name)
+    cleaned = clean_display_name(hf_repo)
     m = _FAMILY_NAME_RE.match(cleaned)
     return m.group(1) if m else cleaned
 
@@ -557,7 +555,7 @@ def _fetch_hf_models(
             CatalogModel(
                 name=slug,
                 tag=DEFAULT_TAG,
-                display_name=clean_display_name(item.id),
+                display_name=f"{slug}:{DEFAULT_TAG}",
                 hf_repo=item.id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
@@ -835,10 +833,11 @@ def _is_hf_repo_id(value: str) -> bool:
 def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
     """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
     repo_name = hf_repo.split("/")[-1]
+    slug = repo_name.lower().replace(" ", "-")
     return CatalogModel(
-        name=repo_name.lower().replace(" ", "-"),
+        name=slug,
         tag=DEFAULT_TAG,
-        display_name=clean_display_name(hf_repo),
+        display_name=f"{slug}:{DEFAULT_TAG}",
         hf_repo=hf_repo,
         gguf_filename="*.gguf",
         size_gb=0.0,
@@ -1196,7 +1195,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
                 featured=m.featured,
                 downloads=m.downloads,
                 task=m.task,
-                display_name=m.display_name or clean_display_name(m.hf_repo),
+                display_name=m.display_name or f"{m.name}:{m.tag}",
                 param_count=_derive_param_count(m),
                 quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
                 installed=is_installed,

@@ -95,7 +95,7 @@ class ModelManifest:
     source_filename: str  # original .gguf filename
     downloaded_at: str  # ISO 8601 timestamp
     blob: str = ""  # SHA-256 hash (filename in blobs/), set by install()
-    display_name: str = ""  # human-readable label: "Qwen3 0.6B"
+    display_name: str = ""  # legacy field; the picker uses the bare ref now
     aliases: list[str] = field(default_factory=list)
 
 
