@@ -290,7 +290,7 @@ class TestFetchHfModels:
         assert len(models) == 2
         assert models[0].name == "model-7b-gguf"
         assert models[0].hf_repo == "user/model-7b-gguf"
-        assert models[0].display_name == "model 7b"
+        assert models[0].display_name == "model-7b-gguf:latest"
         assert models[0].downloads == 5000
         assert models[0].featured is False
         assert models[0].task == "chat"
@@ -1906,10 +1906,10 @@ class TestEnrichCatalog:
         assert e.downloads == original.downloads
         assert e.task == original.task
 
-    def test_param_count_extracted_from_display_name(self) -> None:
+    def test_param_count_extracted_from_hf_repo(self) -> None:
         result = self._make_result()
         enriched = enrich_catalog(result, set())
-        # "Model-7B-GGUF" -> "7B"; "Qwen3 8B" -> "8B"
+        # hf_repo like "org/Model-7B-GGUF" or "Qwen/Qwen3-8B-GGUF" -> "7B"/"8B"
         assert enriched[0].param_count == "7B"
         assert enriched[1].param_count == "8B"
 

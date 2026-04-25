@@ -346,9 +346,11 @@ class TestLlamaCppProvider:
 
         with (
             patch("llama_cpp.Llama", side_effect=ValueError("totally unrelated")),
-            pytest.raises(ValueError, match="totally unrelated"),
+            pytest.raises(ValueError, match="totally unrelated") as exc_info,
         ):
             load_llama(models_dir / "test-model.gguf", mode="chat")
+        # bare re-raise preserves the original chain; the exception isn't its own cause
+        assert exc_info.value.__cause__ is None
 
     def testload_llama_routes_llama_logs_through_python_logger(
         self, models_dir: Path, caplog: pytest.LogCaptureFixture
@@ -359,24 +361,32 @@ class TestLlamaCppProvider:
 
         from lilbee.providers import llama_cpp_provider as prov
 
+        prior_installed = prov._llama_log_installed
+        prior_callback = prov._llama_log_callback
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
         prov._llama_log_installed = False
         prov._llama_log_callback = None
         prov._llama_log_pending.clear()
-        with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
-            load_llama_fn = prov.load_llama
-            load_llama_fn(models_dir / "test-model.gguf", mode="chat")
-            assert prov._llama_log_installed is True
-            mock_set.assert_called_once()
+        try:
+            with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
+                load_llama_fn = prov.load_llama
+                load_llama_fn(models_dir / "test-model.gguf", mode="chat")
+                assert prov._llama_log_installed is True
+                mock_set.assert_called_once()
 
-        # Drive the registered dispatcher directly with a WARN line. WARN
-        # demotes to INFO so users on default WARNING don't see the
-        # llama.cpp auto-correction noise.
-        with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
-            prov._llama_log_dispatch(2, b"init: embeddings required\n", None)
-        records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
-        assert records, "no lilbee.llama_cpp records captured"
-        assert records[-1].levelno == logging.INFO
-        assert "embeddings required" in records[-1].message
+            with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
+                prov._llama_log_dispatch(2, b"init: embeddings required\n", None)
+            records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
+            assert records, "no lilbee.llama_cpp records captured"
+            assert records[-1].levelno == logging.INFO
+            assert "embeddings required" in records[-1].message
+        finally:
+            prov._llama_log_installed = prior_installed
+            prov._llama_log_callback = prior_callback
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
 
     def testllama_log_dispatch_promotes_errors(self) -> None:
         """ggml ERROR maps to Python ERROR so real failures surface at the default level."""
@@ -384,6 +394,8 @@ class TestLlamaCppProvider:
 
         from lilbee.providers import llama_cpp_provider as prov
 
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
         prov._llama_log_pending.clear()
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
@@ -394,6 +406,9 @@ class TestLlamaCppProvider:
             prov._llama_log_dispatch(3, b"fatal: out of memory\n", None)
         finally:
             logger.removeHandler(handler)
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
         assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
 
     def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
@@ -402,6 +417,8 @@ class TestLlamaCppProvider:
 
         from lilbee.providers import llama_cpp_provider as prov
 
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
         prov._llama_log_pending.clear()
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
@@ -432,6 +449,9 @@ class TestLlamaCppProvider:
         finally:
             logger.removeHandler(handler)
             logger.setLevel(prior_level)
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
 
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()

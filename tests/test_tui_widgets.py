@@ -694,6 +694,36 @@ class TestClassifyInstalledModels:
         assert "mistral:latest" in chat_refs
         assert "ollama/mistral:latest" in chat_refs
 
+    def test_native_label_is_ref_not_curated_display_name(self, tmp_path) -> None:
+        """Native picker rows label as the bare ref so two quants of the same base
+        can never collide on a curated label like "Qwen3 0.6B".
+        """
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.registry import ModelManifest
+
+        manifest = ModelManifest(
+            name="qwen3",
+            tag="0.6b",
+            size_bytes=100,
+            task="chat",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+            display_name="Qwen3 0.6B",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        cfg.remote_base_url = "http://localhost:11434"
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [manifest]
+            chat, _ = _classify_installed_models()
+
+        assert chat == [("qwen3:0.6b", "qwen3:0.6b")]
+
     def test_remote_blank_name_dropped(self, tmp_path) -> None:
         """Remote entries with an empty name are skipped before reaching the picker."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
