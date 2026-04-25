@@ -32,6 +32,32 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Dedicated logger for llama.cpp C-side messages routed via llama_log_set
+# (see _install_llama_log_handler). Emits through the standard lilbee
+# logger hierarchy so LILBEE_LOG_LEVEL / --log-level controls verbosity.
+_llama_log = logging.getLogger("lilbee.llama_cpp")
+
+# ggml.h log levels. Not exposed by llama-cpp-python; defined here so the
+# callback doesn't depend on private upstream constants.
+_GGML_LOG_LEVEL_NONE = 0
+_GGML_LOG_LEVEL_INFO = 1
+_GGML_LOG_LEVEL_WARN = 2
+_GGML_LOG_LEVEL_ERROR = 3
+_GGML_LOG_LEVEL_DEBUG = 4
+_GGML_LOG_LEVEL_CONT = 5  # continuation of the previous line
+
+# Map ggml severities to Python log levels. WARN is demoted to INFO
+# because most llama.cpp warnings are auto-corrections that aren't
+# actionable for the user (the noisiest example is "embeddings required
+# but some input tokens were not marked as outputs -> overriding"). Real
+# errors stay at ERROR so they surface at lilbee's default WARNING level.
+_GGML_TO_PY_LEVEL = {
+    _GGML_LOG_LEVEL_INFO: logging.DEBUG,
+    _GGML_LOG_LEVEL_WARN: logging.INFO,
+    _GGML_LOG_LEVEL_ERROR: logging.ERROR,
+    _GGML_LOG_LEVEL_DEBUG: logging.DEBUG,
+}
+
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
@@ -362,6 +388,62 @@ class _LockedStreamIterator:
 
 _STDERR_LOCK = threading.Lock()
 
+# Holds the ctypes-wrapped log callback. ctypes does not retain a Python
+# reference to the wrapped object, so without a module-level handle the
+# wrapper would be garbage collected and llama.cpp would call into freed
+# memory the next time it logged.
+_llama_log_callback: Any = None
+_llama_log_installed = False
+# Buffer for GGML_LOG_LEVEL_CONT (continuation) lines so multi-write
+# log messages reach the Python logger as one record.
+_llama_log_pending: dict[int, str] = {}
+_llama_log_pending_level: int = _GGML_LOG_LEVEL_INFO
+
+
+def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
+    """Route a single llama.cpp log message at *level* into the
+    `lilbee.llama_cpp` Python logger. Continuation lines are coalesced.
+    """
+    global _llama_log_pending_level
+    try:
+        text = text_bytes.decode("utf-8", errors="replace") if text_bytes else ""
+    except Exception:  # pragma: no cover -- defensive against malformed bytes
+        return
+
+    if level == _GGML_LOG_LEVEL_CONT:
+        _llama_log_pending[0] = _llama_log_pending.get(0, "") + text
+    else:
+        if 0 in _llama_log_pending:
+            buffered = _llama_log_pending.pop(0).rstrip()
+            if buffered:
+                _llama_log.log(
+                    _GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), buffered
+                )
+        _llama_log_pending_level = level
+        _llama_log_pending[0] = text
+
+    # Flush whenever the buffered text contains a newline -- llama.cpp
+    # emits messages chunk-by-chunk and the boundary marker is the \n.
+    if "\n" in _llama_log_pending.get(0, ""):
+        full = _llama_log_pending.pop(0).rstrip()
+        if full:
+            _llama_log.log(_GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), full)
+
+
+def _install_llama_log_handler() -> None:
+    """Replace llama.cpp's default fd-2 log writer with a callback that
+    routes messages through Python's `logging`. Idempotent — safe to call
+    on every Llama() construction.
+    """
+    global _llama_log_callback, _llama_log_installed
+    if _llama_log_installed:
+        return
+    import llama_cpp
+
+    _llama_log_callback = llama_cpp.llama_log_callback(_llama_log_dispatch)
+    llama_cpp.llama_log_set(_llama_log_callback, None)
+    _llama_log_installed = True
+
 
 def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call *fn* with C-level stderr suppressed.
@@ -396,6 +478,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """
     from llama_cpp import Llama
 
+    _install_llama_log_handler()
     llm = suppress_native_stderr(
         Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
     )
@@ -465,6 +548,7 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """
     from llama_cpp import Llama
 
+    _install_llama_log_handler()
     embedding = mode in (MODE_EMBED, MODE_RERANK)
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
@@ -497,7 +581,43 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
 
-    return suppress_native_stderr(Llama, **kwargs)
+    try:
+        return suppress_native_stderr(Llama, **kwargs)
+    except ValueError as exc:
+        raise _wrap_llama_load_error(model_path, kwargs, exc) from exc
+
+
+def _wrap_llama_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueError) -> ValueError:
+    """Convert llama.cpp's opaque ``ValueError("Failed to create llama_context")``
+    (or the matching "Failed to load model from file" variant) into a
+    diagnostic that names the model, its on-disk size, the requested
+    context window, and the host's free RAM. Two friends hit the bare
+    upstream message with no clue why; this lets them act on it.
+    """
+    err = str(exc)
+    if "llama_context" not in err and "load model from file" not in err:
+        return exc
+    try:
+        size_gb = model_path.stat().st_size / (1024**3) if model_path.exists() else 0.0
+    except OSError:
+        size_gb = 0.0
+    n_ctx = kwargs.get("n_ctx", 0)
+    n_ctx_label = n_ctx or "model default"
+    parts = [
+        f"Failed to load {model_path.name} ({size_gb:.1f} GB) with n_ctx={n_ctx_label}.",
+    ]
+    try:
+        import psutil
+
+        free_gb = psutil.virtual_memory().available / (1024**3)
+        parts.append(f"Host has {free_gb:.1f} GB free RAM.")
+    except Exception as psu_exc:  # pragma: no cover -- never mask the real failure
+        log.debug("psutil unavailable while building load-error diagnostic: %s", psu_exc)
+    parts.append(
+        "Try a smaller model, lower LILBEE_NUM_CTX, or close other processes to free RAM. "
+        f"(llama.cpp: {err})"
+    )
+    return ValueError(" ".join(parts))
 
 
 def _is_rerank_model(model: str) -> bool:

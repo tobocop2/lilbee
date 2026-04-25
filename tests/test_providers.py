@@ -316,6 +316,97 @@ class TestLlamaCppProvider:
             call_kwargs = llama_cpp.Llama.call_args[1]
             assert "n_batch" not in call_kwargs
 
+    def testload_llama_wraps_context_failure_with_diagnostic(
+        self, models_dir: Path, tmp_path: Path
+    ) -> None:
+        """Opaque ``Failed to create llama_context`` from llama.cpp gets
+        rewrapped with model name, size, n_ctx, and free RAM so users see
+        what went wrong instead of the upstream stub message.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import load_llama
+
+        model = models_dir / "tiny.gguf"
+        model.write_bytes(b"x" * 1024)
+
+        with (
+            patch("llama_cpp.Llama", side_effect=ValueError("Failed to create llama_context")),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            load_llama(model, mode="chat")
+
+        msg = str(exc_info.value)
+        assert "tiny.gguf" in msg
+        assert "n_ctx=" in msg
+        assert "Failed to create llama_context" in msg
+
+    def testload_llama_does_not_wrap_unrelated_value_errors(self, models_dir: Path) -> None:
+        """Only the two known opaque-failure messages get rewrapped; any
+        other ValueError passes through unchanged so we don't bury real
+        bugs under a misleading diagnostic.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import load_llama
+
+        with (
+            patch("llama_cpp.Llama", side_effect=ValueError("totally unrelated")),
+            pytest.raises(ValueError, match="totally unrelated"),
+        ):
+            load_llama(models_dir / "test-model.gguf", mode="chat")
+
+    def testload_llama_routes_llama_logs_through_python_logger(
+        self, models_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """load_llama installs the llama_log_set callback once; calling the
+        installed callback routes ggml WARN to Python INFO (demoted because
+        most are auto-corrections like the embeddings-required flood).
+        """
+        import logging
+        from unittest.mock import patch
+
+        from lilbee.providers import llama_cpp_provider as prov
+
+        prov._llama_log_installed = False
+        prov._llama_log_callback = None
+        prov._llama_log_pending.clear()
+        with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
+            load_llama_fn = prov.load_llama
+            load_llama_fn(models_dir / "test-model.gguf", mode="chat")
+            assert prov._llama_log_installed is True
+            mock_set.assert_called_once()
+
+        # Drive the registered dispatcher directly with a WARN line. WARN
+        # demotes to INFO so users on default WARNING don't see the
+        # llama.cpp auto-correction noise.
+        with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
+            prov._llama_log_dispatch(2, b"init: embeddings required\n", None)
+        records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
+        assert records, "no lilbee.llama_cpp records captured"
+        assert records[-1].levelno == logging.INFO
+        assert "embeddings required" in records[-1].message
+
+    def testllama_log_dispatch_promotes_errors(self) -> None:
+        """ggml ERROR stays ERROR so real failures still surface at the
+        default WARNING level.
+        """
+        import logging
+
+        from lilbee.providers import llama_cpp_provider as prov
+
+        prov._llama_log_pending.clear()
+        logger = logging.getLogger("lilbee.llama_cpp")
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger.addHandler(handler)
+        try:
+            prov._llama_log_dispatch(3, b"fatal: out of memory\n", None)
+        finally:
+            logger.removeHandler(handler)
+        assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
+
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
