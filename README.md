@@ -186,14 +186,24 @@ See [Previews](#previews) for a visual and the [slash-command reference](docs/us
 
 Standalone mode runs entirely on your machine. No cloud required.
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| **CPU** | x86_64 (Sandy Bridge / 2011+) or ARM64 (any) | x86_64 with AVX2 / FMA, or Apple Silicon |
-| **RAM** | 8 GB | 16 to 32 GB |
-| **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (CUDA-native, see [Install](#install)) |
-| **Disk** | 2 GB (models + data) | 10+ GB if using multiple models |
+### Supported platforms
 
-The default PyPI wheel uses ggml's runtime CPU dispatch — it ships every CPU kernel variant (SSE4.2 / AVX / AVX2 / AVX-512) and picks the highest one your CPU supports at startup. On Linux/Windows it links Vulkan for GPU acceleration; on macOS it links Metal. NVIDIA users get GPU acceleration through the NVIDIA Vulkan driver automatically — no CUDA installation required. The opt-in CUDA wheels (above) buy 5–15% extra perf for users who specifically want CUDA-native kernels.
+| Platform | Minimum | Recommended |
+|---|---|---|
+| **Linux x86_64** | A 64-bit Intel or AMD CPU from **2013 or newer** — Intel Core i3/i5/i7 4th-gen (Haswell), Intel Xeon E3-12xx v3 / E5-26xx v3, AMD FX-95xx (Steamroller) or any AMD Zen-based chip. Anything corresponding to the [`x86-64-v3` microarchitecture level](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels). | A modern Intel Core / Xeon / AMD Ryzen / EPYC + an NVIDIA, AMD, or Intel Arc GPU |
+| **macOS arm64** | Any Apple Silicon Mac (M1 or newer) running macOS 11+ | M-series Pro / Max / Ultra |
+| **Windows x86_64** | A 64-bit Intel or AMD CPU from **2013 or newer** (same generations as Linux above), Windows 10/11 | Modern desktop / workstation CPU + GPU |
+| **Linux ARM64** | ARMv8 (NEON-capable) — Raspberry Pi 4+, AWS Graviton, Ampere Altra, etc. | Modern ARM server with 16+ GB RAM |
+
+### Resources
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| **RAM** | 8 GB | 16 to 32 GB |
+| **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
+| **Disk** | 2 GB (models + data) | 10+ GB if you load multiple models |
+
+> **Pre-2013 x86_64 CPUs are not currently supported.** That includes Intel Sandy Bridge / Ivy Bridge (1st–3rd gen Core, Xeon E5-26xx v1/v2, etc.). The constraint comes from one of lilbee's underlying libraries; a permanent upstream fix is being tracked. If this matters to you, [open an issue](https://github.com/tobocop2/lilbee/issues) and we can prioritize.
 
 Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
