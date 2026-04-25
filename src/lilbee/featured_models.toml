@@ -1,6 +1,7 @@
 [[chat]]
 name = "qwen3"
 tag = "0.6b"
+display_name = "Qwen3 0.6B"
 recommended = true
 hf_repo = "Qwen/Qwen3-0.6B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
@@ -11,6 +12,7 @@ description = "Tiny — runs on anything"
 [[chat]]
 name = "qwen3"
 tag = "4b"
+display_name = "Qwen3 4B"
 hf_repo = "Qwen/Qwen3-4B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 2.5
@@ -20,6 +22,7 @@ description = "Small — good balance for 8 GB RAM"
 [[chat]]
 name = "qwen3"
 tag = "8b"
+display_name = "Qwen3 8B"
 hf_repo = "Qwen/Qwen3-8B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 5.0
@@ -29,6 +32,7 @@ description = "Medium — strong general purpose"
 [[chat]]
 name = "mistral"
 tag = "7b-instruct"
+display_name = "Mistral 7B Instruct"
 recommended = true
 hf_repo = "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
@@ -39,6 +43,7 @@ description = "Fast 7B, 32K context"
 [[chat]]
 name = "qwen3-coder"
 tag = "30b-a3b"
+display_name = "Qwen3-Coder 30B A3B"
 recommended = true
 hf_repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
@@ -49,6 +54,7 @@ description = "Extra large — best quality"
 [[chat]]
 name = "gemma4"
 tag = "e2b"
+display_name = "Gemma 4 E2B"
 hf_repo = "unsloth/gemma-4-E2B-it-GGUF"
 gguf_filename = "gemma-4-E2B-it-Q4_K_M.gguf"
 size_gb = 3.1
@@ -58,6 +64,7 @@ description = "Small multimodal — text, image, audio, video"
 [[chat]]
 name = "gemma4"
 tag = "e4b"
+display_name = "Gemma 4 E4B"
 hf_repo = "ggml-org/gemma-4-E4B-it-GGUF"
 gguf_filename = "gemma-4-E4B-it-Q4_K_M.gguf"
 size_gb = 5.3
@@ -67,6 +74,7 @@ description = "Medium multimodal — strong general purpose"
 [[chat]]
 name = "smollm2"
 tag = "135m"
+display_name = "SmolLM2 135M"
 hf_repo = "bartowski/SmolLM2-135M-Instruct-GGUF"
 gguf_filename = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
 size_gb = 0.09
@@ -76,6 +84,7 @@ description = "Ultra-tiny — Raspberry Pi, low-RAM devices"
 [[embedding]]
 name = "nomic-embed-text"
 tag = "v1.5"
+display_name = "Nomic Embed Text v1.5"
 recommended = true
 hf_repo = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 gguf_filename = "nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -86,6 +95,7 @@ description = "Fast, high quality — default for lilbee"
 [[embedding]]
 name = "embeddinggemma-300m"
 tag = "qat-q8_0"
+display_name = "EmbeddingGemma 300M"
 hf_repo = "ggml-org/embeddinggemma-300m-qat-q8_0-GGUF"
 gguf_filename = "*Q8_0.gguf"
 size_gb = 0.3
@@ -95,6 +105,7 @@ description = "Google Gemma embedder, strong multilingual + retrieval"
 [[embedding]]
 name = "all-minilm-l6-v2"
 tag = "latest"
+display_name = "all-MiniLM-L6-v2"
 hf_repo = "second-state/All-MiniLM-L6-v2-Embedding-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 0.025
@@ -104,6 +115,7 @@ description = "Tiny classic embedder, fits anywhere, 384 dims"
 [[vision]]
 name = "lightonocr"
 tag = "2-1b"
+display_name = "LightOnOCR-2"
 recommended = true
 hf_repo = "noctrex/LightOnOCR-2-1B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
@@ -114,6 +126,7 @@ description = "Fast OCR — clean markdown output, small footprint"
 [[rerank]]
 name = "bge-reranker-v2-m3"
 tag = "latest"
+display_name = "BGE Reranker v2 M3"
 recommended = true
 hf_repo = "gpustack/bge-reranker-v2-m3-GGUF"
 gguf_filename = "*Q4_K_M.gguf"

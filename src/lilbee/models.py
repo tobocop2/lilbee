@@ -50,7 +50,7 @@ class ModelInfo:
     """A curated chat model with metadata for the picker UI."""
 
     ref: str  # canonical name:tag (e.g. "qwen3:0.6b")
-    display_name: str  # UI label, ref-style (e.g. "qwen3:0.6b")
+    display_name: str  # UI label (e.g. "Qwen3 0.6B")
     size_gb: float
     min_ram_gb: float
     description: str

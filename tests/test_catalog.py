@@ -290,7 +290,7 @@ class TestFetchHfModels:
         assert len(models) == 2
         assert models[0].name == "model-7b-gguf"
         assert models[0].hf_repo == "user/model-7b-gguf"
-        assert models[0].display_name == "model-7b-gguf:latest"
+        assert models[0].display_name == "model 7b"
         assert models[0].downloads == 5000
         assert models[0].featured is False
         assert models[0].task == "chat"
@@ -655,6 +655,17 @@ class TestGetCatalog:
 
 
 class TestFindCatalogEntry:
+    def test_exact_match_by_display_name(self) -> None:
+        result = find_catalog_entry("Qwen3 8B")
+        assert result is not None
+        assert result.display_name == "Qwen3 8B"
+        assert result.name == "qwen3"
+
+    def test_case_insensitive(self) -> None:
+        result = find_catalog_entry("qwen3 8b")
+        assert result is not None
+        assert result.display_name == "Qwen3 8B"
+
     def test_exact_ref_match(self) -> None:
         result = find_catalog_entry("qwen3:0.6b")
         assert result is not None
@@ -1102,7 +1113,7 @@ class TestPipelineToTask:
 class TestFeaturedVisionModel:
     def test_featured_vision_is_lightonocr(self) -> None:
         assert len(FEATURED_VISION) == 1
-        assert FEATURED_VISION[0].name == "lightonocr"
+        assert "LightOnOCR" in FEATURED_VISION[0].display_name
 
     def test_featured_vision_is_small(self) -> None:
         assert FEATURED_VISION[0].size_gb <= 2.0
@@ -1906,10 +1917,10 @@ class TestEnrichCatalog:
         assert e.downloads == original.downloads
         assert e.task == original.task
 
-    def test_param_count_extracted_from_hf_repo(self) -> None:
+    def test_param_count_extracted_from_display_name(self) -> None:
         result = self._make_result()
         enriched = enrich_catalog(result, set())
-        # hf_repo like "org/Model-7B-GGUF" or "Qwen/Qwen3-8B-GGUF" -> "7B"/"8B"
+        # "Model-7B-GGUF" -> "7B"; "Qwen3 8B" -> "8B"
         assert enriched[0].param_count == "7B"
         assert enriched[1].param_count == "8B"
 

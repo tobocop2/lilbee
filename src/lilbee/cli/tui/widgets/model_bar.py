@@ -108,7 +108,7 @@ def _lookup_bucket(
 
 
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add native registry models to buckets, labeled by ref."""
+    """Add native registry models to buckets."""
     try:
         from lilbee.registry import ModelRegistry
 
@@ -121,7 +121,8 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             if bucket is None:
                 continue
             seen.add(ref)
-            bucket.append(ModelOption(label=ref, ref=ref))
+            label = manifest.display_name or ref
+            bucket.append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 

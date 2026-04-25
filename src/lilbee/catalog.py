@@ -210,12 +210,12 @@ class CatalogModel:
     """A model entry in the catalog.
     Identity follows Ollama conventions: name is a lowercase slug (model family),
     tag is the variant (param count, version, etc.). The canonical reference is
-    ``name:tag`` (e.g. ``qwen3:0.6b``).
+    ``name:tag`` (e.g. ``qwen3:0.6b``).  ``display_name`` is the human label.
     """
 
     name: str  # family slug: "qwen3", "nomic-embed-text"
     tag: str  # variant: "0.6b", "v1.5"
-    display_name: str  # UI label, ref-style: "qwen3:0.6b"
+    display_name: str  # UI label: "Qwen3 0.6B"
     hf_repo: str
     gguf_filename: str
     size_gb: float
@@ -276,28 +276,6 @@ class ModelFamily:
     variants: tuple[ModelVariant, ...]
 
 
-_DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECASE)
-_DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
-_DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
-
-
-def clean_display_name(repo_id: str) -> str:
-    """Derive a human-friendly display name from a HuggingFace repo ID.
-    Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
-    and Meta- prefix. Replaces hyphens with spaces.
-
-    Examples:
-        "Qwen/Qwen2.5-7B-Instruct-GGUF" -> "Qwen2.5 7B"
-        "meta-llama/Meta-Llama-3-8B"     -> "Llama 3 8B"
-    """
-    name = repo_id.split("/")[-1]
-    name = _DISPLAY_NAME_SUFFIXES.sub("", name)
-    name = _DISPLAY_NAME_DATE_SUFFIX.sub("", name)
-    name = _DISPLAY_NAME_META_PREFIX.sub("", name)
-    name = name.replace("-", " ").strip()
-    return re.sub(r"\s+", " ", name)
-
-
 def _load_featured() -> tuple[
     tuple[CatalogModel, ...],
     tuple[CatalogModel, ...],
@@ -316,7 +294,7 @@ def _load_featured() -> tuple[
             CatalogModel(
                 name=m["name"],
                 tag=m.get("tag", DEFAULT_TAG),
-                display_name=f"{m['name']}:{m.get('tag', DEFAULT_TAG)}",
+                display_name=m.get("display_name", m["name"]),
                 hf_repo=m["hf_repo"],
                 gguf_filename=m["gguf_filename"],
                 size_gb=m["size_gb"],
@@ -358,12 +336,14 @@ _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
 
-def _extract_family_name(hf_repo: str) -> str:
-    """Family name from a HuggingFace repo id, stripping trailing parameter count.
+def _extract_family_name(model_name: str) -> str:
+    """Extract the family name by stripping the trailing parameter count.
+    Applies clean_display_name first to strip -GGUF, -Instruct, etc.
 
-    "Qwen/Qwen3-8B-GGUF" -> "Qwen3", "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF" -> "Qwen3-Coder".
+    "Qwen3 8B" -> "Qwen3", "Qwen3-Coder 30B A3B" -> "Qwen3-Coder",
+    "Nomic Embed Text v1.5" -> "Nomic Embed Text v1.5" (no trailing number pattern).
     """
-    cleaned = clean_display_name(hf_repo)
+    cleaned = clean_display_name(model_name)
     m = _FAMILY_NAME_RE.match(cleaned)
     return m.group(1) if m else cleaned
 
@@ -381,8 +361,8 @@ def _derive_param_count(model: CatalogModel) -> str:
     Falls back to ``model.tag`` when the display name has no numeric suffix
     (useful for embedding models whose tag is a version like ``v1.5``).
     """
-    match = PARAM_COUNT_RE.search(model.hf_repo)
-    return match.group(1).upper() if match else model.tag
+    match = PARAM_COUNT_RE.search(model.display_name)
+    return match.group(1) if match else model.tag
 
 
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
@@ -415,7 +395,7 @@ def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFa
         families.append(
             ModelFamily(
                 slug=slug,
-                name=_extract_family_name(representative.hf_repo),
+                name=_extract_family_name(representative.display_name),
                 task=task,
                 description=representative.description,
                 variants=tuple(variants),
@@ -555,7 +535,7 @@ def _fetch_hf_models(
             CatalogModel(
                 name=slug,
                 tag=DEFAULT_TAG,
-                display_name=f"{slug}:{DEFAULT_TAG}",
+                display_name=clean_display_name(item.id),
                 hf_repo=item.id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
@@ -711,7 +691,7 @@ def _get_installed_models(model_manager: Any) -> set[str]:
 
 _SORT_KEYS: dict[str, tuple] = {
     "downloads": (lambda m: m.downloads, True),
-    "name": (lambda m: m.name.lower(), False),
+    "name": (lambda m: m.display_name.lower(), False),
     "size_asc": (lambda m: m.size_gb, False),
     "size_desc": (lambda m: m.size_gb, True),
     "featured": (lambda m: (not m.featured, -m.downloads), False),
@@ -833,11 +813,10 @@ def _is_hf_repo_id(value: str) -> bool:
 def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
     """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
     repo_name = hf_repo.split("/")[-1]
-    slug = repo_name.lower().replace(" ", "-")
     return CatalogModel(
-        name=slug,
+        name=repo_name.lower().replace(" ", "-"),
         tag=DEFAULT_TAG,
-        display_name=f"{slug}:{DEFAULT_TAG}",
+        display_name=clean_display_name(hf_repo),
         hf_repo=hf_repo,
         gguf_filename="*.gguf",
         size_gb=0.0,
@@ -1133,6 +1112,28 @@ def fetch_model_file_size(hf_repo: str) -> float:
     return round(size_bytes / (1024**3), 1) if size_bytes else 0.0
 
 
+_DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECASE)
+_DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
+_DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
+
+
+def clean_display_name(repo_id: str) -> str:
+    """Derive a human-friendly display name from a HuggingFace repo ID.
+    Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
+    and Meta- prefix. Replaces hyphens with spaces.
+
+    Examples:
+        "Qwen/Qwen2.5-7B-Instruct-GGUF" -> "Qwen2.5 7B"
+        "meta-llama/Meta-Llama-3-8B"     -> "Llama 3 8B"
+    """
+    name = repo_id.split("/")[-1]
+    name = _DISPLAY_NAME_SUFFIXES.sub("", name)
+    name = _DISPLAY_NAME_DATE_SUFFIX.sub("", name)
+    name = _DISPLAY_NAME_META_PREFIX.sub("", name)
+    name = name.replace("-", " ").strip()
+    return re.sub(r"\s+", " ", name)
+
+
 QUANT_TIERS: dict[str, str] = {
     "Q2_K": "compact",
     "Q3_K_S": "compact",
@@ -1195,7 +1196,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
                 featured=m.featured,
                 downloads=m.downloads,
                 task=m.task,
-                display_name=m.display_name or f"{m.name}:{m.tag}",
+                display_name=m.display_name or clean_display_name(m.hf_repo),
                 param_count=_derive_param_count(m),
                 quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
                 installed=is_installed,
