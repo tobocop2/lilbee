@@ -33,11 +33,14 @@ jobs:
   # Default-backend wheels for PyPI:
   #   * Linux x86_64       → vulkan
   #   * macOS arm64        → metal
+  #   * macOS x86_64       → cpu (cross-compiled from arm64 host)
   #   * Windows x86_64     → vulkan
   # `pip install lilbee` (no flags) gets these. The build runner can run
-  # the full self-check inference here because Vulkan/Metal fall back to
-  # CPU when no GPU is present, so we test BOTH the GPU path's import
-  # surface AND end-to-end inference.
+  # the full self-check inference for native targets because Vulkan/Metal
+  # fall back to CPU when no GPU is present. The Intel Mac wheel is
+  # cross-compiled from the free arm64 runner (no free Intel runner since
+  # macos-13 was retired), so it gets a structural smoke only — verify-pypi
+  # exercises the real wheel under Rosetta.
   build-default-wheels:
     needs: [ci]
     if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
@@ -52,6 +55,9 @@ jobs:
           - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.11"}
           - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.12"}
           - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.13"}
+          - {os: macos-latest,  backend: cpu,    wheel-plat: macosx_11_0_x86_64,                         python-version: "3.11", target-arch: x86_64}
+          - {os: macos-latest,  backend: cpu,    wheel-plat: macosx_11_0_x86_64,                         python-version: "3.12", target-arch: x86_64}
+          - {os: macos-latest,  backend: cpu,    wheel-plat: macosx_11_0_x86_64,                         python-version: "3.13", target-arch: x86_64}
           - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.11"}
           - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.12"}
           - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.13"}
@@ -60,6 +66,7 @@ jobs:
 
     env:
       BACKEND: ${{ matrix.backend }}
+      TARGET_ARCH: ${{ matrix.target-arch }}
       LLAMA_BUILD_DIR: "/tmp/llama-build"
       MACOSX_DEPLOYMENT_TARGET: "11.0"
 
@@ -101,53 +108,19 @@ jobs:
           --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
           --wheel-platform ${{ matrix.wheel-plat }}
 
-      - name: Smoke test
+      - name: Smoke test (native)
+        if: matrix.target-arch != 'x86_64' || runner.arch == 'X64'
         shell: bash
-        run: |
-          set -euxo pipefail
-          pip install 'typer==0.9.4'
-          pip install --pre dist/*.whl
-          python -c "import typer, sys; v = tuple(int(p) for p in typer.__version__.split('.')[:2]); assert v >= (0, 12), f'typer={typer.__version__} < 0.12'; print(f'typer {typer.__version__} OK')"
+        run: bash tools/wheel-build/smoke_wheel_full.sh 'dist/*.whl'
 
-          python -c "
-          import lilbee
-          from lilbee.cli import app
-          from lilbee import code_chunker, ingest, embedder, store, query, config, chunk
-          import llama_cpp
-          print('llama_cpp loaded from:', llama_cpp.__file__)
-          print('lilbee imports OK')
-          "
-
-          expected=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          stdout_file=$(mktemp)
-          stderr_file=$(mktemp)
-          lilbee --version >"$stdout_file" 2>"$stderr_file"
-          test "$(cat "$stdout_file")" = "lilbee ${expected}"
-          if grep -qE "No such option|Type not yet supported|RuntimeError" "$stderr_file"; then
-            cat "$stderr_file"; exit 1
-          fi
-          lilbee --help >/dev/null 2>"$stderr_file"
-          if grep -qE "No such option|Type not yet supported|RuntimeError" "$stderr_file"; then
-            cat "$stderr_file"; exit 1
-          fi
-
-          export HF_HUB_DISABLE_PROGRESS_BARS=1
-          OUT=$(mktemp); RC=0
-          lilbee --json self-check > "$OUT" 2>&1 || RC=$?
-          echo "=== self-check (exit=${RC}) ==="
-          cat "$OUT"
-          [ "${RC}" = "0" ]
-          python -c "
-          import json, pathlib, sys
-          raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
-          payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
-          data = json.loads(payload)
-          assert data.get('ok'), f'self-check failed: {data}'
-          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
-          dims = data.get('embedding_dims')
-          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
-          print(f'self-check chat={data[\"chat_response\"]!r} embedding_dims={dims}')
-          " "$OUT"
+      # Cross-compiled wheel (e.g. macOS arm64 host -> x86_64 wheel) cannot
+      # be imported on the build host because the bundled libllama.dylib is
+      # foreign-arch. Verify wheel structure + libllama arch instead. The
+      # x86_64 verify-pypi lane (Rosetta-driven) does the real import test.
+      - name: Smoke test (cross-compile, structural)
+        if: matrix.target-arch == 'x86_64' && runner.arch == 'ARM64'
+        shell: bash
+        run: python tools/wheel-build/smoke_wheel_structural.py --expect-arch x86_64
 
       - name: Upload default-backend wheel
         uses: actions/upload-artifact@v4
@@ -260,31 +233,7 @@ jobs:
       # a wheel whose runtime deps aren't present.
       - name: Smoke test (structural, no import)
         shell: bash
-        run: |
-          set -euxo pipefail
-          python -c "
-          import pathlib, sys, zipfile
-          whls = sorted(pathlib.Path('dist').glob('lilbee-*.whl'))
-          assert len(whls) == 1, f'expected exactly one lilbee wheel: {whls}'
-          whl = whls[0]
-          print(f'inspecting {whl.name} ({whl.stat().st_size:,} bytes)')
-          with zipfile.ZipFile(whl) as zf:
-              members = zf.namelist()
-              libs = [n for n in members if n.startswith('llama_cpp/lib/')]
-              print(f'llama_cpp/lib entries: {len(libs)}')
-              for lib in libs:
-                  size = zf.getinfo(lib).file_size
-                  print(f'  {lib} ({size:,} bytes)')
-              llama_libs = [n for n in libs if 'llama' in pathlib.Path(n).name.lower()]
-              assert llama_libs, f'wheel ships no libllama.* in llama_cpp/lib/: {libs}'
-              # libllama on every backend is at least 500 KB compressed —
-              # a near-empty stub would mean cmake silently produced nothing.
-              for lib in llama_libs:
-                  size = zf.getinfo(lib).file_size
-                  if size < 50_000:
-                      raise AssertionError(f'{lib} is suspiciously small ({size} bytes)')
-              print(f'structural smoke OK: {len(llama_libs)} libllama variants present')
-          "
+        run: python tools/wheel-build/smoke_wheel_structural.py
 
       - name: Upload extra-backend wheel
         uses: actions/upload-artifact@v4
@@ -447,6 +396,13 @@ jobs:
           - {os: macos-latest,  backend: metal,  python-version: "3.11"}
           - {os: macos-latest,  backend: metal,  python-version: "3.12"}
           - {os: macos-latest,  backend: metal,  python-version: "3.13"}
+          # Intel Mac wheels: same arm64 runner, but pin setup-python to
+          # x64 so the runner installs an x86_64 Python. Pip then resolves
+          # the macosx_x86_64 wheel from PyPI; the whole stack runs under
+          # Rosetta on the arm64 host.
+          - {os: macos-latest,  backend: cpu,    python-version: "3.11", py-arch: x64}
+          - {os: macos-latest,  backend: cpu,    python-version: "3.12", py-arch: x64}
+          - {os: macos-latest,  backend: cpu,    python-version: "3.13", py-arch: x64}
           - {os: windows-latest, backend: vulkan, python-version: "3.11"}
           - {os: windows-latest, backend: vulkan, python-version: "3.12"}
           - {os: windows-latest, backend: vulkan, python-version: "3.13"}
@@ -460,6 +416,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.py-arch }}
 
       - name: Install GPU runtime loader
         shell: bash
@@ -508,14 +465,4 @@ jobs:
           echo "=== self-check (exit=${RC}) ==="
           cat "$OUT"
           [ "${RC}" = "0" ]
-          python -c "
-          import json, pathlib, sys
-          raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
-          payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
-          data = json.loads(payload)
-          assert data.get('ok'), f'PyPI install self-check failed: {data}'
-          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
-          dims = data.get('embedding_dims')
-          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
-          print(f'PyPI install self-check PASSED chat={data[\"chat_response\"]!r} embedding_dims={dims}')
-          " "$OUT"
+          python tools/wheel-build/parse_self_check.py "$OUT"

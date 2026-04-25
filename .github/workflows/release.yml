@@ -223,19 +223,7 @@ jobs:
             echo "FAIL: self-check exited ${SELF_CHECK_RC}"
             exit 1
           fi
-          python -c "
-          import json, pathlib, sys
-          raw = pathlib.Path(sys.argv[1]).read_text().strip().splitlines()
-          # tolerate log noise before the JSON payload; the last non-empty
-          # line is the self-check JSON line.
-          payload = next(line for line in reversed(raw) if line.strip().startswith('{'))
-          data = json.loads(payload)
-          assert data.get('ok'), f'self-check failed: {data}'
-          assert data.get('chat_response','').strip(), f'empty chat response: {data}'
-          dims = data.get('embedding_dims')
-          assert isinstance(dims, int) and dims > 0, f'missing embedding_dims: {data}'
-          print(f'self-check chat={data[\"chat_response\"]!r} embedding_dims={dims}')
-          " "$SELF_CHECK_LOG"
+          python tools/wheel-build/parse_self_check.py "$SELF_CHECK_LOG"
 
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference all green"
         shell: bash

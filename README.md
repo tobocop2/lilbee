@@ -38,13 +38,13 @@ A terminal-first local search engine for your own files, websites, and scanned d
 
 ## Why lilbee
 
-Local AI tools have gotten great at getting you to a chat window fast. The first evening with a local model is genuinely fun. What makes it stick past the novelty is grounding: the model has to actually know your files, your notes, your codebase. Without that, the conversation runs out of places to go.
+Local AI tools have gotten great at getting you to a chat window fast. The first evening with a local model is genuinely fun. What makes it more than a novelty is grounding: the model needs context from your notes, your files, your codebase. Without that, the local AI tool runs out of places to go.
 
-The interesting part of local AI isn't the chatbot alone. It's pairing a chatbot with a real search engine over your own documents. Index your stuff, retrieve what matters, let a local model reason over it, get answers with citations you can click back to the source. Now the model knows your world.
+Local AI can be made more substantial than a chatbot. lilbee lets you pair the chatbot with a real search engine reviewing a curated set of documents. Make a library of what matters to you, let a local model reason over it, and get answers with citations you can click back to the source. Now the model knows your world.
 
-Historically that meant juggling a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal, including a browsable GGUF model catalog.
+To acheive this in the past a user would manage a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal; including a GGUF model catalog browser.
 
-The same executable ships a Textual TUI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Focused project vaults search better than one giant catch-all index.
+The same executable ships a Textual TUI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Curated documents with topic-specificity produce better answers than a single catch-all vault of personal documents, white papers, instruction manuals, codebases, and so on.
 
 An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
@@ -117,7 +117,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  └───────────────────────────────────────────────┘
 ```
 
-**Model catalog.** Browse, install, and switch roles without leaving the terminal. `★` marks the featured pick for each role.
+**Model catalog.** Browse, install, and switch roles without leaving the terminal. `★` indicates the developer's recommendation for each role.
 
 ```
  ┌─ Model Catalog ───────────────────────────────┐
@@ -156,11 +156,11 @@ For programmers, lilbee plugs into whatever AI agent you already use (via MCP). 
 
 ### Offline copies of websites
 
-Web crawling paired with local search and chat takes one command. Install the crawler extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and indexed. From then on you can search or chat with that site completely offline, even if it changes or goes down.
+Web crawling paired with local search and chat takes one command. Install the crawler extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and indexed. From then on you can search or chat offline with that image of the site, even if it changes or goes down.
 
 ### How it's built
 
-Under the hood lilbee stands on established open-source projects: [Kreuzberg] handles document parsing, [LanceDB] is the embedded search layer, [llama-cpp][llama-cpp-python] runs models locally, [crawl4ai] and [Playwright] crawl the web, and [Textual] draws the terminal. The architectural bet is that everything stays embedded in one process. Most systems in this shape deploy a vector database and a model server separately, usually reaching for a cloud-hosted search service (Pinecone, managed Qdrant, managed Weaviate) to avoid operating them, which moves your data onto someone else's servers. lilbee skips that layer entirely. Copy the executable onto a laptop and you have a complete local search-and-chat stack with nothing to deploy.
+Under the hood lilbee stands on established open-source projects: [Kreuzberg] handles document parsing, [LanceDB] is the embedded search layer, [llama-cpp][llama-cpp-python] runs models locally, [crawl4ai] and [Playwright] crawl the web, and [Textual] draws the terminal. The architectural bet is that everything stays embedded in one process. Most systems in this shape deploy a vector database and a model server separately, usually reaching for a cloud-hosted search service- which moves your data onto someone else's servers. lilbee performs the entire process locally. Pull the module to your laptop, pull your models, and curate your documents. A complete local search-and-chat stack with nothing to deploy.
 
 ### Documents, code, and scanned images
 
@@ -174,7 +174,9 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ### Local-first, frontier-capable
 
-lilbee is built as a local-first tool. The TUI shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. Popular frontier models are one `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`) away when a local model isn't enough, so the power is there when you need it.
+lilbee is built as a local-first tool, but can also connect to cloud-hosted models. The TUI supports API keys and shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. When a local model isn't enough you can start to access popular frontier models with the commands
+`pip install --pre 'lilbee[litellm]'`
+or `uv tool install --prerelease=allow 'lilbee[litellm]''
 
 ## TUI
 
