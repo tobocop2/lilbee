@@ -665,29 +665,26 @@ async def _set_model(
 def _require_model_available(model: str) -> str:
     """Return the normalized installed model ref; raises ValueError when unavailable.
 
-    Accepts catalog ``name:tag``, HuggingFace repo id, display name, or
-    provider-prefixed ref.
+    Accepts a full ``hf_repo/filename`` ref, a bare ``hf_repo`` (resolved
+    via the featured catalog), or a provider-prefixed ref like
+    ``ollama/<name>``.
     """
     from lilbee.catalog import find_catalog_entry
-    from lilbee.models import ensure_tag
 
+    available = set(get_services().provider.list_models())
+    if model in available:
+        return model
+    # Bare hf_repo: try featured catalog and accept any installed quant.
     entry = find_catalog_entry(model)
-    normalized = entry.ref if entry is not None else ensure_tag(model)
-    available = get_services().provider.list_models()
-    # ``available`` lists bare tags from /api/tags; stored refs may carry an
-    # ``ollama/`` prefix. Match on either form so both client styles work.
-    bare = parse_model_ref(normalized).name
-    if normalized in available or bare in available:
-        return normalized
-    # Providers may report the HuggingFace repo form instead of the catalog
-    # ``name:tag``. When the input resolved to a catalog entry, accept that
-    # entry's ``hf_repo`` (with or without ``:latest``) as an equivalent
-    # installed form so the canonical ref is still returned.
     if entry is not None:
-        hf_candidates = {entry.hf_repo, ensure_tag(entry.hf_repo)}
-        if hf_candidates.intersection(available):
-            return normalized
-    raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
+        for ref in available:
+            if ref.startswith(f"{entry.hf_repo}/"):
+                return ref
+    # Provider-prefixed ref bare form.
+    parsed = parse_model_ref(model)
+    if parsed.name in available:
+        return parsed.name
+    raise ValueError(f"Model '{model}' is not available. Pull it first or check the name.")
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:
