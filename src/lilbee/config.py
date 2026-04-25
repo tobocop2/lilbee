@@ -431,7 +431,12 @@ class Config(BaseSettings):
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
     # LLM-generated alternative queries for expansion. 0 disables.
-    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
+    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True, public=True)
+
+    # Skip LLM expansion when tokenized query length ≤ this. The LLM round-trip
+    # dominates latency on small local models; short queries already have strong
+    # BM25/vector signal. Concept-graph expansion still runs. 0 disables the skip.
+    expansion_short_query_tokens: int = ConfigField(default=2, ge=0, writable=True)
 
     # Cosine-distance step when adaptive-widening retry kicks in.
     adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
