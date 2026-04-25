@@ -225,7 +225,10 @@ jobs:
         with:
           cuda: ${{ matrix.cuda }}
           method: network
-          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust"]'
+          # visual_studio_integration is required on Windows so cmake's
+          # CMakeDetermineCUDACompiler can find the MSBuild CUDA toolset.
+          # Linux ignores it. Listing every dep we touch explicitly.
+          sub-packages: '["nvcc","cudart","cudart_dev","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
       - name: Build llama-cpp-python from source
         shell: bash
