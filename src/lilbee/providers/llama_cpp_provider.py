@@ -35,7 +35,6 @@ log = logging.getLogger(__name__)
 _llama_log = logging.getLogger("lilbee.llama_cpp")
 
 # ggml.h log levels (not exposed by llama-cpp-python).
-_GGML_LOG_LEVEL_NONE = 0
 _GGML_LOG_LEVEL_INFO = 1
 _GGML_LOG_LEVEL_WARN = 2
 _GGML_LOG_LEVEL_ERROR = 3
@@ -414,7 +413,7 @@ def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
             _llama_log.log(_GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), full)
 
 
-def _install_llama_log_handler() -> None:
+def install_llama_log_handler() -> None:
     """Route llama.cpp logs through Python logging. Idempotent."""
     global _llama_log_callback, _llama_log_installed
     if _llama_log_installed:
@@ -459,7 +458,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """
     from llama_cpp import Llama
 
-    _install_llama_log_handler()
+    install_llama_log_handler()
     llm = suppress_native_stderr(
         Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
     )
@@ -529,7 +528,7 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """
     from llama_cpp import Llama
 
-    _install_llama_log_handler()
+    install_llama_log_handler()
     embedding = mode in (MODE_EMBED, MODE_RERANK)
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
@@ -565,14 +564,19 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     try:
         return suppress_native_stderr(Llama, **kwargs)
     except ValueError as exc:
-        raise _wrap_llama_load_error(model_path, kwargs, exc) from exc
+        wrapped = _wrap_llama_load_error(model_path, kwargs, exc)
+        if wrapped is None:
+            raise
+        raise wrapped from exc
 
 
-def _wrap_llama_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueError) -> ValueError:
-    """Add model name, size, n_ctx, and free RAM context to opaque llama.cpp load failures."""
+def _wrap_llama_load_error(
+    model_path: Path, kwargs: dict[str, Any], exc: ValueError
+) -> ValueError | None:
+    """Diagnostic ValueError for opaque llama.cpp load failures, or None to pass through."""
     err = str(exc)
     if "llama_context" not in err and "load model from file" not in err:
-        return exc
+        return None
     try:
         size_gb = model_path.stat().st_size / (1024**3) if model_path.exists() else 0.0
     except OSError:  # pragma: no cover
