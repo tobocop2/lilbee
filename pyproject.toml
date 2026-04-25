@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b438"
+version = "0.6.66b439"
 description = "Terminal-first local RAG and AI chat for your own documents, code, and crawled websites. Semantic and hybrid search, vision OCR, auto-built wiki, browsable GGUF model catalog. One install, no sidecars. CLI, TUI, MCP server, REST API, and Python library in one process."
 readme = "README.md"
 license = "Elastic-2.0"
