@@ -7,14 +7,18 @@ on:
     inputs:
       llama_cpp_version:
         description: "llama-cpp-python version to vendor"
-        default: "0.3.18"
+        default: "0.3.19"
         required: false
 
 permissions:
   contents: read
 
 env:
-  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
+  # 0.3.19 is the latest version with abetlen's full prebuilt coverage on
+  # the CPU + CUDA + Metal indexes. Bumping this to a version abetlen
+  # hasn't shipped yet means every backend has to rebuild from source —
+  # see tools/wheel-build/README.md.
+  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.19' }}
 
 jobs:
   ci:
@@ -31,20 +35,61 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # The default-PyPI wheel matrix. One wheel per OS × Python, with
+        # the GPU backend that's universal for that OS:
+        #   * Linux x86_64 → Vulkan (cross-vendor: NVIDIA, AMD, Intel Arc)
+        #   * macOS arm64  → Metal (built into the OS)
+        #   * Windows x86_64 → Vulkan (cross-vendor)
+        # Per-CUDA, ROCm, and SYCL wheels go on a separate extra-index
+        # under the build-extra-index job below.
         include:
           - os: ubuntu-latest
-            llama-plat: linux_x86_64
+            backend: vulkan
             wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+            python-version: "3.11"
+          - os: ubuntu-latest
+            backend: vulkan
+            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+            python-version: "3.12"
+          - os: ubuntu-latest
+            backend: vulkan
+            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+            python-version: "3.13"
+          - os: ubuntu-latest
+            backend: vulkan
+            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+            python-version: "3.14"
           - os: macos-latest
-            llama-plat: macosx_11_0_arm64
+            backend: metal
             wheel-plat: macosx_11_0_arm64
+            python-version: "3.11"
+          - os: macos-latest
+            backend: metal
+            wheel-plat: macosx_11_0_arm64
+            python-version: "3.12"
+          - os: macos-latest
+            backend: metal
+            wheel-plat: macosx_11_0_arm64
+            python-version: "3.13"
           - os: windows-latest
-            llama-plat: win_amd64
+            backend: vulkan
             wheel-plat: win_amd64
+            python-version: "3.11"
+          - os: windows-latest
+            backend: vulkan
+            wheel-plat: win_amd64
+            python-version: "3.12"
+          - os: windows-latest
+            backend: vulkan
+            wheel-plat: win_amd64
+            python-version: "3.13"
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      BACKEND: ${{ matrix.backend }}
+      LLAMA_BUILD_DIR: ${{ runner.temp }}/llama-build
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
 
     steps:
       - uses: actions/checkout@v6
@@ -60,76 +105,28 @@ jobs:
       - name: Build pure wheel
         run: python -m build --wheel
 
-      # Build llama-cpp-python from source on every platform with GPU
-      # acceleration enabled per OS:
-      #   * macOS arm64 — Metal (built into the OS, no extra setup).
-      #   * Linux x86_64 — Vulkan (cross-vendor: NVIDIA, AMD, Intel Arc).
-      #     Requires libvulkan-dev at build time and libvulkan1 at runtime;
-      #     verify-pypi installs the runtime loader, real users typically
-      #     get it via their GPU driver.
-      #   * Windows x86_64 — Vulkan, same story as Linux.
-      # GGML_NATIVE=OFF on every OS so the wheel runs on any CPU class in
-      # the pool (avoids "Illegal instruction" on weaker runners).
-      - name: Install Vulkan SDK (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan-dev glslc
+      - name: Install GPU build toolkit
+        if: matrix.backend != 'metal'
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install Vulkan SDK (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
           install_runtime: true
           cache: true
           stripdown: true
 
-      - name: Build llama-cpp-python from source (Linux)
-        if: runner.os == 'Linux'
+      - name: Build llama-cpp-python from source
         shell: bash
-        env:
-          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_VULKAN=ON"
-        run: |
-          mkdir -p /tmp/llama-build
-          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
-            --no-deps --no-binary=llama-cpp-python \
-            -w /tmp/llama-build
-          ls -lh /tmp/llama-build/
-
-      - name: Build llama-cpp-python from source (macOS arm64)
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_METAL=ON -DGGML_BLAS=OFF"
-          # Deployment target matches the wheel platform tag we stamp on
-          # the lilbee wheel (macosx_11_0_arm64). Without this, cmake
-          # defaults to the runner's current macOS (15+), which would
-          # produce a dylib that fails to load on macOS 11–14 users.
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: |
-          mkdir -p /tmp/llama-build
-          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
-            --no-deps --no-binary=llama-cpp-python \
-            -w /tmp/llama-build
-          ls -lh /tmp/llama-build/
-
-      - name: Build llama-cpp-python from source (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=ON -DGGML_BLAS=OFF"
-        run: |
-          mkdir -p /tmp/llama-build
-          pip wheel "llama-cpp-python==${{ env.LLAMA_CPP_VERSION }}" \
-            --no-deps --no-binary=llama-cpp-python \
-            -w /tmp/llama-build
-          ls -lh /tmp/llama-build/
+        run: bash tools/wheel-build/build_llama_cpp.sh
 
       - name: Vendor llama-cpp-python and retag wheel
         shell: bash
         run: >
           python -m tools.vendor.llama_cpp dist/*.whl
-          --local-wheel /tmp/llama-build/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
+          --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
           --wheel-platform ${{ matrix.wheel-plat }}
 
       - name: List output
@@ -140,25 +137,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
-          # Pre-seed typer 0.9.4 to reproduce the stale-env case that bit a
-          # real user: they had old typer from another project, and the lilbee
-          # wheel didn't force an upgrade, so `lilbee --version` crashed with
-          # "Type not yet supported: pathlib.Path | None". The wheel must
-          # declare typer>=0.12 so pip upgrades it during install.
+          # Pre-seed typer 0.9.4: real users sometimes carry a stale typer
+          # from another project, and lilbee's own pin (typer>=0.12) needs
+          # to drag the resolver forward.
           pip install 'typer==0.9.4'
-
-          # Install with --pre so pip mirrors user install flow for beta
-          # releases. This is what catches transitive pre-release deps like
-          # tree-sitter-language-pack 2.0.0a1 that break real imports.
           pip install --pre dist/*.whl
+          python -c "import typer, sys; v = tuple(int(p) for p in typer.__version__.split('.')[:2]); assert v >= (0, 12), f'typer={typer.__version__} < 0.12'; print(f'typer {typer.__version__} OK')"
 
-          # Verify the install actually upgraded typer past the 0.12 cutoff.
-          python -c "import typer, sys; v = tuple(int(p) for p in typer.__version__.split('.')[:2]); assert v >= (0, 12), f'typer={typer.__version__} < 0.12 — wheel missing pin'; print(f'typer {typer.__version__} OK')"
-
-          # Exercise the import path that users hit on every invocation.
-          # lilbee --version alone only loads the launcher, so it misses
-          # breakage in code_chunker / ingest / cli modules.
           python -c "
           import lilbee
           from lilbee.cli import app
@@ -168,12 +153,6 @@ jobs:
           print('lilbee imports OK')
           "
 
-          # --version must match the version declared in pyproject.toml.
-          # Capture stdout AND stderr: a flood of '-B: no such option' on
-          # stderr means the exe is caught in a multiprocessing-spawn loop
-          # even though stdout shows the right version. --help similarly
-          # must not emit typer usage errors — that means a Path | None or
-          # other unsupported annotation slipped through.
           expected=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           stdout_file=$(mktemp)
           stderr_file=$(mktemp)
@@ -196,15 +175,9 @@ jobs:
             exit 1
           fi
 
-          # END-TO-END INFERENCE SMOKE: download a ~90MB SmolLM2 135M GGUF
-          # through the self-check command and run a tiny completion against
-          # it. This is the exact failure mode that bit a user in b426:
-          # "Shared library with base name 'llama' not found" fires from
-          # llama_cpp/_ctypes_extensions.py when the vendored
-          # llama_cpp/lib/ is missing or unreadable. self-check exits 1
-          # on any failure (download, library load, empty response). The
-          # same command runs in the PyInstaller exe smoke so both artifact
-          # flavors are held to the same bar.
+          # End-to-end inference smoke (chat + embedding legs). Same gate
+          # as release.yml so the wheel and frozen exe are held to the
+          # same bar.
           export HF_HUB_DISABLE_PROGRESS_BARS=1
           SELF_CHECK_LOG=$(mktemp)
           SELF_CHECK_RC=0
@@ -231,10 +204,9 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: wheel-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
-  # Pure sdist for pip install from source (users provide llama-cpp-python).
   build-sdist:
     runs-on: ubuntu-latest
     steps:
@@ -279,11 +251,9 @@ jobs:
 
   # Verify the PUBLISHED artifact (not just the locally-built wheel) actually
   # installs and runs end-to-end across the same OS × Python matrix users
-  # will hit. The in-build smoke tests locally-built dist/*.whl; this one
-  # exercises the exact pip resolution, wheel selection, and install flow a
-  # real user gets, including any way PyPI may have mangled the upload. If
-  # this stage fails, the release is broken for users even though everything
-  # upstream looked green.
+  # will hit. Each runner installs the GPU runtime loader matching the
+  # default wheel's backend (vulkan loader on Linux/Windows, nothing on
+  # macOS) so the import doesn't fail on a CPU-only headless box.
   verify-pypi:
     if: github.event_name == 'release'
     needs: [publish]
@@ -291,26 +261,37 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - os: ubuntu-latest
+            backend: vulkan
+          - os: macos-latest
+            backend: metal
+          - os: windows-latest
+            backend: vulkan
+        # 3.14 is Linux-only on the default index for this release.
+        exclude:
+          - os: macos-latest
+            python-version: "3.14"
+          - os: windows-latest
+            python-version: "3.14"
     runs-on: ${{ matrix.os }}
+    env:
+      BACKEND: ${{ matrix.backend }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Vulkan-built wheels link against libvulkan; without the loader on
-      # the verify-pypi runner the import fails. Real users on systems
-      # with a GPU driver already have it. CPU-only headless boxes need
-      # to install it explicitly — same install we run here.
-      - name: Install Vulkan loader (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan1
+      - name: Install GPU runtime loader
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_runtime.sh
 
       - name: Install Vulkan runtime (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
           install_runtime: true
@@ -329,8 +310,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # PyPI warehouse indexes new uploads with a short lag. Poll up to
-          # ~3 min so the verify lane isn't flaky on the wait.
           for i in $(seq 1 30); do
             if pip install --pre --dry-run "lilbee==${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
               echo "PyPI indexed on attempt ${i}"
@@ -344,22 +323,16 @@ jobs:
           done
           pip install --pre "lilbee==${{ steps.version.outputs.version }}"
 
-      - name: Confirm the resolved wheel actually has vendored llama_cpp libs
+      - name: Confirm the resolved wheel ships vendored llama_cpp libs
         shell: bash
         run: |
           set -euxo pipefail
-          # Fail loudly if pip fell through to sdist or picked a wheel that
-          # doesn't ship libllama. This is the specific failure mode a real
-          # Arch user hit — pip picked something, lilbee imported, but the
-          # shared library wasn't on disk.
           python -c "
           import pathlib, llama_cpp
           lib_dir = pathlib.Path(llama_cpp.__file__).parent / 'lib'
           files = sorted(lib_dir.glob('*')) if lib_dir.is_dir() else []
           print('llama_cpp/lib:', [f.name for f in files])
-          assert any('llama' in f.name for f in files), (
-              f'PyPI-resolved wheel is missing libllama.*: {[f.name for f in files]}'
-          )
+          assert any('llama' in f.name for f in files), f'wheel missing libllama.*: {[f.name for f in files]}'
           "
 
       - name: self-check end-to-end
