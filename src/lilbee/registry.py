@@ -119,10 +119,11 @@ def _sha256_file(path: Path) -> str:
 
 
 class ModelRegistry:
-    """Content-addressable model storage with manifest resolution.
+    """Manifest store keyed by ``(hf_repo, gguf_filename)``.
 
-    References the HF cache layout directly; the registry only manages
-    manifest metadata (``manifests/<repo--repo>/<filename>.json``).
+    Manifests live at ``manifests/<repo--repo>/<filename>.json``; blobs
+    are read directly from the HuggingFace cache layout under
+    ``models--<repo--repo>/blobs/``.
     """
 
     def __init__(self, models_dir: Path) -> None:

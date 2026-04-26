@@ -1004,7 +1004,7 @@ class TestModelsCatalog:
 class TestModelsInstalled:
     async def test_returns_installed_models(self):
         mock_manager = MagicMock()
-        mock_manager.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
+        mock_manager.list_installed.return_value = ["ollama/qwen3:8b", "ollama/mistral:7b"]
         from lilbee.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.REMOTE
@@ -1113,7 +1113,7 @@ class TestModelsDelete:
 class TestModelsShow:
     async def test_returns_params(self, mock_svc):
         mock_svc.provider.show_model.return_value = {"parameters": "temp 0.7"}
-        result = await handlers.models_show("qwen3:8b")
+        result = await handlers.models_show("ollama/qwen3:8b")
         assert result.model_dump() == {"parameters": "temp 0.7"}
 
     async def test_returns_empty_when_none(self, mock_svc):
@@ -1271,19 +1271,21 @@ class TestUpdateConfig:
     async def test_update_config_rejects_chat_model(self):
         """Role fields only move via PUT /api/models/<role>; PATCH must 422."""
         with pytest.raises(ValueError, match="read-only"):
-            await handlers.update_config({"chat_model": "qwen3:0.6b"})
+            await handlers.update_config({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
 
     async def test_update_config_rejects_embedding_model(self):
         with pytest.raises(ValueError, match="read-only"):
-            await handlers.update_config({"embedding_model": "nomic-embed-text:v1.5"})
+            await handlers.update_config({"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF"})
 
     async def test_update_config_rejects_vision_model(self):
         with pytest.raises(ValueError, match="read-only"):
-            await handlers.update_config({"vision_model": "lightonocr:2-1b"})
+            await handlers.update_config({"vision_model": "lightonai/LightOnOCR-2.1B-GGUF"})
 
     async def test_update_config_rejects_reranker_model(self):
         with pytest.raises(ValueError, match="read-only"):
-            await handlers.update_config({"reranker_model": "bge-reranker-v2-m3:latest"})
+            await handlers.update_config(
+                {"reranker_model": "ggml-org/bge-reranker-v2-m3-Q8_0-GGUF"}
+            )
 
 
 _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"

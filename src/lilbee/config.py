@@ -110,7 +110,9 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
         return ref
     if allow_bypass and _model_task_validation_bypassed():
         return ref
-    if ref.split("/", 1)[0] in {"ollama", "openai", "anthropic", "gemini"}:
+    from lilbee.providers.model_ref import PROVIDER_PREFIXES
+
+    if ref.split("/", 1)[0] in PROVIDER_PREFIXES:
         return ref
     entry = _find_model_catalog_entry(ref)
     if entry is None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant
+from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.model_manager import RemoteModel
 
 
@@ -102,7 +102,7 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow
 
 def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
     """Convert a CatalogModel to a TableRow."""
-    quant = _extract_quant_from_filename(m.gguf_filename)
+    quant = extract_quant(m.gguf_filename)
     return TableRow(
         name=m.display_name,
         task=m.task,
@@ -137,12 +137,6 @@ def remote_to_row(rm: RemoteModel) -> TableRow:
         backend=rm.provider.lower(),
         remote_model=rm,
     )
-
-
-def _extract_quant_from_filename(filename: str) -> str:
-    """Extract quantization label from a GGUF filename pattern."""
-    m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
 
 
 # Column sort key extractors

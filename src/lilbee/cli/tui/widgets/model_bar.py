@@ -14,7 +14,7 @@ from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
-from lilbee.catalog import _extract_quant, clean_display_name
+from lilbee.catalog import clean_display_name, extract_quant
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -113,7 +113,7 @@ def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
     base = clean_display_name(hf_repo)
     if repo_count <= 1:
         return base
-    quant = _extract_quant(gguf_filename)
+    quant = extract_quant(gguf_filename)
     return f"{base} ({quant})" if quant else base
 
 
@@ -194,14 +194,11 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Populate a model Select and set it to *default* (from cfg).
 
-    Normalizes *default* with :latest when no tag is present so that a
-    bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
-    instead of creating a broken fallback entry.
-
-    If *default* is set but not actually installed, surfaces it with a
-    ``(not installed)`` label so the user doesn't mistake the config
-    default for a working model. Select still allows picking it for
-    backward compatibility, but the UI makes the real state obvious.
+    A *default* that doesn't match any option (model not installed) is
+    surfaced with a ``(not installed)`` label so the user can still see
+    what cfg points at. Unparseable refs (e.g. legacy strings left over
+    in a stale config) pass through unchanged rather than crashing the
+    picker.
     """
     if default:
         try:

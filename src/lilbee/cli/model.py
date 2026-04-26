@@ -450,7 +450,7 @@ def list_cmd(
 
 @model_app.command("show")
 def show_cmd(
-    ref: str = typer.Argument(..., help="Model ref (e.g. 'qwen3:0.6b')."),
+    ref: str = typer.Argument(..., help="Model ref (e.g. 'Qwen/Qwen3-0.6B-GGUF')."),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -528,7 +528,7 @@ def _pull_rich_progress(ref: str, src: ModelSource) -> None:
 
 @model_app.command("pull")
 def pull_cmd(
-    ref: str = typer.Argument(..., help="Model ref to download (e.g. 'qwen3:0.6b')."),
+    ref: str = typer.Argument(..., help="Model ref to download (e.g. 'Qwen/Qwen3-0.6B-GGUF')."),
     source: str = typer.Option(
         "native",
         "--source",

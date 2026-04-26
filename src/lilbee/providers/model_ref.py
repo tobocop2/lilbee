@@ -14,6 +14,10 @@ from lilbee.providers.base import filter_options
 
 _API_PROVIDERS = {"openai", "anthropic", "gemini"}
 
+# All provider prefixes that route a ref away from the local registry.
+# Includes API providers and ollama (which keeps its own name:tag shape).
+PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | {"ollama"})
+
 OLLAMA_PREFIX = "ollama/"
 
 
@@ -48,7 +52,7 @@ class ProviderModelRef:
         """Name formatted with canonical ``provider/model`` prefix.
 
         The prefix convention is the same one used by OpenAI-compatible
-        SDKs: ``openai/gpt-4o``, ``ollama/qwen3:8b``, etc. Every
+        SDKs: ``openai/gpt-4o``, ``ollama/llama3.2:1b``, etc. Every
         dispatching SDK accepts this shape.
         """
         if self.provider == "ollama":
@@ -73,7 +77,7 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     Classifies model strings by prefix:
     - ``openai/gpt-4o`` -> API provider
     - ``anthropic/claude-sonnet-4-20250514`` -> API provider
-    - ``ollama/qwen3:8b`` -> Ollama provider (keeps its own ``name:tag``)
+    - ``ollama/llama3.2:1b`` -> Ollama provider (keeps its own ``name:tag``)
     - ``<org>/<repo>/<file>.gguf`` -> local HuggingFace native model
     - ``<org>/<repo>`` -> local, repo-only ref (filename resolved later)
     - Any other ``name:tag`` shape is rejected as a legacy ref.

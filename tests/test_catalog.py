@@ -1230,16 +1230,16 @@ class TestExtractFamilyName:
 
 class TestExtractQuant:
     def test_wildcard_pattern(self) -> None:
-        assert catalog._extract_quant("*Q4_K_M.gguf") == "Q4_K_M"
+        assert catalog.extract_quant("*Q4_K_M.gguf") == "Q4_K_M"
 
     def test_full_filename(self) -> None:
-        assert catalog._extract_quant("nomic-embed-text-v1.5.Q4_K_M.gguf") == "Q4_K_M"
+        assert catalog.extract_quant("nomic-embed-text-v1.5.Q4_K_M.gguf") == "Q4_K_M"
 
     def test_q8_0(self) -> None:
-        assert catalog._extract_quant("model-Q8_0.gguf") == "Q8_0"
+        assert catalog.extract_quant("model-Q8_0.gguf") == "Q8_0"
 
     def test_no_quant(self) -> None:
-        assert catalog._extract_quant("model.gguf") == ""
+        assert catalog.extract_quant("model.gguf") == ""
 
 
 class TestGetFamilies:

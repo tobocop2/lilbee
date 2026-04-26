@@ -351,10 +351,8 @@ def _extract_family_name(model_name: str) -> str:
     return m.group(1) if m else cleaned
 
 
-def _extract_quant(filename: str) -> str:
-    """Extract quantization label from a GGUF filename pattern.
-    "*Q4_K_M.gguf" -> "Q4_K_M", "nomic-embed-text-v1.5.Q4_K_M.gguf" -> "Q4_K_M".
-    """
+def extract_quant(filename: str) -> str:
+    """Extract the GGUF quantization label (e.g. ``Q4_K_M``) from a filename."""
     m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
     return m.group(1).upper() if m else ""
 
@@ -376,7 +374,7 @@ def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
         hf_repo=model.hf_repo,
         filename=model.gguf_filename,
         param_count=_derive_param_count(model),
-        quant=_extract_quant(model.gguf_filename),
+        quant=extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
         recommended=model.recommended,
     )
@@ -731,16 +729,11 @@ def _build_catalog_index() -> CatalogIndex:
 
 
 def find_catalog_entry(query: str) -> CatalogModel | None:
-    """Find a featured model by hf_repo or by full ``hf_repo/filename`` ref.
+    """Find a featured model by hf_repo or by ``hf_repo/filename`` ref.
 
-    Lookups, in order:
-    1. Full canonical ref ``<repo>/<filename>`` (only featured entries
-       with a concrete, non-glob filename live in this index).
-    2. Bare ``<repo>``: strip the trailing ``.gguf`` segment if present.
-    3. Provider-prefixed refs (``ollama/...``, ``openai/...``): strip
-       the first segment when it is not itself a known HF owner.
-
-    Case-insensitive. Returns ``None`` on miss.
+    Tries the query as-is, then strips a trailing ``/<filename>.gguf``,
+    then strips a leading non-HF provider prefix (``ollama/``, etc.).
+    Case-insensitive; returns ``None`` on miss.
     """
     if not query:
         return None
@@ -1163,7 +1156,7 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
                 task=m.task,
                 display_name=m.display_name,
                 param_count=_derive_param_count(m),
-                quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
+                quality_tier=quant_tier(extract_quant(m.gguf_filename)),
                 installed=m.hf_repo in installed_repos,
                 source=ModelSource.NATIVE.value,
             )

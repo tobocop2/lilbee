@@ -21,10 +21,10 @@ class RoutingProvider(LLMProvider):
     """Dispatches calls based on the model ref prefix.
 
     ``ollama/``, ``openai/``, ``anthropic/``, ``gemini/`` go to the SDK
-    provider. Unprefixed refs (``qwen3:8b``) go to llama-cpp, which
-    resolves them against the native registry. A registry miss surfaces
-    the native ProviderError unchanged, rather than silently falling
-    through to a remote backend.
+    provider. Other refs (the HuggingFace ``<org>/<repo>/<file>.gguf``
+    shape) go to llama-cpp, which resolves them against the native
+    registry. A registry miss surfaces the native ProviderError
+    unchanged, rather than silently falling through to a remote backend.
     """
 
     def __init__(self) -> None:
