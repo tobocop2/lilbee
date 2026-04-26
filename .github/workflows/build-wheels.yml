@@ -55,9 +55,7 @@ jobs:
           - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.11"}
           - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.12"}
           - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.13"}
-          - {os: macos-latest,  backend: cpu,    wheel-plat: macosx_11_0_x86_64,                         python-version: "3.11", target-arch: x86_64}
-          - {os: macos-latest,  backend: cpu,    wheel-plat: macosx_11_0_x86_64,                         python-version: "3.12", target-arch: x86_64}
-          - {os: macos-latest,  backend: cpu,    wheel-plat: macosx_11_0_x86_64,                         python-version: "3.13", target-arch: x86_64}
+          # Intel Mac wheels live in build-extra-wheels (cross-compile is flaky).
           - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.11"}
           - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.12"}
           - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.13"}
@@ -144,6 +142,10 @@ jobs:
           - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
           - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
           - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
+          # Intel Mac (cross-compiled from arm64 runner; soft-fail).
+          - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.11", target-arch: x86_64}
+          - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.12", target-arch: x86_64}
+          - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.13", target-arch: x86_64}
           # Linux CUDA — toolkit installed via Jimver/cuda-toolkit action,
           # which handles network install of older CUDA versions that
           # NVIDIA's ubuntu2404 apt repo doesn't carry.
@@ -181,6 +183,7 @@ jobs:
 
     env:
       BACKEND: ${{ matrix.backend }}
+      TARGET_ARCH: ${{ matrix.target-arch }}
       LLAMA_BUILD_DIR: "/tmp/llama-build"
       MACOSX_DEPLOYMENT_TARGET: "11.0"
 
@@ -233,7 +236,12 @@ jobs:
       # a wheel whose runtime deps aren't present.
       - name: Smoke test (structural, no import)
         shell: bash
-        run: python tools/wheel-build/smoke_wheel_structural.py
+        run: |
+          if [ -n "${TARGET_ARCH}" ]; then
+            python tools/wheel-build/smoke_wheel_structural.py --expect-arch "${TARGET_ARCH}"
+          else
+            python tools/wheel-build/smoke_wheel_structural.py
+          fi
 
       - name: Upload extra-backend wheel
         uses: actions/upload-artifact@v4
@@ -396,13 +404,7 @@ jobs:
           - {os: macos-latest,  backend: metal,  python-version: "3.11"}
           - {os: macos-latest,  backend: metal,  python-version: "3.12"}
           - {os: macos-latest,  backend: metal,  python-version: "3.13"}
-          # Intel Mac wheels: same arm64 runner, but pin setup-python to
-          # x64 so the runner installs an x86_64 Python. Pip then resolves
-          # the macosx_x86_64 wheel from PyPI; the whole stack runs under
-          # Rosetta on the arm64 host.
-          - {os: macos-latest,  backend: cpu,    python-version: "3.11", py-arch: x64}
-          - {os: macos-latest,  backend: cpu,    python-version: "3.12", py-arch: x64}
-          - {os: macos-latest,  backend: cpu,    python-version: "3.13", py-arch: x64}
+          # Intel Mac is published to the cpu extra-index, not PyPI.
           - {os: windows-latest, backend: vulkan, python-version: "3.11"}
           - {os: windows-latest, backend: vulkan, python-version: "3.12"}
           - {os: windows-latest, backend: vulkan, python-version: "3.13"}
@@ -416,7 +418,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          architecture: ${{ matrix.py-arch }}
 
       - name: Install GPU runtime loader
         shell: bash
