@@ -437,6 +437,30 @@ class TestModelBar:
             await pilot.pause()
             assert app.query_one(ModelBar).scope is SearchScope.WIKI
 
+    async def test_on_unmount_collapses_open_dropdown(self) -> None:
+        """An open SelectOverlay must be torn down on unmount so its border
+        cells don't bleed into the next screen during navigation."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_sel = app.query_one("#chat-model-select", Select)
+            chat_sel.expanded = True
+            await pilot.pause()
+            assert chat_sel.expanded is True
+
+            # Drive on_unmount directly; in the live lifecycle children unmount
+            # before the parent, so the for-loop here only fires when called
+            # while the Select is still attached.
+            bar = app.query_one(ModelBar)
+            bar.on_unmount()
+            assert chat_sel.expanded is False
+
     async def test_scope_hidden_when_wiki_disabled(self) -> None:
         """With ``cfg.wiki=False`` the scope pill+select are omitted entirely.
 

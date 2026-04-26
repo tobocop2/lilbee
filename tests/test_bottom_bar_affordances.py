@@ -314,3 +314,22 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
         await pilot.pause()
         # Falls back to gruvbox (the module-level default), not the bad value.
         assert app.theme != "not-a-real-theme"
+
+
+async def test_sync_theme_index_handles_non_dark_theme(_patch_chat_setup) -> None:
+    """A theme set outside DARK_THEMES must not raise; the cycle index falls
+    back to 0 instead of propagating the ValueError from list.index."""
+    from lilbee.cli.tui.app import DARK_THEMES
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Pick any Textual theme that is intentionally NOT in DARK_THEMES.
+        non_dark = next(
+            (t for t in app.available_themes if t not in DARK_THEMES),
+            None,
+        )
+        assert non_dark is not None, "Textual must ship at least one non-DARK theme"
+        app.theme = non_dark
+        app._sync_theme_index_to_current()
+        assert app._theme_index == 0

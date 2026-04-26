@@ -344,13 +344,9 @@ class ModelBar(Widget, can_focus=False):
     def on_unmount(self) -> None:
         """Collapse any open dropdown before tear-down so the SelectOverlay
         does not leak its border cells into the next screen's render."""
-        from textual.css.query import NoMatches
-
-        for sel_id in ("#chat-model-select", "#embed-model-select", "#scope-select"):
-            with contextlib.suppress(NoMatches):
-                sel = self.query_one(sel_id, Select)
-                if sel.expanded:
-                    sel.expanded = False
+        for sel in self.query(Select):
+            if sel.expanded:
+                sel.expanded = False
 
     @work(thread=True)
     def _scan_models(self) -> None:
