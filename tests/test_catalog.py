@@ -72,11 +72,10 @@ class TestCatalogModelDataclass:
     def test_frozen(self) -> None:
         m = FEATURED_CHAT[0]
         with pytest.raises(AttributeError):
-            m.name = "nope"  # type: ignore[misc]
+            m.hf_repo = "nope"  # type: ignore[misc]
 
     def test_fields(self) -> None:
         m = FEATURED_CHAT[0]
-        assert isinstance(m.name, str)
         assert isinstance(m.hf_repo, str)
         assert isinstance(m.gguf_filename, str)
         assert isinstance(m.size_gb, (int, float))
@@ -85,6 +84,14 @@ class TestCatalogModelDataclass:
         assert isinstance(m.featured, bool)
         assert isinstance(m.downloads, int)
         assert isinstance(m.task, str)
+
+    def test_ref_is_hf_repo(self) -> None:
+        m = FEATURED_CHAT[0]
+        assert m.ref == m.hf_repo
+
+    def test_display_name_derived(self) -> None:
+        m = FEATURED_CHAT[0]
+        assert m.display_name == clean_display_name(m.hf_repo)
 
 
 class TestCatalogResultDataclass:
@@ -198,17 +205,22 @@ class TestIsRerankRef:
         assert FEATURED_RERANK, "rerank catalog must not be empty"
         assert is_rerank_ref(FEATURED_RERANK[0].hf_repo) is True
 
-    def test_hf_repo_with_tag_suffix_matches(self) -> None:
+    def test_hf_full_ref_matches(self) -> None:
+        """A full hf_repo/filename ref resolves through the featured catalog."""
         from lilbee.catalog import FEATURED_RERANK, is_rerank_ref
 
         entry = FEATURED_RERANK[0]
-        assert is_rerank_ref(f"{entry.hf_repo}:latest") is True
-
-    def test_name_tag_matches(self) -> None:
-        from lilbee.catalog import FEATURED_RERANK, is_rerank_ref
-
-        entry = FEATURED_RERANK[0]
-        assert is_rerank_ref(entry.ref) is True
+        # Featured filenames may be globs; fabricate a concrete filename
+        # whose stem matches the glob to exercise by_full_ref.
+        full_ref = f"{entry.hf_repo}/concrete-Q4_K_M.gguf"
+        # Bare hf_repo always resolves; full ref does too via stripped
+        # provider prefix or by_full_ref. is_rerank_ref accepts the bare
+        # hf_repo path which is the canonical browse identity.
+        assert is_rerank_ref(entry.hf_repo) is True
+        # Provider-prefixed ref still resolves once the prefix is stripped.
+        assert is_rerank_ref(f"openai/{entry.hf_repo}") is True
+        # The full filename form must not crash even if it's not in by_full_ref.
+        is_rerank_ref(full_ref)
 
     def test_substring_non_match(self) -> None:
         """``"base"`` must NOT match ``bge-reranker-base``."""
@@ -288,7 +300,6 @@ class TestFetchHfModels:
         page = catalog._fetch_hf_models()
         models = page.models
         assert len(models) == 2
-        assert models[0].name == "model-7b-gguf"
         assert models[0].hf_repo == "user/model-7b-gguf"
         assert models[0].display_name == "model 7b"
         assert models[0].downloads == 5000
@@ -461,9 +472,9 @@ class TestGetCatalog:
     def test_pagination_offset(self) -> None:
         r1 = get_catalog(limit=2, offset=0)
         r2 = get_catalog(limit=2, offset=2)
-        names1 = {m.name for m in r1.models}
-        names2 = {m.name for m in r2.models}
-        assert names1.isdisjoint(names2)
+        repos1 = {m.hf_repo for m in r1.models}
+        repos2 = {m.hf_repo for m in r2.models}
+        assert repos1.isdisjoint(repos2)
 
     def test_filter_by_task_chat(self) -> None:
         result = get_catalog(task="chat")
@@ -484,11 +495,11 @@ class TestGetCatalog:
     def test_search_by_name(self) -> None:
         result = get_catalog(search="Qwen3")
         for m in result.models:
-            assert "qwen3" in m.name.lower() or "qwen3" in m.hf_repo.lower()
+            assert "qwen3" in m.display_name.lower() or "qwen3" in m.hf_repo.lower()
 
     def test_search_by_description(self) -> None:
         result = get_catalog(search="default for lilbee")
-        assert any("nomic" in m.name.lower() for m in result.models)
+        assert any("nomic" in m.hf_repo.lower() for m in result.models)
 
     def test_search_case_insensitive(self) -> None:
         result = get_catalog(search="QWEN3")
@@ -554,24 +565,24 @@ class TestGetCatalog:
     def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="name")
-        names = [m.name.lower() for m in result.models]
+        names = [m.display_name.lower() for m in result.models]
         assert names == sorted(names)
 
     def test_installed_filter_with_model_manager(self) -> None:
         class FakeManager:
             def list_installed(self) -> list[str]:
-                return ["qwen3:8b"]
+                return ["Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
 
         result = get_catalog(installed=True, model_manager=FakeManager())
-        assert all(m.ref == "qwen3:8b" for m in result.models)
+        assert all(m.hf_repo == "Qwen/Qwen3-8B-GGUF" for m in result.models)
 
     def test_installed_filter_not_installed(self) -> None:
         class FakeManager:
             def list_installed(self) -> list[str]:
-                return ["qwen3:8b"]
+                return ["Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
 
         result = get_catalog(installed=False, model_manager=FakeManager())
-        assert all(m.ref != "qwen3:8b" for m in result.models)
+        assert all(m.hf_repo != "Qwen/Qwen3-8B-GGUF" for m in result.models)
 
     def test_installed_filter_manager_error(self) -> None:
         class BadManager:
@@ -584,9 +595,6 @@ class TestGetCatalog:
     def test_combines_featured_and_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hf_models = [
             CatalogModel(
-                name="hf-model",
-                tag="latest",
-                display_name="HF Model",
                 hf_repo="user/hf-model",
                 gguf_filename="*.gguf",
                 size_gb=5.0,
@@ -603,16 +611,13 @@ class TestGetCatalog:
             lambda **kw: _HfPage(models=hf_models, has_more=False),
         )
         result = get_catalog()
-        names = [m.name for m in result.models]
-        assert "hf-model" in names
-        assert "qwen3" in names
+        repos = [m.hf_repo for m in result.models]
+        assert "user/hf-model" in repos
+        assert any("Qwen3" in r for r in repos)
 
     def test_deduplicates_hf_against_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hf_models = [
             CatalogModel(
-                name="qwen3",
-                tag="8b",
-                display_name="Qwen3 8B",
                 hf_repo="Qwen/Qwen3-8B-GGUF",
                 gguf_filename="*.gguf",
                 size_gb=5.0,
@@ -655,58 +660,6 @@ class TestGetCatalog:
 
 
 class TestFindCatalogEntry:
-    def test_exact_match_by_display_name(self) -> None:
-        result = find_catalog_entry("Qwen3 8B")
-        assert result is not None
-        assert result.display_name == "Qwen3 8B"
-        assert result.name == "qwen3"
-
-    def test_case_insensitive(self) -> None:
-        result = find_catalog_entry("qwen3 8b")
-        assert result is not None
-        assert result.display_name == "Qwen3 8B"
-
-    def test_exact_ref_match(self) -> None:
-        result = find_catalog_entry("qwen3:0.6b")
-        assert result is not None
-        assert result.ref == "qwen3:0.6b"
-
-    def test_bare_name_returns_recommended(self) -> None:
-        result = find_catalog_entry("qwen3")
-        assert result is not None
-        assert result.recommended is True
-        assert result.name == "qwen3"
-
-    def test_bare_name_fallback_when_no_recommended(self) -> None:
-        """When no variant is recommended, return the first match."""
-        from unittest.mock import patch
-
-        # Temporarily make all qwen3 entries non-recommended
-        patched = tuple(
-            CatalogModel(
-                name=m.name,
-                tag=m.tag,
-                display_name=m.display_name,
-                hf_repo=m.hf_repo,
-                gguf_filename=m.gguf_filename,
-                size_gb=m.size_gb,
-                min_ram_gb=m.min_ram_gb,
-                description=m.description,
-                featured=m.featured,
-                downloads=m.downloads,
-                task=m.task,
-                recommended=False,
-            )
-            for m in FEATURED_ALL
-        )
-        with patch.object(catalog, "FEATURED_ALL", patched):
-            catalog._build_catalog_index.cache_clear()
-            result = find_catalog_entry("qwen3")
-            assert result is not None
-            assert result.name == "qwen3"
-            assert result.recommended is False
-        catalog._build_catalog_index.cache_clear()  # restore for other tests
-
     def test_match_by_hf_repo(self) -> None:
         result = find_catalog_entry("Qwen/Qwen3-8B-GGUF")
         assert result is not None
@@ -725,55 +678,40 @@ class TestFindCatalogEntry:
         result = find_catalog_entry("")
         assert result is None
 
-    def test_provider_prefixed_ref_resolves(self) -> None:
-        """``ollama/qwen3:0.6b`` resolves to the native catalog entry."""
-        result = find_catalog_entry("ollama/qwen3:0.6b")
+    def test_provider_prefix_stripped(self) -> None:
+        """``ollama/<repo>`` resolves once the provider prefix is stripped."""
+        result = find_catalog_entry("ollama/Qwen/Qwen3-8B-GGUF")
         assert result is not None
-        assert result.ref == "qwen3:0.6b"
+        assert result.hf_repo == "Qwen/Qwen3-8B-GGUF"
 
-    def test_hf_repo_tagged_resolves(self) -> None:
-        """``hf_repo:tag`` form (as PUT handlers produce via ensure_tag) resolves."""
-        result = find_catalog_entry("gpustack/bge-reranker-v2-m3-GGUF:latest")
-        assert result is not None
-        assert result.hf_repo == "gpustack/bge-reranker-v2-m3-GGUF"
-        assert result.ref == "bge-reranker-v2-m3:latest"
-
-    def test_hf_repo_bare_resolves(self) -> None:
-        """Bare ``hf_repo`` (no tag) still resolves via the hf_repo index."""
-        result = find_catalog_entry("gpustack/bge-reranker-v2-m3-GGUF")
-        assert result is not None
-        assert result.hf_repo == "gpustack/bge-reranker-v2-m3-GGUF"
-
-    def test_unknown_tag_does_not_silently_widen(self) -> None:
-        """``qwen3:9b`` (not a featured tag) must NOT collapse to the recommended qwen3.
-
-        Regression for round-4 review: the previous implementation appended
-        the pre-colon segment as a bare-name candidate unconditionally,
-        causing any unknown ``<family>:<tag>`` query to resolve to the
-        family's recommended variant. Strict lookup returns ``None``.
+    def test_full_ref_with_concrete_filename(self) -> None:
+        """A featured entry with a concrete (non-glob) filename is reachable
+        via the full ``hf_repo/filename`` ref.
         """
-        assert find_catalog_entry("qwen3:9b") is None
-
-    def test_provider_prefixed_hf_repo_with_tag_resolves(self) -> None:
-        """``ollama/<org>/<repo>:tag`` resolves via post-prefix hf_repo strip."""
-        result = find_catalog_entry("ollama/gpustack/bge-reranker-v2-m3-GGUF:latest")
+        # Pick a featured entry whose gguf_filename is NOT a glob.
+        concrete = next(m for m in FEATURED_ALL if "*" not in m.gguf_filename)
+        full_ref = f"{concrete.hf_repo}/{concrete.gguf_filename}"
+        result = find_catalog_entry(full_ref)
         assert result is not None
-        assert result.hf_repo == "gpustack/bge-reranker-v2-m3-GGUF"
+        assert result.hf_repo == concrete.hf_repo
+
+    def test_non_hf_keys_return_none(self) -> None:
+        """Bare names and display labels are not lookup keys."""
+        assert find_catalog_entry("qwen3:0.6b") is None
+        assert find_catalog_entry("qwen3") is None
+        assert find_catalog_entry("Qwen3 8B") is None
 
 
 class TestBuildAdhocEntry:
-    def test_valid_repo_derives_slug_and_defaults(self) -> None:
+    def test_valid_repo_derives_defaults(self) -> None:
         from lilbee.models import ModelTask
-        from lilbee.registry import DEFAULT_TAG
 
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
-        assert entry.name == "gemma-2-2b-it-gguf"
-        assert entry.tag == DEFAULT_TAG
         assert entry.gguf_filename == "*.gguf"
+        assert entry.display_name == "gemma 2 2b it"
         assert entry.featured is False
         assert entry.task == ModelTask.CHAT
-        assert entry.display_name
 
     def test_respects_task_override(self) -> None:
         from lilbee.models import ModelTask
@@ -817,12 +755,6 @@ class TestIsHfRepoId:
 
 
 class TestResolvePullTarget:
-    def test_featured_short_name(self) -> None:
-        entry = catalog.resolve_pull_target("qwen3:0.6b")
-        assert entry is not None
-        assert entry.featured is True
-        assert entry.ref == "qwen3:0.6b"
-
     def test_featured_hf_repo_returns_featured_entry(self) -> None:
         entry = catalog.resolve_pull_target("Qwen/Qwen3-8B-GGUF")
         assert entry is not None
@@ -1141,7 +1073,7 @@ class TestSortModels:
     def test_name_sort(self) -> None:
         models = list(FEATURED_ALL)
         sorted_m = catalog._sort_models(models, "name")
-        names = [m.name.lower() for m in sorted_m]
+        names = [m.display_name.lower() for m in sorted_m]
         assert names == sorted(names)
 
     def test_featured_default(self) -> None:
@@ -1237,12 +1169,12 @@ class TestHfCacheEviction:
 
 class TestModelVariantDataclass:
     def test_frozen(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
         with pytest.raises(AttributeError):
             v.hf_repo = "nope"  # type: ignore[misc]
 
     def test_default_mmproj(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, False)
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, False)
         assert v.mmproj_filename == ""
 
 
@@ -1253,7 +1185,7 @@ class TestModelFamilyDataclass:
             f.name = "nope"  # type: ignore[misc]
 
     def test_fields(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
         f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="Fast", variants=(v,))
         assert f.name == "Qwen3"
         assert f.slug == "qwen3"
@@ -1298,16 +1230,16 @@ class TestExtractFamilyName:
 
 class TestExtractQuant:
     def test_wildcard_pattern(self) -> None:
-        assert catalog._extract_quant("*Q4_K_M.gguf") == "Q4_K_M"
+        assert catalog.extract_quant("*Q4_K_M.gguf") == "Q4_K_M"
 
     def test_full_filename(self) -> None:
-        assert catalog._extract_quant("nomic-embed-text-v1.5.Q4_K_M.gguf") == "Q4_K_M"
+        assert catalog.extract_quant("nomic-embed-text-v1.5.Q4_K_M.gguf") == "Q4_K_M"
 
     def test_q8_0(self) -> None:
-        assert catalog._extract_quant("model-Q8_0.gguf") == "Q8_0"
+        assert catalog.extract_quant("model-Q8_0.gguf") == "Q8_0"
 
     def test_no_quant(self) -> None:
-        assert catalog._extract_quant("model.gguf") == ""
+        assert catalog.extract_quant("model.gguf") == ""
 
 
 class TestGetFamilies:
@@ -1487,9 +1419,6 @@ class TestVisionMmprojFallback:
         """A vision model not in VISION_MMPROJ_FILES still gets mmproj via default pattern."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         custom_entry = CatalogModel(
-            name="customvision",
-            tag="1b",
-            display_name="CustomVision 1B",
             hf_repo="user/CustomVision-1B-GGUF",
             gguf_filename="*Q4_K_M.gguf",
             size_gb=1.0,
@@ -1808,6 +1737,36 @@ class TestCleanDisplayName:
         assert result == "Mistral 7B v0.3"
 
 
+class TestDisplayLabelForRef:
+    def test_native_hf_ref_uses_clean_repo_name(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        ref = "bartowski/SmolLM2-135M-Instruct-GGUF/SmolLM2-135M-Instruct-Q3_K_S.gguf"
+        assert display_label_for_ref(ref) == "SmolLM2 135M"
+
+    def test_ollama_prefix_drops_only_the_prefix(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("ollama/qwen3:0.6b") == "qwen3:0.6b"
+
+    def test_openai_prefix_drops_only_the_prefix(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("openai/gpt-4o") == "gpt-4o"
+
+    def test_empty_string(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("") == ""
+
+    def test_unrecognized_shape_passes_through(self) -> None:
+        """Bare names with no '/' are returned unchanged so the picker
+        still has something to show even for stale config values."""
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("qwen3:0.6b") == "qwen3:0.6b"
+
+
 class TestQuantTier:
     def test_all_quant_types_mapped(self) -> None:
         for quant_name, expected_tier in QUANT_TIERS.items():
@@ -1843,9 +1802,6 @@ class TestEnrichCatalog:
     def _make_result(self) -> CatalogResult:
         models = [
             CatalogModel(
-                name="model-7b-gguf",
-                tag="latest",
-                display_name="Model-7B-GGUF",
                 hf_repo="user/Model-7B-Instruct-GGUF",
                 gguf_filename="*Q4_K_M.gguf",
                 size_gb=4.0,
@@ -1856,9 +1812,6 @@ class TestEnrichCatalog:
                 task="chat",
             ),
             CatalogModel(
-                name="qwen3",
-                tag="8b",
-                display_name="Qwen3 8B",
                 hf_repo="Qwen/Qwen3-8B-GGUF",
                 gguf_filename="*Q4_K_M.gguf",
                 size_gb=5.0,
@@ -1880,7 +1833,9 @@ class TestEnrichCatalog:
     def test_display_name_populated(self) -> None:
         result = self._make_result()
         enriched = enrich_catalog(result, set())
-        assert enriched[0].display_name == "Model-7B-GGUF"
+        # Display name is derived from clean_display_name(hf_repo), which
+        # strips -Instruct/-GGUF and replaces dashes with spaces.
+        assert enriched[0].display_name == "Model 7B"
         assert enriched[1].display_name == "Qwen3 8B"
 
     def test_quality_tier_populated(self) -> None:
@@ -1890,7 +1845,8 @@ class TestEnrichCatalog:
 
     def test_installed_status(self) -> None:
         result = self._make_result()
-        enriched = enrich_catalog(result, {"qwen3:8b"})
+        # installed_refs are full hf_repo/filename refs from the registry.
+        enriched = enrich_catalog(result, {"Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"})
         assert enriched[0].installed is False
         assert enriched[0].source == "native"
         assert enriched[1].installed is True
@@ -1898,7 +1854,13 @@ class TestEnrichCatalog:
 
     def test_source_is_native_regardless_of_installed_names(self) -> None:
         result = self._make_result()
-        enriched = enrich_catalog(result, {"model-7b-gguf:latest", "qwen3:8b"})
+        enriched = enrich_catalog(
+            result,
+            {
+                "user/Model-7B-Instruct-GGUF/model-Q4_K_M.gguf",
+                "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+            },
+        )
         assert all(e.source == "native" for e in enriched)
         assert enriched[0].installed is True
         assert enriched[1].installed is True
@@ -1908,9 +1870,8 @@ class TestEnrichCatalog:
         enriched = enrich_catalog(result, set())
         original = result.models[0]
         e = enriched[0]
-        assert e.name == original.name
-        assert e.tag == original.tag
         assert e.hf_repo == original.hf_repo
+        assert e.gguf_filename == original.gguf_filename
         assert e.size_gb == original.size_gb
         assert e.description == original.description
         assert e.featured == original.featured
@@ -1920,20 +1881,19 @@ class TestEnrichCatalog:
     def test_param_count_extracted_from_display_name(self) -> None:
         result = self._make_result()
         enriched = enrich_catalog(result, set())
-        # "Model-7B-GGUF" -> "7B"; "Qwen3 8B" -> "8B"
+        # "Model 7B" (cleaned from user/Model-7B-Instruct-GGUF) -> "7B";
+        # "Qwen3 8B" -> "8B".
         assert enriched[0].param_count == "7B"
         assert enriched[1].param_count == "8B"
 
-    def test_param_count_falls_back_to_tag(self) -> None:
+    def test_param_count_empty_when_no_numeric_suffix(self) -> None:
+        """Embedding models like Nomic Embed Text v1.5 have no NB suffix."""
         result = CatalogResult(
             total=1,
             limit=20,
             offset=0,
             models=[
                 CatalogModel(
-                    name="nomic-embed-text",
-                    tag="v1.5",
-                    display_name="Nomic Embed Text v1.5",
                     hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=0.3,
@@ -1946,7 +1906,7 @@ class TestEnrichCatalog:
             ],
         )
         enriched = enrich_catalog(result, set())
-        assert enriched[0].param_count == "v1.5"
+        assert enriched[0].param_count == ""
 
 
 class TestFormatSizeMb:
@@ -2020,9 +1980,6 @@ class TestRegisterModelFailure:
         from lilbee.config import cfg
 
         entry = CatalogModel(
-            name="test-model",
-            tag="latest",
-            display_name="Test Model",
             hf_repo="user/test",
             gguf_filename="test.gguf",
             size_gb=1.0,

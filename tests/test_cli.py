@@ -268,7 +268,7 @@ class TestAsk:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
-        result = runner.invoke(app, ["ask", "question", "--model", "llama3"])
+        result = runner.invoke(app, ["ask", "question", "--model", "ollama/llama3:8b"])
         assert result.exit_code == 0
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -406,8 +406,9 @@ class TestApplyOverrides:
     def test_model_override(self):
         from lilbee.cli import apply_overrides
 
-        apply_overrides(model="phi3")
-        assert cfg.chat_model == "phi3:latest"
+        ref = "ollama/phi3:latest"
+        apply_overrides(model=ref)
+        assert cfg.chat_model == ref
 
     def test_none_values_are_noop(self):
         from lilbee.cli import apply_overrides
@@ -633,16 +634,18 @@ class TestChatLaunchesTui:
 class TestListInstalledModels:
     """Test list_installed_models helper."""
 
-    def _manifest(self, name: str, tag: str, task: str):
+    _CHAT_REPO = "Qwen/Qwen3-8B-GGUF"
+    _CHAT_FILE = "Qwen3-8B-Q4_K_M.gguf"
+    _CHAT_REF = f"{_CHAT_REPO}/{_CHAT_FILE}"
+
+    def _manifest(self, hf_repo: str, gguf_filename: str, task: str):
         from lilbee.registry import ModelManifest
 
         return ModelManifest(
-            name=name,
-            tag=tag,
+            hf_repo=hf_repo,
+            gguf_filename=gguf_filename,
             size_bytes=0,
             task=task,
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
 
@@ -656,9 +659,9 @@ class TestListInstalledModels:
             mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
             mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
         ):
-            mock_reg.return_value = [self._manifest("llama3", "latest", "chat")]
+            mock_reg.return_value = [self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat")]
             mock_remote.return_value = []
-            assert list_installed_models() == ["llama3:latest"]
+            assert list_installed_models() == [self._CHAT_REF]
 
     def test_returns_empty_on_error(self):
         with mock.patch(
@@ -673,14 +676,16 @@ class TestListInstalledModels:
             mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [
-                self._manifest("llama3", "latest", "chat"),
-                self._manifest("nomic-embed-text", "latest", "embedding"),
-                self._manifest("lightonocr", "2-1b", "vision"),
-                self._manifest("bge-reranker", "v2-m3", "rerank"),
+                self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat"),
+                self._manifest(
+                    "nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-Q4_K_M.gguf", "embedding"
+                ),
+                self._manifest("noctrex/LightOnOCR-2-1B-GGUF", "ocr-Q4_K_M.gguf", "vision"),
+                self._manifest("gpustack/bge-reranker-v2-m3-GGUF", "bge-Q4_K_M.gguf", "rerank"),
             ]
             mock_remote.return_value = []
             result = list_installed_models()
-            assert result == ["llama3:latest"]
+            assert result == [self._CHAT_REF]
 
     def test_excludes_non_chat_remote_tasks(self):
         from lilbee.models import ModelTask
@@ -691,22 +696,23 @@ class TestListInstalledModels:
         ):
             mock_reg.return_value = []
             mock_remote.return_value = [
-                self._remote("llama3:latest", ModelTask.CHAT),
-                self._remote("nomic-embed-text:v1.5", ModelTask.EMBEDDING),
-                self._remote("lightonocr:2-1b", ModelTask.VISION),
-                self._remote("bge-reranker:v2-m3", ModelTask.RERANK),
+                self._remote("ollama/llama3:latest", ModelTask.CHAT),
+                self._remote("ollama/nomic-embed-text:v1.5", ModelTask.EMBEDDING),
+                self._remote("ollama/lightonocr:2-1b", ModelTask.VISION),
+                self._remote("ollama/bge-reranker:v2-m3", ModelTask.RERANK),
             ]
             result = list_installed_models()
-            assert result == ["llama3:latest"]
+            assert result == ["ollama/llama3:latest"]
 
     def test_dedupes_native_and_remote_overlap(self):
         with (
             mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
             mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
         ):
-            mock_reg.return_value = [self._manifest("llama3", "latest", "chat")]
-            mock_remote.return_value = [self._remote("llama3:latest", "chat")]
-            assert list_installed_models() == ["llama3:latest"]
+            mock_reg.return_value = [self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat")]
+            # Remote backend reports the same canonical ref string.
+            mock_remote.return_value = [self._remote(self._CHAT_REF, "chat")]
+            assert list_installed_models() == [self._CHAT_REF]
 
 
 def _search_chunk(**overrides: object) -> SearchChunk:
@@ -975,6 +981,49 @@ class TestVersionFlag:
         result = runner.invoke(app, ["-V"])
         assert result.exit_code == 0
         assert get_version() in result.output
+
+
+class TestConfigLoadWarning:
+    """When persisted config is incompatible, the CLI surfaces a stderr warning."""
+
+    def _invoke_default(self, *, json_output: bool, monkeypatch) -> str:
+        """Call the _default callback directly, returning what it wrote to stderr."""
+        import io
+        import sys
+
+        from typer import Context
+        from typer.core import TyperCommand
+
+        from lilbee.cli.app import _default
+
+        app_module = sys.modules["lilbee.cli.app"]
+        monkeypatch.setattr(app_module, "config_load_error", ValueError("stale-ref-xyz"))
+
+        captured = io.StringIO()
+        monkeypatch.setattr("sys.stderr", captured)
+        # Build a minimal Typer/click Context with a recognised subcommand so
+        # the callback skips the interactive-chat branch.
+        ctx = Context(TyperCommand(name="status", callback=lambda: None))
+        ctx.invoked_subcommand = "status"
+        _default(
+            ctx,
+            data_dir=None,
+            model=None,
+            json_output=json_output,
+            use_global=False,
+            log_level=None,
+            show_version=False,
+        )
+        return captured.getvalue()
+
+    def test_warning_printed_to_stderr_when_config_load_failed(self, monkeypatch):
+        stderr = self._invoke_default(json_output=False, monkeypatch=monkeypatch)
+        assert "Warning: persisted config" in stderr
+        assert "stale-ref-xyz" in stderr
+
+    def test_warning_suppressed_in_json_mode(self, monkeypatch):
+        stderr = self._invoke_default(json_output=True, monkeypatch=monkeypatch)
+        assert "Warning: persisted config" not in stderr
 
 
 class TestRemove:

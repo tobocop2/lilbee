@@ -435,7 +435,8 @@ class Searcher:
 
             return llm_variants
         except Exception as exc:
-            log.warning("Query expansion disabled for this call: %s", exc, exc_info=True)
+            log.warning("Query expansion disabled for this call: %s", exc)
+            log.debug("Query expansion exception", exc_info=True)
             return []
 
     def _should_skip_expansion(self, question: str) -> bool:

@@ -14,6 +14,10 @@ from lilbee.providers.base import filter_options
 
 _API_PROVIDERS = {"openai", "anthropic", "gemini"}
 
+# All provider prefixes that route a ref away from the local registry.
+# Includes API providers and ollama (which keeps its own name:tag shape).
+PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | {"ollama"})
+
 OLLAMA_PREFIX = "ollama/"
 
 
@@ -48,7 +52,7 @@ class ProviderModelRef:
         """Name formatted with canonical ``provider/model`` prefix.
 
         The prefix convention is the same one used by OpenAI-compatible
-        SDKs: ``openai/gpt-4o``, ``ollama/qwen3:8b``, etc. Every
+        SDKs: ``openai/gpt-4o``, ``ollama/llama3.2:1b``, etc. Every
         dispatching SDK accepts this shape.
         """
         if self.provider == "ollama":
@@ -68,29 +72,25 @@ class ProviderModelRef:
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
-    """Parse a model string into a ProviderModelRef.
+    """Classify a model string by its prefix and return the routing ref.
 
-    Classifies model strings by prefix:
-    - ``openai/gpt-4o`` -> API provider, no tag normalization
-    - ``anthropic/claude-sonnet-4-20250514`` -> API provider
-    - ``ollama/qwen3:8b`` -> Ollama provider
-    - ``org/model-name`` -> local (HuggingFace-style), tag normalization applied
-    - ``qwen3:8b`` -> local, already has tag
-    - ``qwen3`` -> local, ``:latest`` appended
+    Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``. Remote
+    providers use prefixes: ``openai/``, ``anthropic/``, ``gemini/``,
+    ``ollama/``.
     """
-    if "/" in raw:
-        prefix, rest = raw.split("/", 1)
-        if prefix in _API_PROVIDERS:
-            return ProviderModelRef(raw=raw, provider=prefix, name=rest)
-        if prefix == "ollama":
-            name = rest if ":" in rest else f"{rest}:latest"
-            return ProviderModelRef(raw=raw, provider="ollama", name=name)
-        # Unknown prefix (HuggingFace org/model). Treat as local.
-        name = raw if ":" in raw else f"{raw}:latest"
-        return ProviderModelRef(raw=raw, provider="local", name=name)
-    # No prefix = local model. Add :latest if no tag.
-    name = raw if ":" in raw else f"{raw}:latest"
-    return ProviderModelRef(raw=raw, provider="local", name=name)
+    if "/" not in raw:
+        raise ValueError(
+            f"Model ref {raw!r} must be a HuggingFace ref "
+            "('<org>/<repo>/<filename>.gguf') or carry a provider prefix "
+            "('ollama/', 'openai/', 'anthropic/', 'gemini/')."
+        )
+    prefix, rest = raw.split("/", 1)
+    if prefix in _API_PROVIDERS:
+        return ProviderModelRef(raw=raw, provider=prefix, name=rest)
+    if prefix == "ollama":
+        name = rest if ":" in rest else f"{rest}:latest"
+        return ProviderModelRef(raw=raw, provider="ollama", name=name)
+    return ProviderModelRef(raw=raw, provider="local", name=raw)
 
 
 def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[str, Any]:

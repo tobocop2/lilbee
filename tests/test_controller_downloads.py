@@ -29,12 +29,13 @@ from lilbee.cli.tui.widgets.task_bar import (
 )
 
 
-def _make_model(name: str = "test", display: str = "Test Model") -> CatalogModel:
+def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:
+    # Encode the desired display name into the hf_repo so
+    # clean_display_name(hf_repo) round-trips it. Used by tests that
+    # assert on the user-visible model name.
+    repo_segment = display.replace(" ", "-")
     return CatalogModel(
-        name=name,
-        tag="7b",
-        display_name=display,
-        hf_repo=f"org/{name}-7b",
+        hf_repo=f"org/{repo_segment}-GGUF",
         gguf_filename="test.gguf",
         size_gb=4.0,
         min_ram_gb=8.0,

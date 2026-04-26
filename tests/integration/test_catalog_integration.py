@@ -17,7 +17,7 @@ pytestmark = pytest.mark.slow
 @pytest.mark.parametrize(
     "entry",
     FEATURED_ALL,
-    ids=[e.name for e in FEATURED_ALL],
+    ids=[e.hf_repo for e in FEATURED_ALL],
 )
 def test_featured_models_all_have_gguf(entry) -> None:
     """Each featured model's HF repo must contain at least one .gguf file."""
@@ -28,4 +28,4 @@ def test_featured_models_all_have_gguf(entry) -> None:
     resp.raise_for_status()
     siblings = resp.json().get("siblings", [])
     gguf_files = [s["rfilename"] for s in siblings if s.get("rfilename", "").endswith(".gguf")]
-    assert gguf_files, f"{entry.name} ({entry.hf_repo}) has no .gguf files in siblings"
+    assert gguf_files, f"{entry.hf_repo} has no .gguf files in siblings"

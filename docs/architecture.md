@@ -377,8 +377,8 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[litellm]`, any remote name the SDK backend understands |
-| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text:v1.5` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[litellm]`, any remote name the SDK backend understands |
+| `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | GGUF vision model for OCR (via mtmd backend) | When set, takes precedence over Tesseract for scanned PDFs and images |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |
 | `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff for vector results | Lower values are stricter (fewer but more precise results). Set to 1.0 to disable filtering. |

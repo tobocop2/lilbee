@@ -12,6 +12,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Select
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.config import cfg
 
@@ -25,8 +26,8 @@ class _ModelBarApp(App[None]):
 def _isolated_cfg(tmp_path):
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path
-    cfg.chat_model = "test-model:latest"
-    cfg.embedding_model = "test-embed:latest"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

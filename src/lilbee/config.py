@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from lilbee.providers.model_ref import PROVIDER_PREFIXES
+
 
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
@@ -98,17 +100,24 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
     raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
 
 
-def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
-    """Return the catalog's canonical ref for *ref*, or raise ValueError.
-
-    ``allow_bypass=True`` (default) honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION``
-    so unrelated tests can set model refs without populating the catalog.
-    Explicit user actions (``PUT /api/models/<role>``) pass
-    ``allow_bypass=False`` to force the check.
-    """
+def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
+    """True when *ref* should bypass the featured-catalog assignment check."""
     if not ref or not ref.strip():
-        return ref
+        return True
     if allow_bypass and _model_task_validation_bypassed():
+        return True
+    return ref.split("/", 1)[0] in PROVIDER_PREFIXES
+
+
+def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
+    """Check *ref* is a featured-catalog entry whose task matches *field_name*.
+
+    Provider-prefixed refs (``ollama/``, ``openai/`` ...) skip the catalog
+    check; routing enforces task taxonomy for them. ``allow_bypass=True``
+    honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` for tests; explicit user
+    actions pass ``allow_bypass=False`` to force the check.
+    """
+    if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     entry = _find_model_catalog_entry(ref)
     if entry is None:
@@ -118,6 +127,10 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
             "POST /api/models/pull with a known catalog ref."
         )
     _enforce_role_match(ref, entry, field_name)
+    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
+    # the exact installed quant; fall back to the catalog ref otherwise.
+    if ref.endswith(".gguf") and ref.count("/") >= 2:
+        return ref
     canonical: str = entry.ref
     return canonical
 
@@ -364,8 +377,11 @@ class Config(BaseSettings):
     # ``vault_path`` for native-UI deep-links.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
-    chat_model: str = Field(default="qwen3:0.6b", min_length=1)
-    embedding_model: str = Field(default="nomic-embed-text:v1.5", min_length=1)
+    chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", min_length=1)
+    embedding_model: str = Field(
+        default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
+        min_length=1,
+    )
     # Vision OCR model for scanned PDFs and image-only pages. Empty = disabled;
     # there is no cross-role fallback onto the chat model even if multimodal.
     vision_model: str = ConfigField(default="", public=True)
@@ -786,7 +802,7 @@ class Config(BaseSettings):
     )
     @classmethod
     def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
-        """Normalize a model ref to ``name:tag``; blank values clear optional roles."""
+        """Validate and canonicalize a model ref; blank clears optional roles."""
         if not v or not v.strip():
             if info.field_name in {"chat_model", "embedding_model"}:
                 raise ValueError(f"{info.field_name} must not be blank")
@@ -914,7 +930,7 @@ class Config(BaseSettings):
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists():
+        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
@@ -1009,4 +1025,23 @@ class _TomlSource:
         return {k: str(v) for k, v in data.items()}
 
 
-cfg = Config()
+def _build_cfg() -> tuple[Config, Exception | None]:
+    """Build cfg; on stale-config validation failure, fall back to defaults.
+
+    A persisted ``config.toml`` from before a breaking schema change can
+    contain values the new validators reject. Crashing at module import
+    means every command (``lilbee --help`` included) emits a Python
+    traceback. Falling back to env+defaults lets the package load; the
+    CLI / TUI surfaces the original error before doing real work.
+    """
+    try:
+        return Config(), None
+    except Exception as exc:
+        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        try:
+            return Config(), exc
+        finally:
+            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+
+
+cfg, config_load_error = _build_cfg()

@@ -79,6 +79,7 @@ class ModelEntry(BaseModel):
 
     @classmethod
     def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
+        from lilbee.catalog import clean_display_name
         from lilbee.model_manager import ModelSource
 
         return cls(
@@ -86,7 +87,7 @@ class ModelEntry(BaseModel):
             source=ModelSource.NATIVE.value,
             task=manifest.task if manifest else None,
             size_gb=_bytes_to_gb(manifest.size_bytes) if manifest else None,
-            display_name=manifest.display_name if manifest else "",
+            display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )
 
     @classmethod
@@ -120,11 +121,10 @@ class ListModelsResult(BaseModel):
 
 
 class CatalogEntryData(BaseModel):
-    name: str
-    tag: str
     ref: str
     display_name: str
     hf_repo: str
+    gguf_filename: str
     size_gb: float
     min_ram_gb: float
     description: str
@@ -135,11 +135,10 @@ class CatalogEntryData(BaseModel):
     @classmethod
     def from_catalog_model(cls, entry: CatalogModel) -> CatalogEntryData:
         return cls(
-            name=entry.name,
-            tag=entry.tag,
             ref=entry.ref,
             display_name=entry.display_name,
             hf_repo=entry.hf_repo,
+            gguf_filename=entry.gguf_filename,
             size_gb=entry.size_gb,
             min_ram_gb=entry.min_ram_gb,
             description=entry.description,
@@ -150,25 +149,27 @@ class CatalogEntryData(BaseModel):
 
 
 class ManifestData(BaseModel):
-    name: str
+    ref: str
     display_name: str
     task: str
     size_gb: float
     size_bytes: int
-    source_repo: str
-    source_filename: str
+    hf_repo: str
+    gguf_filename: str
     downloaded_at: str
 
     @classmethod
     def from_manifest(cls, manifest: ModelManifest) -> ManifestData:
+        from lilbee.catalog import clean_display_name
+
         return cls(
-            name=f"{manifest.name}:{manifest.tag}",
-            display_name=manifest.display_name,
+            ref=manifest.ref,
+            display_name=clean_display_name(manifest.hf_repo),
             task=manifest.task,
             size_gb=_bytes_to_gb(manifest.size_bytes),
             size_bytes=manifest.size_bytes,
-            source_repo=manifest.source_repo,
-            source_filename=manifest.source_filename,
+            hf_repo=manifest.hf_repo,
+            gguf_filename=manifest.gguf_filename,
             downloaded_at=manifest.downloaded_at,
         )
 
@@ -230,11 +231,11 @@ class RemoveResult(BaseModel):
 
 
 def _native_manifest_index() -> dict[str, ModelManifest]:
-    """Map 'name:tag' to manifest for every installed native model."""
+    """Map ref string ('hf_repo/filename') to manifest for every installed native model."""
     from lilbee.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
-    return {f"{m.name}:{m.tag}": m for m in registry.list_installed()}
+    return {m.ref: m for m in registry.list_installed()}
 
 
 def _resolve_native_path(ref: str) -> str | None:
@@ -449,7 +450,7 @@ def list_cmd(
 
 @model_app.command("show")
 def show_cmd(
-    ref: str = typer.Argument(..., help="Model ref (e.g. 'qwen3:0.6b')."),
+    ref: str = typer.Argument(..., help="Model ref (e.g. 'Qwen/Qwen3-0.6B-GGUF')."),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -527,7 +528,7 @@ def _pull_rich_progress(ref: str, src: ModelSource) -> None:
 
 @model_app.command("pull")
 def pull_cmd(
-    ref: str = typer.Argument(..., help="Model ref to download (e.g. 'qwen3:0.6b')."),
+    ref: str = typer.Argument(..., help="Model ref to download (e.g. 'Qwen/Qwen3-0.6B-GGUF')."),
     source: str = typer.Option(
         "native",
         "--source",

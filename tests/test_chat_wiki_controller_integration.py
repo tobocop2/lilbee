@@ -20,10 +20,7 @@ from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBarController
 
 def _fake_model() -> CatalogModel:
     return CatalogModel(
-        name="n",
-        tag="t",
-        display_name="Fake",
-        hf_repo="o/r",
+        hf_repo="o/r-GGUF",
         gguf_filename="f.gguf",
         size_gb=1.0,
         min_ram_gb=2.0,
