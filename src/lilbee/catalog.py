@@ -207,12 +207,7 @@ _HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag",
 
 @dataclass(frozen=True)
 class CatalogModel:
-    """A model entry in the catalog.
-
-    Identity is the HuggingFace repo. ``gguf_filename`` may be a glob
-    (e.g. ``*Q4_K_M.gguf``) for featured entries; the concrete filename
-    is resolved at install time and recorded on the manifest.
-    """
+    """One catalog entry, keyed by HuggingFace repo. ``gguf_filename`` may be a glob."""
 
     hf_repo: str
     gguf_filename: str
@@ -256,11 +251,7 @@ class _HfPage:
 
 @dataclass(frozen=True)
 class ModelVariant:
-    """A specific quantization/size variant within a model family.
-
-    Identity is ``(hf_repo, filename)``. ``filename`` may be a glob for
-    featured entries; the concrete file is resolved at install time.
-    """
+    """One quantization within a model family. ``filename`` may be a glob."""
 
     hf_repo: str
     filename: str
@@ -358,12 +349,7 @@ def extract_quant(filename: str) -> str:
 
 
 def _derive_param_count(model: CatalogModel) -> str:
-    """Extract the parameter-count label (e.g. ``7B``) from a catalog model.
-
-    Reads the count from the cleaned HF repo name. Returns an empty
-    string when the display has no numeric suffix (e.g. embedding models
-    like ``Nomic Embed Text v1.5``); callers fall back to ``"--"``.
-    """
+    """Parse the ``7B``-style param count from the display name; ``""`` if absent."""
     match = PARAM_COUNT_RE.search(model.display_name)
     return match.group(1) if match else ""
 
@@ -631,9 +617,7 @@ def get_catalog(
         lo, hi = _SIZE_RANGES[size]
         all_models = [m for m in all_models if lo <= m.size_gb < hi]
 
-    # Filter by installed status. Installed manifests have refs of the
-    # form ``hf_repo/filename``; catalog entries identify by ``hf_repo``.
-    # A repo is "installed" if any quant of it has a manifest.
+    # A repo is "installed" if any of its quants has a manifest.
     if installed is not None and model_manager is not None:
         installed_repos = {ref.rsplit("/", 1)[0] for ref in _get_installed_models(model_manager)}
         if installed:

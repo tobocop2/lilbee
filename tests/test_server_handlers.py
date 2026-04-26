@@ -819,8 +819,8 @@ class TestSetChatModel:
         with pytest.raises(ValueError, match="not chat"):
             await handlers.set_chat_model(_VISION_REF)
 
-    async def test_rejects_unparseable_legacy_ref(self, tmp_path, mock_svc):
-        """A leftover legacy `name:tag` ref errors with the standard not-available message."""
+    async def test_rejects_unparseable_ref(self, tmp_path, mock_svc):
+        """An unparseable bare ``name:tag`` errors with the standard not-available message."""
         mock_svc.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_chat_model("qwen3:0.6b")

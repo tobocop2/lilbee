@@ -480,8 +480,8 @@ class TestLlamaCppProvider:
         finally:
             self._resolve_patcher.start()
 
-    def testresolve_model_path_legacy_ref_rejected(self, models_dir: Path) -> None:
-        """Bare ``name:tag`` strings are no longer recognised by the registry."""
+    def test_resolve_model_path_rejects_bare_name_tag(self, models_dir: Path) -> None:
+        """Bare ``name:tag`` strings are not HuggingFace refs and the registry rejects them."""
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError

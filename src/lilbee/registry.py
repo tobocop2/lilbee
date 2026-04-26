@@ -1,22 +1,9 @@
-"""Model registry -- manifest-based resolution over HuggingFace cache.
+"""Manifest store keyed by ``(hf_repo, gguf_filename)`` over the HF cache.
 
-Identity is the HuggingFace repo plus the GGUF filename. Two distinct
-files in the same repo (different quantizations) are two distinct
-installations. The canonical ref string joins them with ``/``::
-
-    Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf
-
-Storage layout::
-
-    models_dir/
-    +-- manifests/
-    |   +-- Qwen--Qwen3-0.6B-GGUF/
-    |   |   +-- Qwen3-0.6B-Q4_K_M.gguf.json
-    |   |   +-- Qwen3-0.6B-Q8_0.gguf.json
-    |   +-- nomic-ai--nomic-embed-text-v1.5-GGUF/
-    |       +-- nomic-embed-text-v1.5.Q4_K_M.gguf.json
-    +-- models--ORG--NAME/blobs/
-        +-- sha256-abc123...
+Canonical ref: ``<hf_repo>/<gguf_filename>``. Two quants of the same
+repo are two distinct installations. Manifests live at
+``manifests/<repo--repo>/<filename>.json``; blobs at
+``models--<repo--repo>/blobs/<sha>``.
 """
 
 from __future__ import annotations
@@ -56,28 +43,14 @@ def _validate_gguf_filename(filename: str) -> str:
     return filename
 
 
-def parse_hf_ref(ref: str) -> tuple[str, str]:
-    """Split a stored ref string into ``(hf_repo, gguf_filename)``.
+_REF_SHAPE_HINT = "Use '<org>/<repo>/<filename>.gguf'."
 
-    Accepts the canonical shape ``<org>/<repo>/<file>.gguf``. Rejects
-    legacy ``name:tag`` strings with a clear migration error so the user
-    can update their config rather than getting a silent miss.
-    """
-    if ":" in ref and "/" not in ref:
-        raise ValueError(
-            f"Legacy model ref {ref!r} is no longer supported. "
-            "Use the HuggingFace shape '<org>/<repo>/<filename>.gguf'. "
-            "See release notes for the upgrade path."
-        )
-    if not ref.endswith(".gguf"):
-        raise ValueError(
-            f"Model ref {ref!r} must end in .gguf "
-            "(canonical shape: '<org>/<repo>/<filename>.gguf')."
-        )
-    parts = ref.rsplit("/", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Model ref {ref!r} missing repo prefix")
-    hf_repo, gguf_filename = parts
+
+def parse_hf_ref(ref: str) -> tuple[str, str]:
+    """Split ``<org>/<repo>/<file>.gguf`` into ``(hf_repo, gguf_filename)``."""
+    if not ref.endswith(".gguf") or "/" not in ref:
+        raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
+    hf_repo, gguf_filename = ref.rsplit("/", 1)
     return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
 
 
@@ -88,11 +61,7 @@ def repo_to_dir(hf_repo: str) -> str:
 
 @dataclass
 class ModelManifest:
-    """Manifest for an installed model.
-
-    Identity is ``(hf_repo, gguf_filename)``. The canonical ref string is
-    ``<hf_repo>/<gguf_filename>`` (see :py:meth:`ref`).
-    """
+    """One installed model's metadata. Identity: ``(hf_repo, gguf_filename)``."""
 
     hf_repo: str
     gguf_filename: str
@@ -119,22 +88,14 @@ def _sha256_file(path: Path) -> str:
 
 
 class ModelRegistry:
-    """Manifest store keyed by ``(hf_repo, gguf_filename)``.
-
-    Manifests live at ``manifests/<repo--repo>/<filename>.json``; blobs
-    are read directly from the HuggingFace cache layout under
-    ``models--<repo--repo>/blobs/``.
-    """
+    """Read/write manifests and resolve refs to blobs in the HF cache."""
 
     def __init__(self, models_dir: Path) -> None:
         self._root = models_dir
         self._manifests_dir = models_dir / "manifests"
 
     def resolve(self, ref: str) -> Path:
-        """Resolve a ref string to its blob file in the HF cache.
-
-        Raises :class:`KeyError` if the model is not installed.
-        """
+        """Return the blob path for *ref*; ``KeyError`` if not installed."""
         hf_repo, gguf_filename = parse_hf_ref(ref)
         manifest = self._read_manifest(hf_repo, gguf_filename)
         if manifest is None:
@@ -162,13 +123,7 @@ class ModelRegistry:
         source_path: Path,
         manifest: ModelManifest,
     ) -> Path:
-        """Write a manifest and ensure the blob exists in the cache.
-
-        If *source_path* already lives at the expected cache location
-        (e.g. populated by ``hf_hub_download``), only the manifest is
-        written; otherwise the file is copied into the HF-style cache
-        tree so subsequent ``resolve`` calls succeed.
-        """
+        """Write a manifest, copying *source_path* into the HF cache if needed."""
         import shutil
 
         digest = _sha256_file(source_path)

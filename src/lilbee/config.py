@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from lilbee.providers.model_ref import PROVIDER_PREFIXES
+
 
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
@@ -98,6 +100,15 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
     raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
 
 
+def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
+    """True when *ref* should bypass the featured-catalog assignment check."""
+    if not ref or not ref.strip():
+        return True
+    if allow_bypass and _model_task_validation_bypassed():
+        return True
+    return ref.split("/", 1)[0] in PROVIDER_PREFIXES
+
+
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
     """Check *ref* is a featured-catalog entry whose task matches *field_name*.
 
@@ -106,13 +117,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` for tests; explicit user
     actions pass ``allow_bypass=False`` to force the check.
     """
-    if not ref or not ref.strip():
-        return ref
-    if allow_bypass and _model_task_validation_bypassed():
-        return ref
-    from lilbee.providers.model_ref import PROVIDER_PREFIXES
-
-    if ref.split("/", 1)[0] in PROVIDER_PREFIXES:
+    if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     entry = _find_model_catalog_entry(ref)
     if entry is None:
@@ -122,13 +127,11 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
             "POST /api/models/pull with a known catalog ref."
         )
     _enforce_role_match(ref, entry, field_name)
-    # Preserve the user's full ref (with filename) so downstream
-    # ``resolve_model_path`` can locate the exact installed quant. Fall
-    # back to the catalog entry's ref only for bare ``hf_repo`` input.
+    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
+    # the exact installed quant; fall back to the catalog ref otherwise.
     if ref.endswith(".gguf") and ref.count("/") >= 2:
         return ref
-    canonical: str = entry.ref
-    return canonical
+    return entry.ref
 
 
 _BOOL_TRUE = frozenset({"true", "1", "yes"})

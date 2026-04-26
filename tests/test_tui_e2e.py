@@ -165,7 +165,7 @@ class TestModelClassification:
         assert embed_ref in embed_refs
 
     def test_no_loose_gguf_scanning(self):
-        """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
+        """Loose ``.gguf`` files NOT in registry must NOT appear in dropdowns."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
         # Create loose files that should be ignored

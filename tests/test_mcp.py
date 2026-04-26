@@ -382,11 +382,11 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
-    def test_legacy_name_tag_rejected_after_init(self, tmp_path):
-        """The cfg validator rejects bare ``name:tag`` shapes (hard cut)."""
+    def test_bare_name_tag_rejected_after_init(self, tmp_path):
+        """The cfg validator rejects bare ``name:tag`` shapes."""
         from pydantic import ValidationError
 
-        with pytest.raises(ValidationError, match="Legacy model ref"):
+        with pytest.raises(ValidationError, match="must be a HuggingFace ref"):
             cfg.chat_model = "qwen3:0.6b"
 
 

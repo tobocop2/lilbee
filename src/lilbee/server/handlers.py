@@ -25,6 +25,7 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from lilbee import settings
+from lilbee.catalog import find_catalog_entry
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import Config, cfg
 from lilbee.model_manager import ModelSource, get_model_manager
@@ -701,36 +702,37 @@ async def _set_model(
     return SetModelResponse(model=model)
 
 
-def _require_model_available(model: str) -> str:
-    """Return the normalized installed model ref; raises ValueError when unavailable.
-
-    Accepts a full ``hf_repo/filename`` ref, a bare ``hf_repo`` (resolved
-    via the featured catalog), or a provider-prefixed ref like
-    ``ollama/<name>``.
-    """
-    from lilbee.catalog import find_catalog_entry
-
-    if not model:
-        raise ValueError(f"Model '{model}' is not available. Pull it first or check the name.")
-    available = set(get_services().provider.list_models())
-    if model in available:
-        return model
-    # Bare hf_repo: try featured catalog and accept any installed quant.
+def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
+    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*."""
     entry = find_catalog_entry(model)
-    if entry is not None:
-        for ref in available:
-            if ref.startswith(f"{entry.hf_repo}/"):
-                return ref
-    # Provider-prefixed ref bare form.
+    if entry is None:
+        return None
+    return next((ref for ref in available if ref.startswith(f"{entry.hf_repo}/")), None)
+
+
+def _resolve_via_parse(model: str, available: set[str]) -> str | None:
+    """Resolve a provider-prefixed ref to its bare provider name in *available*."""
     try:
         parsed = parse_model_ref(model)
     except ValueError:
-        raise ValueError(
-            f"Model '{model}' is not available. Pull it first or check the name."
-        ) from None
-    if parsed.name in available:
-        return parsed.name
-    raise ValueError(f"Model '{model}' is not available. Pull it first or check the name.")
+        return None
+    return parsed.name if parsed.name in available else None
+
+
+def _require_model_available(model: str) -> str:
+    """Return the installed-and-routable form of *model*, or raise."""
+    not_available = ValueError(
+        f"Model '{model}' is not available. Pull it first or check the name."
+    )
+    if not model:
+        raise not_available
+    available = set(get_services().provider.list_models())
+    if model in available:
+        return model
+    hit = _resolve_via_catalog(model, available) or _resolve_via_parse(model, available)
+    if hit is None:
+        raise not_available
+    return hit
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:

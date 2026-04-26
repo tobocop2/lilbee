@@ -72,35 +72,25 @@ class ProviderModelRef:
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
-    """Parse a model string into a ProviderModelRef.
+    """Classify a model string by its prefix and return the routing ref.
 
-    Classifies model strings by prefix:
-    - ``openai/gpt-4o`` -> API provider
-    - ``anthropic/claude-sonnet-4-20250514`` -> API provider
-    - ``ollama/llama3.2:1b`` -> Ollama provider (keeps its own ``name:tag``)
-    - ``<org>/<repo>/<file>.gguf`` -> local HuggingFace native model
-    - ``<org>/<repo>`` -> local, repo-only ref (filename resolved later)
-    - Any other ``name:tag`` shape is rejected as a legacy ref.
+    Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``. Remote
+    providers use prefixes: ``openai/``, ``anthropic/``, ``gemini/``,
+    ``ollama/``.
     """
-    if "/" in raw:
-        prefix, rest = raw.split("/", 1)
-        if prefix in _API_PROVIDERS:
-            return ProviderModelRef(raw=raw, provider=prefix, name=rest)
-        if prefix == "ollama":
-            name = rest if ":" in rest else f"{rest}:latest"
-            return ProviderModelRef(raw=raw, provider="ollama", name=name)
-        return ProviderModelRef(raw=raw, provider="local", name=raw)
-    if ":" in raw:
+    if "/" not in raw:
         raise ValueError(
-            f"Legacy model ref {raw!r} is no longer supported. "
-            "Use the HuggingFace shape '<org>/<repo>/<filename>.gguf'. "
-            "See release notes for the upgrade path."
+            f"Model ref {raw!r} must be a HuggingFace ref "
+            "('<org>/<repo>/<filename>.gguf') or carry a provider prefix "
+            "('ollama/', 'openai/', 'anthropic/', 'gemini/')."
         )
-    raise ValueError(
-        f"Model ref {raw!r} is not recognized. Native models use "
-        "'<org>/<repo>/<filename>.gguf'; remote models use a provider "
-        "prefix like 'ollama/' or 'openai/'."
-    )
+    prefix, rest = raw.split("/", 1)
+    if prefix in _API_PROVIDERS:
+        return ProviderModelRef(raw=raw, provider=prefix, name=rest)
+    if prefix == "ollama":
+        name = rest if ":" in rest else f"{rest}:latest"
+        return ProviderModelRef(raw=raw, provider="ollama", name=name)
+    return ProviderModelRef(raw=raw, provider="local", name=raw)
 
 
 def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[str, Any]:

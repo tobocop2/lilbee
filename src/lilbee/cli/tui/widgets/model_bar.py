@@ -192,14 +192,8 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
 
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
-    """Populate a model Select and set it to *default* (from cfg).
-
-    A *default* that doesn't match any option (model not installed) is
-    surfaced with a ``(not installed)`` label so the user can still see
-    what cfg points at. Unparseable refs (e.g. legacy strings left over
-    in a stale config) pass through unchanged rather than crashing the
-    picker.
-    """
+    """Populate a Select with *opts*; show *default* with ``(not installed)``
+    when it isn't in the list, and pass unparseable defaults through unchanged."""
     if default:
         try:
             ref = parse_model_ref(default)

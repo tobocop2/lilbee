@@ -48,14 +48,14 @@ class TestParseModelRef:
         assert ref.provider == "gemini"
         assert ref.name == "gemini-2.5-pro"
 
-    def test_legacy_name_tag_rejected(self) -> None:
-        """Bare ``name:tag`` is no longer recognised; the parser raises."""
-        with pytest.raises(ValueError, match="Legacy model ref"):
+    def test_bare_name_tag_rejected(self) -> None:
+        """A bare ``name:tag`` lacks a provider prefix and is rejected."""
+        with pytest.raises(ValueError, match="must be a HuggingFace ref"):
             parse_model_ref("qwen3:0.6b")
 
-    def test_unrecognized_shape_rejected(self) -> None:
-        """A bare name with no provider prefix and no ``/`` is rejected."""
-        with pytest.raises(ValueError, match="not recognized"):
+    def test_unprefixed_bare_name_rejected(self) -> None:
+        """A bare name with no ``/`` is rejected."""
+        with pytest.raises(ValueError, match="must be a HuggingFace ref"):
             parse_model_ref("qwen3")
 
     def test_empty_string_rejected(self) -> None:

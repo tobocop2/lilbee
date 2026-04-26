@@ -142,8 +142,8 @@ class TestSdkFactory:
 
         assert isinstance(provider, SdkLLMProvider)
 
-    def test_legacy_ollama_alias_rejected(self) -> None:
-        """'ollama' is no longer a valid llm_provider value; only "remote" is."""
+    def test_ollama_alias_rejected(self) -> None:
+        """'ollama' is not a valid llm_provider value; only "remote" is."""
         from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
 

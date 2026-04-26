@@ -695,8 +695,8 @@ class TestFindCatalogEntry:
         assert result is not None
         assert result.hf_repo == concrete.hf_repo
 
-    def test_legacy_name_tag_returns_none(self) -> None:
-        """``qwen3:0.6b`` is no longer a recognised lookup key."""
+    def test_non_hf_keys_return_none(self) -> None:
+        """Bare names and display labels are not lookup keys."""
         assert find_catalog_entry("qwen3:0.6b") is None
         assert find_catalog_entry("qwen3") is None
         assert find_catalog_entry("Qwen3 8B") is None

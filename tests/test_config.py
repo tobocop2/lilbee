@@ -97,11 +97,11 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.embedding_model == ref
 
-    def test_legacy_name_tag_rejected_on_assignment(self):
-        """Bare ``name:tag`` strings are no longer accepted (hard cut)."""
+    def test_bare_name_tag_rejected_on_assignment(self):
+        """Bare ``name:tag`` strings are not accepted by the cfg validator."""
         from pydantic import ValidationError
 
-        with pytest.raises(ValidationError, match="Legacy model ref"):
+        with pytest.raises(ValidationError, match="must be a HuggingFace ref"):
             cfg.chat_model = "qwen3:0.6b"
 
     def test_normalize_model_tag_empty_string_passthrough(self):

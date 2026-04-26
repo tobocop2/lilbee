@@ -61,16 +61,16 @@ class TestParseHfRef:
         assert repo == "nomic-ai/nomic-embed-text-v1.5-GGUF"
         assert filename == "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
-    def test_legacy_name_tag_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Legacy model ref"):
+    def test_bare_name_tag_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not a HuggingFace ref"):
             parse_hf_ref("qwen3:0.6b")
 
     def test_missing_gguf_suffix_rejected(self) -> None:
-        with pytest.raises(ValueError, match=r"must end in \.gguf"):
+        with pytest.raises(ValueError, match="not a HuggingFace ref"):
             parse_hf_ref("Qwen/Qwen3-0.6B-GGUF")
 
     def test_missing_repo_prefix_rejected(self) -> None:
-        with pytest.raises(ValueError, match="missing repo prefix"):
+        with pytest.raises(ValueError, match="not a HuggingFace ref"):
             parse_hf_ref("standalone.gguf")
 
     def test_path_traversal_rejected(self) -> None:
@@ -180,9 +180,9 @@ class TestModelRegistryResolve:
         with pytest.raises(KeyError, match="not installed"):
             registry.resolve(_REF)
 
-    def test_resolve_legacy_ref_raises_value_error(self, tmp_path: Path) -> None:
+    def test_resolve_unparseable_ref_raises_value_error(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        with pytest.raises(ValueError, match="Legacy model ref"):
+        with pytest.raises(ValueError, match="not a HuggingFace ref"):
             registry.resolve("qwen3:0.6b")
 
     def test_resolve_returns_blob_path(self, tmp_path: Path) -> None:
@@ -227,9 +227,9 @@ class TestModelRegistryIsInstalled:
         registry = ModelRegistry(tmp_path)
         assert not registry.is_installed(_REF)
 
-    def test_is_installed_legacy_ref(self, tmp_path: Path) -> None:
+    def test_is_installed_unparseable_ref(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        # Legacy refs raise inside resolve, swallowed by is_installed
+        # resolve() raises on unparseable refs; is_installed swallows that.
         assert not registry.is_installed("qwen3:0.6b")
 
 

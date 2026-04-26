@@ -2698,15 +2698,9 @@ class TestSyncSelectPrepend:
         assert "not installed" in passed[0].label
         assert sel.value == missing
 
-    def test_legacy_default_passes_through_unchanged(self) -> None:
-        """parse_model_ref now rejects legacy bare names; _sync_select degrades gracefully.
-
-        For an unrecognised default the raw string is used as-is — set as
-        the Select value and (if missing from opts) prepended with the
-        ``(not installed)`` label. This keeps the picker usable when a
-        config is mid-migration; the cfg validator surfaces the proper
-        error at startup.
-        """
+    def test_unparseable_default_passes_through_unchanged(self) -> None:
+        """An unparseable default is used as-is so the picker stays usable;
+        the cfg validator is the proper place for the error to surface."""
         from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
 
         sel = mock.MagicMock()
