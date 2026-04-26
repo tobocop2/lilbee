@@ -406,14 +406,21 @@ def chat_stream(
     )
 
 
-async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:
+async def _run_sync_with_sentinel(
+    sse: SseStream, enable_ocr: bool | None, force_rebuild: bool = False
+) -> SyncResult:
     """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
     try:
         with temporary_ocr_config(enable_ocr):
-            return await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            return await sync(
+                quiet=True,
+                on_progress=sse.callback,
+                cancel=sse.cancel,
+                force_rebuild=force_rebuild,
+            )
     finally:
         sse.queue.put_nowait(None)
 
@@ -422,6 +429,37 @@ async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> Sy
 # avoid a TOCTOU between locked() and acquire() under concurrent /api/add.
 _INGEST_LOCKS: dict[str, asyncio.Lock] = {}
 _INGEST_LOCK_REGISTRY: asyncio.Lock | None = None
+
+
+# Types that can carry script even within an "inline-rendered" category.
+# Keep the deny narrow and explicit. Broadening this set is a security-relevant
+# change — file an issue with the ``security`` label before adding entries.
+_RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset(
+    {
+        "text/html",
+        "text/javascript",
+        "application/javascript",
+        "application/xhtml+xml",
+        "text/css",
+        "image/svg+xml",
+    }
+)
+
+
+def _is_safe_for_inline_render(content_type: str) -> bool:
+    """Whether ``raw=1`` may serve this Content-Type as-is.
+
+    Trusted categories (``text/*``, ``image/*``, ``application/pdf``) pass
+    through, with named exceptions for types that embed executable script.
+    Everything else degrades to ``application/octet-stream`` so an attacker-
+    renamed file (e.g. ``evil.html``) cannot trick a browser into rendering
+    it inline within the plugin origin.
+    """
+    if content_type in _RAW_INLINE_RENDER_DENY:
+        return False
+    if content_type == "application/pdf":
+        return True
+    return content_type.startswith("text/") or content_type.startswith("image/")
 
 
 def _get_registry_lock() -> asyncio.Lock:
@@ -457,10 +495,16 @@ def _canonical_source_name(p_str: str) -> str:
     return Path(p_str).name
 
 
-async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
-    """Trigger sync, yield SSE progress events, then done event."""
+async def sync_stream(
+    *, enable_ocr: bool | None = None, force_rebuild: bool = False
+) -> AsyncGenerator[str, None]:
+    """Trigger sync, yield SSE progress events, then done event.
+
+    When ``force_rebuild`` is true, the underlying sync drops every table and
+    re-ingests from ``cfg.documents_dir`` (the REST equivalent of ``lilbee rebuild``).
+    """
     sse = SseStream()
-    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr))
+    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr, force_rebuild))
     async for event in sse.drain(task, "Sync stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
@@ -722,9 +766,26 @@ async def set_chat_model(model: str) -> SetModelResponse:
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
-    """Switch embedding model. Validates installation and catalog task."""
+    """Switch embedding model. Validates installation and catalog task.
+
+    Returns ``reindex_required=True`` when the new model differs from the
+    embedding model that built the persisted vector store. The caller is
+    expected to trigger a rebuild (``lilbee rebuild`` or ``POST /api/sync``
+    with ``force_rebuild=true``). Search and ingest will refuse to operate
+    until that happens.
+
+    Pins a legacy store's identity to the OLD cfg before mutating it. Without
+    this step, a pre-upgrade store with chunks but no ``_meta`` row would have
+    its meta lazy-initialized from the NEW cfg on the next read, hiding the
+    drift the caller just introduced.
+    """
     normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
-    return await _set_model("embedding_model", normalized)
+    store = get_services().store
+    store.initialize_meta_if_legacy()
+    await _set_model("embedding_model", normalized)
+    meta = store.get_meta()
+    reindex_required = meta is not None and meta["embedding_model"] != normalized
+    return SetModelResponse(model=normalized, reindex_required=reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:
@@ -874,7 +935,14 @@ async def get_source_content(
         content_type = "application/octet-stream"
 
     if raw:
-        return resolved.read_bytes(), content_type
+        # Cap raw responses to inline-render-safe categories; anything else
+        # degrades to a binary download so attacker-renamed files (e.g.
+        # evil.html) can't trick the embedding browser into running script
+        # under our origin.
+        served_type = (
+            content_type if _is_safe_for_inline_render(content_type) else "application/octet-stream"
+        )
+        return resolved.read_bytes(), served_type
 
     if not content_type.startswith("text/"):
         return SourceContentResponse(markdown="", content_type=content_type, title=None)

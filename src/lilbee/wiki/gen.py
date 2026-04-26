@@ -16,14 +16,14 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 import numpy as np
 import yaml
 
 from lilbee.chunk import chunk_text
 from lilbee.clustering import SourceClusterer
-from lilbee.config import CHUNKS_TABLE, Config, cfg
+from lilbee.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config, cfg
 from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
@@ -72,9 +72,6 @@ WikiProgressCallback = Callable[[str, dict[str, object]], None]
 
 _MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
-# Conservative default context window when num_ctx is not configured.
-# Most modern models support at least 8192 tokens.
-_DEFAULT_CONTEXT_WINDOW = 8192
 
 # Fraction of context window reserved for chunks. The remainder leaves
 # room for the system/user prompt template and generation output.
@@ -125,7 +122,7 @@ def _truncate_chunks_to_budget(
     Uses a chars/4 heuristic for token estimation. Returns the original list
     unchanged when all chunks fit.
     """
-    context_window = config.num_ctx or _DEFAULT_CONTEXT_WINDOW
+    context_window = config.num_ctx or DEFAULT_NUM_CTX
     budget_tokens = int(context_window * _CONTEXT_BUDGET_FRACTION)
     budget_chars = budget_tokens * _CHARS_PER_TOKEN
 
@@ -1709,3 +1706,99 @@ def _rewrite_links_across_wiki(entities: list[ExtractedEntity], config: Config) 
             rewritten = apply_rewriter(original, rewriter, skip_slug=owning_slug)
             if rewritten != original:
                 md_path.write_text(rewritten, encoding="utf-8")
+
+
+class WikiBuildSummary(TypedDict):
+    """Result of a full wiki build/update."""
+
+    paths: list[str]
+    entities: int
+    count: int
+
+
+def run_full_build(config: Config | None = None) -> WikiBuildSummary:
+    """Extract entities + build wiki across every ingested source.
+
+    Shared entry point for CLI ``wiki build`` / ``wiki update``, MCP
+    ``wiki_build`` / ``wiki_update``, and ``POST /api/wiki/build`` /
+    ``PATCH /api/wiki/update``.
+
+    Side effects (in order):
+        1. Reads every source via ``store.get_sources()``.
+        2. Reads chunks for each source via ``store.get_chunks_by_source``.
+        3. Calls the entity extractor (may invoke the LLM provider).
+        4. Calls :func:`build_wiki` which writes wiki page files.
+        5. Calls :func:`update_wiki_index` which rewrites ``wiki/index.md``.
+        6. Calls :func:`append_wiki_log` which appends a build entry.
+
+    Concurrency:
+        Not safe to run concurrently with itself or with another wiki
+        write path (drafts accept/reject, prune). Callers that share an
+        event loop or process must serialize via an external lock — the
+        REST routes do this with a per-process ``asyncio.Lock``; MCP and
+        CLI run in their own processes and don't need one.
+
+        Running concurrently with ``/api/sync`` (an ingest write path
+        rather than a wiki write path) is permitted but not coherent: a
+        sync that lands between this function's source-scan and per-source
+        chunk-fetch may produce a wiki that's missing pages for sources
+        ingested mid-build. The result is incomplete, not corrupt, and
+        is repaired by re-running ``run_full_build`` after the sync
+        finishes.
+
+    A crash mid-build leaves a partial wiki on disk; the next successful
+    build is idempotent and re-emits any pages it would have written, so
+    recovery is "run it again."
+    """
+    if config is None:
+        config = cfg
+    from lilbee.wiki.entity_extractor import get_entity_extractor
+    from lilbee.wiki.shared import WIKI_LOG_ACTION_BUILD
+
+    svc = get_services()
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+
+    extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
+    entities = extractor.extract(chunks)
+    pages = build_wiki(
+        entities,
+        svc.provider,
+        svc.store,
+        config,
+        extract_concepts=config.wiki_extract_concepts,
+    )
+    update_wiki_index()
+    append_wiki_log(WIKI_LOG_ACTION_BUILD, f"{len(pages)} pages from {len(entities)} records")
+    return {
+        "paths": [str(p) for p in pages],
+        "entities": len(entities),
+        "count": len(pages),
+    }
+
+
+class WikiSynthesizeSummary(TypedDict):
+    """Result of running synthesis-page generation."""
+
+    paths: list[str]
+    count: int
+
+
+def run_full_synthesize(config: Config | None = None) -> WikiSynthesizeSummary:
+    """Generate synthesis pages for cross-source clusters of 3+ documents.
+
+    Shared entry point for MCP ``wiki_synthesize`` and ``POST
+    /api/wiki/synthesize``. Concurrency contract matches
+    :func:`run_full_build`: not safe to run in parallel with itself or
+    with other wiki write paths; callers serialize via an external lock
+    on shared event loops.
+    """
+    if config is None:
+        config = cfg
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer, config)
+    return {
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
+    }

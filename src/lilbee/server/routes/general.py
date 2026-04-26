@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from litestar import Response, get, patch
@@ -78,5 +79,11 @@ async def source_content_route(
     # so mypy sees the tuple branch without leaning on ``type: ignore``.
     if isinstance(result, tuple):
         body, content_type = result
-        return Response(content=body, media_type=content_type, status_code=200)
+        # nosniff blocks browser MIME-sniffing fallbacks; attachment forces a
+        # download for any type the handler degraded to octet-stream so
+        # attacker-named files don't render inline anywhere.
+        headers = {"X-Content-Type-Options": "nosniff"}
+        if content_type == "application/octet-stream":
+            headers["Content-Disposition"] = f'attachment; filename="{Path(source).name}"'
+        return Response(content=body, media_type=content_type, status_code=200, headers=headers)
     return result

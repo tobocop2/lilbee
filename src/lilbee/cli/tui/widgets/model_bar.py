@@ -25,7 +25,7 @@ from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
 )
-from lilbee.services import reset_services
+from lilbee.services import get_services, reset_services
 from lilbee.store import SearchScope
 
 log = logging.getLogger(__name__)
@@ -385,6 +385,10 @@ class ModelBar(Widget, can_focus=False):
         value = self._extract_value(event, embed_sel)
         if value is None or value == cfg.embedding_model:
             return
+        # Pin a legacy store's identity to the OLD model BEFORE the cfg mutation
+        # so the gate in store.search/add_chunks correctly detects drift on the
+        # next op. See bb-x1qa.
+        get_services().store.initialize_meta_if_legacy()
         apply_active_model(self.app, "embedding_model", value)
         self._after_model_change()
 

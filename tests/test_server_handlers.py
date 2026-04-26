@@ -633,6 +633,34 @@ class TestSyncStreamDoneDelivery:
         # No done frame should be emitted when sync failed.
         assert done_events == []
 
+    async def test_force_rebuild_flag_reaches_sync(self):
+        """sync_stream(force_rebuild=True) plumbs the flag through to ingest.sync."""
+        sync_result = SyncResult(added=[])
+        observed: dict[str, bool] = {}
+
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            observed["force_rebuild"] = force_rebuild
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream(force_rebuild=True)]
+
+        assert observed["force_rebuild"] is True
+
+    async def test_force_rebuild_defaults_to_false(self):
+        """sync_stream() with no arguments leaves the existing incremental sync semantics."""
+        sync_result = SyncResult(added=[])
+        observed: dict[str, bool] = {}
+
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            observed["force_rebuild"] = force_rebuild
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream()]
+
+        assert observed["force_rebuild"] is False
+
 
 class TestDrainFallback:
     async def test_drain_exits_when_task_done_without_sentinel(self):
@@ -1358,6 +1386,68 @@ class TestSetEmbeddingModel:
         mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
         with pytest.raises(ValueError, match="not embedding"):
             await handlers.set_embedding_model("qwen3:0.6b")
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_returns_reindex_required_when_persisted_meta_differs(self, mock_svc):
+        """Switching to a model different from the one that built the store flags rebuild."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.store.get_meta.return_value = {
+            "embedding_model": "previous-model:v1",
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.model == "nomic-embed-text:v1.5"
+        assert result.reindex_required is True
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_returns_no_reindex_required_on_empty_store(self, mock_svc):
+        """A store with no _meta row (fresh install) does not need a rebuild."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.store.get_meta.return_value = None
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.reindex_required is False
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_returns_no_reindex_required_when_same_model(self, mock_svc):
+        """Re-setting the same model that already built the store does not need a rebuild."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.store.get_meta.return_value = {
+            "embedding_model": "nomic-embed-text:v1.5",
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.reindex_required is False
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc):
+        """A pre-upgrade store with chunks but no _meta is pinned under the OLD cfg.
+
+        Asserts call ordering: initialize_meta_if_legacy must run BEFORE cfg is
+        mutated. A regression that swaps the two would let lazy-init adopt the
+        NEW cfg as the legacy identity, hiding the drift the caller just introduced.
+        """
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        store_mock = mock_svc.return_value.store
+        store_mock.get_meta.return_value = {
+            "embedding_model": "previous-model:v1",
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        cfg_at_pin: dict[str, str] = {}
+
+        def record_cfg() -> None:
+            cfg_at_pin["embedding_model"] = cfg.embedding_model
+
+        store_mock.initialize_meta_if_legacy.side_effect = record_cfg
+        original_model = cfg.embedding_model
+        await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        store_mock.initialize_meta_if_legacy.assert_called_once()
+        assert cfg_at_pin["embedding_model"] == original_model
 
 
 class TestGetConfig:
@@ -2140,3 +2230,161 @@ class TestSourceContentRoute:
         assert resp.status_code == 200
         assert resp.content == payload
         assert resp.headers["content-type"].startswith("application/pdf")
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert "content-disposition" not in resp.headers
+
+    async def test_raw_html_source_forces_octet_stream_attachment(self, isolated_env):
+        """An attacker-named .html source must not render as text/html.
+
+        The server caps the Content-Type to a known-safe allowlist; .html falls
+        outside it, so the response is served as application/octet-stream with
+        Content-Disposition: attachment and X-Content-Type-Options: nosniff.
+        """
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "evil.html").write_bytes(b"<script>alert(1)</script>")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "evil.html", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/octet-stream")
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert "attachment" in resp.headers["content-disposition"]
+        assert "evil.html" in resp.headers["content-disposition"]
+
+    @pytest.mark.parametrize(
+        ("filename", "body"),
+        [
+            ("evil.js", b"alert(1)"),
+            ("evil.css", b"body { background: url(javascript:1); }"),
+            ("evil.xhtml", b"<x:y xmlns:x='ns' />"),
+        ],
+    )
+    async def test_raw_script_carrying_text_types_force_attachment(
+        self, isolated_env, filename, body
+    ):
+        """Text-category types that can carry script are denied inline.
+
+        ``.mjs`` is intentionally omitted from this parametrization because
+        ``mimetypes.guess_type`` resolves it from the Windows registry and
+        returns inconsistent answers across platforms; ``.js`` covers the
+        same ``text/javascript`` deny path with deterministic mapping.
+        """
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / filename).write_bytes(body)
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": filename, "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/octet-stream")
+        assert "attachment" in resp.headers["content-disposition"]
+
+    async def test_raw_svg_source_forces_octet_stream_attachment(self, isolated_env):
+        """SVG can carry script; not in the allowlist → forced to octet-stream."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "evil.svg").write_bytes(
+            b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+        )
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "evil.svg", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/octet-stream")
+        assert "attachment" in resp.headers["content-disposition"]
+
+    async def test_raw_markdown_serves_text_markdown_no_attachment(self, isolated_env):
+        """text/markdown is in the allowlist → served inline with nosniff only."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "note.md").write_text("# hi", encoding="utf-8")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "note.md", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/markdown")
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert "content-disposition" not in resp.headers
+
+    async def test_raw_unknown_extension_forces_attachment(self, isolated_env):
+        """No extension → mimetypes returns None → octet-stream + attachment."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "mystery").write_bytes(b"\x00\x01\x02")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "mystery", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/octet-stream")
+        assert "attachment" in resp.headers["content-disposition"]
+
+    async def test_raw_csv_serves_text_csv_no_attachment(self, isolated_env):
+        """text/csv passes through under the category-based policy.
+
+        The previous static allowlist rejected anything not pre-enumerated;
+        the category policy admits any ``text/*`` (except ``text/html``) so
+        plausible-but-unenumerated types like CSV serve inline.
+        """
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "data.csv").write_text("a,b,c\n1,2,3\n", encoding="utf-8")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "data.csv", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert "content-disposition" not in resp.headers
+
+    async def test_raw_avif_serves_image_avif_no_attachment(self, isolated_env):
+        """image/avif passes through under the category-based policy.
+
+        Modern image formats not present in the previous static allowlist
+        (e.g. AVIF) are admitted now that ``image/*`` is allowed by category.
+        """
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / "pic.avif").write_bytes(b"\x00\x00\x00 ftypavif")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "pic.avif", "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/avif")
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert "content-disposition" not in resp.headers

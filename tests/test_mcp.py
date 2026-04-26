@@ -21,6 +21,7 @@ from lilbee.mcp import (
     search,
     status,
     sync,
+    wiki_build,
     wiki_citations,
     wiki_drafts_diff,
     wiki_drafts_list,
@@ -30,6 +31,7 @@ from lilbee.mcp import (
     wiki_read,
     wiki_status,
     wiki_synthesize,
+    wiki_update,
 )
 from lilbee.store import SearchChunk
 
@@ -706,6 +708,35 @@ class TestWikiStatus:
         assert result["summaries"] == 1
         assert result["drafts"] == 1
         assert result["pages"] == 2
+
+
+class TestWikiBuildTool:
+    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = False
+        assert wiki_build() == {"error": "wiki not enabled"}
+
+    def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        result_dict = {"paths": [str(tmp_path / "p.md")], "entities": 7, "count": 1}
+        monkeypatch.setattr("lilbee.wiki.run_full_build", lambda *a, **kw: result_dict)
+        result = wiki_build()
+        assert result["command"] == "wiki_build"
+        assert result["count"] == 1
+        assert result["entities"] == 7
+
+
+class TestWikiUpdateTool:
+    def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
+        cfg.wiki = False
+        assert wiki_update() == {"error": "wiki not enabled"}
+
+    def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
+        cfg.wiki = True
+        result_dict = {"paths": [], "entities": 0, "count": 0}
+        monkeypatch.setattr("lilbee.wiki.run_full_build", lambda *a, **kw: result_dict)
+        result = wiki_update()
+        assert result["command"] == "wiki_update"
+        assert result["count"] == 0
 
 
 class TestWikiSynthesizeTool:

@@ -165,6 +165,50 @@ def test_unload_all(_mem: object, model_dir: Path) -> None:
 
 
 @mock.patch("lilbee.providers.model_cache.get_available_memory", return_value=10 * 1024**3)
+def test_unload_path_evicts_only_matching_path(_mem: object, model_dir: Path) -> None:
+    cache = MemoryAwareModelCache(loader=_fake_loader)
+    chat_path = model_dir / "chat.gguf"
+    embed_path = model_dir / "embed.gguf"
+    chat = cache.load_model(chat_path, mode="chat")
+    embed = cache.load_model(embed_path, mode="embed")
+
+    evicted = cache.unload_path(chat_path)
+
+    assert evicted == 1
+    chat.close.assert_called_once()
+    embed.close.assert_not_called()
+    stats = cache.get_stats()
+    assert stats["loaded_models"] == 1
+    assert stats["models"][0]["path"] == str(embed_path)
+
+
+@mock.patch("lilbee.providers.model_cache.get_available_memory", return_value=10 * 1024**3)
+def test_unload_path_evicts_all_modes_for_same_path(_mem: object, model_dir: Path) -> None:
+    cache = MemoryAwareModelCache(loader=_fake_loader)
+    path = model_dir / "embed.gguf"
+    embed = cache.load_model(path, mode="embed")
+    rerank = cache.load_model(path, mode="rerank")
+
+    evicted = cache.unload_path(path)
+
+    assert evicted == 2
+    embed.close.assert_called_once()
+    rerank.close.assert_called_once()
+    assert cache.get_stats()["loaded_models"] == 0
+
+
+@mock.patch("lilbee.providers.model_cache.get_available_memory", return_value=10 * 1024**3)
+def test_unload_path_unknown_path_is_noop(_mem: object, model_dir: Path) -> None:
+    cache = MemoryAwareModelCache(loader=_fake_loader)
+    cache.load_model(model_dir / "chat.gguf", mode="chat")
+
+    evicted = cache.unload_path(model_dir / "missing.gguf")
+
+    assert evicted == 0
+    assert cache.get_stats()["loaded_models"] == 1
+
+
+@mock.patch("lilbee.providers.model_cache.get_available_memory", return_value=10 * 1024**3)
 def test_get_stats(_mem: object, model_dir: Path) -> None:
     cache = MemoryAwareModelCache(
         max_memory_fraction=0.8, keep_alive_seconds=120, loader=_fake_loader

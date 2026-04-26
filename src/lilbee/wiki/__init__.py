@@ -23,6 +23,8 @@ from lilbee.wiki.gen import (
     WikiProgressCallback,
     build_wiki,
     generate_synthesis_pages,
+    run_full_build,
+    run_full_synthesize,
 )
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import lint_all, lint_wiki_page
@@ -61,6 +63,8 @@ __all__ = [
     "prune_wiki",
     "read_page",
     "render_citation_block",
+    "run_full_build",
+    "run_full_synthesize",
     "strip_citation_block",
     "update_wiki_index",
     "verify_citation",
