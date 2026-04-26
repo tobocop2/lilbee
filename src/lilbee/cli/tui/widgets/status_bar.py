@@ -1,4 +1,4 @@
-"""ViewTabs — view tab strip with mode + active-model indicator."""
+"""ViewTabs: view tab strip with mode and active-model indicator."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class ViewTabs(Widget):
     """View tab strip with mode + active-model indicator.
 
     The active chat model is shown as a right-aligned pill so the user
-    can see which model is loaded on every screen, not just chat — the
+    can see which model is loaded on every screen, not just chat. The
     chat ModelBar (which only mounts on the chat screen) used to be the
     only place that surfaced the active model.
     """

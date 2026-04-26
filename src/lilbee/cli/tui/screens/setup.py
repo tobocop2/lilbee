@@ -261,12 +261,16 @@ class SetupWizard(Screen[str | None]):
         if ref is None:
             return
         # Write the fragment; embedding never overrides chat and vice versa.
-        if task == ModelTask.CHAT:
-            cfg.chat_model = ref
-            settings.set_value(cfg.data_root, "chat_model", ref)
-        elif task == ModelTask.EMBEDDING:
-            cfg.embedding_model = ref
-            settings.set_value(cfg.data_root, "embedding_model", ref)
+        # Routes through LilbeeApp.set_active_model so cache eviction and
+        # ViewTabs pill refresh fire from the wizard path too. Falls back
+        # to the direct write when the host App isn't a LilbeeApp.
+        key = "chat_model" if task == ModelTask.CHAT else "embedding_model"
+        if task in (ModelTask.CHAT, ModelTask.EMBEDDING):
+            if isinstance(self.app, LilbeeApp):
+                self.app.set_active_model(key, ref)
+            else:
+                setattr(cfg, key, ref)
+                settings.set_value(cfg.data_root, key, ref)
 
         pending = _pending_download(card)
         if (

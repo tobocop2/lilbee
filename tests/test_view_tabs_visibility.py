@@ -1,4 +1,4 @@
-"""Per-screen ViewTabs visibility — guards against the page indicator
+"""Per-screen ViewTabs visibility. Guards against the page indicator
 being mounted in compose() but invisible at render time."""
 
 from __future__ import annotations
@@ -74,12 +74,12 @@ async def test_view_tabs_visible_on_screen(view_name: str) -> None:
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Chat starts in insert mode — escape to normal so [/] navigation works.
+        # Chat starts in insert mode; escape to normal so [/] navigation works.
         await pilot.press("escape")
         await pilot.pause()
         app.switch_view(view_name)
         await pilot.pause()
-        await pilot.pause()  # second tick — switch_screen completes via call_later
+        await pilot.pause()  # second tick: switch_screen completes via call_later
 
         tabs = app.screen.query_one(ViewTabs)
         assert tabs.is_mounted, f"ViewTabs not mounted on {view_name}"
@@ -119,7 +119,7 @@ async def test_view_tabs_docks_at_top_not_bottom() -> None:
         footer = app.screen.query_one(Footer)
         assert tabs.region.y < footer.region.y, (
             f"ViewTabs (y={tabs.region.y}) must sit above Footer "
-            f"(y={footer.region.y}) — airline-style header."
+            f"(y={footer.region.y}); airline-style header."
         )
         # ViewTabs is in the top half of a 40-row terminal.
         assert tabs.region.y < 20

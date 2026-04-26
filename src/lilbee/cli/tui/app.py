@@ -176,6 +176,25 @@ class LilbeeApp(App[None]):
         cfg.theme = name
         settings.set_value(cfg.data_root, "theme", name)
 
+    def set_active_model(self, key: str, value: str) -> None:
+        """Single write boundary for the active chat / embedding / vision /
+        reranker model ref.
+
+        Writes the in-memory ``cfg`` field, persists to ``config.toml``, and
+        publishes ``settings_changed_signal`` so subscribers (cache eviction,
+        the ViewTabs model pill, ChatScreen status line) react regardless of
+        which surface triggered the change: Settings UI, ModelBar dropdown,
+        ``/model`` command, catalog row select, or setup wizard.
+
+        Per AGENTS.md "Write-boundary canonicalization beats read-path
+        fallbacks": every model-mutation path goes through this method.
+        """
+        from lilbee import settings
+
+        setattr(cfg, key, value)
+        settings.set_value(cfg.data_root, key, value)
+        self.settings_changed_signal.publish((key, value))
+
     def _sync_theme_index_to_current(self) -> None:
         """Align the cycle index with the active theme so Ctrl+T moves from there.
 
@@ -260,11 +279,14 @@ class LilbeeApp(App[None]):
             # so ViewTabs.on_mount captured the previous active_view value.
             # Push the new value into the live ViewTabs so the highlighted
             # tab tracks the actual screen instead of lagging by one step.
+            # Tolerate NoMatches: the help / setup screens don't mount ViewTabs.
             from contextlib import suppress
+
+            from textual.css.query import NoMatches
 
             from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-            with suppress(Exception):
+            with suppress(NoMatches):
                 self.screen.query_one(ViewTabs).active_view = view_name
 
         self.call_later(_finish)

@@ -98,7 +98,7 @@ async def test_view_tabs_renders_active_chat_model_on_chat(_patch_chat_setup) ->
 
 
 async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup) -> None:
-    """The model pill follows the user to non-chat screens — the bug 2 fix."""
+    """The model pill follows the user to non-chat screens; the bug 2 fix."""
     cfg.chat_model = "llama3:8b"
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -141,7 +141,7 @@ async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -
         tabs = app.screen.query_one(ViewTabs)
         before = _rendered_tab_text(tabs)
 
-        # Change cfg out of band but only publish an unrelated key — pill must not flip.
+        # Change cfg out of band but only publish an unrelated key; pill must not flip.
         cfg.chat_model = "should-not-show"
         app.settings_changed_signal.publish(("temperature", 0.5))
         await pilot.pause()
@@ -296,7 +296,7 @@ async def test_app_restores_persisted_theme_on_startup(_patch_chat_setup) -> Non
 
 
 async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) -> None:
-    """Garbage in cfg.theme doesn't brick the TUI — fall back to the default."""
+    """Garbage in cfg.theme doesn't brick the TUI; fall back to the default."""
     cfg.theme = "not-a-real-theme"
 
     app = LilbeeApp()
