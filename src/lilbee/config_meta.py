@@ -1,11 +1,4 @@
-"""Metadata derived from :class:`lilbee.config.Config` field declarations.
-
-These field sets used to live in ``lilbee.server.handlers``, but the CLI and
-MCP entry points now need them too (to know which fields a per-vault
-``config.toml`` is allowed to overlay). Keeping them next to the model they
-describe, and away from the FastAPI bootstrap, lets non-server modules
-import them without paying the handlers import cost.
-"""
+"""Field-set metadata derived from :class:`lilbee.config.Config`."""
 
 from __future__ import annotations
 
@@ -40,11 +33,7 @@ def _is_nullable(info: FieldInfo) -> bool:
 def _derive_field_sets() -> tuple[
     types.MappingProxyType[str, bool], frozenset[str], frozenset[str]
 ]:
-    """Derive writable, reindex, and public field sets from Config metadata.
-
-    Model-role fields are public even when not writable: they are set via
-    ``PUT /api/models/<role>`` but must still surface in ``GET /api/config``.
-    """
+    """Derive writable, reindex, and public field sets from Config metadata."""
     writable: dict[str, bool] = {}
     reindex: set[str] = set()
     public: set[str] = set()

@@ -60,14 +60,7 @@ seed_option = typer.Option(None, "--seed", help="Random seed for reproducibility
 
 
 def _apply_data_root(root: Path) -> None:
-    """Point all cfg data paths at *root* AND re-read per-root config.toml.
-
-    cfg's scalar fields (chat_model, embedding_model, temperature, ...) are
-    populated from the *global* config.toml at module import time, before
-    ``--data-dir`` / ``LILBEE_DATA`` / ``--global`` ever land. Without an
-    overlay step here, a managed server pointed at a per-vault data root
-    silently keeps using whichever models the global file last wrote.
-    """
+    """Point cfg paths at *root* and overlay its config.toml onto cfg."""
     cfg.data_root = root
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"
@@ -76,18 +69,10 @@ def _apply_data_root(root: Path) -> None:
 
 
 def overlay_persisted_settings(root: Path) -> None:
-    """Re-apply persisted scalar fields from ``<root>/config.toml`` onto cfg.
+    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg.
 
-    Public so the MCP ``init`` tool can call it after switching the session
-    to a project-local KB. Without this, the per-project config.toml is
-    silently ignored on every entry point other than the CLI's ``--data-dir``.
-
-    The set of overlayable fields is derived dynamically from Config metadata
-    rather than hand-enumerated: every field that ``settings.set_value`` and
-    ``settings.update_values`` can persist (writable + model-role fields) is
-    a candidate. A malformed or out-of-range stale value is logged and
-    skipped, so cfg keeps its current (validated) value rather than crashing
-    startup.
+    Bad values are logged and skipped. Shared with the MCP ``init`` tool
+    so per-vault model preferences take effect on every entry point.
     """
     log = logging.getLogger(__name__)
     try:
