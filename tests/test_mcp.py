@@ -390,7 +390,7 @@ class TestInit:
         assert cfg.embedding_model == "nomic-embed-text:latest"
 
     def test_init_overlays_per_root_config_toml(self, tmp_path):
-        """init() must re-read the project base's config.toml — same fix as
+        """init() must re-read the project base's config.toml, the same fix as
         the CLI's --data-dir entry point. Without this, switching the MCP
         session to a project that has its own model preferences silently
         keeps the previously-active models."""

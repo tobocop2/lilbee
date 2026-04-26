@@ -531,7 +531,7 @@ class TestApplyOverrides:
         assert cfg.embedding_model == "kept-embed:latest"
 
     def test_data_dir_overlay_covers_writable_scalar_fields(self, tmp_path):
-        """Writable scalar fields (e.g. temperature, top_k) overlay too — not just models."""
+        """Writable scalar fields (e.g. temperature, top_k) overlay too, not just models."""
         from lilbee.cli import apply_overrides
 
         cfg.temperature = 0.9

@@ -3,7 +3,7 @@
 These field sets used to live in ``lilbee.server.handlers``, but the CLI and
 MCP entry points now need them too (to know which fields a per-vault
 ``config.toml`` is allowed to overlay). Keeping them next to the model they
-describe — and away from the FastAPI bootstrap — lets non-server modules
+describe, and away from the FastAPI bootstrap, lets non-server modules
 import them without paying the handlers import cost.
 """
 

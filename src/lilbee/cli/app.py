@@ -63,7 +63,7 @@ def _apply_data_root(root: Path) -> None:
     """Point all cfg data paths at *root* AND re-read per-root config.toml.
 
     cfg's scalar fields (chat_model, embedding_model, temperature, ...) are
-    populated from the *global* config.toml at module import time — before
+    populated from the *global* config.toml at module import time, before
     ``--data-dir`` / ``LILBEE_DATA`` / ``--global`` ever land. Without an
     overlay step here, a managed server pointed at a per-vault data root
     silently keeps using whichever models the global file last wrote.
@@ -79,14 +79,14 @@ def overlay_persisted_settings(root: Path) -> None:
     """Re-apply persisted scalar fields from ``<root>/config.toml`` onto cfg.
 
     Public so the MCP ``init`` tool can call it after switching the session
-    to a project-local KB — without this, the per-project config.toml is
+    to a project-local KB. Without this, the per-project config.toml is
     silently ignored on every entry point other than the CLI's ``--data-dir``.
 
     The set of overlayable fields is derived dynamically from Config metadata
     rather than hand-enumerated: every field that ``settings.set_value`` and
     ``settings.update_values`` can persist (writable + model-role fields) is
     a candidate. A malformed or out-of-range stale value is logged and
-    skipped — cfg keeps its current (validated) value rather than crashing
+    skipped, so cfg keeps its current (validated) value rather than crashing
     startup.
     """
     log = logging.getLogger(__name__)
