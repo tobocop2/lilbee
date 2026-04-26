@@ -282,8 +282,14 @@ class Greeter:
             f.flush()
             path = Path(f.name)
 
+        # Force _ensure_language True so the try/except in chunk_code is
+        # actually entered; otherwise CI hosts without tree-sitter Python
+        # preloaded short-circuit to the no-language fallback first.
         try:
-            with patch("lilbee.code_chunker.process", side_effect=RuntimeError("parse fail")):
+            with (
+                patch("lilbee.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.code_chunker.process", side_effect=RuntimeError("parse fail")),
+            ):
                 chunks = chunk_code(path)
                 assert isinstance(chunks, list)
         finally:
@@ -300,11 +306,26 @@ class Greeter:
             path = Path(f.name)
 
         try:
-            with patch("lilbee.code_chunker._extract_symbols", return_value=[]):
+            # Force _ensure_language True so the no-symbols branch is reachable
+            # on CI hosts where tree-sitter Python isn't yet downloaded.
+            with (
+                patch("lilbee.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.code_chunker._extract_symbols", return_value=[]),
+            ):
                 chunks = chunk_code(path)
                 assert isinstance(chunks, list)
         finally:
             path.unlink()
+
+    def test_ensure_language_returns_true_when_already_loaded(self):
+        """The early-return branch fires when has_language already says yes."""
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import _ensure_language
+
+        with patch("lilbee.code_chunker.has_language", return_value=True) as has:
+            assert _ensure_language("python") is True
+            has.assert_called_once_with("python")
 
 
 class TestHeadingContextNoDuplicate:
