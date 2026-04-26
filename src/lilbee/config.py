@@ -164,11 +164,7 @@ DEFAULT_ALLOWED_NER_LABELS = frozenset(
 # Timeout for backend catalog / management HTTP calls.
 DEFAULT_HTTP_TIMEOUT = 30.0
 
-# Safe default context window when ``cfg.num_ctx`` is unset. Modern
-# chat GGUFs train at 128K+ and letting llama.cpp allocate the full
-# training context OOMs on most laptops. 8192 mirrors common local-LLM
-# tooling and is also used as the upper cap when the model's training
-# context is larger.
+# Safe default + cap for chat-mode n_ctx; full 128K+ training contexts OOM laptops.
 DEFAULT_NUM_CTX = 8192
 
 CHUNKS_TABLE = "chunks"

@@ -1,10 +1,4 @@
-"""Settings UI -> model cache eviction wiring.
-
-Verifies that publishing settings_changed_signal for a load-affecting key
-calls invalidate_load_cache() on the active provider, while ignoring
-sampling-only keys. The provider Protocol's no-op default keeps litellm
-backends untouched; only native llama-cpp evicts.
-"""
+"""Settings UI to model cache eviction wiring."""
 
 from __future__ import annotations
 

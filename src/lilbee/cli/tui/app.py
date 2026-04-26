@@ -16,7 +16,7 @@ from textual.signal import Signal
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.config import cfg
-from lilbee.services import reset_services
+from lilbee.services import get_services, reset_services
 
 log = logging.getLogger(__name__)
 
@@ -84,19 +84,13 @@ def get_views() -> dict[str, Callable[[], Screen]]:
 
 
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
-    """Drop loaded-model state when a load-affecting setting changes.
-
-    The provider Protocol gates this; litellm/remote backends inherit a
-    no-op default since they have no local model cache. Only the native
-    llama-cpp side actually evicts.
-    """
+    """Drop loaded-model state when a load-affecting setting changes."""
+    # Lazy: llama_cpp_provider's transitive imports cost ~500ms.
     from lilbee.providers.llama_cpp_provider import LOAD_AFFECTING_KEYS
-    from lilbee.services import get_services
 
     key, _value = payload
-    if key not in LOAD_AFFECTING_KEYS:
-        return
-    get_services().provider.invalidate_load_cache()
+    if key in LOAD_AFFECTING_KEYS:
+        get_services().provider.invalidate_load_cache()
 
 
 class LilbeeApp(App[None]):

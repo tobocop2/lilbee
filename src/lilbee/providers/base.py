@@ -121,13 +121,5 @@ class LLMProvider(Protocol):
         ...
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Drop loaded-model state so the next call re-reads load-time settings.
-
-        With ``model_path=None`` evict everything; with a path, evict only
-        entries for that file across all modes. Native llama-cpp uses
-        this to react to load-affecting setting changes and to model
-        switches. Backends without local model loading (litellm/remote)
-        inherit the no-op default; load-time settings like ``num_ctx``
-        are the API server's concern, not lilbee's.
-        """
+        """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
         return

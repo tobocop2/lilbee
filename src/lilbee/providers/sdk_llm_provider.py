@@ -255,10 +255,4 @@ class SdkLLMProvider(LLMProvider):
         """SDK-backed providers hold no lilbee-side resources."""
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """No-op: cloud/remote backends have no local model cache to evict.
-
-        Load-time settings like ``num_ctx`` are the API server's concern
-        on this path, not lilbee's. The explicit override keeps SDK
-        backends symmetric with the other ``LLMProvider`` implementations
-        (see also ``supports_rerank``).
-        """
+        """No-op: cloud backends have no local model cache to evict."""
