@@ -126,7 +126,10 @@ class CatalogScreen(Screen[None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield VerticalScroll(id="catalog-list")
@@ -134,7 +137,6 @@ class CatalogScreen(Screen[None]):
         yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:

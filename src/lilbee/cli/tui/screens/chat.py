@@ -155,8 +155,11 @@ class ChatScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
-        yield ModelBar(id="model-bar")
+        with TopBars():
+            yield ModelBar(id="model-bar")
+            yield ViewTabs()
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
@@ -169,7 +172,6 @@ class ChatScreen(Screen[None]):
                     suggester=SlashSuggester(use_cache=False),
                 )
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:

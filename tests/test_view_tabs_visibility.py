@@ -102,6 +102,29 @@ async def test_view_tabs_visible_on_chat() -> None:
         assert str(tabs.styles.display) != "none"
 
 
+async def test_view_tabs_docks_at_top_not_bottom() -> None:
+    """Airline-style header: ViewTabs sits at the top of every screen
+    (above the screen content), and the Footer keybindings stay at the
+    bottom. Asserting via region.y instead of compose-tree position so
+    the test catches CSS regressions too."""
+    from textual.widgets import Footer
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        tabs = app.screen.query_one(ViewTabs)
+        footer = app.screen.query_one(Footer)
+        assert tabs.region.y < footer.region.y, (
+            f"ViewTabs (y={tabs.region.y}) must sit above Footer "
+            f"(y={footer.region.y}) — airline-style header."
+        )
+        # ViewTabs is in the top half of a 40-row terminal.
+        assert tabs.region.y < 20
+
+
 async def test_view_tabs_active_view_tracks_screen_changes() -> None:
     """Regression: ViewTabs.on_mount captured app.active_view once, but
     switch_view's _finish callback updates app.active_view AFTER the new

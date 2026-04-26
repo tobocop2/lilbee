@@ -101,7 +101,10 @@ class WikiScreen(Screen[None]):
 
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
         tree: Tree[str | None] = Tree("Wiki", id="wiki-page-list")
         tree.show_root = False
         yield Horizontal(
@@ -126,7 +129,6 @@ class WikiScreen(Screen[None]):
         )
         with BottomBars():
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:

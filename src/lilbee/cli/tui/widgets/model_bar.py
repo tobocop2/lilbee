@@ -235,7 +235,6 @@ class ModelBar(Widget, can_focus=False):
     # forces the compositor to re-paint the covered region.
     DEFAULT_CSS = """
     ModelBar {
-        dock: top;
         height: auto;
         padding: 0 1;
     }

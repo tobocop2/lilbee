@@ -63,7 +63,10 @@ class TaskCenter(Screen[None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
         yield Label(msg.TASK_CENTER_TITLE, id="task-center-title")
         yield Label("", id="task-center-counts")
         yield VerticalScroll(id="task-rows")
@@ -74,7 +77,6 @@ class TaskCenter(Screen[None]):
         with BottomBars():
             yield Label(msg.TASK_CENTER_HINT, id="task-center-hint")
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def action_go_back(self) -> None:

@@ -142,14 +142,16 @@ class SetupWizard(Screen[str | None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_INTRO, id="setup-intro")
         yield VerticalScroll(id="setup-grid-container")
         with BottomBars():
             yield Label(self._initial_hint_text(), id="setup-enter-hint")
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def _initial_hint_text(self) -> str:
