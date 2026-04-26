@@ -527,6 +527,11 @@ class Config(BaseSettings):
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
 
+    # TUI theme name. Persists the user's last cycle pick (ctrl+t) so the
+    # next session opens with the same colors instead of resetting to
+    # the gruvbox default.
+    theme: str = ConfigField(default="gruvbox", writable=True)
+
     # Per-model generation defaults set via apply_model_defaults().
     _model_defaults: Any = None
 

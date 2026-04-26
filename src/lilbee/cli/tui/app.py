@@ -98,7 +98,7 @@ class LilbeeApp(App[None]):
         Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
-        Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
         # priority=True is required: even though NavAwareInput lets [ and ]
         # bubble past Input.check_consume_key, Textual's focused Input still
@@ -142,7 +142,11 @@ class LilbeeApp(App[None]):
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
-        self.theme = _DEFAULT_THEME
+        # Restore the persisted theme so the TUI opens in whatever the user
+        # picked last session, not always the gruvbox default.
+        persisted = cfg.theme or _DEFAULT_THEME
+        self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
+        self._sync_theme_index_to_current()
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -155,13 +159,34 @@ class LilbeeApp(App[None]):
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
         name = DARK_THEMES[self._theme_index]
-        self.theme = name
+        self._apply_and_persist_theme(name)
         self.notify(msg.THEME_SET.format(name=name))
 
     def set_theme(self, name: str) -> None:
-        """Set theme by name (used by /theme command)."""
+        """Set theme by name (used by /theme command). Persists across sessions."""
         if name in self.available_themes:
-            self.theme = name
+            self._apply_and_persist_theme(name)
+            self._sync_theme_index_to_current()
+
+    def _apply_and_persist_theme(self, name: str) -> None:
+        """Apply *name* live and write it to config.toml so it sticks across sessions."""
+        from lilbee import settings
+
+        self.theme = name
+        cfg.theme = name
+        settings.set_value(cfg.data_root, "theme", name)
+
+    def _sync_theme_index_to_current(self) -> None:
+        """Align the cycle index with the active theme so Ctrl+T moves from there.
+
+        Without this, restoring a persisted dracula and then pressing Ctrl+T
+        would jump back to the index-0 theme regardless of where the user
+        actually is.
+        """
+        try:
+            self._theme_index = DARK_THEMES.index(self.theme)
+        except ValueError:
+            self._theme_index = 0
 
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel active task > cancel stream > quit.

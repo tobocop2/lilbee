@@ -137,15 +137,31 @@ class SetupWizard(Screen[str | None]):
         return self._selections[ModelTask.EMBEDDING][0]
 
     def compose(self) -> ComposeResult:
+        from textual.widgets import Footer
+
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_INTRO, id="setup-intro")
         yield VerticalScroll(id="setup-grid-container")
         with BottomBars():
-            yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
+            yield Label(self._initial_hint_text(), id="setup-enter-hint")
             yield TaskBar()
+            yield ViewTabs()
+            yield Footer()
+
+    def _initial_hint_text(self) -> str:
+        """Pick the hint that matches the user's actual situation.
+
+        When both roles already have an installed model, the wizard is a
+        review screen rather than a first-run install path, so the hint
+        should tell the user how to leave instead of how to install.
+        """
+        if self._chat_installed and self._embed_installed:
+            return msg.SETUP_RETURN_HINT
+        return msg.SETUP_ENTER_HINT
 
     def on_mount(self) -> None:
         self._build_grid()

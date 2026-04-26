@@ -1,4 +1,4 @@
-"""ViewTabs — view tab strip with mode indicator."""
+"""ViewTabs — view tab strip with mode + active-model indicator."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import DOT_SEP, pill
+from lilbee.config import cfg
 
 _MODE_COLORS: dict[str, str] = {
     msg.MODE_NORMAL: "$primary",
@@ -18,9 +19,20 @@ _MODE_COLORS: dict[str, str] = {
 
 _DEFAULT_MODE_COLOR = "$error"
 
+# Settings keys that change what the model pill should render. Triggers
+# a refresh on settings_changed_signal without coupling ViewTabs to any
+# specific publisher (ModelBar dropdowns, Settings UI editor, etc.).
+_MODEL_PILL_KEYS = frozenset({"chat_model"})
+
 
 class ViewTabs(Widget):
-    """View tab strip with mode indicator."""
+    """View tab strip with mode + active-model indicator.
+
+    The active chat model is shown as a right-aligned pill so the user
+    can see which model is loaded on every screen, not just chat — the
+    chat ModelBar (which only mounts on the chat screen) used to be the
+    only place that surfaced the active model.
+    """
 
     # NOTE: no ``dock: bottom`` here. ViewTabs is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
@@ -43,13 +55,25 @@ class ViewTabs(Widget):
 
     def on_mount(self) -> None:
         self.active_view = getattr(self.app, "active_view", msg.DEFAULT_VIEW)
-        self._refresh()
+        signal = getattr(self.app, "settings_changed_signal", None)
+        if signal is not None:
+            signal.subscribe(self, self._on_settings_changed)
+        # Defer the initial paint to the next tick so the inner Static is
+        # fully mounted; calling update() during on_mount can no-op when
+        # the Static's own mount cycle hasn't completed.
+        self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
         self._refresh()
 
     def watch_mode_text(self, value: str) -> None:
         self._refresh()
+
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        """Refresh the model pill when the active chat model changes."""
+        key, _value = payload
+        if key in _MODEL_PILL_KEYS:
+            self._refresh()
 
     def _refresh(self) -> None:
         if not self.is_mounted:
@@ -71,7 +95,13 @@ class ViewTabs(Widget):
             joined.append(part)
         parts.extend(joined)
 
-        # Mode pill (right-aligned)
+        # Active-model pill (right-aligned, before the mode pill)
+        chat_model = cfg.chat_model
+        if chat_model:
+            parts.append("  ")
+            parts.append(pill(f" {chat_model} ", "$accent", "$text"))
+
+        # Mode pill (right-aligned, last)
         if self.mode_text:
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")

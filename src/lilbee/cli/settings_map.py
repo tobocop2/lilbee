@@ -155,6 +155,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Display",
         help_text="Show model reasoning/thinking tokens in output",
     ),
+    "theme": SettingDef(
+        str,
+        nullable=False,
+        group="Display",
+        help_text="TUI color theme. Cycle with Ctrl+T; the active theme persists across sessions.",
+    ),
     "wiki": SettingDef(
         bool,
         nullable=False,
