@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.providers.model_ref import parse_model_ref, translate_options
+
+# Canonical native HF ref for tests that need a local model.
+_LOCAL_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
 
 class TestParseModelRef:
-    def test_local_bare_name(self) -> None:
-        ref = parse_model_ref("qwen3")
+    def test_native_hf_ref(self) -> None:
+        ref = parse_model_ref(_LOCAL_REF)
         assert ref.provider == "local"
-        assert ref.name == "qwen3:latest"
-        assert ref.raw == "qwen3"
+        assert ref.name == _LOCAL_REF
+        assert ref.raw == _LOCAL_REF
 
-    def test_local_with_tag(self) -> None:
-        ref = parse_model_ref("qwen3:0.6b")
+    def test_bare_hf_repo_is_local(self) -> None:
+        """A bare ``<org>/<repo>`` (no filename) is treated as a local ref."""
+        ref = parse_model_ref("Qwen/Qwen3-8B-GGUF")
         assert ref.provider == "local"
-        assert ref.name == "qwen3:0.6b"
+        assert ref.name == "Qwen/Qwen3-8B-GGUF"
 
     def test_ollama_prefix(self) -> None:
         ref = parse_model_ref("ollama/qwen3:8b")
@@ -42,20 +48,19 @@ class TestParseModelRef:
         assert ref.provider == "gemini"
         assert ref.name == "gemini-2.5-pro"
 
-    def test_unknown_prefix_treated_as_local(self) -> None:
-        ref = parse_model_ref("maternion/LightOnOCR-2")
-        assert ref.provider == "local"
-        assert ref.name == "maternion/LightOnOCR-2:latest"
+    def test_legacy_name_tag_rejected(self) -> None:
+        """Bare ``name:tag`` is no longer recognised; the parser raises."""
+        with pytest.raises(ValueError, match="Legacy model ref"):
+            parse_model_ref("qwen3:0.6b")
 
-    def test_unknown_prefix_with_tag(self) -> None:
-        ref = parse_model_ref("maternion/LightOnOCR-2:v1")
-        assert ref.provider == "local"
-        assert ref.name == "maternion/LightOnOCR-2:v1"
+    def test_unrecognized_shape_rejected(self) -> None:
+        """A bare name with no provider prefix and no ``/`` is rejected."""
+        with pytest.raises(ValueError, match="not recognized"):
+            parse_model_ref("qwen3")
 
-    def test_empty_string(self) -> None:
-        ref = parse_model_ref("")
-        assert ref.provider == "local"
-        assert ref.name == ":latest"
+    def test_empty_string_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            parse_model_ref("")
 
 
 class TestProviderModelRefProperties:
@@ -66,7 +71,7 @@ class TestProviderModelRefProperties:
         assert ref.is_remote is True
 
     def test_local_model_is_local(self) -> None:
-        ref = parse_model_ref("qwen3:8b")
+        ref = parse_model_ref(_LOCAL_REF)
         assert ref.is_local is True
         assert ref.is_api is False
         assert ref.is_remote is False
@@ -82,7 +87,7 @@ class TestProviderModelRefProperties:
         assert ref.needs_api_base is False
 
     def test_local_model_needs_api_base(self) -> None:
-        ref = parse_model_ref("qwen3:8b")
+        ref = parse_model_ref(_LOCAL_REF)
         assert ref.needs_api_base is True
 
     def test_ollama_model_needs_api_base(self) -> None:
@@ -104,8 +109,8 @@ class TestForOpenaiPrefix:
         assert ref.for_openai_prefix() == "anthropic/claude-sonnet-4-20250514"
 
     def test_local_model(self) -> None:
-        ref = parse_model_ref("qwen3:8b")
-        assert ref.for_openai_prefix() == "qwen3:8b"
+        ref = parse_model_ref(_LOCAL_REF)
+        assert ref.for_openai_prefix() == _LOCAL_REF
 
 
 class TestForDisplay:
@@ -125,7 +130,7 @@ class TestTranslateOptions:
         assert "top_k" not in result
 
     def test_local_model_keeps_options(self) -> None:
-        ref = parse_model_ref("qwen3:8b")
+        ref = parse_model_ref(_LOCAL_REF)
         opts = {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096}
         result = translate_options(opts, ref)
         assert result == {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096}

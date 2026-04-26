@@ -394,24 +394,24 @@ class TestSetRerankerModelRoute:
 
     @mock.patch("lilbee.server.handlers._require_model_available")
     @mock.patch("lilbee.server.handlers._set_model", new_callable=AsyncMock)
-    def test_route_canonicalizes_hf_repo_form(self, mock_set, mock_available, client):
-        """POSTing hf_repo form returns the catalog's canonical ``name:tag``.
+    def test_route_resolves_bare_repo_to_installed_quant(self, mock_set, mock_available, client):
+        """POSTing a bare ``hf_repo`` resolves to whichever quant is installed.
 
-        Locks the full Litestar pipeline (route serialization + handler
-        + ``_require_model_for_task`` canonicalization) so the response
-        body carries the registry key rather than the user-supplied
-        hf_repo ref.
+        Locks the Litestar pipeline (route serialization + handler +
+        ``_require_model_for_task`` resolution) so the response body
+        carries the canonical full ref of the installed quant, not the
+        bare repo the user posted.
         """
-        mock_available.return_value = "gpustack/bge-reranker-v2-m3-GGUF:latest"
-        mock_set.return_value = {"model": "bge-reranker-v2-m3:latest"}
+        full_ref = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
+        mock_available.return_value = full_ref
+        mock_set.return_value = {"model": full_ref}
         resp = client.put(
             "/api/models/reranker",
             json={"model": "gpustack/bge-reranker-v2-m3-GGUF"},
         )
         assert resp.status_code == 200
-        assert resp.json()["model"] == "bge-reranker-v2-m3:latest"
-        # _set_model was called with the canonical ref, not the hf_repo ref.
-        assert mock_set.call_args.args[1] == "bge-reranker-v2-m3:latest"
+        assert resp.json()["model"] == full_ref
+        assert mock_set.call_args.args[1] == full_ref
 
 
 class TestModelsCatalogRoute:
@@ -501,7 +501,7 @@ class TestConfigDefaultsRoute:
         # Model role defaults surface so UI reset affordances can restore
         # them via PUT /api/models/<role>, even though the fields are
         # non-writable on PATCH /api/config.
-        assert data["chat_model"] == "qwen3:0.6b"
+        assert data["chat_model"] == "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
         # Wiki cfg fields are writable and appear with their declared defaults.
         assert data["wiki_prune_raw"] is False
         assert data["wiki_embedding_faithfulness_threshold"] == 0.5
