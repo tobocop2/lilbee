@@ -1717,39 +1717,7 @@ class WikiBuildSummary(TypedDict):
 
 
 def run_full_build(config: Config | None = None) -> WikiBuildSummary:
-    """Extract entities + build wiki across every ingested source.
-
-    Shared entry point for CLI ``wiki build`` / ``wiki update``, MCP
-    ``wiki_build`` / ``wiki_update``, and ``POST /api/wiki/build`` /
-    ``PATCH /api/wiki/update``.
-
-    Side effects (in order):
-        1. Reads every source via ``store.get_sources()``.
-        2. Reads chunks for each source via ``store.get_chunks_by_source``.
-        3. Calls the entity extractor (may invoke the LLM provider).
-        4. Calls :func:`build_wiki` which writes wiki page files.
-        5. Calls :func:`update_wiki_index` which rewrites ``wiki/index.md``.
-        6. Calls :func:`append_wiki_log` which appends a build entry.
-
-    Concurrency:
-        Not safe to run concurrently with itself or with another wiki
-        write path (drafts accept/reject, prune). Callers that share an
-        event loop or process must serialize via an external lock — the
-        REST routes do this with a per-process ``asyncio.Lock``; MCP and
-        CLI run in their own processes and don't need one.
-
-        Running concurrently with ``/api/sync`` (an ingest write path
-        rather than a wiki write path) is permitted but not coherent: a
-        sync that lands between this function's source-scan and per-source
-        chunk-fetch may produce a wiki that's missing pages for sources
-        ingested mid-build. The result is incomplete, not corrupt, and
-        is repaired by re-running ``run_full_build`` after the sync
-        finishes.
-
-    A crash mid-build leaves a partial wiki on disk; the next successful
-    build is idempotent and re-emits any pages it would have written, so
-    recovery is "run it again."
-    """
+    """Extract entities and build wiki pages for every ingested source."""
     if config is None:
         config = cfg
     from lilbee.wiki.entity_extractor import get_entity_extractor

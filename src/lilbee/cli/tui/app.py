@@ -188,15 +188,14 @@ class LilbeeApp(App[None]):
         settings.set_value(cfg.data_root, "theme", name)
 
     def set_active_model(self, key: str, value: str) -> None:
-        """Single write boundary for active model refs; persists the
-        post-validator value so subscribers see the normalized form."""
+        """Single write boundary for active model refs."""
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         settings.set_value(cfg.data_root, key, normalized)
         self.settings_changed_signal.publish((key, normalized))
 
     def _sync_theme_index_to_current(self) -> None:
-        """Align the cycle index with the active theme so Ctrl+T moves from there."""
+        """Align cycle index with the active theme."""
         try:
             self._theme_index = DARK_THEMES.index(self.theme)
         except ValueError:
@@ -301,7 +300,7 @@ class LilbeeApp(App[None]):
 
 
 def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
-    """Route model writes through LilbeeApp.set_active_model; bare-App fallback for tests."""
+    """Route model writes through set_active_model, falling back to direct cfg+settings writes."""
     if isinstance(host_app, LilbeeApp):
         host_app.set_active_model(key, value)
         return

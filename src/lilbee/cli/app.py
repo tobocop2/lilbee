@@ -69,11 +69,7 @@ def _apply_data_root(root: Path) -> None:
 
 
 def overlay_persisted_settings(root: Path) -> None:
-    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg.
-
-    Bad values are logged and skipped. Shared with the MCP ``init`` tool
-    so per-vault model preferences take effect on every entry point.
-    """
+    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values."""
     log = logging.getLogger(__name__)
     try:
         persisted = _settings_module.load(root)

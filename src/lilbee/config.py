@@ -101,7 +101,7 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
 
 
 def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
-    """True when *ref* should bypass the featured-catalog assignment check."""
+    """Whether *ref* skips the catalog check."""
     if not ref or not ref.strip():
         return True
     if allow_bypass and _model_task_validation_bypassed():
@@ -110,13 +110,7 @@ def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
 
 
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
-    """Check *ref* is a featured-catalog entry whose task matches *field_name*.
-
-    Provider-prefixed refs (``ollama/``, ``openai/`` ...) skip the catalog
-    check; routing enforces task taxonomy for them. ``allow_bypass=True``
-    honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` for tests; explicit user
-    actions pass ``allow_bypass=False`` to force the check.
-    """
+    """Check *ref* is a catalog entry whose task matches *field_name*; return the canonical ref."""
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     entry = _find_model_catalog_entry(ref)
