@@ -633,6 +633,34 @@ class TestSyncStreamDoneDelivery:
         # No done frame should be emitted when sync failed.
         assert done_events == []
 
+    async def test_force_rebuild_flag_reaches_sync(self):
+        """sync_stream(force_rebuild=True) plumbs the flag through to ingest.sync."""
+        sync_result = SyncResult(added=[])
+        observed: dict[str, bool] = {}
+
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            observed["force_rebuild"] = force_rebuild
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream(force_rebuild=True)]
+
+        assert observed["force_rebuild"] is True
+
+    async def test_force_rebuild_defaults_to_false(self):
+        """sync_stream() with no arguments leaves the existing incremental sync semantics."""
+        sync_result = SyncResult(added=[])
+        observed: dict[str, bool] = {}
+
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            observed["force_rebuild"] = force_rebuild
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream()]
+
+        assert observed["force_rebuild"] is False
+
 
 class TestDrainFallback:
     async def test_drain_exits_when_task_done_without_sentinel(self):
@@ -1358,6 +1386,41 @@ class TestSetEmbeddingModel:
         mock_svc.return_value.provider.list_models.return_value = ["qwen3:0.6b"]
         with pytest.raises(ValueError, match="not embedding"):
             await handlers.set_embedding_model("qwen3:0.6b")
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_returns_reindex_required_when_persisted_meta_differs(self, mock_svc, tmp_path):
+        """Switching to a model different from the one that built the store flags rebuild."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.store.get_meta.return_value = {
+            "embedding_model": "previous-model:v1",
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.model == "nomic-embed-text:v1.5"
+        assert result.reindex_required is True
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_returns_no_reindex_required_on_empty_store(self, mock_svc, tmp_path):
+        """A store with no _meta row (fresh install) does not need a rebuild."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.store.get_meta.return_value = None
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.reindex_required is False
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_returns_no_reindex_required_when_same_model(self, mock_svc, tmp_path):
+        """Re-setting the same model that already built the store does not need a rebuild."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        mock_svc.return_value.store.get_meta.return_value = {
+            "embedding_model": "nomic-embed-text:v1.5",
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        assert result.reindex_required is False
 
 
 class TestGetConfig:
