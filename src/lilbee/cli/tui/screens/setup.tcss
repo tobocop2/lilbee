@@ -19,7 +19,8 @@
 
 /* setup-enter-hint lives inside the BottomBars wrapper; docking directly
  * here would overlap with the TaskBar above the Footer (see BottomBars
- * docstring). */
+ * docstring). Height includes the border row, so height: 1 + border-top
+ * would leave zero rows for the text and render blank. */
 #setup-enter-hint {
     height: 1;
     width: 100%;
@@ -27,7 +28,6 @@
     color: $primary;
     text-style: italic;
     padding: 0 2;
-    border-top: solid $surface-lighten-2;
 }
 
 ModelCard {

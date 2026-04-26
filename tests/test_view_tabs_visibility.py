@@ -100,3 +100,30 @@ async def test_view_tabs_visible_on_chat() -> None:
         assert tabs.is_mounted
         assert tabs.region.height > 0
         assert str(tabs.styles.display) != "none"
+
+
+async def test_view_tabs_active_view_tracks_screen_changes() -> None:
+    """Regression: ViewTabs.on_mount captured app.active_view once, but
+    switch_view's _finish callback updates app.active_view AFTER the new
+    screen mounts. The pill highlight lagged the actual screen by one
+    navigation step. Fix pushes the new active_view into the live ViewTabs
+    after _finish runs."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert app.screen.query_one(ViewTabs).active_view == "Chat"
+
+        for view in ("Catalog", "Status", "Settings", "Tasks"):
+            app.switch_view(view)
+            await pilot.pause()
+            await pilot.pause()  # one extra tick for call_later(_finish)
+            tabs = app.screen.query_one(ViewTabs)
+            assert tabs.active_view == view, (
+                f"After switch to {view}, ViewTabs.active_view was "
+                f"{tabs.active_view!r}, expected {view!r}"
+            )

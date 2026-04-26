@@ -256,6 +256,16 @@ class LilbeeApp(App[None]):
         def _finish() -> None:
             self.active_view = view_name
             self._switching = False
+            # The new screen mounted its ViewTabs BEFORE this _finish runs,
+            # so ViewTabs.on_mount captured the previous active_view value.
+            # Push the new value into the live ViewTabs so the highlighted
+            # tab tracks the actual screen instead of lagging by one step.
+            from contextlib import suppress
+
+            from lilbee.cli.tui.widgets.status_bar import ViewTabs
+
+            with suppress(Exception):
+                self.screen.query_one(ViewTabs).active_view = view_name
 
         self.call_later(_finish)
 

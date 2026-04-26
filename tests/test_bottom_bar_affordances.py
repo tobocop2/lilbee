@@ -218,6 +218,26 @@ async def test_setup_wizard_hint_when_models_already_installed() -> None:
             assert msg.SETUP_RETURN_HINT in str(label.render())
 
 
+async def test_setup_wizard_hint_label_has_no_border_top_eating_its_row() -> None:
+    """Regression: setup.tcss had `border-top: solid` + `height: 1`. Textual
+    counts the border row toward the widget's height, so the only row was
+    eaten by the border and the hint text rendered into nothing."""
+    with mock.patch(
+        "lilbee.cli.tui.screens.setup._scan_installed_models",
+        return_value=([], []),
+    ):
+        app = _SetupHostApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            label = app.screen.query_one("#setup-enter-hint")
+            border_style = label.styles.border_top[0] if label.styles.border_top else ""
+            assert border_style in ("", "none", None), (
+                f"border-top must stay off so height: 1 leaves a row for text "
+                f"(got {border_style!r})"
+            )
+            assert label.region.height >= 1
+
+
 # ---------------------------------------------------------------------------
 # Theme persistence + visible keybinding
 # ---------------------------------------------------------------------------
