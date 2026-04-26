@@ -555,9 +555,155 @@ class TestLoadLlamaNCtx:
         assert call_kwargs["embedding"] is True
 
         mock_llama_cpp.Llama.reset_mock()
+        cfg.num_ctx = 8192
         load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
+
+    def test_chat_default_caps_at_safe_value_when_num_ctx_unset(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """num_ctx=None on chat mode caps at 8192 even when the model trains at 128K."""
+        from lilbee.providers.llama_cpp_provider import DEFAULT_NUM_CTX, load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = None
+        # Metadata read returns a huge training context (mimics modern chat GGUFs)
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "llama",
+            "llama.context_length": "131072",
+        }
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == DEFAULT_NUM_CTX  # 8192
+
+    def test_chat_default_uses_training_ctx_when_smaller(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """num_ctx=None on chat mode uses the training context when smaller than the cap."""
+        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = None
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "llama",
+            "llama.context_length": "4096",
+        }
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 4096
+
+    def test_embed_mode_still_uses_training_ctx_when_unset(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Embedding models still get n_ctx=0 (full training context); regression guard."""
+        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_EMBED
+
+        cfg.num_ctx = None
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "2048",
+        }
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 0
+
+
+class TestProviderInvalidateLoadCache:
+    def test_invalidate_load_cache_clears_native_cache(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """invalidate_load_cache() with no path drops every cached model."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
+
+        cfg.num_ctx = 8192
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        provider = LlamaCppProvider()
+        try:
+            provider._cache.load_model(models_dir / "test-model.gguf", mode=MODE_CHAT)
+            provider._cache.load_model(models_dir / "test-model.gguf", mode=MODE_EMBED)
+            assert provider._cache.get_stats()["loaded_models"] == 2
+
+            provider.invalidate_load_cache()
+
+            assert provider._cache.get_stats()["loaded_models"] == 0
+        finally:
+            provider.shutdown()
+
+    def test_invalidate_load_cache_with_path_evicts_only_that_model(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """invalidate_load_cache(path) leaves entries for other paths intact."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = 8192
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        provider = LlamaCppProvider()
+        try:
+            other = models_dir / "other.gguf"
+            other.write_bytes(b"fake-gguf")
+            provider._cache.load_model(models_dir / "test-model.gguf", mode=MODE_CHAT)
+            provider._cache.load_model(other, mode=MODE_CHAT)
+
+            provider.invalidate_load_cache(models_dir / "test-model.gguf")
+
+            stats = provider._cache.get_stats()
+            assert stats["loaded_models"] == 1
+            assert stats["models"][0]["path"] == str(other)
+        finally:
+            provider.shutdown()
+
+    def test_protocol_default_is_noop_when_subclass_does_not_override(self) -> None:
+        """A backend that inherits LLMProvider WITHOUT overriding the method
+        gets the Protocol's no-op default body, which returns None."""
+        from lilbee.providers.base import LLMProvider
+
+        class _BackendWithNoOverride(LLMProvider):  # type: ignore[misc]
+            """Concrete subclass that doesn't define invalidate_load_cache."""
+
+        backend = _BackendWithNoOverride()
+        assert backend.invalidate_load_cache() is None
+        assert backend.invalidate_load_cache(Path("/tmp/anything.gguf")) is None
+
+    def test_routing_provider_forwards_only_to_native_side(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """RoutingProvider forwards invalidate_load_cache to the lazily-built
+        native provider only; never wakes the SDK side, even after both
+        sub-providers have been instantiated."""
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        cfg.num_ctx = 8192
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        routing = RoutingProvider()
+        try:
+            # No native side built yet -> invalidation is a no-op (does not eagerly construct).
+            routing.invalidate_load_cache()
+            assert routing._llama_cpp is None
+
+            # Force the native side to instantiate via a method that touches it.
+            from lilbee.providers.model_cache import MODE_CHAT
+
+            native = routing._get_llama_cpp()
+            native._cache.load_model(models_dir / "test-model.gguf", mode=MODE_CHAT)  # type: ignore[attr-defined]
+            assert native._cache.get_stats()["loaded_models"] == 1  # type: ignore[attr-defined]
+
+            assert routing._sdk_provider is None  # SDK side never woke
+            routing.invalidate_load_cache()
+            assert native._cache.get_stats()["loaded_models"] == 0  # type: ignore[attr-defined]
+            # SDK side STILL didn't wake after the invalidation call.
+            assert routing._sdk_provider is None
+        finally:
+            routing.shutdown()
 
 
 class TestSuppressStderrThreadSafety:
