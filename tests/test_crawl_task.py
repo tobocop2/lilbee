@@ -135,7 +135,7 @@ class TestRunCrawl:
         from lilbee.crawler import CrawlerBackendMissing
 
         mock_crawl.side_effect = CrawlerBackendMissing(
-            "crawl4ai is not installed. Run `uv sync --extra crawler` to enable crawling."
+            "Web crawling is not available. Run `uv sync --extra crawler` to enable it."
         )
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
 

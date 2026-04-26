@@ -131,14 +131,16 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
 
 
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
-    """Fetch a single URL. Raises :class:`CrawlerBackendMissing` if crawl4ai isn't installed."""
+    """Fetch a single URL.
+
+    Raises :class:`CrawlerBackendMissing` if the crawler extra isn't installed.
+    """
     validate_crawl_url(url)
-    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+    from lilbee.crawler import crawler_available
 
     if not crawler_available():
         raise bootstrap.CrawlerBackendMissing(
-            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
-            "(or 'pip install crawl4ai') to enable web crawling."
+            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
@@ -268,15 +270,14 @@ async def crawl_recursive(
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.
-    from lilbee.crawler.crawl4ai_fetcher import crawler_available
+    from lilbee.crawler import crawler_available
 
     if not crawler_available():
         raise bootstrap.CrawlerBackendMissing(
-            "crawl4ai is not installed. Run 'uv sync --extra crawler' "
-            "(or 'pip install crawl4ai') to enable recursive web crawling."
+            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
 
-    # Fail fast before pulling in crawl4ai submodules so callers get a clean
+    # Fail fast before pulling in backend submodules so callers get a clean
     # CrawlerBrowserMissing instead of a Playwright install banner.
     if not bootstrap.chromium_installed():
         raise CrawlerBrowserMissing(
@@ -424,6 +425,16 @@ async def crawl_and_save(
     stream so a cancelled crawl preserves the pages already fetched instead
     of discarding them.
     """
+    # Reject early when the crawler extra isn't installed. Runs before the
+    # Chromium bootstrap so a user without [crawler] doesn't pay the ~160 MB
+    # download just to hit the same error afterward.
+    from lilbee.crawler import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendMissing(
+            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
+        )
+
     # Auto-bootstrap Chromium on first use so every crawl entry point works
     # on a fresh install without a separate setup step. ``bootstrap_chromium``
     # short-circuits when Chromium is already installed. Any progress is

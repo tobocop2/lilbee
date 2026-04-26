@@ -1366,54 +1366,36 @@ def wiki_build(
     if not cfg.wiki:
         _fail_wiki_disabled()
         return
-    from lilbee.store import SearchChunk
-    from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
-    from lilbee.wiki.entity_extractor import get_entity_extractor
-    from lilbee.wiki.shared import WIKI_LOG_ACTION_BUILD
-
-    svc = get_services()
-    chunks: list[SearchChunk] = []
-    for record in svc.store.get_sources():
-        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
-
-    extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
-    entities = extractor.extract(chunks)
 
     if dry_run:
+        from lilbee.store import SearchChunk
+        from lilbee.wiki.entity_extractor import get_entity_extractor
+
+        svc = get_services()
+        chunks: list[SearchChunk] = []
+        for record in svc.store.get_sources():
+            chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+        extractor = get_entity_extractor(cfg.wiki_entity_mode, svc.provider, cfg)
+        entities = extractor.extract(chunks)
         _wiki_build_dry_run_output(entities)
         return
 
-    pages = build_wiki(
-        entities,
-        svc.provider,
-        svc.store,
-        cfg,
-        extract_concepts=cfg.wiki_extract_concepts,
-    )
-    update_wiki_index()
-    append_wiki_log(
-        WIKI_LOG_ACTION_BUILD,
-        f"{len(pages)} pages from {len(entities)} records",
-    )
+    from lilbee.wiki import run_full_build
+
+    result = run_full_build(cfg)
 
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "wiki_build",
-                "paths": [str(p) for p in pages],
-                "entities": len(entities),
-                "count": len(pages),
-            }
-        )
+        json_output({"command": "wiki_build", **result})
         return
 
+    pages = result["paths"]
     if not pages:
         console.print("No concept or entity pages generated.")
         return
 
     console.print(
-        f"Generated [{theme.LABEL}]{len(pages)}[/{theme.LABEL}] "
-        f"wiki pages from {len(entities)} extracted records:"
+        f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] "
+        f"wiki pages from {result['entities']} extracted records:"
     )
     for path in pages:
         console.print(f"  {path}")

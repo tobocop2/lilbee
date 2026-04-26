@@ -46,6 +46,16 @@ def isolated_env(tmp_path, monkeypatch, request):
     cls = request.cls.__name__ if request.cls else ""
     if cls != "TestPlaywrightBrowserCheck":
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
+    # Stub crawler_available so crawl_and_save's pre-flight backend check passes
+    # in CI envs where the [crawler] extra isn't installed. Tests that exercise
+    # the missing-extra path opt out by re-patching to ``False``. Both the SDK
+    # façade (used by callers) and the impl (used by tests that import directly)
+    # are patched so the value is consistent across import paths. The
+    # ``TestCrawlerAvailable`` class drives the real function directly via
+    # ``sys.modules`` patching, so it opts out of the auto-stub.
+    if cls != "TestCrawlerAvailable":
+        monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
     # Default the sitemap bound to "unknown" so tests don't hit the network.
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
     # opt out of this autopatch.
@@ -422,8 +432,9 @@ class TestCrawlSingle:
         """
         from lilbee.crawler import CrawlerBackendMissing
 
+        monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendMissing, match="crawl4ai is not installed"):
+        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
             await crawl_single("https://example.com")
 
 
@@ -878,8 +889,9 @@ class TestCrawlRecursive:
         """
         from lilbee.crawler import CrawlerBackendMissing
 
+        monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendMissing, match="crawl4ai is not installed"):
+        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
             await crawl_recursive("https://example.com", max_depth=1)
 
 
@@ -1066,6 +1078,23 @@ class TestCrawlAndSave:
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
         await crawl_and_save("https://example.com", depth=0)
         assert called == [None]
+
+    async def test_raises_backend_missing_before_bootstrap(self, isolated_env, monkeypatch):
+        """Without [crawler] extra, fail fast — never trigger Chromium bootstrap."""
+        from lilbee.crawler import CrawlerBackendMissing
+
+        monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
+        bootstrap_called: list[object] = []
+
+        async def _fake_bootstrap(on_progress=None):
+            bootstrap_called.append(on_progress)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
+        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+            await crawl_and_save("https://example.com", depth=0)
+        assert bootstrap_called == []
 
     @patch("lilbee.crawler.api.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):
