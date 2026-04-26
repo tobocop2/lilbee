@@ -1282,3 +1282,32 @@ class TestValidateModelTaskAssignment:
 
         handler_message = format_task_mismatch(vision, ModelTask.VISION, ModelTask.CHAT)
         assert handler_message in str(exc_info.value)
+
+
+class TestBuildCfgFallback:
+    """The cfg-construction fallback recovers from a stale persisted config.toml."""
+
+    def test_falls_back_to_defaults_on_validation_error(self, tmp_path):
+        """A toml carrying an invalid model ref triggers the fallback path."""
+        from lilbee.config import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        # Bare ``name:tag`` is rejected by the new validator.
+        toml_path.write_text('chat_model = "qwen3:0.6b"\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "must be a HuggingFace ref" in str(error)
+        # Falls back to defaults — chat_model is the featured Qwen3 ref.
+        assert built_cfg.chat_model.endswith(".gguf")
+
+    def test_returns_none_error_on_clean_load(self, tmp_path):
+        from lilbee.config import _build_cfg
+
+        env = _clean_env(tmp_path)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        with mock.patch.dict(os.environ, env, clear=True):
+            _, error = _build_cfg()
+        assert error is None
