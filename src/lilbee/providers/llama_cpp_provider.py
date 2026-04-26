@@ -53,6 +53,26 @@ _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatchin
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
+# Settings whose values are baked into Llama() at load time, OR whose
+# change means a different model file is now active. Changing one of
+# these requires evicting cached model instances so the next request
+# reloads with the new state. Sampling params (temperature, top_p, etc.)
+# are read fresh per-call and are intentionally NOT in this set.
+LOAD_AFFECTING_KEYS = frozenset(
+    {
+        "num_ctx",
+        "chat_model",
+        "embedding_model",
+        "vision_model",
+        "reranker_model",
+    }
+)
+
+# Safety cap when num_ctx is unset. Modern chat GGUFs train at 128K+, and
+# letting llama.cpp allocate the full training context OOMs on most laptops.
+# 8192 is a sane default that mirrors common local-LLM tooling.
+_CHAT_DEFAULT_N_CTX = 8192
+
 
 @dataclass
 class _EmbedRequest:
@@ -319,6 +339,17 @@ class LlamaCppProvider(LLMProvider):
             self._subprocess_worker = None
         self._cache.unload_all()
 
+    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
+        """Drop loaded-model state so the next call re-reads load-time settings.
+
+        Called when ``LOAD_AFFECTING_KEYS`` change in settings, or when the
+        user switches the active chat/embedding model in the UI.
+        """
+        if model_path is None:
+            self._cache.unload_all()
+        else:
+            self._cache.unload_path(model_path)
+
 
 class _LockedStreamIterator:
     """Wraps a streaming response so the chat lock is held until iteration ends.
@@ -538,11 +569,25 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     }
     if cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
-    else:
+    elif embedding:
         # n_ctx=0 tells llama.cpp to use the model's training context.
         # Without this, llama.cpp defaults to 512 tokens which is too small
         # for most embedding models (e.g. nomic-embed-text trains at 2048).
         kwargs["n_ctx"] = 0
+    else:
+        # Chat models often train at 128K+; letting llama.cpp allocate the
+        # full training context OOMs on most laptops. Cap at a safe default
+        # bounded by the model's training length. Metadata-read failures
+        # fall through to the cap so the actual load attempt still runs
+        # (and surfaces its own diagnostic if it fails).
+        training_ctx = _CHAT_DEFAULT_N_CTX
+        try:
+            meta = read_gguf_metadata(model_path)
+        except Exception:
+            meta = None
+        if meta:
+            training_ctx = int(meta.get("context_length", _CHAT_DEFAULT_N_CTX))
+        kwargs["n_ctx"] = min(training_ctx, _CHAT_DEFAULT_N_CTX)
 
     if embedding:
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently

@@ -84,6 +84,22 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
+def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
+    """Drop loaded-model state when a load-affecting setting changes.
+
+    The provider Protocol gates this — litellm/remote backends inherit a
+    no-op default since they have no local model cache. Only the native
+    llama-cpp side actually evicts.
+    """
+    from lilbee.providers.llama_cpp_provider import LOAD_AFFECTING_KEYS
+    from lilbee.services import get_services
+
+    key, _value = payload
+    if key not in LOAD_AFFECTING_KEYS:
+        return
+    get_services().provider.invalidate_load_cache()
+
+
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -143,6 +159,8 @@ class LilbeeApp(App[None]):
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
+
+        self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 

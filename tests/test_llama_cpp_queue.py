@@ -555,9 +555,125 @@ class TestLoadLlamaNCtx:
         assert call_kwargs["embedding"] is True
 
         mock_llama_cpp.Llama.reset_mock()
+        cfg.num_ctx = 8192
         load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
+
+    def test_chat_default_caps_at_safe_value_when_num_ctx_unset(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """num_ctx=None on chat mode caps at 8192 even when the model trains at 128K."""
+        from lilbee.providers.llama_cpp_provider import _CHAT_DEFAULT_N_CTX, load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = None
+        # Metadata read returns a huge training context (mimics modern chat GGUFs)
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "llama",
+            "llama.context_length": "131072",
+        }
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == _CHAT_DEFAULT_N_CTX  # 8192
+
+    def test_chat_default_uses_training_ctx_when_smaller(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """num_ctx=None on chat mode uses the training context when smaller than the cap."""
+        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = None
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "llama",
+            "llama.context_length": "4096",
+        }
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 4096
+
+    def test_embed_mode_still_uses_training_ctx_when_unset(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Embedding models still get n_ctx=0 (full training context) — regression guard."""
+        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.model_cache import MODE_EMBED
+
+        cfg.num_ctx = None
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "2048",
+        }
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 0
+
+
+class TestProviderInvalidateLoadCache:
+    def test_invalidate_load_cache_clears_native_cache(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """invalidate_load_cache() with no path drops every cached model."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
+
+        cfg.num_ctx = 8192
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        provider = LlamaCppProvider()
+        try:
+            provider._cache.load_model(models_dir / "test-model.gguf", mode=MODE_CHAT)
+            provider._cache.load_model(models_dir / "test-model.gguf", mode=MODE_EMBED)
+            assert provider._cache.get_stats()["loaded_models"] == 2
+
+            provider.invalidate_load_cache()
+
+            assert provider._cache.get_stats()["loaded_models"] == 0
+        finally:
+            provider.shutdown()
+
+    def test_invalidate_load_cache_with_path_evicts_only_that_model(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """invalidate_load_cache(path) leaves entries for other paths intact."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = 8192
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        provider = LlamaCppProvider()
+        try:
+            other = models_dir / "other.gguf"
+            other.write_bytes(b"fake-gguf")
+            provider._cache.load_model(models_dir / "test-model.gguf", mode=MODE_CHAT)
+            provider._cache.load_model(other, mode=MODE_CHAT)
+
+            provider.invalidate_load_cache(models_dir / "test-model.gguf")
+
+            stats = provider._cache.get_stats()
+            assert stats["loaded_models"] == 1
+            assert stats["models"][0]["path"] == str(other)
+        finally:
+            provider.shutdown()
+
+    def test_protocol_default_is_noop(self) -> None:
+        """SDK/litellm backends inherit the no-op default — load-time settings don't apply."""
+
+        class _StubSdk:
+            def invalidate_load_cache(self, model_path=None):  # type: ignore[no-untyped-def]
+                from lilbee.providers.base import LLMProvider
+
+                LLMProvider.invalidate_load_cache(self, model_path)
+
+        # Calling the inherited default should not raise and should return None
+        assert _StubSdk().invalidate_load_cache() is None
+        assert _StubSdk().invalidate_load_cache(Path("/tmp/anything.gguf")) is None
 
 
 class TestSuppressStderrThreadSafety:
