@@ -9,7 +9,6 @@
 }
 
 #wiki-search {
-    dock: top;
     margin: 0 1;
 }
 

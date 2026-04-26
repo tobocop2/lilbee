@@ -130,10 +130,10 @@ class CatalogScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
+            yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield VerticalScroll(id="catalog-list")
-        yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()

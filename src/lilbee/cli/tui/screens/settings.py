@@ -243,16 +243,16 @@ class SettingsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-        with Horizontal(id="settings-top-row"):
-            yield NavAwareInput(
-                placeholder="Filter settings...",
-                id="settings-search",
-            )
-            yield Button(
-                msg.SETTINGS_RESET_ALL_LABEL,
-                id="reset-all-defaults",
-                classes="reset-all-button",
-            )
+            with Horizontal(id="settings-top-row"):
+                yield NavAwareInput(
+                    placeholder="Filter settings...",
+                    id="settings-search",
+                )
+                yield Button(
+                    msg.SETTINGS_RESET_ALL_LABEL,
+                    id="reset-all-defaults",
+                    classes="reset-all-button",
+                )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
         with BottomBars():

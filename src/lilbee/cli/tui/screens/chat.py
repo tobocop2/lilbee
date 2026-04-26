@@ -160,7 +160,7 @@ class ChatScreen(Screen[None]):
         with TopBars():
             yield ModelBar(id="model-bar")
             yield ViewTabs()
-        yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
+            yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
         yield ChatStatusLine(id="chat-status-line")
