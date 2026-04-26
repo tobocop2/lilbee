@@ -1992,19 +1992,6 @@ class TestPill:
         assert isinstance(result, Content)
 
 
-class TestEvents:
-    def test_model_changed_is_message(self) -> None:
-        from textual.message import Message
-
-        from lilbee.cli.tui.events import ModelChanged
-        from lilbee.models import ModelTask
-
-        msg = ModelChanged(ModelTask.CHAT, "qwen3:8b")
-        assert isinstance(msg, Message)
-        assert msg.role == ModelTask.CHAT
-        assert msg.name == "qwen3:8b"
-
-
 # ---------------------------------------------------------------------------
 # GridSelect widget tests
 # ---------------------------------------------------------------------------

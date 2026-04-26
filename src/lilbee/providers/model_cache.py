@@ -224,6 +224,14 @@ class MemoryAwareModelCache:
             for k in keys:
                 self._unload_entry(k)
 
+    def unload_path(self, model_path: Path) -> int:
+        """Evict every cache entry for *model_path* (across all modes). Returns count."""
+        with self._lock:
+            keys = [k for k, entry in self._cache.items() if entry.path == model_path]
+            for k in keys:
+                self._unload_entry(k)
+            return len(keys)
+
     def get_stats(self) -> dict[str, Any]:
         """Return cache statistics for monitoring."""
         with self._lock:
