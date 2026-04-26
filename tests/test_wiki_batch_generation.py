@@ -75,7 +75,8 @@ def stub_embedder(monkeypatch):
     svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
         [0.1] * cfg.embedding_dim for _ in texts
     ]
-    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.page.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
     return svc
 
 
@@ -233,7 +234,7 @@ class TestGenerateSourceBatchEdgeCases:
         provider = MagicMock()
         provider.chat.side_effect = RuntimeError("LLM down")
         provider.get_capabilities.return_value = []
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        caplog.set_level("WARNING", logger="lilbee.wiki.synthesis")
         pages = _generate_source_batch(
             source="s.txt",
             entities=[_entity("henry", "Henry", ["s.txt"])],
@@ -251,7 +252,7 @@ class TestGenerateSourceBatchEdgeCases:
         chunks = [_chunk("s.txt", 0, "body")]
         # strip_reasoning + .strip() produces an empty string.
         provider = _mock_batch_provider("   \n  \n")
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        caplog.set_level("WARNING", logger="lilbee.wiki.synthesis")
         pages = _generate_source_batch(
             source="s.txt",
             entities=[_entity("henry", "Henry", ["s.txt"])],
@@ -278,7 +279,7 @@ class TestFinalizeSectionGuards:
         # citation checks never run.
         text = "## ---\n\n> Henry Ford founded Ford Motor. [^src1]\n" + _valid_citation_block()
         provider = _mock_batch_provider(text)
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        caplog.set_level("INFO", logger="lilbee.wiki.batch")
         # Concept-curation mode so the unmatched header is tagged as a
         # concept and reaches _finalize_section (entities-only mode
         # would just drop it in _split_batched_output).
@@ -304,14 +305,14 @@ class TestFinalizeSectionGuards:
         # First entry to zero-vec body, then flip one element on
         # subsequent calls (index step), so the chunk vectors used
         # earlier still differ.
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
         text = (
             _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
             + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        caplog.set_level("INFO", logger="lilbee.wiki.batch")
         pages = _generate_source_batch(
             source="s.txt",
             entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
@@ -347,7 +348,7 @@ class TestAllSourcesInScope:
         store = MagicMock()
         store.get_sources.side_effect = RuntimeError("backend down")
         grouped = {"a.md": []}
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        caplog.set_level("WARNING", logger="lilbee.wiki.generation")
         result = _all_sources_in_scope(
             entities=[],
             grouped=grouped,
@@ -421,7 +422,7 @@ class TestBuildWikiSkipLogging:
         ]
         store.get_chunks_by_source.return_value = [_chunk("s.txt", 0, "x")]
         provider = _mock_batch_provider("unused")
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        caplog.set_level("INFO", logger="lilbee.wiki.generation")
         pages = build_wiki([], provider, store, cfg, extract_concepts=True)
         assert pages == []
         assert any("Skipping source" in r.message for r in caplog.records)
@@ -580,7 +581,7 @@ class TestBatchGeneration:
         ]
         store.get_chunks_by_source.return_value = [_chunk("s.txt", 0, "x")]
         provider = _mock_batch_provider("unused")
-        with patch("lilbee.wiki.gen._generate_source_batch") as batch:
+        with patch("lilbee.wiki.generation._generate_source_batch") as batch:
             build_wiki([], provider, store, cfg)
         batch.assert_not_called()
 

@@ -51,16 +51,18 @@ def isolated_env(wiki_isolated_env: Path):
 
 @pytest.fixture(autouse=True)
 def _stub_wiki_index_services(monkeypatch):
-    """Stub ``get_services`` inside ``wiki.gen`` so tests that drive
-    ``_persist_and_finalize`` don't hit the real provider when the new
-    wiki-body indexer runs. ``TestWikiIndexing`` re-patches explicitly
-    to exercise the indexer's own assertions.
+    """Stub ``get_services`` inside the wiki page + quality modules so tests
+    that drive ``_persist_and_finalize`` don't hit the real provider when the
+    wiki-body indexer or the embedding faithfulness scorer runs.
+    ``TestWikiIndexing`` re-patches explicitly to exercise the indexer's
+    own assertions.
     """
     svc = MagicMock()
     svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
         [0.1] * cfg.embedding_dim for _ in texts
     ]
-    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.page.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
     return svc
 
 
@@ -157,7 +159,7 @@ class TestTruncateChunksToBudget:
         """A warning is logged when chunks are truncated."""
         cfg.num_ctx = 100
         chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(5)]
-        with caplog.at_level("WARNING", logger="lilbee.wiki.gen"):
+        with caplog.at_level("WARNING", logger="lilbee.wiki.page"):
             _truncate_chunks_to_budget(chunks, cfg)
         assert "Truncated chunks from 5 to 1" in caplog.text
 
@@ -190,7 +192,7 @@ class TestEmbeddingFaithfulness:
 
     def test_score_zero_on_dim_mismatch_and_warns(self, caplog: pytest.LogCaptureFixture):
         """Off-shape body vector vs source-mean vector returns 0.0 with a warning."""
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        caplog.set_level("WARNING", logger="lilbee.wiki.quality")
         score = _embedding_faithfulness_score([1.0, 0.0], [[1.0, 0.0, 0.0]])
         assert score == 0.0
         assert any("does not match source vector dim" in r.message for r in caplog.records)
@@ -429,7 +431,7 @@ class TestCheckFaithfulness:
         """The body embeds once; chunks reuse their stored .vector."""
         svc = MagicMock()
         svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == pytest.approx(1.0)
@@ -443,7 +445,7 @@ class TestCheckFaithfulness:
         """A body that points away from the chunk mean scores at/near zero."""
         svc = MagicMock()
         svc.embedder.embed_batch.return_value = [[0.0, 1.0]]
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == pytest.approx(0.0)
@@ -451,7 +453,7 @@ class TestCheckFaithfulness:
     def test_coherence_failure_returns_zero(self, monkeypatch):
         """B3: a structurally broken H1 returns 0.0 without embedding."""
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# | | bad\n\nbody"
         chunks = [_chunk_with_vector([1.0])]
         score = _check_faithfulness(chunks, wiki, "bad")
@@ -460,7 +462,7 @@ class TestCheckFaithfulness:
 
     def test_missing_concept_mention_returns_zero(self, monkeypatch):
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# Brakes\n\nThis page talks about tires and wheels."
         chunks = [_chunk_with_vector([1.0])]
         score = _check_faithfulness(chunks, wiki, "brakes")
@@ -468,7 +470,7 @@ class TestCheckFaithfulness:
 
     def test_missing_h1_returns_zero(self, monkeypatch):
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "No heading here, just prose about brakes."
         chunks = [_chunk_with_vector([1.0])]
         score = _check_faithfulness(chunks, wiki, "brakes")
@@ -477,7 +479,7 @@ class TestCheckFaithfulness:
     def test_coherent_page_uses_embedding_score(self, monkeypatch):
         svc = MagicMock()
         svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# Chevrolet\n\nChevrolet is a manufacturer of vehicles."
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, wiki, "Chevrolet")
@@ -487,7 +489,7 @@ class TestCheckFaithfulness:
         """Structural chars in the label don't block coherence matching."""
         svc = MagicMock()
         svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# Designer\n\nThe designer of the Caprice was Irv Rybicki."
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, wiki, "| | designer")
@@ -496,21 +498,21 @@ class TestCheckFaithfulness:
     def test_embedder_failure_returns_zero(self, monkeypatch):
         svc = MagicMock()
         svc.embedder.embed_batch.side_effect = RuntimeError("down")
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == 0.0
 
     def test_empty_source_vectors_returns_zero(self, monkeypatch):
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         score = _check_faithfulness([], _COHERENT_WIKI, "test")
         assert score == 0.0
 
     def test_empty_display_label_returns_zero(self, monkeypatch):
         """clean_label_for_display → empty string → coherence False."""
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0])]
         # A label made entirely of structural chars reduces to empty
         # display under clean_label_for_display, hitting the guard
@@ -523,7 +525,7 @@ class TestCheckFaithfulness:
     def test_empty_body_after_citation_strip_returns_zero(self, monkeypatch):
         """A page whose body is entirely citation block collapses to empty."""
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         # Construct a wiki text whose body (after strip_citation_block)
         # is blank. ``## footnotes`` is the citation block header used
         # by render_citation_block, so strip_citation_block removes
@@ -543,7 +545,7 @@ class TestCheckFaithfulness:
         # Monkeypatch strip_citation_block to return an empty body so
         # we exercise the empty-body guard directly without fighting
         # the title-coherence gate semantics.
-        monkeypatch.setattr("lilbee.wiki.gen.strip_citation_block", lambda _: "   ")
+        monkeypatch.setattr("lilbee.wiki.quality.strip_citation_block", lambda _: "   ")
         chunks = [_chunk_with_vector([1.0])]
         score = _check_faithfulness(chunks, wiki, "test")
         assert score == 0.0
@@ -553,7 +555,7 @@ class TestCheckFaithfulness:
         """Embedder returned an empty list → score 0.0 without crashing."""
         svc = MagicMock()
         svc.embedder.embed_batch.return_value = []
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == 0.0
@@ -564,7 +566,7 @@ class TestTitleContentCoherence:
 
     def test_coherence_failure_returns_zero_score(self, monkeypatch):
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# | | designer\n\nThe designer refers to an individual."
         chunks = [_chunk_with_vector([1.0])]
         score = _check_faithfulness(chunks, wiki, "designer")
@@ -572,8 +574,8 @@ class TestTitleContentCoherence:
 
     def test_logs_info_on_coherence_failure(self, monkeypatch, caplog: pytest.LogCaptureFixture):
         svc = MagicMock()
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
+        caplog.set_level("INFO", logger="lilbee.wiki.quality")
         chunks = [_chunk_with_vector([1.0])]
         _check_faithfulness(chunks, "# bad\n\nbody", "brakes")
         assert any("coherence failed" in r.message for r in caplog.records)
@@ -1158,9 +1160,9 @@ class TestWikiIndexing:
         content = self._content("Brakes convert kinetic energy to heat through friction pads.")
 
         with (
-            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
             patch(
-                "lilbee.wiki.gen.chunk_text",
+                "lilbee.wiki.page.chunk_text",
                 return_value=["Brakes convert kinetic energy to heat through friction pads."],
             ),
         ):
@@ -1194,8 +1196,8 @@ class TestWikiIndexing:
         target = self._target(subdir=DRAFTS_SUBDIR)
 
         with (
-            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
-            patch("lilbee.wiki.gen.chunk_text", return_value=["body"]),
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.chunk_text", return_value=["body"]),
         ):
             index_wiki_page(self._content("body"), target.wiki_source, store)
 
@@ -1207,7 +1209,7 @@ class TestWikiIndexing:
         skipped rather than silently writing to the store or crashing.
         """
         store = MagicMock(spec=Store)
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        caplog.set_level("WARNING", logger="lilbee.wiki.page")
         result = index_wiki_page(self._content("body"), "malformed", store)
         assert result == 0
         store.clear_table.assert_not_called()
@@ -1228,8 +1230,8 @@ class TestWikiIndexing:
         )
 
         with (
-            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
-            patch("lilbee.wiki.gen.chunk_text") as chunker,
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.chunk_text") as chunker,
         ):
             index_wiki_page(content, target.wiki_source, store)
 
@@ -1243,8 +1245,8 @@ class TestWikiIndexing:
         target = self._target()
 
         with (
-            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
-            patch("lilbee.wiki.gen.chunk_text", return_value=[]),
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.chunk_text", return_value=[]),
         ):
             index_wiki_page(self._content("some body"), target.wiki_source, store)
 
@@ -1261,8 +1263,8 @@ class TestWikiIndexing:
         store.add_chunks.side_effect = lambda records: call_order.append("add") or len(records)
 
         with (
-            patch("lilbee.wiki.gen.get_services", return_value=self._services_mock()),
-            patch("lilbee.wiki.gen.chunk_text", return_value=["one chunk"]),
+            patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),
+            patch("lilbee.wiki.page.chunk_text", return_value=["one chunk"]),
         ):
             index_wiki_page(self._content("first body"), target.wiki_source, store)
             index_wiki_page(self._content("second body"), target.wiki_source, store)

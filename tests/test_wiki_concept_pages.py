@@ -34,15 +34,16 @@ from lilbee.wiki.gen import (
 
 @pytest.fixture(autouse=True)
 def _stub_wiki_index_services(monkeypatch):
-    """Stub ``get_services`` inside ``wiki.gen`` so tests that drive
-    ``_persist_and_finalize`` don't hit the real provider when the
-    wiki-body indexer runs.
+    """Stub ``get_services`` inside the wiki page + quality modules so tests
+    that drive ``_persist_and_finalize`` don't hit the real provider when the
+    wiki-body indexer or the embedding faithfulness scorer runs.
     """
     svc = MagicMock()
     svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
         [0.1] * cfg.embedding_dim for _ in texts
     ]
-    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.page.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
     return svc
 
 
@@ -220,7 +221,7 @@ class TestBuildWikiRewritesLinks:
             ),
         ]
         # Prevent the per-source batch from actually calling the LLM.
-        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]):
+        with patch("lilbee.wiki.generation._generate_source_batch", return_value=[]):
             build_wiki(entities, MagicMock(), MagicMock(), cfg)
 
         concept_body = (wiki_root / "concepts" / "braking.md").read_text()
@@ -233,7 +234,7 @@ class TestBuildWikiRewritesLinks:
         (tmp_path / cfg.wiki_dir).mkdir(parents=True, exist_ok=True)
         store = MagicMock()
         store.get_sources.return_value = []
-        with patch("lilbee.wiki.gen._generate_source_batch") as batch:
+        with patch("lilbee.wiki.generation._generate_source_batch") as batch:
             build_wiki([], MagicMock(), store, cfg)
         batch.assert_not_called()
 
@@ -257,7 +258,7 @@ class TestBuildWikiRewritesLinks:
                 chunk_refs=(ChunkRef("a.txt", 1),),
             ),
         ]
-        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]):
+        with patch("lilbee.wiki.generation._generate_source_batch", return_value=[]):
             build_wiki(entities, MagicMock(), MagicMock(), cfg)
         body = (wiki_root / "concepts" / "braking.md").read_text()
         assert "[[henry-ford]]" in body
@@ -278,6 +279,6 @@ class TestBuildWikiDefaults:
         )
         store = MagicMock()
         store.get_chunks_by_source.return_value = [_chunk("a.txt", 0, "body")]
-        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]) as batch:
+        with patch("lilbee.wiki.generation._generate_source_batch", return_value=[]) as batch:
             build_wiki([rec], MagicMock(), store, None)
         batch.assert_called_once()

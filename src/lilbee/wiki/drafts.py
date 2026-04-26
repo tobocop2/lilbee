@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.store import Store
-from lilbee.wiki.gen import index_wiki_page
+from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
