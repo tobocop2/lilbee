@@ -1,4 +1,4 @@
-"""ViewTabs — view tab strip with mode indicator."""
+"""ViewTabs: view tab strip with mode and active-model indicator."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import DOT_SEP, pill
+from lilbee.config import cfg
 
 _MODE_COLORS: dict[str, str] = {
     msg.MODE_NORMAL: "$primary",
@@ -18,9 +19,12 @@ _MODE_COLORS: dict[str, str] = {
 
 _DEFAULT_MODE_COLOR = "$error"
 
+# Settings keys that trigger a model-pill refresh.
+_MODEL_PILL_KEYS = frozenset({"chat_model"})
+
 
 class ViewTabs(Widget):
-    """View tab strip with mode indicator."""
+    """View tab strip with mode and active-model indicator."""
 
     # NOTE: no ``dock: bottom`` here. ViewTabs is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
@@ -43,7 +47,12 @@ class ViewTabs(Widget):
 
     def on_mount(self) -> None:
         self.active_view = getattr(self.app, "active_view", msg.DEFAULT_VIEW)
-        self._refresh()
+        signal = getattr(self.app, "settings_changed_signal", None)
+        if signal is not None:
+            signal.subscribe(self, self._on_settings_changed)
+        # Defer the initial paint: update() during on_mount can no-op while
+        # the inner Static is still completing its mount cycle.
+        self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
         self._refresh()
@@ -51,19 +60,23 @@ class ViewTabs(Widget):
     def watch_mode_text(self, value: str) -> None:
         self._refresh()
 
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        """Refresh the model pill when the active chat model changes."""
+        key, _value = payload
+        if key in _MODEL_PILL_KEYS:
+            self._refresh()
+
     def _refresh(self) -> None:
         if not self.is_mounted:
             return
         parts: list[Content | str | tuple[str, str]] = []
 
-        # Build tab strip
         tab_parts: list[Content | str | tuple[str, str]] = []
         for name in msg.get_nav_views():
             if name == self.active_view:
                 tab_parts.append(pill(f" {name} ", "$primary", "$text"))
             else:
                 tab_parts.append((f" {name} ", "dim"))
-        # Join with dot separators
         joined: list[Content | str | tuple[str, str]] = []
         for i, part in enumerate(tab_parts):
             if i > 0:
@@ -71,7 +84,12 @@ class ViewTabs(Widget):
             joined.append(part)
         parts.extend(joined)
 
-        # Mode pill (right-aligned)
+        # ModelBar already shows the active chat model on the chat screen,
+        # so the pill would just duplicate it there. Show it everywhere else.
+        if cfg.chat_model and self.active_view != msg.DEFAULT_VIEW:
+            parts.append("  ")
+            parts.append(pill(f" {cfg.chat_model} ", "$accent", "$text"))
+
         if self.mode_text:
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")

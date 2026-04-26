@@ -271,6 +271,7 @@ class TestModeIndicator:
             assert "NORMAL" in bar.mode_text
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestViewCycling:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
@@ -457,6 +458,7 @@ def _mock_status_deps():
     )
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestScreenTransitions:
     """Test that switching between screens does not crash."""
 

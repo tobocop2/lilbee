@@ -239,22 +239,24 @@ class SettingsScreen(Screen[None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
-        with Horizontal(id="settings-top-row"):
-            yield NavAwareInput(
-                placeholder="Filter settings...",
-                id="settings-search",
-            )
-            yield Button(
-                msg.SETTINGS_RESET_ALL_LABEL,
-                id="reset-all-defaults",
-                classes="reset-all-button",
-            )
+        with TopBars():
+            yield ViewTabs()
+            with Horizontal(id="settings-top-row"):
+                yield NavAwareInput(
+                    placeholder="Filter settings...",
+                    id="settings-search",
+                )
+                yield Button(
+                    msg.SETTINGS_RESET_ALL_LABEL,
+                    id="reset-all-defaults",
+                    classes="reset-all-button",
+                )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
         with BottomBars():
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def _compose_groups(self) -> ComposeResult:

@@ -278,6 +278,7 @@ class TestBuildContext:
         assert "chunk one" in ctx
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestSearchContext:
     def test_returns_results(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1290,6 +1291,7 @@ class TestFormatSourceWiki:
         assert "wiki/summaries/doc.md" in result.replace("\\", "/")
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestChunkTypeScope:
     """build_rag_context and ask_stream forward ``chunk_type`` to the store search.
 
