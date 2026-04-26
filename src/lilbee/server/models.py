@@ -60,9 +60,16 @@ class ChatRequest(BaseModel):
 
 
 class SyncRequest(BaseModel):
-    """Request body for /api/sync."""
+    """Request body for /api/sync.
+
+    ``force_rebuild`` triggers a full drop-and-reingest equivalent to ``lilbee rebuild``.
+    Use it to recover from an embedding-model switch (when the store refuses search
+    or ingest because ``cfg.embedding_model`` no longer matches the persisted vectors).
+    The default is incremental sync.
+    """
 
     enable_ocr: bool | None = None
+    force_rebuild: bool = False
 
 
 class AddRequest(BaseModel):
@@ -164,9 +171,16 @@ class AskResponse(BaseModel):
 
 
 class SetModelResponse(BaseModel):
-    """Response for PUT /api/models/{chat|embedding|vision|reranker}."""
+    """Response for PUT /api/models/{chat|embedding|vision|reranker}.
+
+    ``reindex_required`` is ``True`` only when the new embedding model differs from
+    the model that built the persisted vector store. The chat, vision, and reranker
+    handlers always return ``False`` because their changes do not invalidate stored
+    vectors. Mirrors the ``reindex_required`` flag on ``ConfigUpdateResponse``.
+    """
 
     model: str
+    reindex_required: bool = False
 
 
 class ConfigUpdateResponse(BaseModel):
@@ -229,9 +243,8 @@ class ModelsShowResponse(BaseModel):
 class CatalogEntryResponse(BaseModel):
     """A single model in the catalog browser."""
 
-    name: str
-    tag: str
     hf_repo: str
+    gguf_filename: str
     task: str
     display_name: str
     param_count: str

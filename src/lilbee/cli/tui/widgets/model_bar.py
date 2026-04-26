@@ -14,6 +14,7 @@ from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
+from lilbee.catalog import clean_display_name, extract_quant
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -25,7 +26,7 @@ from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
 )
-from lilbee.services import reset_services
+from lilbee.services import get_services, reset_services
 from lilbee.store import SearchScope
 
 log = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class ModelOption(NamedTuple):
     """A selectable model with display label and config ref."""
 
     label: str  # human-readable name for the dropdown
-    ref: str  # name:tag identity for config persistence
+    ref: str  # canonical ref persisted to config
 
 
 def _is_mmproj(name: str) -> bool:
@@ -107,35 +108,62 @@ def _lookup_bucket(
     return buckets.get(key)
 
 
+def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
+    """Build the picker label, appending the quant suffix only on collision."""
+    base = clean_display_name(hf_repo)
+    if repo_count <= 1:
+        return base
+    quant = extract_quant(gguf_filename)
+    return f"{base} ({quant})" if quant else base
+
+
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
         from lilbee.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
-        for manifest in registry.list_installed():
-            ref = f"{manifest.name}:{manifest.tag}"
-            if _is_mmproj(ref) or ref in seen:
+        manifests = registry.list_installed()
+        repo_counts: dict[str, int] = {}
+        for m in manifests:
+            repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
+
+        for manifest in manifests:
+            ref = manifest.ref
+            if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
             bucket = _lookup_bucket(buckets, manifest.task, ref)
             if bucket is None:
                 continue
             seen.add(ref)
-            label = manifest.display_name or ref
+            label = _native_label(
+                manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
+            )
             bucket.append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing."""
+    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing.
+
+    Skipped entirely when the SDK extra (``lilbee[litellm]``) isn't installed:
+    surfacing a model the SDK can't actually serve only sets the user up
+    for a runtime traceback when they pick it. (bb-ezwy)
+    """
+    from lilbee.providers.litellm_sdk import litellm_available
+
+    if not litellm_available():
+        return
     try:
         from lilbee.model_manager import classify_remote_models
 
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
-            if not model.name:
+            # Skip backend rows with a blank model name so the picker
+            # doesn't render an empty " (Ollama)" row.
+            if not model.name.strip():
                 continue
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
             if ref in seen or _is_mmproj(model.name):
@@ -151,7 +179,16 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket."""
+    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket.
+
+    Same litellm guard as ``_collect_remote_models``: API providers
+    require the SDK to route a turn; without it, surfacing them just
+    invites a runtime traceback. (bb-ezwy)
+    """
+    from lilbee.providers.litellm_sdk import litellm_available
+
+    if not litellm_available():
+        return
     try:
         from lilbee.model_manager import discover_api_models
 
@@ -173,19 +210,15 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
 
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
-    """Populate a model Select and set it to *default* (from cfg).
-
-    Normalizes *default* with :latest when no tag is present so that a
-    bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
-    instead of creating a broken fallback entry.
-
-    If *default* is set but not actually installed, surfaces it with a
-    ``(not installed)`` label so the user doesn't mistake the config
-    default for a working model. Select still allows picking it for
-    backward compatibility, but the UI makes the real state obvious.
-    """
-    ref = parse_model_ref(default) if default else None
-    default = ref.for_openai_prefix() if ref else default
+    """Populate a Select with *opts*; show *default* with ``(not installed)``
+    when it isn't in the list, and pass unparseable defaults through unchanged."""
+    if default:
+        try:
+            ref = parse_model_ref(default)
+        except ValueError:
+            ref = None
+        if ref is not None:
+            default = ref.for_openai_prefix()
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)
@@ -387,6 +420,10 @@ class ModelBar(Widget, can_focus=False):
         value = self._extract_value(event, embed_sel)
         if value is None or value == cfg.embedding_model:
             return
+        # Pin a legacy store's identity to the OLD model BEFORE the cfg mutation
+        # so the gate in store.search/add_chunks correctly detects drift on the
+        # next op. See bb-x1qa.
+        get_services().store.initialize_meta_if_legacy()
         cfg.embedding_model = value
         settings.set_value(cfg.data_root, "embedding_model", value)
         self._after_model_change()

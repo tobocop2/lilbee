@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -118,3 +119,7 @@ class LLMProvider(Protocol):
     def shutdown(self) -> None:
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
+
+    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
+        """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
+        return

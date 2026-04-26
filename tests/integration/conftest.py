@@ -12,22 +12,37 @@ from lilbee.config import cfg
 from lilbee.platform import canonical_models_dir
 
 # macOS CI runners use CPU-only inference (no Metal GPU passthrough).
-# smollm2 (135M) is fast enough; qwen3:0.6b is too slow.
-_CI_CHAT_MODEL = os.environ.get("LILBEE_TEST_CHAT_MODEL", "qwen3:0.6b")
+# SmolLM2-135M is fast enough; Qwen3-0.6B is too slow.
+_DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
+_CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
+# Back-compat alias: existing integration test modules import this name.
+_CI_CHAT_MODEL = _CI_CHAT_REPO
 
 # Assertions that depend on the LLM producing specific factual content are
 # unreliable on 135M-param models, which collapse into repetition even with
 # correct retrieval context. Used to skip those content-assertions on macOS
 # CI while still exercising the full pipeline on Ubuntu + Windows.
-_SMALL_CHAT_MODEL = "smollm2:135m"
+_SMALL_CHAT_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
 skip_if_small_chat_model = pytest.mark.skipif(
-    _CI_CHAT_MODEL == _SMALL_CHAT_MODEL,
-    reason=f"{_SMALL_CHAT_MODEL} too small for reliable factual RAG answers",
+    _CI_CHAT_REPO == _SMALL_CHAT_REPO,
+    reason=f"{_SMALL_CHAT_REPO} too small for reliable factual RAG answers",
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
 TEST_DOCS = {f.name: f.read_text() for f in sorted(DOCS_DIR.iterdir()) if f.is_file()}
+
+
+def _resolve_installed_ref(hf_repo: str) -> str:
+    """Return the canonical ``hf_repo/filename`` ref for whichever quant of
+    *hf_repo* is currently installed in the registry."""
+    from lilbee.registry import ModelRegistry
+
+    for manifest in ModelRegistry(cfg.models_dir).list_installed():
+        if manifest.hf_repo == hf_repo:
+            return manifest.ref
+    raise RuntimeError(f"No installed manifest for {hf_repo}")
+
 
 # Integration tests run real LLM inference; the global 60s unit-test cap is too
 # aggressive. 180s is ~4x the slowest observed test on Metal. Any test exceeding
@@ -119,12 +134,11 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
 
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
-    cfg.embedding_model = embed_entry.ref
+    cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
-    name, tag = _CI_CHAT_MODEL.split(":")
-    chat_entry = next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
+    chat_entry = next(m for m in FEATURED_CHAT if m.hf_repo == _CI_CHAT_REPO)
     download_model(chat_entry)
-    cfg.chat_model = chat_entry.ref
+    cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
     result = _integration_loop.run_until_complete(sync(quiet=True))
 
@@ -185,12 +199,11 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
 
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
-    cfg.embedding_model = embed_entry.ref
+    cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
-    name, tag = _CI_CHAT_MODEL.split(":")
-    chat_entry = next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
+    chat_entry = next(m for m in FEATURED_CHAT if m.hf_repo == _CI_CHAT_REPO)
     download_model(chat_entry)
-    cfg.chat_model = chat_entry.ref
+    cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
     result = _integration_loop.run_until_complete(sync(quiet=True))
 

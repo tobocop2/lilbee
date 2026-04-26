@@ -300,8 +300,8 @@ The ones most users set at least once.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `qwen3:0.6b` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
-| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text:v1.5` | Embedding model. Changing this requires `lilbee rebuild` |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
+| `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Embedding model. Changing this requires `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |

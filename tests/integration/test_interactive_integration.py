@@ -123,10 +123,9 @@ out of the box. Set appropriate timeouts and max connections.
 
 def _chat_model_entry():
     """Return the chat model catalog entry based on env var or default."""
-    from tests.integration.conftest import _CI_CHAT_MODEL
+    from tests.integration.conftest import _CI_CHAT_REPO
 
-    name, tag = _CI_CHAT_MODEL.split(":")
-    return next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
+    return next(m for m in FEATURED_CHAT if m.hf_repo == _CI_CHAT_REPO)
 
 
 def _embedding_model_entry():
@@ -163,8 +162,10 @@ def isolated_env(tmp_path, real_models):
 
     cfg.llm_provider = "llama-cpp"
     cfg.models_dir = canonical_models_dir()
-    cfg.chat_model = _chat_model_entry().ref
-    cfg.embedding_model = _embedding_model_entry().ref
+    from tests.integration.conftest import _resolve_installed_ref
+
+    cfg.chat_model = _resolve_installed_ref(_chat_model_entry().hf_repo)
+    cfg.embedding_model = _resolve_installed_ref(_embedding_model_entry().hf_repo)
     cfg.embedding_dim = 768
 
     cfg.concept_graph = False

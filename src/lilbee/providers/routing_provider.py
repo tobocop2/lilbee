@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 from lilbee.catalog import is_rerank_ref
@@ -21,10 +22,10 @@ class RoutingProvider(LLMProvider):
     """Dispatches calls based on the model ref prefix.
 
     ``ollama/``, ``openai/``, ``anthropic/``, ``gemini/`` go to the SDK
-    provider. Unprefixed refs (``qwen3:8b``) go to llama-cpp, which
-    resolves them against the native registry. A registry miss surfaces
-    the native ProviderError unchanged, rather than silently falling
-    through to a remote backend.
+    provider. Other refs (the HuggingFace ``<org>/<repo>/<file>.gguf``
+    shape) go to llama-cpp, which resolves them against the native
+    registry. A registry miss surfaces the native ProviderError
+    unchanged, rather than silently falling through to a remote backend.
     """
 
     def __init__(self) -> None:
@@ -153,6 +154,11 @@ class RoutingProvider(LLMProvider):
             self._llama_cpp.shutdown()
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
+
+    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
+        """Forward to the native side only; the SDK side has no local cache."""
+        if self._llama_cpp is not None:
+            self._llama_cpp.invalidate_load_cache(model_path)
 
 
 def _is_native_rerank_ref(model: str) -> bool:

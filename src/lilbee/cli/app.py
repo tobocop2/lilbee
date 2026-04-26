@@ -11,7 +11,7 @@ from rich.console import Console
 from lilbee import settings as _settings_module
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.config import cfg
+from lilbee.config import cfg, config_load_error
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
@@ -28,7 +28,7 @@ model_option = typer.Option(
     None,
     "--model",
     "-m",
-    help="Override chat model (default: $LILBEE_CHAT_MODEL or 'qwen3:8b')",
+    help="Override chat model (default: $LILBEE_CHAT_MODEL or the featured Qwen3 entry)",
 )
 
 json_option = typer.Option(
@@ -177,6 +177,14 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
+
+    if config_load_error is not None and not json_output:
+        # Print to stderr so JSON-mode output stays parseable.
+        sys.stderr.write(
+            "Warning: persisted config has values this version doesn't accept; "
+            "running with defaults until you fix it.\n"
+            f"  Detail: {config_load_error}\n"
+        )
 
     level_str = os.environ.get("LILBEE_LOG_LEVEL", "WARNING").upper()
     if log_level is not None:

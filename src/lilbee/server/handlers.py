@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
 from lilbee import settings
+from lilbee.catalog import find_catalog_entry
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import Config, cfg
 from lilbee.config_meta import (
@@ -369,14 +370,21 @@ def chat_stream(
     )
 
 
-async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:
+async def _run_sync_with_sentinel(
+    sse: SseStream, enable_ocr: bool | None, force_rebuild: bool = False
+) -> SyncResult:
     """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
     try:
         with temporary_ocr_config(enable_ocr):
-            return await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            return await sync(
+                quiet=True,
+                on_progress=sse.callback,
+                cancel=sse.cancel,
+                force_rebuild=force_rebuild,
+            )
     finally:
         sse.queue.put_nowait(None)
 
@@ -451,10 +459,16 @@ def _canonical_source_name(p_str: str) -> str:
     return Path(p_str).name
 
 
-async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
-    """Trigger sync, yield SSE progress events, then done event."""
+async def sync_stream(
+    *, enable_ocr: bool | None = None, force_rebuild: bool = False
+) -> AsyncGenerator[str, None]:
+    """Trigger sync, yield SSE progress events, then done event.
+
+    When ``force_rebuild`` is true, the underlying sync drops every table and
+    re-ingests from ``cfg.documents_dir`` (the REST equivalent of ``lilbee rebuild``).
+    """
     sse = SseStream()
-    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr))
+    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr, force_rebuild))
     async for event in sse.drain(task, "Sync stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
@@ -606,7 +620,15 @@ def _catalog_section(
     active: str,
     installed: set[str],
 ) -> ModelCatalogSection:
-    """Build a ModelCatalogSection from a featured-catalog tuple."""
+    """Build a ModelCatalogSection from a featured-catalog tuple.
+
+    A featured row is "installed" when at least one quant of its
+    ``hf_repo`` has a manifest. Installed refs are full
+    ``hf_repo/filename`` strings, so the membership test compares the
+    leading ``hf_repo`` segment. Bare ``hf_repo`` entries are accepted
+    too (e.g. older clients that report just the repo).
+    """
+    installed_repos = {ref.rsplit("/", 1)[0] if ref.endswith(".gguf") else ref for ref in installed}
     return ModelCatalogSection(
         active=active,
         catalog=[
@@ -615,7 +637,7 @@ def _catalog_section(
                 size_gb=m.size_gb,
                 min_ram_gb=m.min_ram_gb,
                 description=m.description,
-                installed=m.ref in installed,
+                installed=m.hf_repo in installed_repos,
             )
             for m in featured
         ],
@@ -656,32 +678,37 @@ async def _set_model(
     return SetModelResponse(model=model)
 
 
-def _require_model_available(model: str) -> str:
-    """Return the normalized installed model ref; raises ValueError when unavailable.
-
-    Accepts catalog ``name:tag``, HuggingFace repo id, display name, or
-    provider-prefixed ref.
-    """
-    from lilbee.catalog import find_catalog_entry
-    from lilbee.models import ensure_tag
-
+def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
+    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*."""
     entry = find_catalog_entry(model)
-    normalized = entry.ref if entry is not None else ensure_tag(model)
-    available = get_services().provider.list_models()
-    # ``available`` lists bare tags from /api/tags; stored refs may carry an
-    # ``ollama/`` prefix. Match on either form so both client styles work.
-    bare = parse_model_ref(normalized).name
-    if normalized in available or bare in available:
-        return normalized
-    # Providers may report the HuggingFace repo form instead of the catalog
-    # ``name:tag``. When the input resolved to a catalog entry, accept that
-    # entry's ``hf_repo`` (with or without ``:latest``) as an equivalent
-    # installed form so the canonical ref is still returned.
-    if entry is not None:
-        hf_candidates = {entry.hf_repo, ensure_tag(entry.hf_repo)}
-        if hf_candidates.intersection(available):
-            return normalized
-    raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
+    if entry is None:
+        return None
+    return next((ref for ref in available if ref.startswith(f"{entry.hf_repo}/")), None)
+
+
+def _resolve_via_parse(model: str, available: set[str]) -> str | None:
+    """Resolve a provider-prefixed ref to its bare provider name in *available*."""
+    try:
+        parsed = parse_model_ref(model)
+    except ValueError:
+        return None
+    return parsed.name if parsed.name in available else None
+
+
+def _require_model_available(model: str) -> str:
+    """Return the installed-and-routable form of *model*, or raise."""
+    not_available = ValueError(
+        f"Model '{model}' is not available. Pull it first or check the name."
+    )
+    if not model:
+        raise not_available
+    available = set(get_services().provider.list_models())
+    if model in available:
+        return model
+    hit = _resolve_via_catalog(model, available) or _resolve_via_parse(model, available)
+    if hit is None:
+        raise not_available
+    return hit
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:
@@ -716,9 +743,26 @@ async def set_chat_model(model: str) -> SetModelResponse:
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
-    """Switch embedding model. Validates installation and catalog task."""
+    """Switch embedding model. Validates installation and catalog task.
+
+    Returns ``reindex_required=True`` when the new model differs from the
+    embedding model that built the persisted vector store. The caller is
+    expected to trigger a rebuild (``lilbee rebuild`` or ``POST /api/sync``
+    with ``force_rebuild=true``). Search and ingest will refuse to operate
+    until that happens.
+
+    Pins a legacy store's identity to the OLD cfg before mutating it. Without
+    this step, a pre-upgrade store with chunks but no ``_meta`` row would have
+    its meta lazy-initialized from the NEW cfg on the next read, hiding the
+    drift the caller just introduced.
+    """
     normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
-    return await _set_model("embedding_model", normalized)
+    store = get_services().store
+    store.initialize_meta_if_legacy()
+    await _set_model("embedding_model", normalized)
+    meta = store.get_meta()
+    reindex_required = meta is not None and meta["embedding_model"] != normalized
+    return SetModelResponse(model=normalized, reindex_required=reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:
@@ -950,8 +994,8 @@ async def models_catalog(
     )
 
     registry = get_services().registry
-    installed_names = {f"{m.name}:{m.tag}" for m in registry.list_installed()}
-    enriched = enrich_catalog(result, installed_names)
+    installed_refs = {m.ref for m in registry.list_installed()}
+    enriched = enrich_catalog(result, installed_refs)
 
     return ModelsCatalogResponse(
         total=result.total,
@@ -960,9 +1004,8 @@ async def models_catalog(
         has_more=result.has_more,
         models=[
             CatalogEntryResponse(
-                name=e.name,
-                tag=e.tag,
                 hf_repo=e.hf_repo,
+                gguf_filename=e.gguf_filename,
                 task=e.task,
                 display_name=e.display_name,
                 param_count=e.param_count,

@@ -113,6 +113,7 @@ class TestAvailable:
         with mock.patch.dict(sys.modules, {"litellm": fake}):
             assert backend.available() is True
 
+    @pytest.mark.real_litellm_probe
     def test_returns_false_when_sdk_missing(self, backend: LlmSdkBackend) -> None:
         with mock.patch.dict(sys.modules, {"litellm": None}):
             assert backend.available() is False

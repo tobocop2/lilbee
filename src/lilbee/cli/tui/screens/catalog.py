@@ -150,17 +150,21 @@ class CatalogScreen(Screen[None]):
             self.query_one(GridSelect).focus()
 
     def _fetch_installed_names(self) -> None:
-        """Populate installed source repos/filenames from registry manifests."""
+        """Populate installed identities from registry manifests.
+
+        Stored set contains both the canonical ref (``hf_repo/filename``)
+        and the bare ``hf_repo`` so catalog rows whose ref is the repo
+        alone still light up as installed when at least one quant of
+        that repo has a manifest.
+        """
         with contextlib.suppress(Exception):
             from lilbee.registry import ModelRegistry
 
             registry = ModelRegistry(cfg.models_dir)
             self._installed_names = set()
             for m in registry.list_installed():
-                # Store both name:tag and source_repo/source_filename for matching
-                self._installed_names.add(f"{m.name}:{m.tag}")
-                if m.source_repo and m.source_filename:
-                    self._installed_names.add(f"{m.source_repo}/{m.source_filename}")
+                self._installed_names.add(m.ref)
+                self._installed_names.add(m.hf_repo)
 
     def action_toggle_view(self) -> None:
         """Toggle between grid and list view."""
@@ -359,9 +363,7 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for fam in self._families:
             for v in fam.variants:
-                installed = self._is_installed(
-                    f"{fam.slug}:{v.tag}", repo=v.hf_repo, filename=v.filename
-                )
+                installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
                 row = variant_to_row(v, fam, installed)
                 if matches_search(row, search):
                     rows.append(row)
@@ -623,9 +625,6 @@ class CatalogScreen(Screen[None]):
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
         entry = CatalogModel(
-            name=family.slug,
-            tag=variant.tag,
-            display_name=f"{family.name} {variant.param_count}",
             hf_repo=variant.hf_repo,
             gguf_filename=variant.filename,
             size_gb=variant.size_mb / 1024,

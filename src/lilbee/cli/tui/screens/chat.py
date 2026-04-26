@@ -26,6 +26,7 @@ from textual.widgets import Footer, Input, Label, Select, Static
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee import asyncio_loop, settings
+from lilbee.catalog import display_label_for_ref
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
@@ -86,10 +87,12 @@ class ChatStatusLine(Label):
         if not name:
             self.update("")
             return
-        parts: list[Content | tuple[str, str]] = [pill(name, "$primary", "$text")]
+        chat_label = display_label_for_ref(name)
+        parts: list[Content | tuple[str, str]] = [pill(chat_label, "$primary", "$text")]
         if cfg.embedding_model:
+            embed_label = display_label_for_ref(cfg.embedding_model)
             parts.append((DOT_SEP, "$text-muted"))
-            parts.append(pill(cfg.embedding_model, "$secondary", "$text"))
+            parts.append(pill(embed_label, "$secondary", "$text"))
         self.update(Content.assemble(*parts))
 
 

@@ -7,7 +7,12 @@ from unittest import mock
 import pytest
 from textual.binding import Binding
 
-from conftest import make_test_catalog_model as _make_model
+from conftest import (
+    TEST_LOCAL_REF,
+)
+from conftest import (
+    make_test_catalog_model as _make_model,
+)
 from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -20,7 +25,7 @@ def _isolated_cfg(tmp_path):
     cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
-    cfg.chat_model = "test-model"
+    cfg.chat_model = TEST_LOCAL_REF
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -294,10 +299,11 @@ class TestChatScreenAsync:
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
-            inp.value = "/model new-model"
+            new_ref = "ollama/new-model:latest"
+            inp.value = f"/model {new_ref}"
             await pilot.press("enter")
             await pilot.pause()
-            assert cfg.chat_model == "new-model:latest"
+            assert cfg.chat_model == new_ref
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_slash_set_changes_setting(self, mock_catalog: mock.MagicMock) -> None:
@@ -901,21 +907,6 @@ class TestAppSignals:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert hasattr(app, "settings_changed_signal")
-
-    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    @mock.patch("lilbee.cli.tui.screens.catalog.get_families", return_value=[])
-    async def test_model_changed_signal_exists(
-        self,
-        _fam: mock.MagicMock,
-        _cat: mock.MagicMock,
-    ) -> None:
-        _cat.return_value = CatalogResult(total=0, limit=25, offset=0, models=[])
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert hasattr(app, "model_changed_signal")
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families", return_value=[])
