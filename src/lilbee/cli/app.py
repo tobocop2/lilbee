@@ -8,9 +8,11 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from lilbee import settings as _settings_module
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg, config_load_error
+from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -58,11 +60,41 @@ seed_option = typer.Option(None, "--seed", help="Random seed for reproducibility
 
 
 def _apply_data_root(root: Path) -> None:
-    """Point all cfg data paths at *root*."""
+    """Point cfg paths at *root* and overlay its config.toml onto cfg."""
     cfg.data_root = root
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
+    overlay_persisted_settings(root)
+
+
+def overlay_persisted_settings(root: Path) -> None:
+    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg.
+
+    Bad values are logged and skipped. Shared with the MCP ``init`` tool
+    so per-vault model preferences take effect on every entry point.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        persisted = _settings_module.load(root)
+    except (OSError, ValueError):
+        log.warning("Failed to read %s/config.toml; using in-memory defaults", root)
+        return
+    if not persisted:
+        return
+    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
+    for key, raw in persisted.items():
+        if key not in overlayable:
+            continue
+        try:
+            setattr(cfg, key, raw)
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "Ignoring invalid persisted value for %s in %s: %s",
+                key,
+                root,
+                exc,
+            )
 
 
 def apply_overrides(
