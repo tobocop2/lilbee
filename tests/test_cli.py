@@ -2447,14 +2447,16 @@ class TestWikiLint:
 @pytest.mark.usefixtures("wiki_enabled")
 class TestWikiSynthesize:
     def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
-        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.generation.generate_synthesis_pages", lambda *a, **kw: [])
         result = runner.invoke(app, ["wiki", "synthesize"])
         assert result.exit_code == 0
         assert "No synthesis pages" in result.output
 
     def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
         out = isolated_env / "wiki" / "synthesis" / "typing.md"
-        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [out])
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.generate_synthesis_pages", lambda *a, **kw: [out]
+        )
         result = runner.invoke(app, ["wiki", "synthesize"])
         assert result.exit_code == 0
         assert "typing.md" in result.output
@@ -2462,7 +2464,9 @@ class TestWikiSynthesize:
     def test_json_output(self, mock_svc, isolated_env, monkeypatch):
         cfg.json_mode = True
         out = isolated_env / "wiki" / "synthesis" / "typing.md"
-        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [out])
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.generate_synthesis_pages", lambda *a, **kw: [out]
+        )
         result = runner.invoke(app, ["--json", "wiki", "synthesize"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -2552,9 +2556,9 @@ class TestWikiBuild:
 
         mock_svc.store.get_chunks_by_source.side_effect = fake_chunks
         self._stub_extraction(monkeypatch)
-        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", lambda *a, **kw: [])
-        monkeypatch.setattr("lilbee.wiki.gen.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.gen.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.generation.append_wiki_log", lambda *a, **kw: None)
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
         assert chunk_calls == ["a.txt", "b.txt"]
@@ -2590,10 +2594,10 @@ class TestWikiBuild:
             raise AssertionError("build_wiki must not run in --dry-run")
 
         # Patch the impl, not the re-export — `run_full_build` resolves
-        # `build_wiki` from `lilbee.wiki.gen`, so a dry-run regression that
+        # `build_wiki` from `lilbee.wiki.generation`, so a dry-run regression that
         # accidentally fell through to the build path would only trip a
         # boom installed there.
-        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", build_boom)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", build_boom)
         result = runner.invoke(app, ["wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         assert "chevrolet" in result.output
@@ -2624,10 +2628,10 @@ class TestWikiBuild:
             raise AssertionError("build_wiki must not run in --dry-run")
 
         # Patch the impl, not the re-export — `run_full_build` resolves
-        # `build_wiki` from `lilbee.wiki.gen`, so a dry-run regression that
+        # `build_wiki` from `lilbee.wiki.generation`, so a dry-run regression that
         # accidentally fell through to the build path would only trip a
         # boom installed there.
-        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", build_boom)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", build_boom)
         result = runner.invoke(app, ["--json", "wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         data = json.loads(result.output)

@@ -19,13 +19,11 @@ from lilbee.wiki.citation import (
     strip_citation_block,
     verify_citation,
 )
-from lilbee.wiki.gen import (
-    run_full_build,
-    run_full_synthesize,
-)
 from lilbee.wiki.generation import (
     build_wiki,
     generate_synthesis_pages,
+    run_full_build,
+    run_full_synthesize,
 )
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import lint_all, lint_wiki_page

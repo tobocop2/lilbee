@@ -9,32 +9,31 @@ import pytest
 
 from lilbee.config import CHUNKS_TABLE, cfg
 from lilbee.store import CHUNK_TYPE_WIKI, SearchChunk, Store
-from lilbee.wiki.citation import ParsedCitation
-from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
-from lilbee.wiki.gen import (
-    _check_faithfulness,
-    _chunks_to_text,
-    _content_change_ratio,
-    _diff_summary,
-    _divert_to_drafts,
-    _embedding_faithfulness_score,
-    _extract_excerpt,
-    _find_cached_leaf,
-    _find_excerpt_source,
-    _generate_synthesis_page,
+from lilbee.wiki.batch import (
     _group_chunks_by_page,
-    _group_entities_by_primary_source,
-    _leaf_hash,
-    _match_citation_source,
     _maybe_run_phase_d_migration,
-    _mean_vector,
+    _unwrap_archived_links,
+)
+from lilbee.wiki.cache import _find_cached_leaf, _leaf_hash
+from lilbee.wiki.citation import ParsedCitation
+from lilbee.wiki.citations import (
+    _extract_excerpt,
+    _find_excerpt_source,
+    _match_citation_source,
     _resolve_citations,
     _resolve_multi_source_citations,
-    _truncate_chunks_to_budget,
-    _unwrap_archived_links,
     _verify_citations,
-    generate_synthesis_pages,
-    index_wiki_page,
+)
+from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
+from lilbee.wiki.generation import generate_synthesis_pages
+from lilbee.wiki.page import _chunks_to_text, _truncate_chunks_to_budget, index_wiki_page
+from lilbee.wiki.persistence import _divert_to_drafts
+from lilbee.wiki.quality import (
+    _check_faithfulness,
+    _content_change_ratio,
+    _diff_summary,
+    _embedding_faithfulness_score,
+    _mean_vector,
 )
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
@@ -42,6 +41,7 @@ from lilbee.wiki.shared import (
     PageTarget,
     make_slug,
 )
+from lilbee.wiki.synthesis import _generate_synthesis_page, _group_entities_by_primary_source
 
 
 @pytest.fixture(autouse=True)
@@ -376,7 +376,7 @@ class TestVerifyCitations:
 
 class TestBuildWikiMessages:
     def test_thinking_capability_prepends_no_think_directive(self):
-        from lilbee.wiki.gen import _build_wiki_messages
+        from lilbee.wiki.page import _build_wiki_messages
 
         provider = MagicMock()
         provider.get_capabilities.return_value = ["completion", "thinking"]
@@ -391,7 +391,7 @@ class TestBuildWikiMessages:
         provider.get_capabilities.assert_called_once()
 
     def test_no_thinking_capability_passes_prompt_through(self):
-        from lilbee.wiki.gen import _build_wiki_messages
+        from lilbee.wiki.page import _build_wiki_messages
 
         provider = MagicMock()
         provider.get_capabilities.return_value = ["completion"]
@@ -402,7 +402,7 @@ class TestBuildWikiMessages:
 
     def test_empty_capabilities_passes_prompt_through(self):
         """Backends that don't report capabilities leave the prompt untouched."""
-        from lilbee.wiki.gen import _build_wiki_messages
+        from lilbee.wiki.page import _build_wiki_messages
 
         provider = MagicMock()
         provider.get_capabilities.return_value = []
@@ -1276,13 +1276,13 @@ class TestBuildFrontmatter:
     """B2: frontmatter carries a provenance block when chunks are provided."""
 
     def test_no_chunks_omits_provenance(self):
-        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.page import _build_frontmatter
 
         fm = _build_frontmatter(cfg, ["doc.md"], 0.9)
         assert "provenance:" not in fm
 
     def test_with_chunks_renders_provenance_block(self):
-        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.page import _build_frontmatter
 
         chunks = [
             _make_chunk("body a", source="doc.md", chunk_index=0),
@@ -1297,7 +1297,7 @@ class TestBuildFrontmatter:
         assert "chunk_index: 1" in fm
 
     def test_provenance_round_trips_through_parse_frontmatter(self):
-        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.page import _build_frontmatter
         from lilbee.wiki.shared import parse_frontmatter
 
         chunks = [_make_chunk("a", source="foo.pdf", chunk_index=5)]
@@ -1335,7 +1335,7 @@ class TestBuildFrontmatter:
         (not part of this PR); pass a benign value for the sources
         list so the test isolates the provenance-block behavior.
         """
-        from lilbee.wiki.gen import _build_frontmatter
+        from lilbee.wiki.page import _build_frontmatter
         from lilbee.wiki.shared import parse_frontmatter
 
         pathological = 'weird "name": with\\slash\n'
@@ -1433,7 +1433,7 @@ class TestUnwrapArchivedLinks:
 class TestRunFullBuild:
     def test_defaults_to_global_cfg_when_called_with_no_args(self, monkeypatch):
         """run_full_build() with no arg falls back to lilbee.config.cfg."""
-        from lilbee.wiki.gen import run_full_build
+        from lilbee.wiki.generation import run_full_build
 
         captured: dict[str, object] = {}
 
@@ -1451,10 +1451,10 @@ class TestRunFullBuild:
             captured["config"] = config
             return []
 
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", fake_get_services)
-        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", fake_build_wiki)
-        monkeypatch.setattr("lilbee.wiki.gen.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.gen.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", fake_get_services)
+        monkeypatch.setattr("lilbee.wiki.generation.build_wiki", fake_build_wiki)
+        monkeypatch.setattr("lilbee.wiki.generation.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.generation.append_wiki_log", lambda *a, **kw: None)
         monkeypatch.setattr("lilbee.wiki.entity_extractor.get_entity_extractor", fake_extractor)
 
         result = run_full_build()
@@ -1465,7 +1465,7 @@ class TestRunFullBuild:
 class TestRunFullSynthesize:
     def test_defaults_to_global_cfg_when_called_with_no_args(self, monkeypatch, tmp_path):
         """run_full_synthesize() with no arg falls back to lilbee.config.cfg."""
-        from lilbee.wiki.gen import run_full_synthesize
+        from lilbee.wiki.generation import run_full_synthesize
 
         captured: dict[str, object] = {}
 
@@ -1477,8 +1477,8 @@ class TestRunFullSynthesize:
             captured["config"] = config
             return [tmp_path / "wiki" / "synthesis" / "typing.md"]
 
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", fake_get_services)
-        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", fake_generate)
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", fake_get_services)
+        monkeypatch.setattr("lilbee.wiki.generation.generate_synthesis_pages", fake_generate)
 
         result = run_full_synthesize()
         assert captured["config"] is cfg

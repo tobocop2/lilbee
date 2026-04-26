@@ -1,6 +1,6 @@
 """Tests for Phase D per-source batched wiki generation.
 
-Covers the new per-source batch path in ``lilbee.wiki.gen``:
+Covers the per-source batch path in ``lilbee.wiki.generation``:
 section splitting, concept curation toggling, parse-failure and
 slug-collision drafts, the incremental ``extract_concepts=False``
 kwarg, and PENDING marker replacement on successful regen.
@@ -15,25 +15,24 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.store import SearchChunk
+from lilbee.wiki.batch import _chunks_for_source
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.gen import (
-    _all_sources_in_scope,
-    _chunks_for_source,
-    _delete_pending_marker_if_present,
-    _generate_source_batch,
-    _prefix_heading,
-    _split_batched_output,
-    build_wiki,
-)
+from lilbee.wiki.generation import _all_sources_in_scope, build_wiki
+from lilbee.wiki.persistence import _delete_pending_marker_if_present
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     ENTITIES_SUBDIR,
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
+)
+from lilbee.wiki.synthesis import (
+    _generate_source_batch,
+    _prefix_heading,
+    _split_batched_output,
 )
 
 

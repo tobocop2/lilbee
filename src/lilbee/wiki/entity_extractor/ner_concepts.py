@@ -1,7 +1,7 @@
 """spaCy NER entity extractor (default strategy).
 
 Phase D removed the noun-chunk "concept" path from this extractor. The
-per-source batched call in :mod:`lilbee.wiki.gen` now proposes concept
+per-source batched call in :mod:`lilbee.wiki.generation` now proposes concept
 pages through the LLM. This module produces typed NER entities only.
 """
 
@@ -68,7 +68,7 @@ class NerConceptsExtractor:
 
     Phase D removed the noun-chunk concept loop: LLM-curated concept
     pages are produced downstream by the per-source batched call in
-    :mod:`lilbee.wiki.gen`. The class name is kept for backwards
+    :mod:`lilbee.wiki.generation`. The class name is kept for backwards
     compatibility at the factory dispatch site; the implementation
     emits only ``EntityKind.ENTITY`` records now.
     """

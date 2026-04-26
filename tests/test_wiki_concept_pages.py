@@ -19,15 +19,15 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.store import SearchChunk
+from lilbee.wiki.batch import _hash_existing_sources
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.gen import (
+from lilbee.wiki.generation import (
     _augment_surface_map_with_existing_pages,
     _entity_surface_map,
-    _hash_existing_sources,
     build_wiki,
 )
 
@@ -81,7 +81,7 @@ class TestPersistAndFinalize:
     """wiki_prune_raw drops the raw chunks once a page lands successfully."""
 
     def test_prune_raw_deletes_source_chunks(self, tmp_path: Path) -> None:
-        from lilbee.wiki.gen import _persist_and_finalize
+        from lilbee.wiki.persistence import _persist_and_finalize
         from lilbee.wiki.shared import PageTarget
 
         cfg.wiki_prune_raw = True
@@ -113,7 +113,7 @@ class TestGeneratePageProgress:
     """_generate_page forwards progress events to the on_progress callback."""
 
     def test_progress_callback_receives_generating_stage(self, tmp_path: Path) -> None:
-        from lilbee.wiki.gen import _generate_page
+        from lilbee.wiki.page import _generate_page
 
         cfg.data_root = tmp_path
         (tmp_path / cfg.wiki_dir).mkdir(parents=True, exist_ok=True)

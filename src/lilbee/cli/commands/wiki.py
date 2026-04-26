@@ -186,7 +186,7 @@ def wiki_synthesize(
     if not cfg.wiki:
         _fail_wiki_disabled()
         return
-    from lilbee.wiki.gen import generate_synthesis_pages
+    from lilbee.wiki.generation import generate_synthesis_pages
 
     svc = get_services()
     paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)

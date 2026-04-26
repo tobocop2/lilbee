@@ -36,9 +36,9 @@ from lilbee.wiki.shared import (
 
 # Re-export the kind constants from wiki.shared so existing imports
 # (``from lilbee.wiki.drafts import PENDING_KIND_PARSE``) keep working.
-# Their canonical home is :mod:`lilbee.wiki.shared` — the writer side
-# in :mod:`lilbee.wiki.gen` would create a circular import if it
-# reached into this module for them.
+# Their canonical home is :mod:`lilbee.wiki.shared`. The writer side
+# in :mod:`lilbee.wiki.persistence` would create a circular import if
+# it reached into this module for them.
 __all__ = [
     "PENDING_KIND_COLLISION",
     "PENDING_KIND_DRIFT",
@@ -373,7 +373,7 @@ def reject_draft(slug: str, wiki_root: Path) -> None:
 
 
 def _reindex_accepted_page(target: Path, wiki_root: Path, store: Store) -> int:
-    """Re-index *target* via :func:`lilbee.wiki.gen.index_wiki_page`.
+    """Re-index *target* via :func:`lilbee.wiki.page.index_wiki_page`.
 
     Returns the number of ``chunk_type="wiki"`` rows written. Routes
     through the same chunk / embed / clear-and-rewrite path as initial

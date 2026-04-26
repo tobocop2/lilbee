@@ -16,19 +16,23 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TypedDict
 
 from lilbee.clustering import SourceClusterer
 from lilbee.config import Config, cfg
 from lilbee.providers.base import LLMProvider
-from lilbee.store import Store
+from lilbee.services import get_services
+from lilbee.store import SearchChunk, Store
 from lilbee.wiki.batch import _maybe_run_phase_d_migration
-from lilbee.wiki.entity_extractor import ExtractedEntity
+from lilbee.wiki.entity_extractor import ExtractedEntity, get_entity_extractor
+from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     ENTITIES_SUBDIR,
     MIN_CLUSTER_SOURCES,
     WIKI_CONTENT_SUBDIRS,
+    WIKI_LOG_ACTION_BUILD,
 )
 from lilbee.wiki.synthesis import (
     _generate_source_batch,
@@ -258,3 +262,57 @@ def build_wiki(
     _rewrite_links_across_wiki(entities, config)
     log.info("Generated %d batched wiki pages", len(pages))
     return pages
+
+
+class WikiBuildSummary(TypedDict):
+    """Result of a full wiki build/update."""
+
+    paths: list[str]
+    entities: int
+    count: int
+
+
+def run_full_build(config: Config | None = None) -> WikiBuildSummary:
+    """Extract entities and build wiki pages for every ingested source."""
+    if config is None:
+        config = cfg
+    svc = get_services()
+    chunks: list[SearchChunk] = []
+    for record in svc.store.get_sources():
+        chunks.extend(svc.store.get_chunks_by_source(record["filename"]))
+
+    extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
+    entities = extractor.extract(chunks)
+    pages = build_wiki(
+        entities,
+        svc.provider,
+        svc.store,
+        config,
+        extract_concepts=config.wiki_extract_concepts,
+    )
+    update_wiki_index()
+    append_wiki_log(WIKI_LOG_ACTION_BUILD, f"{len(pages)} pages from {len(entities)} records")
+    return {
+        "paths": [str(p) for p in pages],
+        "entities": len(entities),
+        "count": len(pages),
+    }
+
+
+class WikiSynthesizeSummary(TypedDict):
+    """Result of running synthesis-page generation."""
+
+    paths: list[str]
+    count: int
+
+
+def run_full_synthesize(config: Config | None = None) -> WikiSynthesizeSummary:
+    """Generate synthesis pages for cross-source clusters."""
+    if config is None:
+        config = cfg
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer, config)
+    return {
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
+    }

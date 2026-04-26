@@ -765,7 +765,9 @@ class TestWikiSynthesizeTool:
     def test_returns_synthesis_paths(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
         paths = [tmp_path / "wiki" / "synthesis" / "typing.md"]
-        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: paths)
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.generate_synthesis_pages", lambda *a, **kw: paths
+        )
         result = wiki_synthesize()
         assert result["command"] == "wiki_synthesize"
         assert result["count"] == 1
@@ -773,7 +775,7 @@ class TestWikiSynthesizeTool:
 
     def test_no_clusters_returns_empty(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
-        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.generation.generate_synthesis_pages", lambda *a, **kw: [])
         result = wiki_synthesize()
         assert result["count"] == 0
         assert result["paths"] == []
