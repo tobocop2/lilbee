@@ -49,7 +49,10 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
     # The ``crawl_recursive`` entry point now gates on ``crawler_available()``
     # so a missing ``[crawler]`` extra produces ``CrawlerBackendMissing``.
-    # Stub it True here so orchestration tests don't require crawl4ai.
+    # Stub it True here so orchestration tests don't require the crawler extra.
+    # Both the SDK façade (used by callers) and the impl (used by tests that
+    # import directly) are patched so the value is consistent across import paths.
+    monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
     monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
     # Bypass SSRF DNS resolution by default so localhost-like test URLs
     # don't hit real DNS.

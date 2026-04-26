@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
-from litestar import delete, get, post
+from litestar import delete, get, patch, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 
@@ -14,6 +15,7 @@ from lilbee.config import cfg
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,
+    WikiBuildResult,
     WikiCitationRecord,
     WikiCitationsResult,
     WikiDraftAcceptResponse,
@@ -24,9 +26,12 @@ from lilbee.server.models import (
     WikiPageDetail,
     WikiPruneRecordResponse,
     WikiPruneResult,
+    WikiStatusResult,
+    WikiSynthesizeResult,
 )
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
+from lilbee.wiki import run_full_build, run_full_synthesize
 from lilbee.wiki.browse import (
     find_page,
     list_pages,
@@ -39,7 +44,7 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.shared import WIKI_DISABLED_ERROR
+from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, WIKI_DISABLED_ERROR
 
 
 def _wiki_root() -> Path:
@@ -194,4 +199,88 @@ async def wiki_prune_route() -> WikiPruneResult:
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
         flagged=report.flagged_count,
+    )
+
+
+# Serialize wiki builds: ``run_full_build`` writes pages, the wiki index, and
+# the wiki log; two concurrent calls would corrupt those. The lock is created
+# lazily because ``Lock()`` requires a running event loop.
+_WIKI_BUILD_LOCK: asyncio.Lock | None = None
+
+
+def _wiki_build_lock() -> asyncio.Lock:
+    """Return the per-process wiki-build mutex, creating it on first call."""
+    global _WIKI_BUILD_LOCK
+    if _WIKI_BUILD_LOCK is None:
+        _WIKI_BUILD_LOCK = asyncio.Lock()
+    return _WIKI_BUILD_LOCK
+
+
+def _reset_wiki_build_lock() -> None:
+    """Test hook: clear the per-process wiki-build mutex.
+
+    Mirrors ``handlers._reset_ingest_locks`` so a test that creates the
+    lock under one event loop doesn't leak it into the next test.
+    """
+    global _WIKI_BUILD_LOCK
+    _WIKI_BUILD_LOCK = None
+
+
+@post("/api/wiki/build")
+async def wiki_build_route() -> WikiBuildResult:
+    """Build the concept and entity wiki across all ingested sources.
+
+    The build is CPU- and IO-bound (LLM calls, embeddings, file writes) so
+    it runs in a worker thread; concurrent build/update requests serialize
+    on a per-process lock so they don't corrupt the wiki index.
+    """
+    _require_wiki()
+    async with _wiki_build_lock():
+        result = await asyncio.to_thread(run_full_build, cfg)
+    return WikiBuildResult(**result)
+
+
+@patch("/api/wiki/update")
+async def wiki_update_route() -> WikiBuildResult:
+    """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
+    _require_wiki()
+    async with _wiki_build_lock():
+        result = await asyncio.to_thread(run_full_build, cfg)
+    return WikiBuildResult(**result)
+
+
+@post("/api/wiki/synthesize")
+async def wiki_synthesize_route() -> WikiSynthesizeResult:
+    """Generate synthesis pages for concept clusters spanning 3+ sources.
+
+    Shares the wiki-build mutex so synthesis can't race a build/update
+    over the same on-disk wiki tree.
+    """
+    _require_wiki()
+    async with _wiki_build_lock():
+        result = await asyncio.to_thread(run_full_synthesize, cfg)
+    return WikiSynthesizeResult(**result)
+
+
+@get("/api/wiki/status")
+@read_only
+async def wiki_status_route() -> WikiStatusResult:
+    """Wiki layer status: page counts and recent lint counts."""
+    root = _wiki_root()
+    if not root.exists():
+        return WikiStatusResult(wiki_enabled=cfg.wiki)
+
+    summaries_dir = root / SUMMARIES_SUBDIR
+    drafts_dir = root / DRAFTS_SUBDIR
+    summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
+    drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
+
+    report = lint_mod.lint_all(svc_mod.get_services().store)
+    return WikiStatusResult(
+        wiki_enabled=cfg.wiki,
+        summaries=len(summaries),
+        drafts=len(drafts),
+        pages=len(summaries) + len(drafts),
+        lint_errors=report.error_count,
+        lint_warnings=report.warning_count,
     )
