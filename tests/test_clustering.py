@@ -541,7 +541,7 @@ class TestConceptGraphClusterer:
     def test_unavailable_without_graph(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.concepts import ConceptGraphClusterer
 
-        monkeypatch.setattr("lilbee.concepts.concepts_available", lambda: False)
+        monkeypatch.setattr("lilbee.concepts.clusterer.concepts_available", lambda: False)
         store = MagicMock()
         store.open_table.return_value = None
         clusterer = ConceptGraphClusterer(cfg, store)

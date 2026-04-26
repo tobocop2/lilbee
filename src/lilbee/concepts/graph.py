@@ -1,26 +1,21 @@
-"""Concept graph for LazyGraphRAG-style index-time knowledge extraction.
-
-Extracts noun-phrase concepts from chunks via spaCy, builds a PPMI-weighted
-co-occurrence graph (Church & Hanks 1990), and clusters with Leiden
-(Traag et al. 2019, graspologic-native). Used to boost search results by
-concept overlap and expand queries via graph traversal.
-
-Requires optional ``graph`` extra: ``pip install lilbee[graph]``.
-When dependencies are missing, all public functions degrade gracefully.
-"""
+"""ConceptGraph: extracts, stores, and queries concept relationships."""
 
 from __future__ import annotations
 
 import logging
-import math
 from collections import Counter
-from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from lilbee.clustering import SourceCluster
+from lilbee.concepts.community import Community, _compute_pmi, _leiden_partition
+from lilbee.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
+from lilbee.concepts.schema import (
+    _chunk_concepts_schema,
+    _concept_edges_schema,
+    _concept_nodes_schema,
+)
 from lilbee.config import (
     CHUNK_CONCEPTS_TABLE,
     CONCEPT_EDGES_TABLE,
@@ -28,163 +23,8 @@ from lilbee.config import (
     Config,
 )
 from lilbee.store import Store, escape_sql_string
-from lilbee.wiki.shared import is_valid_label
 
 log = logging.getLogger(__name__)
-
-_MIN_LEIDEN_WEIGHT = 0.01
-
-
-def concepts_available() -> bool:
-    """Check if concept graph dependencies (spacy, graspologic) are installed."""
-    try:
-        import graspologic_native  # noqa: F401
-        import spacy  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@dataclass
-class Community:
-    """A cluster of related concepts from Leiden partitioning."""
-
-    cluster_id: int
-    size: int
-    concepts: list[str]
-
-
-def _ensure_spacy_model() -> Any:
-    """Load the spaCy model, auto-downloading on first use."""
-    import spacy
-
-    model_name = "en_core_web_sm"
-    try:
-        return spacy.load(model_name)
-    except OSError:
-        log.info("Downloading spaCy model '%s'...", model_name)
-        try:
-            from spacy.cli import download
-
-            download(model_name)
-            return spacy.load(model_name)
-        except (SystemExit, OSError, Exception) as exc:
-            raise ImportError(
-                f"spaCy model '{model_name}' not available and auto-download failed. "
-                f"Install manually: python -m spacy download {model_name}"
-            ) from exc
-
-
-def load_spacy_pipeline() -> Any:
-    """Public wrapper around the shared spaCy NER + noun-chunk pipeline.
-
-    Raises ``ImportError`` if spaCy or the ``en_core_web_sm`` model cannot
-    be installed.
-    """
-    return _ensure_spacy_model()
-
-
-def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
-    """Extract deduplicated, filtered noun chunks from a spaCy doc.
-
-    Applies the same :func:`is_valid_label` gate the wiki entity
-    extractor uses, so structural-noise concepts (markdown table
-    delimiters, page-number-prefixed tokens, sub-three-char fragments)
-    never enter the co-occurrence graph and therefore never become a
-    synthesis-page cluster label.
-
-    The gate runs on the lowercased form here while the NER extractor
-    gates on the original-cased surface; the two decisions match
-    because ``is_valid_label`` is case-agnostic today. Any future
-    case-sensitive rule must land in both call sites together.
-    """
-    seen: set[str] = set()
-    concepts: list[str] = []
-    for chunk in doc.noun_chunks:
-        concept = chunk.text.lower().strip()
-        if not is_valid_label(concept):
-            continue
-        if concept in seen:
-            continue
-        seen.add(concept)
-        concepts.append(concept)
-        if len(concepts) >= max_concepts:
-            break
-    return concepts
-
-
-def _concept_nodes_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("concept", pa.utf8()),
-            pa.field("cluster_id", pa.int32()),
-            pa.field("degree", pa.int32()),
-        ]
-    )
-
-
-def _concept_edges_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("source", pa.utf8()),
-            pa.field("target", pa.utf8()),
-            pa.field("weight", pa.float32()),
-        ]
-    )
-
-
-def _chunk_concepts_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("chunk_source", pa.utf8()),
-            pa.field("chunk_index", pa.int32()),
-            pa.field("concept", pa.utf8()),
-        ]
-    )
-
-
-def _compute_pmi(
-    cooccurrences: Counter[tuple[str, str]],
-    concept_counts: Counter[str],
-    total_chunks: int,
-) -> dict[tuple[str, str], float]:
-    """Compute PPMI (Positive PMI) weights for concept co-occurrence pairs.
-    PPMI = max(0, log2(P(a,b) / (P(a) * P(b)))).
-    Based on Church & Hanks 1990, "Word Association Norms, Mutual Information,
-    and Lexicography." Negative values are clamped to zero to discard
-    anti-correlated pairs.
-    """
-    pmi: dict[tuple[str, str], float] = {}
-    for (a, b), count in cooccurrences.items():
-        p_a = concept_counts[a] / total_chunks
-        p_b = concept_counts[b] / total_chunks
-        if p_a == 0 or p_b == 0:
-            continue
-        p_ab = count / total_chunks
-        pmi[(a, b)] = max(0.0, math.log2(p_ab / (p_a * p_b)))
-    return pmi
-
-
-def _leiden_partition(
-    edge_rows: list[dict[str, Any]],
-) -> tuple[dict[str, int], dict[str, int]]:
-    """Run Leiden clustering on edge rows. Returns (partition, degree_map).
-    Uses graspologic-native's Rust implementation (Traag et al. 2019,
-    "From Louvain to Leiden: guaranteeing well-connected communities").
-    """
-    from graspologic_native import leiden
-
-    edges: list[tuple[str, str, float]] = [
-        (row["source"], row["target"], max(_MIN_LEIDEN_WEIGHT, row["weight"])) for row in edge_rows
-    ]
-    _modularity, partition = leiden(edges=edges)  # type: ignore[call-arg]
-
-    degree_map: dict[str, int] = Counter()
-    for row in edge_rows:
-        degree_map[row["source"]] += 1
-        degree_map[row["target"]] += 1
-    return partition, dict(degree_map)
 
 
 class ConceptGraph:
@@ -482,33 +322,3 @@ class ConceptGraph:
         """Clear the spaCy model cache. For testing only."""
         self._nlp = None
         self._nlp_unavailable = False
-
-
-class ConceptGraphClusterer:
-    """SourceClusterer backed by the concept graph (requires ``[graph]`` extra).
-
-    Wraps :class:`ConceptGraph` so the wiki synthesis layer can consume
-    concept-based clusters through the generic ``SourceClusterer`` protocol
-    without importing ``ConceptGraph`` directly. Leaves ``ConceptGraph``
-    unchanged.
-    """
-
-    def __init__(self, config: Config, store: Store) -> None:
-        self._graph = ConceptGraph(config, store)
-
-    def available(self) -> bool:
-        """Concept-graph clustering needs both dependencies and a built graph."""
-        return bool(concepts_available() and self._graph.get_graph())
-
-    def get_clusters(self, min_sources: int = 3) -> list[SourceCluster]:
-        """Expose concept clusters as generic :class:`SourceCluster` values."""
-        cluster_sources = self._graph.get_cluster_sources(min_sources=min_sources)
-        return [
-            SourceCluster(
-                cluster_id=f"concept-{cid}",
-                label=self._graph.get_cluster_label(cid),
-                sources=frozenset(sources),
-            )
-            for cid, sources in cluster_sources.items()
-            if len(sources) >= min_sources
-        ]
