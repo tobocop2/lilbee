@@ -114,6 +114,33 @@ async def test_view_tabs_docks_at_top_not_bottom() -> None:
         assert tabs.region.y < 20
 
 
+async def test_view_tabs_no_stale_pill_after_navigation() -> None:
+    """Regression: rapid screen cycling must not leave the previous screen's
+    model pill or stale tab content in the new screen's ViewTabs."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    cfg.chat_model = "qwen3:8b"
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        # Cycle through every named view, then confirm the final state matches.
+        for view in ("Catalog", "Status", "Settings", "Tasks", "Chat"):
+            app.switch_view(view)
+            await pilot.pause()
+            await pilot.pause()
+
+        # Back on chat: ModelBar shows the model, ViewTabs pill must be hidden,
+        # and no stale "qwen3:8b" string should leak into the tab strip from a
+        # prior screen's render.
+        assert isinstance(app.screen, ChatScreen)
+        tabs = app.screen.query_one(ViewTabs)
+        text = str(tabs.query_one("#view-tabs-content").render())
+        assert "qwen3:8b" not in text
+        assert "Chat" in text  # active-view highlight present
+
+
 async def test_view_tabs_active_view_tracks_screen_changes() -> None:
     """Regression: highlighted tab kept lagging the actual screen by one nav step."""
     from lilbee.cli.tui.screens.chat import ChatScreen

@@ -51,7 +51,7 @@ class ViewTabs(Widget):
         if signal is not None:
             signal.subscribe(self, self._on_settings_changed)
         # Defer the initial paint: update() during on_mount can no-op while
-        # the inner Static is still completing its own mount cycle.
+        # the inner Static is still completing its mount cycle.
         self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
@@ -84,7 +84,9 @@ class ViewTabs(Widget):
             joined.append(part)
         parts.extend(joined)
 
-        if cfg.chat_model:
+        # ModelBar already shows the active chat model on the chat screen,
+        # so the pill would just duplicate it there. Show it everywhere else.
+        if cfg.chat_model and self.active_view != msg.DEFAULT_VIEW:
             parts.append("  ")
             parts.append(pill(f" {cfg.chat_model} ", "$accent", "$text"))
 

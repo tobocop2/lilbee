@@ -4845,6 +4845,7 @@ async def test_app_nav_prev_cycles_views():
     """App-level h/left binding cycles to previous view."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
+    cfg.wiki = True  # Keep Wiki in the nav cycle for this test.
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()

@@ -79,8 +79,9 @@ def _rendered_tab_text(tabs: ViewTabs) -> str:
     return str(inner.render())
 
 
-async def test_view_tabs_renders_active_chat_model_on_chat(_patch_chat_setup) -> None:
-    """The model pill renders on the chat screen alongside the page indicator."""
+async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
+    """ModelBar already shows the active chat model on chat, so the ViewTabs
+    pill would just duplicate it; it must hide there."""
     cfg.chat_model = "qwen3:8b"
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -88,7 +89,7 @@ async def test_view_tabs_renders_active_chat_model_on_chat(_patch_chat_setup) ->
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert "qwen3:8b" in text
+        assert "qwen3:8b" not in text
 
 
 async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup) -> None:
@@ -110,11 +111,18 @@ async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup
 
 
 async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_setup) -> None:
-    """When chat_model is updated and the signal fires, ViewTabs re-renders."""
+    """When chat_model is updated and the signal fires, the ViewTabs pill
+    on a non-chat screen re-renders to the new value."""
     cfg.chat_model = "qwen3:8b"
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        app.switch_view("Settings")
+        await pilot.pause()
+        await pilot.pause()
+
         tabs = app.screen.query_one(ViewTabs)
         assert "qwen3:8b" in _rendered_tab_text(tabs)
 
@@ -127,11 +135,21 @@ async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_set
 
 
 async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -> None:
-    """Sampling-param signal payloads do not cause spurious refreshes."""
+    """Sampling-param signal payloads do not cause spurious refreshes.
+
+    Asserted on a non-chat screen so the pill actually renders; on chat
+    the pill is hidden regardless, so a regression would slip through.
+    """
     cfg.chat_model = "qwen3:8b"
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        app.switch_view("Settings")
+        await pilot.pause()
+        await pilot.pause()
+
         tabs = app.screen.query_one(ViewTabs)
         before = _rendered_tab_text(tabs)
 

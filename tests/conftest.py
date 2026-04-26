@@ -268,6 +268,15 @@ def source_hash(path: Path) -> str:
     return file_hash(path)
 
 
+@pytest.fixture
+def wiki_enabled():
+    """Toggle ``cfg.wiki`` on for the duration of a test, then restore."""
+    previous = cfg.wiki
+    cfg.wiki = True
+    yield
+    cfg.wiki = previous
+
+
 @pytest.fixture(autouse=False)
 def wiki_isolated_env(tmp_path: Path):
     """Shared fixture for wiki tests: snapshot cfg, set wiki-related paths, restore."""

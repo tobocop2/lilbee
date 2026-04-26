@@ -2267,6 +2267,7 @@ class TestWikiLint:
         assert "total" in data
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestWikiSynthesize:
     def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
         monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", lambda *a, **kw: [])
@@ -2306,6 +2307,7 @@ class TestWikiSynthesize:
         assert data["error"] == msg.CMD_WIKI_DISABLED
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestWikiBuild:
     def _stub_extraction(self, monkeypatch):
         fake_extractor = MagicMock()

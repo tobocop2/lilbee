@@ -45,6 +45,9 @@ class TestFromEnvDefaults:
             assert c.top_k == 10
             assert c.max_distance == 0.9
             assert c.json_mode is False
+            # Wiki is opt-in: the Wiki view tab and the chat ModelBar's
+            # scope picker only appear when the user explicitly enables it.
+            assert c.wiki is False
 
     def test_constants_unchanged(self):
         assert CHUNKS_TABLE == "chunks"

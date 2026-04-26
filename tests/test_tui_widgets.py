@@ -350,7 +350,10 @@ class _ModelBarApp(App):
         yield ModelBar()
 
 
+@pytest.mark.usefixtures("wiki_enabled")
 class TestModelBar:
+    """ModelBar tests assert the scope picker, which only renders when wiki is on."""
+
     @pytest.fixture(autouse=True)
     def mock_classify(self):
         empty = ([], [])
