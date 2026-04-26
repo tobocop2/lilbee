@@ -10,7 +10,7 @@ from rich.console import Console
 
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.config import cfg
+from lilbee.config import cfg, config_load_error
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -130,6 +130,14 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
+
+    if config_load_error is not None and not json_output:
+        # Print to stderr so JSON-mode output stays parseable.
+        sys.stderr.write(
+            "Warning: persisted config has values this version doesn't accept; "
+            "running with defaults until you fix it.\n"
+            f"  Detail: {config_load_error}\n"
+        )
 
     level_str = os.environ.get("LILBEE_LOG_LEVEL", "WARNING").upper()
     if log_level is not None:

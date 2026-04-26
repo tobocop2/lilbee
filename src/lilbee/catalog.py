@@ -1075,6 +1075,22 @@ def clean_display_name(repo_id: str) -> str:
     return re.sub(r"\s+", " ", name)
 
 
+def display_label_for_ref(ref: str) -> str:
+    """Render any model ref as a short, human-friendly UI label.
+
+    - Native HF ref (``<repo>/<file>.gguf``): cleaned repo name.
+    - Provider-prefixed (``ollama/``, ``openai/`` ...): the part after the prefix.
+    - Anything else: returned unchanged.
+    """
+    if not ref:
+        return ""
+    if ref.endswith(".gguf") and ref.count("/") >= 2:
+        return clean_display_name(ref.rsplit("/", 1)[0])
+    if "/" in ref:
+        return ref.split("/", 1)[1]
+    return ref
+
+
 QUANT_TIERS: dict[str, str] = {
     "Q2_K": "compact",
     "Q3_K_S": "compact",

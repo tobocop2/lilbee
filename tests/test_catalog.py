@@ -1737,6 +1737,36 @@ class TestCleanDisplayName:
         assert result == "Mistral 7B v0.3"
 
 
+class TestDisplayLabelForRef:
+    def test_native_hf_ref_uses_clean_repo_name(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        ref = "bartowski/SmolLM2-135M-Instruct-GGUF/SmolLM2-135M-Instruct-Q3_K_S.gguf"
+        assert display_label_for_ref(ref) == "SmolLM2 135M"
+
+    def test_ollama_prefix_drops_only_the_prefix(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("ollama/qwen3:0.6b") == "qwen3:0.6b"
+
+    def test_openai_prefix_drops_only_the_prefix(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("openai/gpt-4o") == "gpt-4o"
+
+    def test_empty_string(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("") == ""
+
+    def test_unrecognized_shape_passes_through(self) -> None:
+        """Bare names with no '/' are returned unchanged so the picker
+        still has something to show even for stale config values."""
+        from lilbee.catalog import display_label_for_ref
+
+        assert display_label_for_ref("qwen3:0.6b") == "qwen3:0.6b"
+
+
 class TestQuantTier:
     def test_all_quant_types_mapped(self) -> None:
         for quant_name, expected_tier in QUANT_TIERS.items():

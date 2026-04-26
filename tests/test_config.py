@@ -76,6 +76,9 @@ class TestEnvVarOverrides:
 
     def test_data_root_default_uses_platform(self):
         env = _clean_env()
+        # Skip the platform-default config.toml: a dev's persisted state
+        # could carry refs the new validators reject.
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert str(c.data_root).endswith("lilbee")
@@ -667,6 +670,7 @@ class TestLocalDotLilbee:
 
     def test_no_local_uses_platform_default(self):
         env = _clean_env()
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch("lilbee.platform.find_local_root", return_value=None),
@@ -766,6 +770,7 @@ class TestIgnoreDirs:
 
     def test_lilbee_ignore_dirs_empty_string(self):
         env = _clean_env()
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
@@ -805,6 +810,7 @@ class TestConceptAllowedEntTypes:
     def test_empty_env_falls_back_to_default(self):
         # Empty override should not silently deactivate the gate.
         env = _clean_env()
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         env["LILBEE_CONCEPT_ALLOWED_ENT_TYPES"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()

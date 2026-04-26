@@ -925,7 +925,7 @@ class Config(BaseSettings):
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists():
+        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
@@ -1020,4 +1020,23 @@ class _TomlSource:
         return {k: str(v) for k, v in data.items()}
 
 
-cfg = Config()
+def _build_cfg() -> tuple[Config, Exception | None]:
+    """Build cfg; on stale-config validation failure, fall back to defaults.
+
+    A persisted ``config.toml`` from before a breaking schema change can
+    contain values the new validators reject. Crashing at module import
+    means every command (``lilbee --help`` included) emits a Python
+    traceback. Falling back to env+defaults lets the package load; the
+    CLI / TUI surfaces the original error before doing real work.
+    """
+    try:
+        return Config(), None
+    except Exception as exc:
+        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        try:
+            return Config(), exc
+        finally:
+            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+
+
+cfg, config_load_error = _build_cfg()

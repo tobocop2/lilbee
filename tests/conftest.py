@@ -116,6 +116,30 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _assume_litellm_available(monkeypatch):
+    """Assume the SDK extra is installed for unit tests.
+
+    Production code now gates remote-model discovery on
+    ``litellm_available()``. Dev environments without ``lilbee[litellm]``
+    would otherwise short-circuit every remote-discovery test. Tests that
+    cover the missing-extra path patch this back to False explicitly.
+    """
+    monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _ignore_user_global_config(monkeypatch):
+    """Skip the platform-default config.toml for unit tests.
+
+    A developer's persisted ``~/Library/Application Support/lilbee/config.toml``
+    can hold values from a previous schema. ``Config()`` would crash at
+    construction. Setting this env var tells ``settings_customise_sources``
+    not to add the toml source — env + defaults only.
+    """
+    monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+
+
+@pytest.fixture(autouse=True)
 def _drain_textual_threads():
     """Safety net: join non-daemon threads that outlive the test.
 

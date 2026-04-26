@@ -145,7 +145,16 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing."""
+    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing.
+
+    Skipped entirely when the SDK extra (``lilbee[litellm]``) isn't installed:
+    surfacing a model the SDK can't actually serve only sets the user up
+    for a runtime traceback when they pick it. (bb-ezwy)
+    """
+    from lilbee.providers.litellm_sdk import litellm_available
+
+    if not litellm_available():
+        return
     try:
         from lilbee.model_manager import classify_remote_models
 
@@ -170,7 +179,16 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket."""
+    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket.
+
+    Same litellm guard as ``_collect_remote_models``: API providers
+    require the SDK to route a turn; without it, surfacing them just
+    invites a runtime traceback. (bb-ezwy)
+    """
+    from lilbee.providers.litellm_sdk import litellm_available
+
+    if not litellm_available():
+        return
     try:
         from lilbee.model_manager import discover_api_models
 
