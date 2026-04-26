@@ -2171,7 +2171,6 @@ class TestSourceContentRoute:
         ("filename", "body"),
         [
             ("evil.js", b"alert(1)"),
-            ("evil.mjs", b"export {};"),
             ("evil.css", b"body { background: url(javascript:1); }"),
             ("evil.xhtml", b"<x:y xmlns:x='ns' />"),
         ],
@@ -2179,7 +2178,13 @@ class TestSourceContentRoute:
     async def test_raw_script_carrying_text_types_force_attachment(
         self, isolated_env, filename, body
     ):
-        """Text-category types that can carry script are denied inline."""
+        """Text-category types that can carry script are denied inline.
+
+        ``.mjs`` is intentionally omitted from this parametrization because
+        ``mimetypes.guess_type`` resolves it from the Windows registry and
+        returns inconsistent answers across platforms; ``.js`` covers the
+        same ``text/javascript`` deny path with deterministic mapping.
+        """
         from litestar.testing import AsyncTestClient
 
         from lilbee.server.app import create_app
