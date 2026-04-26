@@ -160,12 +160,13 @@ class TestChatNonStream:
     def test_builds_completion_request_with_parsed_ref(self) -> None:
         backend = FakeBackend()
         provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
-        provider.chat([{"role": "user", "content": "hey"}], model="qwen3:8b")
+        ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        provider.chat([{"role": "user", "content": "hey"}], model=ref)
         req = backend.complete_calls[-1]
         # Semantic layer passes the parsed ref; the adapter handles the
-        # wire format (ollama/ prefix) when converting to SDK kwargs.
-        assert req.ref.raw == "qwen3:8b"
-        assert req.ref.name == "qwen3:8b"
+        # wire format when converting to SDK kwargs.
+        assert req.ref.raw == ref
+        assert req.ref.name == ref
         assert req.ref.provider == "local"
         assert req.api_base == "http://localhost:11434"
 
@@ -301,7 +302,7 @@ class TestEmbed:
 
     def test_request_includes_api_base_for_ollama(self) -> None:
         backend = FakeBackend()
-        cfg.embedding_model = "nomic-embed-text"
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
         provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
         provider.embed(["hello"])
         assert backend.embed_calls[-1].api_base == "http://localhost:11434"
@@ -313,14 +314,14 @@ class TestEmbed:
         provider.embed(["hello"])
         assert backend.embed_calls[-1].api_base is None
 
-    def test_bare_embed_model_with_non_ollama_base_url(self) -> None:
+    def test_local_embed_model_with_non_ollama_base_url(self) -> None:
         backend = FakeBackend()
-        cfg.embedding_model = "custom-embed"
+        cfg.embedding_model = "org/Custom-Embed-GGUF/custom-Q4_K_M.gguf"
         provider = SdkLLMProvider(backend, base_url="https://self-hosted:8000")
         provider.embed(["hello"])
-        # Non-API, non-Ollama URL keeps the raw name and still passes api_base.
+        # Local HF refs keep their raw name and still pass api_base.
         req = backend.embed_calls[-1]
-        assert req.ref.name == "custom-embed:latest"
+        assert req.ref.name == "org/Custom-Embed-GGUF/custom-Q4_K_M.gguf"
         assert req.ref.provider == "local"
         assert req.api_base == "https://self-hosted:8000"
 

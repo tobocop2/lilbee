@@ -1044,7 +1044,7 @@ class TestAskRawWithReranker:
         mock_svc.provider.chat.return_value = "answer"
         mock_svc.reranker.rerank.return_value = [_make_result()]
         old = cfg.reranker_model
-        cfg.reranker_model = "test-reranker"
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
         try:
             result = get_services().searcher.ask_raw("question")
             mock_svc.reranker.rerank.assert_called_once()
@@ -1059,7 +1059,7 @@ class TestAskStreamWithReranker:
         mock_svc.provider.chat.return_value = iter(["token"])
         mock_svc.reranker.rerank.return_value = [_make_result()]
         old = cfg.reranker_model
-        cfg.reranker_model = "test-reranker"
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
         try:
             list(get_services().searcher.ask_stream("question"))
             mock_svc.reranker.rerank.assert_called_once()

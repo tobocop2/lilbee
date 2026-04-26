@@ -27,16 +27,13 @@ from lilbee.registry import ModelManifest
 runner = CliRunner()
 
 
-def _manifest(name: str, tag: str, *, size: int, task: str) -> ModelManifest:
+def _manifest(hf_repo: str, gguf_filename: str, *, size: int, task: str) -> ModelManifest:
     return ModelManifest(
-        name=name,
-        tag=tag,
+        hf_repo=hf_repo,
+        gguf_filename=gguf_filename,
         size_bytes=size,
         task=task,
-        source_repo=f"org/{name}-GGUF",
-        source_filename=f"{name}.gguf",
         downloaded_at="2026-04-11T00:00:00+00:00",
-        display_name=f"{name} {tag}",
     )
 
 
@@ -48,13 +45,12 @@ def _remote(name: str, task: str, parameter_size: str = "8B") -> MagicMock:
     return rm
 
 
-def _catalog_model(*, name: str = "qwen3", tag: str = "0.6b", task: str = "chat") -> MagicMock:
+def _catalog_model(*, hf_repo: str = "Qwen/Qwen3-0.6B-GGUF", task: str = "chat") -> MagicMock:
     entry = MagicMock()
-    entry.name = name
-    entry.tag = tag
-    entry.ref = f"{name}:{tag}"
-    entry.display_name = f"Qwen3 {tag.upper()}"
-    entry.hf_repo = f"Qwen/Qwen3-{tag.upper()}-GGUF"
+    entry.ref = hf_repo
+    entry.display_name = "Qwen3 0.6B"
+    entry.hf_repo = hf_repo
+    entry.gguf_filename = "*Q4_K_M.gguf"
     entry.size_gb = 0.5
     entry.min_ram_gb = 2.0
     entry.description = "Tiny chat model"
@@ -62,6 +58,13 @@ def _catalog_model(*, name: str = "qwen3", tag: str = "0.6b", task: str = "chat"
     entry.featured = True
     entry.recommended = True
     return entry
+
+
+# Canonical refs reused across the suite.
+_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
+_CHAT_FILE = "Qwen3-0.6B-Q4_K_M.gguf"
+_CHAT_REF = f"{_CHAT_REPO}/{_CHAT_FILE}"
+_OLLAMA_REF = "ollama/llama3:latest"
 
 
 class _FakeManager:
@@ -118,7 +121,7 @@ class _FakeManager:
 
 @pytest.fixture
 def fake_manager():
-    manager = _FakeManager(native=["qwen3:0.6b"], litellm=["llama3:latest"])
+    manager = _FakeManager(native=[_CHAT_REF], litellm=[_OLLAMA_REF])
     with patch("lilbee.model_manager.get_model_manager", return_value=manager):
         yield manager
 
@@ -133,7 +136,7 @@ def empty_manager():
 @pytest.fixture
 def native_manifests():
     manifests = {
-        "qwen3:0.6b": _manifest("qwen3", "0.6b", size=5 * 1024**3, task="chat"),
+        _CHAT_REF: _manifest(_CHAT_REPO, _CHAT_FILE, size=5 * 1024**3, task="chat"),
     }
     with patch("lilbee.cli.model._native_manifest_index", return_value=manifests):
         yield manifests
@@ -147,36 +150,37 @@ def no_remote_classify():
 
 @pytest.fixture
 def with_remote_classify():
-    remote = [_remote("llama3:latest", task="chat", parameter_size="8B")]
+    remote = [_remote(_OLLAMA_REF, task="chat", parameter_size="8B")]
     with patch("lilbee.model_manager.classify_remote_models", return_value=remote):
         yield remote
 
 
 class TestModelEntryFactories:
     def test_from_native_populates_size_and_task(self):
-        manifest = _manifest("qwen3", "0.6b", size=2 * 1024**3, task="chat")
-        entry = ModelEntry.from_native("qwen3:0.6b", manifest)
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=2 * 1024**3, task="chat")
+        entry = ModelEntry.from_native(_CHAT_REF, manifest)
         assert entry.source == "native"
         assert entry.size_gb == 2.0
         assert entry.task == "chat"
-        assert entry.display_name == "qwen3 0.6b"
+        # Display derives from clean_display_name(hf_repo).
+        assert entry.display_name == "Qwen3 0.6B"
 
     def test_from_native_missing_manifest(self):
-        entry = ModelEntry.from_native("qwen3:8b", None)
+        entry = ModelEntry.from_native("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf", None)
         assert entry.source == "native"
         assert entry.task is None
         assert entry.size_gb is None
         assert entry.display_name == ""
 
     def test_from_backend_with_remote(self):
-        remote = _remote("llama3:latest", task="chat", parameter_size="8B")
-        entry = ModelEntry.from_backend("llama3:latest", remote)
+        remote = _remote(_OLLAMA_REF, task="chat", parameter_size="8B")
+        entry = ModelEntry.from_backend(_OLLAMA_REF, remote)
         assert entry.source == "remote"
         assert entry.task == "chat"
         assert entry.display_name == "8B"
 
     def test_from_backend_missing_remote(self):
-        entry = ModelEntry.from_backend("llama3:latest", None)
+        entry = ModelEntry.from_backend(_OLLAMA_REF, None)
         assert entry.task is None
         assert entry.display_name == ""
 
@@ -194,7 +198,7 @@ class TestListModelsData:
             data = model_mod.list_models_data(source=ModelSource.NATIVE)
         classify.assert_not_called()
         assert data.total == 1
-        assert data.models[0].name == "qwen3:0.6b"
+        assert data.models[0].name == _CHAT_REF
 
     def test_filter_source_litellm(self, fake_manager, native_manifests, with_remote_classify):
         data = model_mod.list_models_data(source=ModelSource.REMOTE)
@@ -205,7 +209,7 @@ class TestListModelsData:
         self, fake_manager, native_manifests, with_remote_classify
     ):
         data = model_mod.list_models_data(task="chat")
-        assert {e.name for e in data.models} == {"qwen3:0.6b", "llama3:latest"}
+        assert {e.name for e in data.models} == {_CHAT_REF, _OLLAMA_REF}
         empty = model_mod.list_models_data(task="embedding")
         assert empty.total == 0
 
@@ -219,15 +223,15 @@ class TestListCmd:
     def test_human_output(self, fake_manager, native_manifests, with_remote_classify):
         result = runner.invoke(app, ["model", "list"])
         assert result.exit_code == 0, result.output
-        assert "qwen3:0.6b" in result.output
-        assert "llama3:latest" in result.output
+        assert _CHAT_REF in result.output
+        assert _OLLAMA_REF in result.output
 
     def test_json_output_roundtrips(self, fake_manager, native_manifests, with_remote_classify):
         result = runner.invoke(app, ["--json", "model", "list"])
         assert result.exit_code == 0, result.output
         parsed = ListModelsResult.model_validate_json(result.output)
         assert parsed.total == 2
-        assert {e.name for e in parsed.models} == {"qwen3:0.6b", "llama3:latest"}
+        assert {e.name for e in parsed.models} == {_CHAT_REF, _OLLAMA_REF}
 
     def test_empty_human_message(self, empty_manager, no_remote_classify):
         with patch("lilbee.cli.model._native_manifest_index", return_value={}):
@@ -258,7 +262,7 @@ class TestShowModelData:
                 return_value="/fake/path.gguf",
             ),
         ):
-            data = model_mod.show_model_data("qwen3:0.6b")
+            data = model_mod.show_model_data(_CHAT_REF)
         assert isinstance(data, ShowModelResult)
         assert data.installed is True
         assert data.source == "native"
@@ -269,12 +273,12 @@ class TestShowModelData:
         assert data.manifest.task == "chat"
 
     def test_catalog_only_not_installed(self, empty_manager):
-        entry = _catalog_model(name="qwen3", tag="8b")
+        entry = _catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
         with (
             patch("lilbee.cli.model._native_manifest_index", return_value={}),
             patch("lilbee.catalog.find_catalog_entry", return_value=entry),
         ):
-            data = model_mod.show_model_data("qwen3:8b")
+            data = model_mod.show_model_data("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
         assert data.installed is False
         assert data.catalog is not None
         assert data.manifest is None
@@ -293,21 +297,21 @@ class TestResolveNativePath:
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = tmp_path / "blob.gguf"
         with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
-            path = model_mod._resolve_native_path("qwen3:0.6b")
+            path = model_mod._resolve_native_path(_CHAT_REF)
         assert path == str(tmp_path / "blob.gguf")
 
     def test_suppresses_key_error_from_missing_blob(self):
         fake_registry = MagicMock()
         fake_registry.resolve.side_effect = KeyError("no blob")
         with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
-            path = model_mod._resolve_native_path("qwen3:0.6b")
+            path = model_mod._resolve_native_path(_CHAT_REF)
         assert path is None
 
     def test_suppresses_value_error_from_invalid_ref(self):
         fake_registry = MagicMock()
         fake_registry.resolve.side_effect = ValueError("bad ref")
         with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
-            path = model_mod._resolve_native_path("qwen3:0.6b")
+            path = model_mod._resolve_native_path(_CHAT_REF)
         assert path is None
 
 
@@ -321,7 +325,7 @@ class TestShowCmd:
                 return_value="/fake/path.gguf",
             ),
         ):
-            result = runner.invoke(app, ["model", "show", "qwen3:0.6b"])
+            result = runner.invoke(app, ["model", "show", _CHAT_REF])
         assert result.exit_code == 0, result.output
         assert "source:" in result.output
         assert "/fake/path.gguf" in result.output
@@ -333,7 +337,7 @@ class TestShowCmd:
             patch("lilbee.catalog.find_catalog_entry", return_value=entry),
             patch("lilbee.cli.model._resolve_native_path", return_value="/p.gguf"),
         ):
-            result = runner.invoke(app, ["--json", "model", "show", "qwen3:0.6b"])
+            result = runner.invoke(app, ["--json", "model", "show", _CHAT_REF])
         assert result.exit_code == 0, result.output
         parsed = ShowModelResult.model_validate_json(result.output)
         assert parsed.installed is True
@@ -363,19 +367,20 @@ class TestShowCmd:
 
 class TestPullModelData:
     def test_already_installed_short_circuits(self, fake_manager, native_manifests):
-        result = model_mod.pull_model_data("qwen3:0.6b", ModelSource.NATIVE)
+        result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
         assert isinstance(result, PullResult)
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
 
     def test_pull_native_invokes_manager_and_callbacks(self, fake_manager, native_manifests):
         events = []
-        result = model_mod.pull_model_data("qwen3:8b", ModelSource.NATIVE, on_update=events.append)
+        target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        result = model_mod.pull_model_data(target, ModelSource.NATIVE, on_update=events.append)
         assert result.status == PullStatus.OK
-        assert result.path == "/fake/qwen3:8b.gguf"
+        assert result.path == f"/fake/{target}.gguf"
         assert events
         assert events[0].percent == 50
-        assert fake_manager.pull_calls == [("qwen3:8b", ModelSource.NATIVE)]
+        assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
 
     def test_build_pull_callbacks_none_when_no_on_update(self):
         dict_cb, bytes_cb = model_mod._build_pull_callbacks(None)
@@ -395,7 +400,7 @@ class TestPullModelData:
         manager = _Litellm()
         with patch("lilbee.model_manager.get_model_manager", return_value=manager):
             result = model_mod.pull_model_data(
-                "llama3:latest", ModelSource.REMOTE, on_update=events.append
+                _OLLAMA_REF, ModelSource.REMOTE, on_update=events.append
             )
         assert result.status == PullStatus.OK
         assert result.path is None
@@ -406,21 +411,23 @@ class TestPullModelData:
 
 class TestPullCmd:
     def test_json_stream_emits_done_event(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["--json", "model", "pull", "qwen3:8b"])
+        result = runner.invoke(
+            app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+        )
         assert result.exit_code == 0, result.output
         lines = [line for line in result.output.splitlines() if line.strip()]
         parsed = [json.loads(line) for line in lines]
         assert parsed[-1]["event"] == PullEvent.DONE.value
         assert parsed[-1]["status"] == PullStatus.OK.value
-        assert parsed[-1]["model"] == "qwen3:8b"
+        assert parsed[-1]["model"] == "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
     def test_human_mode_prints_pulled(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["model", "pull", "qwen3:8b"])
+        result = runner.invoke(app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"])
         assert result.exit_code == 0, result.output
         assert "Pulled" in result.output
 
     def test_human_already_installed_message(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["model", "pull", "qwen3:0.6b"])
+        result = runner.invoke(app, ["model", "pull", _CHAT_REF])
         assert result.exit_code == 0
         assert "already installed" in result.output
 
@@ -428,7 +435,9 @@ class TestPullCmd:
         manager = _FakeManager()
         manager.pull = MagicMock(side_effect=RuntimeError("no network"))
         with patch("lilbee.model_manager.get_model_manager", return_value=manager):
-            result = runner.invoke(app, ["--json", "model", "pull", "qwen3:8b"])
+            result = runner.invoke(
+                app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+            )
         assert result.exit_code == 1
         payload = json.loads(result.output.strip().splitlines()[-1])
         assert payload == {"error": "no network"}
@@ -437,45 +446,49 @@ class TestPullCmd:
         manager = _FakeManager()
         manager.pull = MagicMock(side_effect=RuntimeError("boom"))
         with patch("lilbee.model_manager.get_model_manager", return_value=manager):
-            result = runner.invoke(app, ["model", "pull", "qwen3:8b"])
+            result = runner.invoke(
+                app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+            )
         assert result.exit_code == 1
         assert "boom" in result.output
 
     def test_invalid_source(self, fake_manager):
-        result = runner.invoke(app, ["model", "pull", "qwen3:8b", "--source", "bad"])
+        result = runner.invoke(
+            app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf", "--source", "bad"]
+        )
         assert result.exit_code != 0
 
 
 class TestRemoveModelData:
     def test_removes_and_reports_freed(self, fake_manager, native_manifests):
-        result = model_mod.remove_model_data("qwen3:0.6b")
+        result = model_mod.remove_model_data(_CHAT_REF)
         assert isinstance(result, RemoveResult)
         assert result.deleted is True
         assert result.freed_gb == 5.0
-        assert fake_manager.remove_calls == [("qwen3:0.6b", None)]
+        assert fake_manager.remove_calls == [(_CHAT_REF, None)]
 
     def test_missing_manifest_returns_zero_freed(self, fake_manager):
         with patch("lilbee.cli.model._native_manifest_index", return_value={}):
-            result = model_mod.remove_model_data("qwen3:0.6b")
+            result = model_mod.remove_model_data(_CHAT_REF)
         assert result.deleted is True
         assert result.freed_gb == 0.0
 
 
 class TestRmCmd:
     def test_confirm_declined(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["model", "rm", "qwen3:0.6b"], input="n\n")
+        result = runner.invoke(app, ["model", "rm", _CHAT_REF], input="n\n")
         assert result.exit_code == 0
         assert "Aborted" in result.output
         assert fake_manager.remove_calls == []
 
     def test_confirm_accepted(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["model", "rm", "qwen3:0.6b"], input="y\n")
+        result = runner.invoke(app, ["model", "rm", _CHAT_REF], input="y\n")
         assert result.exit_code == 0
         assert "5.00 GB freed" in result.output
-        assert fake_manager.remove_calls == [("qwen3:0.6b", None)]
+        assert fake_manager.remove_calls == [(_CHAT_REF, None)]
 
     def test_yes_flag_skips_prompt(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["model", "rm", "--yes", "qwen3:0.6b"])
+        result = runner.invoke(app, ["model", "rm", "--yes", _CHAT_REF])
         assert result.exit_code == 0
         assert "Removed" in result.output
 
@@ -485,7 +498,7 @@ class TestRmCmd:
         assert "Not found" in result.output
 
     def test_json_output_serializes_remove_result(self, fake_manager, native_manifests):
-        result = runner.invoke(app, ["--json", "model", "rm", "qwen3:0.6b"])
+        result = runner.invoke(app, ["--json", "model", "rm", _CHAT_REF])
         assert result.exit_code == 0
         parsed = RemoveResult.model_validate_json(result.output)
         assert parsed.deleted is True
@@ -498,7 +511,7 @@ class TestRmCmd:
         assert parsed.deleted is False
 
     def test_invalid_source(self, fake_manager):
-        result = runner.invoke(app, ["model", "rm", "--yes", "qwen3:0.6b", "--source", "bad"])
+        result = runner.invoke(app, ["model", "rm", "--yes", _CHAT_REF, "--source", "bad"])
         assert result.exit_code != 0
 
 
@@ -528,7 +541,8 @@ class TestCatalogEntryDataFactory:
     def test_from_catalog_model_maps_fields(self):
         entry = _catalog_model()
         data = CatalogEntryData.from_catalog_model(entry)
-        assert data.ref == "qwen3:0.6b"
+        # CatalogModel.ref is now the bare hf_repo (catalog browse identity).
+        assert data.ref == "Qwen/Qwen3-0.6B-GGUF"
         assert data.hf_repo == "Qwen/Qwen3-0.6B-GGUF"
         assert data.featured is True
         assert data.recommended is True
@@ -536,20 +550,21 @@ class TestCatalogEntryDataFactory:
 
 class TestManifestDataFactory:
     def test_from_manifest_computes_size_gb(self):
-        manifest = _manifest("qwen3", "0.6b", size=3 * 1024**3, task="chat")
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=3 * 1024**3, task="chat")
         data = ManifestData.from_manifest(manifest)
         assert data.size_gb == 3.0
-        assert data.name == "qwen3:0.6b"
-        assert data.source_repo == "org/qwen3-GGUF"
+        assert data.ref == _CHAT_REF
+        assert data.hf_repo == _CHAT_REPO
+        assert data.gguf_filename == _CHAT_FILE
 
 
 class TestNativeManifestIndex:
     def test_indexes_by_ref(self, tmp_path):
         fake_registry = MagicMock()
         fake_registry.list_installed.return_value = [
-            _manifest("qwen3", "0.6b", size=1024, task="chat"),
+            _manifest(_CHAT_REPO, _CHAT_FILE, size=1024, task="chat"),
         ]
         with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
             index = model_mod._native_manifest_index()
-        assert "qwen3:0.6b" in index
-        assert index["qwen3:0.6b"].task == "chat"
+        assert _CHAT_REF in index
+        assert index[_CHAT_REF].task == "chat"

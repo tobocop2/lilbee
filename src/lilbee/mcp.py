@@ -453,7 +453,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
 
 @mcp.tool()
 def model_show(model: str) -> dict[str, Any]:
-    """Show catalog and installed metadata for a model ref (e.g. 'qwen3:0.6b')."""
+    """Show catalog and installed metadata for a model ref."""
     from lilbee.cli.model import show_model_data
     from lilbee.model_manager import ModelNotFoundError
 
@@ -484,7 +484,8 @@ async def model_pull(
     """Download a model, streaming progress via MCP notifications.
 
     Args:
-        model: Model ref to pull (e.g. "qwen3:0.6b").
+        model: Model ref to pull (e.g. "Qwen/Qwen3-0.6B-GGUF" or
+            "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf").
         source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
     """
     from lilbee.catalog import DownloadProgress

@@ -30,10 +30,7 @@ def _tracker_tqdm_class(callback):
 
 def _test_entry() -> CatalogModel:
     return CatalogModel(
-        name="test-model",
-        tag="tiny",
-        display_name="Test Model Tiny",
-        hf_repo="user/test-model",
+        hf_repo="user/Test-Model-GGUF",
         gguf_filename="test-model.gguf",
         size_gb=0.01,
         min_ram_gb=0.5,

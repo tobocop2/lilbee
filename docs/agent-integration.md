@@ -65,7 +65,7 @@ Add to your MCP client's configuration:
 
 ```json
 {
-  "config": {"documents_dir": "...", "chat_model": "qwen3:0.6b", "embedding_model": "nomic-embed-text:v1.5", "reranker_model": "", "enable_ocr": false},
+  "config": {"documents_dir": "...", "chat_model": "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", "embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "reranker_model": "", "enable_ocr": false},
   "sources": [{"filename": "manual.pdf", "chunk_count": 42}],
   "total_chunks": 42
 }

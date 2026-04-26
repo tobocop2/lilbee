@@ -48,49 +48,43 @@ class TestModelSource:
 def _install_registry_model(
     models_dir: Path,
     tmp_path: Path,
-    name: str,
+    filename: str,
     data: bytes,
-    repo: str = "org/repo",
-) -> None:
-    """Helper: create HF cache blob and install a model into the registry."""
-    import hashlib
+    repo: str = "org/repo-GGUF",
+) -> str:
+    """Install a model into the registry; return the canonical ref string."""
+    from lilbee.registry import ModelManifest, ModelRegistry
 
-    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
-
-    digest = hashlib.sha256(data).hexdigest()
-    cache_dir = models_dir / f"models--{repo.replace('/', '--')}"
-    blob_dir = cache_dir / "blobs"
-    blob_dir.mkdir(parents=True, exist_ok=True)
-    (blob_dir / digest).write_bytes(data)
-
-    source = tmp_path / f"{name}.gguf"
+    source = tmp_path / filename
     source.write_bytes(data)
 
     registry = ModelRegistry(models_dir)
-    ref = ModelRef(name=name)
     manifest = ModelManifest(
-        name=name,
-        tag="latest",
+        hf_repo=repo,
+        gguf_filename=filename,
         size_bytes=len(data),
         task="chat",
-        source_repo=repo,
-        source_filename=f"{name}.gguf",
         downloaded_at="2026-01-01T00:00:00+00:00",
     )
-    registry.install(ref, source, manifest)
+    registry.install(repo, filename, source, manifest)
+    return f"{repo}/{filename}"
 
 
 class TestModelManagerListInstalled:
     def test_native_lists_registered_models(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "llama3-8b", b"llama3-data")
-        _install_registry_model(models_dir, tmp_path, "mistral-7b", b"mistral-data")
+        ref_a = _install_registry_model(
+            models_dir, tmp_path, "llama3-8b.gguf", b"llama3-data", repo="org/llama3-8b-GGUF"
+        )
+        ref_b = _install_registry_model(
+            models_dir, tmp_path, "mistral-7b.gguf", b"mistral-data", repo="org/mistral-7b-GGUF"
+        )
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         result = mgr.list_installed(ModelSource.NATIVE)
 
-        assert set(result) == {"llama3-8b:latest", "mistral-7b:latest"}
+        assert set(result) == {ref_a, ref_b}
 
     def test_native_empty_dir(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
@@ -143,7 +137,9 @@ class TestModelManagerListInstalled:
     def test_none_source_lists_both(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "native-model", b"native-data")
+        native_ref = _install_registry_model(
+            models_dir, tmp_path, "native.gguf", b"native-data", repo="org/native-GGUF"
+        )
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "remote-model:latest"}]}
@@ -153,23 +149,26 @@ class TestModelManagerListInstalled:
             mgr = ModelManager(models_dir, "http://localhost:11434")
             result = mgr.list_installed(None)
 
-        assert set(result) == {"native-model:latest", "remote-model:latest"}
+        assert set(result) == {native_ref, "remote-model:latest"}
 
     def test_none_source_deduplicates(self, tmp_path: Path) -> None:
-        """If same model appears in both sources, it should appear once."""
+        """If the same ref appears in both sources, it should appear once."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "llama3", b"llama3-dedup-data")
+        native_ref = _install_registry_model(
+            models_dir, tmp_path, "shared.gguf", b"shared-data", repo="org/shared-GGUF"
+        )
 
+        # The remote backend reports the same ref string verbatim.
         mock_response = mock.Mock()
-        mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
+        mock_response.json.return_value = {"models": [{"name": native_ref}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(models_dir, "http://localhost:11434")
             result = mgr.list_installed(None)
 
-        assert result.count("llama3:latest") == 1
+        assert result.count(native_ref) == 1
 
     def test_second_call_within_ttl_uses_cache(self) -> None:
         """Two back-to-back calls should hit the HTTP endpoint only once."""
@@ -208,7 +207,9 @@ class TestModelManagerListInstalled:
         """After pull(), the next list_installed must refetch."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "before", b"before-data")
+        _install_registry_model(
+            models_dir, tmp_path, "before.gguf", b"before-data", repo="org/before-GGUF"
+        )
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
@@ -221,7 +222,7 @@ class TestModelManagerListInstalled:
 
             # Swap the pull implementation so we don't actually fetch.
             with mock.patch.object(mgr, "_pull_native", return_value=Path("/tmp/x")):
-                mgr.pull("new-model", ModelSource.NATIVE)
+                mgr.pull("Qwen/Qwen3-0.6B-GGUF", ModelSource.NATIVE)
 
             assert mgr._installed_cache == {}
 
@@ -229,7 +230,9 @@ class TestModelManagerListInstalled:
         """After remove(), the next list_installed must refetch."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "doomed", b"doomed-data")
+        ref = _install_registry_model(
+            models_dir, tmp_path, "doomed.gguf", b"doomed-data", repo="org/doomed-GGUF"
+        )
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
@@ -240,7 +243,7 @@ class TestModelManagerListInstalled:
             mgr.list_installed(None)  # populate cache
             assert mgr._installed_cache
 
-            mgr.remove("doomed:latest", ModelSource.NATIVE)
+            mgr.remove(ref, ModelSource.NATIVE)
             assert mgr._installed_cache == {}
 
 
@@ -687,28 +690,32 @@ class TestIsNativePathTraversal:
 
 class TestIsNativeRegistry:
     def test_is_native_true_when_in_registry(self, tmp_path: Path) -> None:
-        """_is_native returns True when model exists in registry."""
+        """_is_native returns True when the ref points at an installed manifest."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "my-reg-model", b"registry-model-data")
+        ref = _install_registry_model(
+            models_dir, tmp_path, "my-reg.gguf", b"data", repo="org/my-reg-GGUF"
+        )
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr._is_native("my-reg-model") is True
+        assert mgr._is_native(ref) is True
 
 
 class TestRemoveNativeRegistry:
     def test_remove_native_from_registry(self, tmp_path: Path) -> None:
-        """_remove_native removes model from registry."""
+        """_remove_native removes the manifest from the registry."""
         from lilbee.registry import ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        _install_registry_model(models_dir, tmp_path, "removable", b"registry-model-data")
+        ref = _install_registry_model(
+            models_dir, tmp_path, "removable.gguf", b"data", repo="org/removable-GGUF"
+        )
 
         registry = ModelRegistry(models_dir)
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr._remove_native("removable") is True
-        assert not registry.is_installed("removable")
+        assert mgr._remove_native(ref) is True
+        assert not registry.is_installed(ref)
 
 
 class TestDetectProvider:

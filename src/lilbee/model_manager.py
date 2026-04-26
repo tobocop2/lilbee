@@ -105,7 +105,7 @@ class ModelManager:
 
     def _list_native(self) -> list[str]:
         """List native models from the registry only."""
-        return sorted(f"{m.name}:{m.tag}" for m in self._registry.list_installed())
+        return sorted(m.ref for m in self._registry.list_installed())
 
     def _list_remote(self) -> list[str]:
         """List models from the SDK backend via its HTTP API."""
