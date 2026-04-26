@@ -92,7 +92,10 @@ class WikiDraftsScreen(Screen[None]):
 
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
         table: DataTable[str] = DataTable(id="wiki-drafts-table")
         table.cursor_type = "row"
         yield Horizontal(
@@ -115,7 +118,6 @@ class WikiDraftsScreen(Screen[None]):
         )
         with BottomBars():
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:
