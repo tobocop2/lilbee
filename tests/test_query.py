@@ -308,8 +308,8 @@ class TestSearchContext:
         expanded = _make_result(source="b.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[original], [expanded]]
         mock_svc.embedder.embed.return_value = [0.1] * 768
-        mock_svc.provider.chat.return_value = "kubernetes deployment details"
-        results = get_services().searcher.search("kubernetes deployment")
+        mock_svc.provider.chat.return_value = "kubernetes deployment internals"
+        results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 2
         sources = {r.source for r in results}
         assert "a.md" in sources
@@ -319,8 +319,8 @@ class TestSearchContext:
         same = _make_result(source="a.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[same], [same]]
         mock_svc.embedder.embed.return_value = [0.1] * 768
-        mock_svc.provider.chat.return_value = "kubernetes deployment details"
-        results = get_services().searcher.search("kubernetes deployment")
+        mock_svc.provider.chat.return_value = "kubernetes deployment internals"
+        results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 1
 
 
@@ -339,12 +339,19 @@ class TestExpandQuery:
 
     def test_caps_at_three(self, mock_svc):
         mock_svc.provider.chat.return_value = "A\nB\nC\nD\nE"
-        variants = get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        variants = get_services().searcher._expand_query(
+            "explain how kubernetes pods schedule", self._QUESTION_VEC
+        )
         assert len(variants) == 3
 
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
-        assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
+        assert (
+            get_services().searcher._expand_query(
+                "explain how kubernetes pods schedule", self._QUESTION_VEC
+            )
+            == []
+        )
 
     def test_disabled_when_count_zero(self, mock_svc):
         cfg.query_expansion_count = 0
@@ -384,12 +391,63 @@ class TestExpandQuery:
 
     def test_returns_empty_on_non_string(self, mock_svc):
         mock_svc.provider.chat.return_value = iter(["stream"])
-        assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
+        assert (
+            get_services().searcher._expand_query(
+                "kubernetes scheduling internals", self._QUESTION_VEC
+            )
+            == []
+        )
+
+    def test_skips_llm_for_short_query(self, mock_svc):
+        # 1-token query is below the default threshold of 2, so LLM expansion
+        # should not fire. Concept-graph is off in this test, so the result is [].
+        mock_svc.provider.chat.return_value = "should not be reached"
+        assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC) == []
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_skips_llm_at_threshold_boundary(self, mock_svc):
+        # 2-token query == threshold; ≤ short_threshold means skip.
+        mock_svc.provider.chat.return_value = "should not be reached"
+        assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC) == []
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_runs_llm_above_threshold(self, mock_svc):
+        # 3-token query > threshold; LLM expansion runs.
+        mock_svc.provider.chat.return_value = "v one\nv two"
+        variants = get_services().searcher._expand_query(
+            "kubernetes scheduling internals", self._QUESTION_VEC
+        )
+        assert len(variants) == 2
+        mock_svc.provider.chat.assert_called_once()
+
+    def test_short_threshold_zero_disables_skip(self, mock_svc):
+        old = cfg.expansion_short_query_tokens
+        cfg.expansion_short_query_tokens = 0
+        mock_svc.provider.chat.return_value = "v one\nv two"
+        try:
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            assert len(variants) == 2
+            mock_svc.provider.chat.assert_called_once()
+        finally:
+            cfg.expansion_short_query_tokens = old
+
+    def test_short_query_still_runs_concept_expansion(self, mock_svc):
+        # Skip-LLM path must not short-circuit concept-graph expansion.
+        old_concept = cfg.concept_graph
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.expand_query.return_value = ["kubernetes"]
+        try:
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            assert [text for text, _ in variants] == ["kubernetes"]
+            mock_svc.provider.chat.assert_not_called()
+        finally:
+            cfg.concept_graph = old_concept
 
     def test_batches_llm_variants_in_one_call(self, mock_svc):
         """LLM variants should embed via a single embed_batch call, not N embed calls."""
         mock_svc.provider.chat.return_value = "variant one\nvariant two\nvariant three"
-        get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        get_services().searcher._expand_query("kubernetes scheduling internals", self._QUESTION_VEC)
         assert mock_svc.embedder.embed_batch.call_count >= 1
         batch_call_args = mock_svc.embedder.embed_batch.call_args_list[0].args[0]
         assert len(batch_call_args) == 3
@@ -406,7 +464,9 @@ class TestExpandQuery:
         mock_svc.concepts.expand_query.return_value = ["kubernetes", "scheduling"]
         mock_svc.provider.chat.return_value = "restate one\nrestate two"
         try:
-            get_services().searcher._expand_query("q", self._QUESTION_VEC)
+            get_services().searcher._expand_query(
+                "kubernetes scheduling internals", self._QUESTION_VEC
+            )
         finally:
             cfg.concept_graph = old_concept
         # Two sources (LLM + concepts) => exactly 2 batch calls.

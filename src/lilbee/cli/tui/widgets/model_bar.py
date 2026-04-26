@@ -14,6 +14,7 @@ from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
 from lilbee import settings
+from lilbee.catalog import _extract_quant, clean_display_name
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -62,7 +63,7 @@ class ModelOption(NamedTuple):
     """A selectable model with display label and config ref."""
 
     label: str  # human-readable name for the dropdown
-    ref: str  # name:tag identity for config persistence
+    ref: str  # canonical ref persisted to config
 
 
 def _is_mmproj(name: str) -> bool:
@@ -108,15 +109,7 @@ def _lookup_bucket(
 
 
 def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
-    """Build the picker label for a native manifest.
-
-    When the same repo has multiple installed quants, the label appends
-    the quant suffix (e.g. ``Qwen3 0.6B (Q4_K_M)``) so the picker rows
-    are visually distinct. With one quant per repo the bare display
-    name suffices.
-    """
-    from lilbee.catalog import _extract_quant, clean_display_name
-
+    """Build the picker label, appending the quant suffix only on collision."""
     base = clean_display_name(hf_repo)
     if repo_count <= 1:
         return base
@@ -159,9 +152,8 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
         for model in classify_remote_models(base_url):
-            # Skip backend rows that report a blank model name; otherwise
-            # the picker shows an empty " (Ollama)" stub at the top of
-            # the dropdown (see bb-qbwj).
+            # Skip backend rows with a blank model name so the picker
+            # doesn't render an empty " (Ollama)" row.
             if not model.name.strip():
                 continue
             ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name

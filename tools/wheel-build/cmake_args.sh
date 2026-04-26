@@ -17,6 +17,13 @@ set -euo pipefail
 backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|sycl)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
 
+# TARGET_ARCH: cross-compile target. Defaults to host arch.
+target_arch="${TARGET_ARCH:-$(uname -m)}"
+case "${target_arch}" in
+  arm64|aarch64) target_arch=arm64 ;;
+  x86_64|amd64)  target_arch=x86_64 ;;
+esac
+
 # Universal portability flags applied to every x86_64 build:
 #
 #   GGML_NATIVE=OFF — no -march=native; builds done on AVX2-capable
@@ -56,12 +63,20 @@ case "${backend}_${runner_os}" in
     args="${common_x86} -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_VULKAN=OFF"
     ;;
   cpu_macOS)
-    args="${common_arm} -DGGML_METAL=OFF -DGGML_BLAS=OFF"
+    if [ "${target_arch}" = "x86_64" ]; then
+      args="${common_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF"
+    else
+      args="${common_arm} -DGGML_METAL=OFF -DGGML_BLAS=OFF"
+    fi
     ;;
   cpu_Windows)
     args="${common_x86} -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
     ;;
   metal_macOS)
+    if [ "${target_arch}" = "x86_64" ]; then
+      echo "metal backend is arm64-only; use cpu for Intel Mac" >&2
+      exit 1
+    fi
     args="${common_arm} -DGGML_METAL=ON -DGGML_BLAS=OFF"
     ;;
   vulkan_Linux|vulkan_Windows)

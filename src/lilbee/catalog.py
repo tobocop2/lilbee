@@ -226,10 +226,7 @@ class CatalogModel:
 
     @property
     def ref(self) -> str:
-        """Browse-time ref. For featured entries with glob filenames this
-        is the repo only; for ad-hoc and HF-search entries it is also the
-        repo (concrete filename is resolved when installing).
-        """
+        """Browse-time ref (the HF repo); concrete filename is resolved at install."""
         return self.hf_repo
 
     @property
@@ -707,11 +704,6 @@ _SORT_KEYS: dict[str, tuple] = {
     "featured": (lambda m: (not m.featured, -m.downloads), False),
 }
 
-# Note: ``_SORT_KEYS["name"]`` reads ``CatalogModel.display_name``, which
-# is now a property that calls ``clean_display_name(hf_repo)`` (defined
-# later in this module). The lambda is evaluated at sort time, so the
-# forward reference resolves fine despite the source-order ordering.
-
 
 def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     """Sort models according to the specified sort order."""
@@ -773,12 +765,7 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
 
 
 def is_rerank_ref(model_ref: str) -> bool:
-    """Return True iff *model_ref* resolves to a rerank catalog entry.
-
-    Accepts hf_repo, tag-suffixed hf_repo, provider-prefixed, and
-    ``name:tag`` forms (case-insensitive). Exact match only via
-    ``find_catalog_entry``: ``"base"`` never matches ``bge-reranker-base``.
-    """
+    """Return True iff *model_ref* resolves to a rerank catalog entry."""
     if not model_ref:
         return False
     entry = find_catalog_entry(model_ref)

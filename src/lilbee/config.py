@@ -99,21 +99,12 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
 
 
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
-    """Validate *ref* belongs to the featured catalog AND its task matches.
+    """Check *ref* is a featured-catalog entry whose task matches *field_name*.
 
-    Returns the input ref unchanged on success when it is a full
-    ``hf_repo/filename`` form (preserving the user's chosen quant), or
-    the catalog entry's canonical ref when only ``hf_repo`` was given.
-
-    Provider-prefixed refs (``ollama/``, ``openai/``, ``anthropic/``,
-    ``gemini/``) bypass the featured-catalog check: those models are
-    never in the native featured table and the task taxonomy is
-    enforced at the routing layer instead.
-
-    ``allow_bypass=True`` (default) honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION``
-    so unrelated tests can set model refs without populating the catalog.
-    Explicit user actions (``PUT /api/models/<role>``) pass
-    ``allow_bypass=False`` to force the check.
+    Provider-prefixed refs (``ollama/``, ``openai/`` ...) skip the catalog
+    check; routing enforces task taxonomy for them. ``allow_bypass=True``
+    honors ``LILBEE_SKIP_MODEL_TASK_VALIDATION`` for tests; explicit user
+    actions pass ``allow_bypass=False`` to force the check.
     """
     if not ref or not ref.strip():
         return ref
@@ -451,6 +442,11 @@ class Config(BaseSettings):
 
     # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
+
+    # Skip LLM expansion when tokenized query length ≤ this. The LLM round-trip
+    # dominates latency on small local models; short queries already have strong
+    # BM25/vector signal. Concept-graph expansion still runs. 0 disables the skip.
+    expansion_short_query_tokens: int = ConfigField(default=2, ge=0, writable=True)
 
     # Cosine-distance step when adaptive-widening retry kicks in.
     adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
@@ -796,7 +792,7 @@ class Config(BaseSettings):
     )
     @classmethod
     def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
-        """Normalize a model ref to ``name:tag``; blank values clear optional roles."""
+        """Validate and canonicalize a model ref; blank clears optional roles."""
         if not v or not v.strip():
             if info.field_name in {"chat_model", "embedding_model"}:
                 raise ValueError(f"{info.field_name} must not be blank")

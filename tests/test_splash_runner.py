@@ -102,6 +102,16 @@ def test_pipe_closed_with_data_available():
     os.close(r)
 
 
+def test_pipe_closed_returns_true_on_bad_fd():
+    """A closed fd returns True instead of raising EBADF (matches POSIX branch)."""
+    r, w = os.pipe()
+    os.close(w)
+    os.close(r)
+    from lilbee._splash_runner import pipe_closed
+
+    assert pipe_closed(r) is True
+
+
 def test_read_eof_with_bad_fd():
     """_read_eof returns True when os.read raises OSError."""
     from lilbee._splash_runner import _read_eof

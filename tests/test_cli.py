@@ -2323,34 +2323,31 @@ class TestWikiBuild:
         return fake_extractor
 
     def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
-        mock_svc.store.get_sources.return_value = []
-        self._stub_extraction(monkeypatch)
-        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [])
-        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build",
+            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+        )
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
         assert "No concept or entity pages" in result.output
 
     def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
-        mock_svc.store.get_sources.return_value = []
-        self._stub_extraction(monkeypatch)
         out = isolated_env / "wiki" / "concepts" / "braking.md"
-        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [out])
-        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build",
+            lambda *a, **kw: {"paths": [str(out)], "entities": 0, "count": 1},
+        )
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
         assert "braking.md" in result.output
 
     def test_json_output(self, mock_svc, isolated_env, monkeypatch):
         cfg.json_mode = True
-        mock_svc.store.get_sources.return_value = []
-        self._stub_extraction(monkeypatch)
         out = isolated_env / "wiki" / "entities" / "henry-ford.md"
-        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [out])
-        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build",
+            lambda *a, **kw: {"paths": [str(out)], "entities": 0, "count": 1},
+        )
         result = runner.invoke(app, ["--json", "wiki", "build"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -2360,11 +2357,10 @@ class TestWikiBuild:
 
     def test_update_reruns_build(self, mock_svc, isolated_env, monkeypatch):
         """wiki update currently delegates to wiki build (see bb-he8o for smarter version)."""
-        mock_svc.store.get_sources.return_value = []
-        self._stub_extraction(monkeypatch)
-        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [])
-        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build",
+            lambda *a, **kw: {"paths": [], "entities": 0, "count": 0},
+        )
         result = runner.invoke(app, ["wiki", "update"])
         assert result.exit_code == 0
         assert "No concept or entity pages" in result.output
@@ -2383,9 +2379,9 @@ class TestWikiBuild:
 
         mock_svc.store.get_chunks_by_source.side_effect = fake_chunks
         self._stub_extraction(monkeypatch)
-        monkeypatch.setattr("lilbee.wiki.build_wiki", lambda *a, **kw: [])
-        monkeypatch.setattr("lilbee.wiki.update_wiki_index", lambda *a, **kw: None)
-        monkeypatch.setattr("lilbee.wiki.append_wiki_log", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", lambda *a, **kw: [])
+        monkeypatch.setattr("lilbee.wiki.gen.update_wiki_index", lambda *a, **kw: None)
+        monkeypatch.setattr("lilbee.wiki.gen.append_wiki_log", lambda *a, **kw: None)
         result = runner.invoke(app, ["wiki", "build"])
         assert result.exit_code == 0
         assert chunk_calls == ["a.txt", "b.txt"]
@@ -2420,7 +2416,11 @@ class TestWikiBuild:
         def build_boom(*a, **kw):
             raise AssertionError("build_wiki must not run in --dry-run")
 
-        monkeypatch.setattr("lilbee.wiki.build_wiki", build_boom)
+        # Patch the impl, not the re-export — `run_full_build` resolves
+        # `build_wiki` from `lilbee.wiki.gen`, so a dry-run regression that
+        # accidentally fell through to the build path would only trip a
+        # boom installed there.
+        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", build_boom)
         result = runner.invoke(app, ["wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         assert "chevrolet" in result.output
@@ -2450,7 +2450,11 @@ class TestWikiBuild:
         def build_boom(*a, **kw):
             raise AssertionError("build_wiki must not run in --dry-run")
 
-        monkeypatch.setattr("lilbee.wiki.build_wiki", build_boom)
+        # Patch the impl, not the re-export — `run_full_build` resolves
+        # `build_wiki` from `lilbee.wiki.gen`, so a dry-run regression that
+        # accidentally fell through to the build path would only trip a
+        # boom installed there.
+        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", build_boom)
         result = runner.invoke(app, ["--json", "wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -2469,6 +2473,24 @@ class TestWikiBuild:
         result = runner.invoke(app, ["wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         assert "No candidate entities" in result.output
+
+    def test_dry_run_collects_chunks_from_each_source(self, mock_svc, isolated_env, monkeypatch):
+        """Dry-run iterates every tracked source to feed the entity extractor."""
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a.txt"},
+            {"filename": "b.txt"},
+        ]
+        chunk_calls: list[str] = []
+
+        def fake_chunks(source: str) -> list:
+            chunk_calls.append(source)
+            return []
+
+        mock_svc.store.get_chunks_by_source.side_effect = fake_chunks
+        self._stub_extraction(monkeypatch)
+        result = runner.invoke(app, ["wiki", "build", "--dry-run"])
+        assert result.exit_code == 0
+        assert chunk_calls == ["a.txt", "b.txt"]
 
 
 class TestWikiCitations:

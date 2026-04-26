@@ -123,7 +123,7 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
 
 
 def _model_download_size_gb(model: str) -> float:
-    """Estimated download size for a model by ref (name:tag)."""
+    """Estimated download size in GiB for an HF model ref."""
     catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog()}
     fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)

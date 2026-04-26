@@ -121,7 +121,10 @@ def pipe_closed(pipe_fd: int) -> bool:
         import ctypes
         import msvcrt
 
-        handle = msvcrt.get_osfhandle(pipe_fd)
+        try:
+            handle = msvcrt.get_osfhandle(pipe_fd)
+        except OSError:
+            return True  # bad fd, pipe is gone
         avail = ctypes.c_ulong(0)
         if not ctypes.windll.kernel32.PeekNamedPipe(
             handle, None, 0, None, ctypes.byref(avail), None

@@ -689,13 +689,8 @@ class TestClassifyInstalledModels:
         assert native.ref in chat_refs
         assert "ollama/mistral:latest" in chat_refs
 
-    def test_blank_ollama_name_is_filtered(self, tmp_path) -> None:
-        """Empty/whitespace remote names must not surface as picker rows.
-
-        Regression for bb-qbwj: the friend's screenshot had an empty
-        ``(Ollama)`` row at the top of the chat dropdown. _collect_remote_models
-        now skips remote entries whose name is blank.
-        """
+    def test_remote_blank_name_dropped(self, tmp_path) -> None:
+        """Remote entries with an empty name are skipped before reaching the picker."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.model_manager import RemoteModel
 
@@ -703,38 +698,37 @@ class TestClassifyInstalledModels:
         cfg.models_dir.mkdir()
         cfg.remote_base_url = "http://localhost:11434"
 
-        blank = RemoteModel(name="", task="chat", family="", parameter_size="", provider="Ollama")
-        real = RemoteModel(
-            name="qwen3:0.6b",
+        blank = RemoteModel(
+            name="",
             task="chat",
-            family="qwen",
-            parameter_size="0.6B",
+            family="",
+            parameter_size="",
             provider="Ollama",
         )
-
+        good = RemoteModel(
+            name="qwen3:8b",
+            task="chat",
+            family="qwen3",
+            parameter_size="8B",
+            provider="Ollama",
+        )
         with (
             mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
             mock.patch(
                 "lilbee.model_manager.classify_remote_models",
-                return_value=[blank, real],
+                return_value=[blank, good],
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, _ = _classify_installed_models()
 
-        labels = [label for label, _ in chat]
-        assert all(label.strip() != "(Ollama)" for label in labels)
-        assert any("qwen3:0.6b" in label for label in labels)
+        chat_labels = [label for label, _ in chat]
+        chat_refs = [ref for _, ref in chat]
+        assert chat_refs == ["ollama/qwen3:8b"]
+        assert all(lbl != " (Ollama)" and lbl.strip() != "(Ollama)" for lbl in chat_labels)
 
     def test_multi_quant_same_repo_disambiguates_label(self, tmp_path) -> None:
-        """Two quants from the same repo render with quant suffixes.
-
-        Regression coverage for bb-qbwj's "Qwen3 0.6B appears twice"
-        screenshot: with the old name:tag identity, two manifests could
-        share a display_name. The new identity makes them distinct refs
-        and the picker decorates the label with the quant tier so the
-        rows are visually distinct.
-        """
+        """Two quants from the same repo render with quant suffixes."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.registry import ModelManifest
 
