@@ -118,7 +118,11 @@ jobs:
 
       - name: Verify extras installed in build venv
         shell: bash
-        run: uv run python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
+        # --no-sync is load-bearing: a plain `uv run` re-syncs the venv
+        # against the lockfile, which reinstalls python-multipart after
+        # the explicit uninstall in "Install dependencies" and reproduces
+        # the multipart-shim shadowing failure at frozen-binary startup.
+        run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
       - name: Build executable
         # Bundles the optional extras (crawler, litellm, graph) so the
