@@ -1918,11 +1918,16 @@ async def test_app_cycle_theme():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Cycle starts from whatever theme on_mount restored, not from
+        # index 0, so the next theme is the one AFTER the active theme.
+        start_idx = DARK_THEMES.index(app.theme)
+        next_idx = (start_idx + 1) % len(DARK_THEMES)
+
         app.action_cycle_theme()
-        assert app.theme == DARK_THEMES[1]
+        assert app.theme == DARK_THEMES[next_idx]
         for _ in range(len(DARK_THEMES)):
             app.action_cycle_theme()
-        assert app.theme == DARK_THEMES[1]
+        assert app.theme == DARK_THEMES[next_idx]
 
 
 async def test_app_set_theme():
@@ -4840,6 +4845,7 @@ async def test_app_nav_prev_cycles_views():
     """App-level h/left binding cycles to previous view."""
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
+    cfg.wiki = True  # Keep Wiki in the nav cycle for this test.
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()

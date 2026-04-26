@@ -13,9 +13,9 @@ from textual.widget import Widget
 from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
-from lilbee import settings
 from lilbee.catalog import clean_display_name, extract_quant
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
@@ -268,21 +268,29 @@ class ModelBar(Widget, can_focus=False):
     # forces the compositor to re-paint the covered region.
     DEFAULT_CSS = """
     ModelBar {
-        dock: top;
         height: auto;
         padding: 0 1;
     }
     ModelBar Horizontal {
-        height: 3;
+        height: 1;
         width: 100%;
     }
     ModelBar .model-bar-pill {
         width: auto;
-        padding: 1 1 0 0;
+        padding: 0 1 0 0;
     }
     ModelBar Select {
         width: 1fr;
+        height: 1;
+        max-height: 1;
         margin: 0 1 0 0;
+        border: none;
+        padding: 0;
+    }
+    ModelBar Select > SelectCurrent {
+        height: 1;
+        padding: 0;
+        border: none;
     }
     ModelBar Select > SelectOverlay {
         max-height: 8;
@@ -366,6 +374,13 @@ class ModelBar(Widget, can_focus=False):
 
         self.watch(sel, "expanded", _on_expanded_change, init=False)
 
+    def on_unmount(self) -> None:
+        """Collapse any open dropdown before tear-down so the SelectOverlay
+        does not leak its border cells into the next screen's render."""
+        for sel in self.query(Select):
+            if sel.expanded:
+                sel.expanded = False
+
     @work(thread=True)
     def _scan_models(self) -> None:
         """Scan installed models in background, then populate dropdowns."""
@@ -398,8 +413,7 @@ class ModelBar(Widget, can_focus=False):
         value = self._extract_value(event, chat_sel)
         if value is None or value == cfg.chat_model:
             return
-        cfg.chat_model = value
-        settings.set_value(cfg.data_root, "chat_model", value)
+        apply_active_model(self.app, "chat_model", value)
         self._refresh_cloud_warning()
         self._after_model_change()
 
@@ -424,8 +438,7 @@ class ModelBar(Widget, can_focus=False):
         # so the gate in store.search/add_chunks correctly detects drift on the
         # next op. See bb-x1qa.
         get_services().store.initialize_meta_if_legacy()
-        cfg.embedding_model = value
-        settings.set_value(cfg.data_root, "embedding_model", value)
+        apply_active_model(self.app, "embedding_model", value)
         self._after_model_change()
 
     @on(Select.Changed, "#scope-select")

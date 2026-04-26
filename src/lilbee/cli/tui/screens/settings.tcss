@@ -1,6 +1,5 @@
 SettingsScreen {
     #settings-top-row {
-        dock: top;
         height: auto;
         margin: 0 1;
     }

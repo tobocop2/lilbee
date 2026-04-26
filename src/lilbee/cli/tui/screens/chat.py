@@ -30,6 +30,7 @@ from lilbee.catalog import display_label_for_ref
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -158,9 +159,12 @@ class ChatScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
-        yield ModelBar(id="model-bar")
-        yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
+        with TopBars():
+            yield ModelBar(id="model-bar")
+            yield ViewTabs()
+            yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
         yield ChatStatusLine(id="chat-status-line")
@@ -172,7 +176,6 @@ class ChatScreen(Screen[None]):
                     suggester=SlashSuggester(use_cache=False),
                 )
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:
@@ -609,8 +612,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            cfg.chat_model = args
-            settings.set_value(cfg.data_root, "chat_model", cfg.chat_model)
+            apply_active_model(self.app, "chat_model", args)
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
