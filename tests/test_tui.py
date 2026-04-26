@@ -790,10 +790,14 @@ class TestMinimalFooter:
         visible = self._visible_bindings(LilbeeApp.BINDINGS)
         assert any("help" in d.lower() for d in visible)
         assert any("quit" in d.lower() or "cancel" in d.lower() for d in visible)
+        # Per-view nav (Catalog/Status/Settings) is via [/], not direct
+        # Footer keybindings, so those view names must NOT appear.
         assert not any(d == "Catalog" for d in visible)
         assert not any(d == "Status" for d in visible)
         assert not any(d == "Settings" for d in visible)
-        assert not any(d == "Theme" for d in visible)
+        # Theme cycling IS exposed in the Footer (Ctrl+T) so users can
+        # discover it without digging through docs.
+        assert any(d == "Theme" for d in visible)
 
     def test_chat_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
