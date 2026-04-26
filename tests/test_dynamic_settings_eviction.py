@@ -31,8 +31,8 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir = tmp_path / "documents"
     cfg.models_dir = tmp_path / "models"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.chat_model = "test-chat-model.gguf"
-    cfg.embedding_model = "test-embed-model"
+    cfg.chat_model = "ollama/test-chat-model:v1"
+    cfg.embedding_model = "ollama/test-embed-model:v1"
     cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)

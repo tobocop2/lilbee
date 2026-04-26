@@ -378,7 +378,7 @@ class TestBuildWikiMessages:
 
         provider = MagicMock()
         provider.get_capabilities.return_value = ["completion", "thinking"]
-        cfg.chat_model = "any-model"
+        cfg.chat_model = "ollama/any-model:latest"
 
         messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
 
@@ -393,7 +393,7 @@ class TestBuildWikiMessages:
 
         provider = MagicMock()
         provider.get_capabilities.return_value = ["completion"]
-        cfg.chat_model = "any-model"
+        cfg.chat_model = "ollama/any-model:latest"
 
         messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
@@ -404,7 +404,7 @@ class TestBuildWikiMessages:
 
         provider = MagicMock()
         provider.get_capabilities.return_value = []
-        cfg.chat_model = "any-model"
+        cfg.chat_model = "ollama/any-model:latest"
 
         messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
@@ -810,7 +810,7 @@ class TestGenerateSynthesisPage:
         assert "synthesis" in str(result)
         assert result.name == "gradual-typing.md"
         content = result.read_text()
-        assert "generated_by: test-model" in content
+        assert f"generated_by: {cfg.chat_model}" in content
         assert 'sources: ["a.md", "b.md", "c.md"]' in content
         # Phase D: faithfulness is now a cosine-similarity score between
         # the body embedding and the mean of the source chunk vectors.

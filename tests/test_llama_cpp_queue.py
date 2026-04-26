@@ -11,6 +11,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.config import cfg
 
 
@@ -31,12 +32,12 @@ def models_dir(tmp_path: Path) -> Path:
     models.mkdir()
     (models / "test-model.gguf").write_bytes(b"fake-gguf")
     cfg.models_dir = models
-    cfg.embedding_model = "test-model"
-    cfg.chat_model = "test-model"
+    cfg.embedding_model = TEST_EMBED_REF
+    cfg.chat_model = TEST_LOCAL_REF
     cfg.subprocess_embed = False
     patcher = mock.patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
-        side_effect=lambda m: models / f"{m}.gguf",
+        side_effect=lambda m: models / f"{m.rsplit('/', 1)[-1]}",
     )
     patcher.start()
     yield models
@@ -298,7 +299,7 @@ class TestRerankQueue:
         """rerank() returns one float per candidate in input order."""
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        cfg.reranker_model = "test-model"
+        cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
         scores_iter = iter([0.81, 0.42, 0.13])
 
@@ -322,7 +323,7 @@ class TestRerankQueue:
         """
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        cfg.reranker_model = "test-model"
+        cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
         captured_inputs: list[str] = []
 
@@ -347,7 +348,7 @@ class TestRerankQueue:
         """Empty candidate list short-circuits without touching the model."""
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        cfg.reranker_model = "test-model"
+        cfg.reranker_model = TEST_EMBED_REF
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
 
         provider = LlamaCppProvider()
@@ -375,8 +376,8 @@ class TestRerankQueue:
         """rerank and embed on the same model produce separate Llama loads."""
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        cfg.embedding_model = "test-model"
-        cfg.reranker_model = "test-model"
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
         instance.create_embedding.return_value = {"data": [{"embedding": [0.5]}]}
         mock_llama_cpp.Llama.return_value = instance

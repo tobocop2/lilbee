@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from textual.widgets import Footer
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -25,8 +26,8 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.lancedb_dir = tmp_path / "lancedb"
-    cfg.chat_model = "test-model:latest"
-    cfg.embedding_model = "test-embed:latest"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

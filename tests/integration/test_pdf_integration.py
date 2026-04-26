@@ -36,6 +36,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     """
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
     from lilbee.model_manager import reset_model_manager
+    from tests.integration.conftest import _resolve_installed_ref
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("pdf_integration")
@@ -64,7 +65,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     # Download embedding model
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
-    cfg.embedding_model = embed_entry.ref
+    cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
     # Run sync (will use Tesseract OCR if available, otherwise skip PDF)
     _integration_loop.run_until_complete(sync(quiet=True))

@@ -14,7 +14,6 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from rich.table import Table
 
 from lilbee import settings
-from lilbee.providers.model_ref import parse_model_ref
 
 # circular: config -> models via ModelTask. cfg is imported lazily.
 
@@ -38,27 +37,15 @@ _DISK_HEADROOM_GB = 2
 MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 
-def ensure_tag(name: str) -> str:
-    """Ensure a model name has an explicit tag and canonical prefix."""
-    if not name:
-        return name
-    return parse_model_ref(name).for_openai_prefix()
-
-
 @dataclass(frozen=True)
 class ModelInfo:
     """A curated chat model with metadata for the picker UI."""
 
-    ref: str  # canonical name:tag (e.g. "qwen3:0.6b")
+    ref: str  # canonical HF ref (e.g. "Qwen/Qwen3-0.6B-GGUF")
     display_name: str  # UI label (e.g. "Qwen3 0.6B")
     size_gb: float
     min_ram_gb: float
     description: str
-
-    @property
-    def name(self) -> str:
-        """Family slug for backwards compatibility."""
-        return self.ref.split(":")[0] if ":" in self.ref else self.ref
 
 
 def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
@@ -136,7 +123,7 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
 
 
 def _model_download_size_gb(model: str) -> float:
-    """Estimated download size for a model by ref (name:tag)."""
+    """Estimated download size in GiB for an HF model ref."""
     catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog()}
     fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
@@ -274,9 +261,11 @@ def ensure_chat_model() -> None:
     except RuntimeError as exc:
         raise RuntimeError(f"Cannot list models: {exc}") from exc
 
-    # Filter out embedding model — only check for chat models
-    embed_base = parse_model_ref(cfg.embedding_model).name.split(":")[0]
-    chat_models = [m for m in installed if m.split(":")[0] != embed_base]
+    # Filter out the configured embedding model so we only check for chat
+    # candidates. The embedding ref points at one specific manifest; we
+    # match it exactly rather than by family stem.
+    embed_ref = cfg.embedding_model
+    chat_models = [m for m in installed if m != embed_ref]
     if chat_models:
         return
 
@@ -288,7 +277,7 @@ def ensure_chat_model() -> None:
     else:
         model_info = pick_default_model(ram_gb)
         sys.stderr.write(
-            f"No chat model found. Auto-installing '{model_info.name}' "
+            f"No chat model found. Auto-installing '{model_info.display_name}' "
             f"(detected {ram_gb:.0f} GB RAM)...\n"
         )
 
@@ -312,7 +301,7 @@ def list_installed_models() -> list[str]:
         registry = ModelRegistry(cfg.models_dir)
         for manifest in registry.list_installed():
             if manifest.task == ModelTask.CHAT:
-                names.append(f"{manifest.name}:{manifest.tag}")
+                names.append(manifest.ref)
         for remote in classify_remote_models(cfg.remote_base_url):
             if remote.task == ModelTask.CHAT:
                 names.append(remote.name)

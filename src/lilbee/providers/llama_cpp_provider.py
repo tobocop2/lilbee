@@ -277,7 +277,7 @@ class LlamaCppProvider(LLMProvider):
     def list_models(self) -> list[str]:
         """List installed models from registry."""
         registry = get_services().registry
-        return sorted(f"{m.name}:{m.tag}" for m in registry.list_installed())
+        return sorted(m.ref for m in registry.list_installed())
 
     def list_chat_models(self, provider: str) -> list[str]:
         """llama-cpp has no frontier-provider catalog; always ``[]``."""

@@ -56,7 +56,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 
 ```
  ┌─ lilbee ──────────────────────────────────────────────────────┐
- │ [💬 qwen3:0.6b ▾] [🗄 nomic-embed ▾] [OCR] [All|Wiki|Raw]     │
+ │ [💬 Qwen3 0.6B ▾] [🗄 Nomic Embed ▾] [OCR] [All|Wiki|Raw]     │
  │───────────────────────────────────────────────────────────────│
  │                                                               │
  │ You:    what does the oil pressure warning mean?              │
@@ -80,7 +80,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 ```
  ┌─ Task Center ─────────────── [cap 3/3] [Clear]┐
  │ ACTIVE (2)                                    │
- │   ████████████░░░░░░░░░  42%  PULL  qwen3:8b  │
+ │   ████████████░░░░░░░░░  42%  PULL  Qwen3 8B  │
  │   ██████░░░░░░░░░░░░░░░  18%  SYNC  vault     │
  │ QUEUED (1)                                    │
  │   CRAWL  https://docs.example.com             │

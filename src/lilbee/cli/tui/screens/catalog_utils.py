@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant
+from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.model_manager import RemoteModel
 
 
@@ -14,8 +14,9 @@ class TableRow:
     """A row in the catalog grid or list view with source metadata.
 
     ``name`` is the human-readable display label (e.g. "Qwen3 0.6B").
-    ``ref`` is the canonical name:tag identifier used for config persistence
-    (e.g. "qwen3:0.6b"). When ``ref`` is empty, fall back to ``name``.
+    ``ref`` is the canonical identifier used for config persistence:
+    ``hf_repo`` for catalog rows, ``hf_repo/filename`` for installed
+    native models, and the provider's ref shape for remote/API rows.
     """
 
     name: str
@@ -75,8 +76,11 @@ def _is_param_count(label: str) -> bool:
 
 def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
     """Convert a ModelVariant + family to a TableRow."""
-    # Avoid duplicating the tag when the family name already ends with it.
-    label = f.name if f.name.endswith(v.param_count) else f"{f.name} {v.param_count}"
+    # Avoid duplicating the param count when the family name already ends with it.
+    if v.param_count and not f.name.endswith(v.param_count):
+        label = f"{f.name} {v.param_count}"
+    else:
+        label = f.name
     params = v.param_count if _is_param_count(v.param_count) else "--"
     return TableRow(
         name=label,
@@ -89,7 +93,7 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow
         installed=installed,
         sort_downloads=0,
         sort_size=v.size_mb / 1024,
-        ref=f"{f.slug}:{v.tag}",
+        ref=v.hf_repo,
         backend="native",
         variant=v,
         family=f,
@@ -98,11 +102,11 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow
 
 def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
     """Convert a CatalogModel to a TableRow."""
-    quant = _extract_quant_from_filename(m.gguf_filename)
+    quant = extract_quant(m.gguf_filename)
     return TableRow(
         name=m.display_name,
         task=m.task,
-        params=parse_param_label(m.tag),
+        params=parse_param_label(m.display_name),
         size=format_size_gb(m.size_gb),
         quant=quant or "--",
         downloads=_format_downloads(m.downloads) if m.downloads > 0 else "--",
@@ -133,12 +137,6 @@ def remote_to_row(rm: RemoteModel) -> TableRow:
         backend=rm.provider.lower(),
         remote_model=rm,
     )
-
-
-def _extract_quant_from_filename(filename: str) -> str:
-    """Extract quantization label from a GGUF filename pattern."""
-    m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
 
 
 # Column sort key extractors
