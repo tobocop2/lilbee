@@ -15,19 +15,27 @@ import logging
 import mimetypes
 import threading
 import time
-import types
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Union, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel
-from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from lilbee import settings
 from lilbee.catalog import find_catalog_entry
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import Config, cfg
+from lilbee.config_meta import (
+    MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
+)
+from lilbee.config_meta import (
+    PUBLIC_CONFIG_FIELDS as _PUBLIC_CONFIG_FIELDS,
+)
+from lilbee.config_meta import (
+    REINDEX_FIELDS,
+    WRITABLE_CONFIG_FIELDS,
+)
 from lilbee.model_manager import ModelSource, get_model_manager
 from lilbee.models import ModelTask
 from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
@@ -73,51 +81,6 @@ log = logging.getLogger(__name__)
 mimetypes.add_type("text/markdown", ".md")
 
 MAX_ADD_FILES = 100
-
-
-def _get_extra(info: FieldInfo, key: str, default: bool = False) -> bool:
-    """Read a boolean flag from a field's ``json_schema_extra``."""
-    extra = info.json_schema_extra
-    if isinstance(extra, dict):
-        return bool(extra.get(key, default))
-    return default
-
-
-def _is_nullable(info: FieldInfo) -> bool:
-    """Return True if ``None`` is part of the field's type union."""
-    origin = get_origin(info.annotation)
-    if origin is Union or origin is types.UnionType:
-        return type(None) in get_args(info.annotation)
-    return False
-
-
-_MODEL_ROLE_FIELDS = frozenset({"chat_model", "embedding_model", "vision_model", "reranker_model"})
-
-
-def _derive_field_sets() -> tuple[
-    types.MappingProxyType[str, bool], frozenset[str], frozenset[str]
-]:
-    """Derive writable, reindex, and public field sets from Config metadata.
-
-    Model-role fields are public even when not writable: they are set via
-    ``PUT /api/models/<role>`` but must still surface in ``GET /api/config``.
-    """
-    writable: dict[str, bool] = {}
-    reindex: set[str] = set()
-    public: set[str] = set()
-    for name, info in Config.model_fields.items():
-        if _get_extra(info, "writable"):
-            writable[name] = _is_nullable(info)
-            if not _get_extra(info, "write_only") and _get_extra(info, "public", default=True):
-                public.add(name)
-            if _get_extra(info, "reindex"):
-                reindex.add(name)
-        elif name in _MODEL_ROLE_FIELDS:
-            public.add(name)
-    return types.MappingProxyType(writable), frozenset(reindex), frozenset(public)
-
-
-WRITABLE_CONFIG_FIELDS, REINDEX_FIELDS, _PUBLIC_CONFIG_FIELDS = _derive_field_sets()
 
 
 class ModelCatalogEntry(BaseModel):
