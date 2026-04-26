@@ -167,6 +167,7 @@ DEFAULT_HTTP_TIMEOUT = 30.0
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
+META_TABLE = "_meta"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from lilbee.config import (
     CHUNKS_TABLE,
     CITATIONS_TABLE,
+    META_TABLE,
     SOURCES_TABLE,
     Config,
     cfg,
@@ -212,6 +213,61 @@ class CitationRecord(TypedDict):
     line_end: int
     excerpt: str
     created_at: str
+
+
+class StoreMeta(TypedDict):
+    """Single-row store metadata recording the embedding model used to build the store.
+
+    Compatibility is checked before every read and write. When ``cfg.embedding_model``
+    or ``cfg.embedding_dim`` drifts from the persisted row, the store refuses to serve
+    until ``lilbee rebuild`` (CLI) or ``POST /api/sync {"force_rebuild": true}`` (HTTP)
+    rewrites the chunks under the new model.
+    """
+
+    embedding_model: str
+    embedding_dim: int
+    schema_version: int
+    updated_at: str
+
+
+# ``schema_version`` is an integer for forward-compat. Bump only if we ever need to
+# add or rename a meta column without forcing every store to drop_all.
+META_SCHEMA_VERSION = 1
+
+
+class EmbeddingModelMismatchError(RuntimeError):
+    """Raised when stored vectors were built with a different embedding model than ``cfg``.
+
+    Carries a user-facing message naming both the persisted and the configured model and
+    pointing at the two recovery paths (``lilbee rebuild`` and ``POST /api/sync`` with
+    ``force_rebuild=true``).
+    """
+
+
+def _embedding_mismatch_message(
+    persisted_model: str,
+    persisted_dim: int,
+    current_model: str,
+    current_dim: int,
+) -> str:
+    return (
+        f"The vector store was built with embedding model '{persisted_model}' "
+        f"(dim {persisted_dim}), but lilbee is now configured to use "
+        f"'{current_model}' (dim {current_dim}). Search and ingest are disabled "
+        "until the store is rebuilt under the new model. "
+        'Run `lilbee rebuild` or POST /api/sync with `{"force_rebuild": true}`.'
+    )
+
+
+def _meta_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("embedding_model", pa.utf8()),
+            pa.field("embedding_dim", pa.int32()),
+            pa.field("schema_version", pa.int32()),
+            pa.field("updated_at", pa.utf8()),
+        ]
+    )
 
 
 def _sources_schema() -> pa.Schema:
@@ -412,6 +468,85 @@ class Store:
             ]
         )
 
+    def get_meta(self) -> StoreMeta | None:
+        """Return the persisted store metadata row, or ``None`` if unset."""
+        table = self.open_table(META_TABLE)
+        if table is None:
+            return None
+        rows = table.search().limit(1).to_list()
+        if not rows:
+            return None
+        row = rows[0]
+        return StoreMeta(
+            embedding_model=row["embedding_model"],
+            embedding_dim=int(row["embedding_dim"]),
+            schema_version=int(row["schema_version"]),
+            updated_at=row["updated_at"],
+        )
+
+    def _write_meta_unlocked(self) -> None:
+        """Overwrite the single ``_meta`` row with the current cfg snapshot.
+
+        Caller must hold ``write_lock()``. Maintains the single-row invariant via
+        delete-then-insert (mirrors ``upsert_source``).
+        """
+        db = self.get_db()
+        table = ensure_table(db, META_TABLE, _meta_schema())
+        _safe_delete_unlocked(table, "schema_version >= 0")
+        table.add(
+            [
+                {
+                    "embedding_model": self._config.embedding_model,
+                    "embedding_dim": self._config.embedding_dim,
+                    "schema_version": META_SCHEMA_VERSION,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                }
+            ]
+        )
+
+    def _ensure_embedding_compat(self) -> None:
+        """Refuse to operate when the persisted embedding identity drifts from cfg.
+
+        Behavior matrix:
+        - ``_meta`` row matches cfg: no-op (the common case).
+        - ``_meta`` empty AND chunks table empty: no-op. Will be initialized on first
+          ``add_chunks``.
+        - ``_meta`` empty AND chunks present (legacy store from before this gate
+          existed): write ``_meta`` from current cfg with a one-time warning. This
+          trusts that current cfg matches the actual stored vectors. Pre-upgrade
+          silent corruption is not retroactively detectable, but the gate is active
+          from this point forward.
+        - ``_meta`` present and mismatches cfg: raise ``EmbeddingModelMismatchError``.
+        """
+        meta = self.get_meta()
+        if meta is not None:
+            if (
+                meta["embedding_model"] == self._config.embedding_model
+                and meta["embedding_dim"] == self._config.embedding_dim
+            ):
+                return
+            raise EmbeddingModelMismatchError(
+                _embedding_mismatch_message(
+                    persisted_model=meta["embedding_model"],
+                    persisted_dim=meta["embedding_dim"],
+                    current_model=self._config.embedding_model,
+                    current_dim=self._config.embedding_dim,
+                )
+            )
+        chunks = self.open_table(CHUNKS_TABLE)
+        if chunks is None or chunks.count_rows() == 0:
+            return
+        log.warning(
+            "Legacy store has chunks but no _meta row. Initializing _meta from "
+            "the current configuration (embedding_model=%s, embedding_dim=%d). "
+            "If you changed embedding_model before upgrading, run `lilbee rebuild` "
+            "to ensure the store is consistent.",
+            self._config.embedding_model,
+            self._config.embedding_dim,
+        )
+        with write_lock():
+            self._write_meta_unlocked()
+
     def get_db(self) -> lancedb.DBConnection:
         if self._db is None:
             import lancedb as _lancedb
@@ -455,7 +590,13 @@ class Store:
                 log.debug("FTS index ensure failed (empty table?)", exc_info=True)
 
     def add_chunks(self, records: list[dict]) -> int:
-        """Add chunk records to the store. Returns count added."""
+        """Add chunk records to the store. Returns count added.
+
+        Raises ``EmbeddingModelMismatchError`` if the persisted ``_meta`` row was
+        written under a different embedding model than the current ``cfg``. On the
+        first write to a fresh store, ``_meta`` is initialized from the current cfg.
+        """
+        self._ensure_embedding_compat()
         with write_lock():
             self._fts_ready = False
             if not records:
@@ -470,6 +611,8 @@ class Store:
             db = self.get_db()
             table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
             table.add(records)
+            if self.get_meta() is None:
+                self._write_meta_unlocked()
             return len(records)
 
     def bm25_probe(self, query_text: str, top_k: int = 5) -> list[SearchChunk]:
@@ -496,10 +639,14 @@ class Store:
         query_text: str | None = None,
         chunk_type: str | None = None,
     ) -> list[SearchChunk]:
-        """Search for similar chunks — hybrid when FTS available, else vector-only.
+        """Search for similar chunks. Hybrid when FTS available, else vector-only.
+
         Results with distance > max_distance are filtered out (vector-only path).
         Pass max_distance=0 to disable filtering.
         When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
+
+        Raises ``EmbeddingModelMismatchError`` if the persisted ``_meta`` row was
+        written under a different embedding model than the current ``cfg``.
         """
         if top_k is None:
             top_k = self._config.top_k
@@ -508,6 +655,7 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
+        self._ensure_embedding_compat()
 
         if query_text and not self._fts_ready:
             self.ensure_fts_index()
