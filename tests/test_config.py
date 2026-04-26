@@ -32,12 +32,16 @@ def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     return env
 
 
+_DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+_DEFAULT_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+
+
 class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:0.6b"
-            assert c.embedding_model == "nomic-embed-text:v1.5"
+            assert c.chat_model == _DEFAULT_CHAT_REF
+            assert c.embedding_model == _DEFAULT_EMBED_REF
             assert c.embedding_dim == 768
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
@@ -75,30 +79,36 @@ class TestEnvVarOverrides:
 
     def test_data_root_default_uses_platform(self):
         env = _clean_env()
+        # Skip the platform-default config.toml: a dev's persisted state
+        # could carry refs the new validators reject.
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert str(c.data_root).endswith("lilbee")
 
     def test_chat_model_override(self):
-        with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "llama3"}):
+        with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "ollama/llama3:8b"}):
             c = Config()
-            assert c.chat_model == "llama3:latest"
+            assert c.chat_model == "ollama/llama3:8b"
 
-    def test_chat_model_override_tagged(self):
-        with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "llama3:8b"}):
+    def test_chat_model_override_native_hf_ref(self):
+        ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": ref}):
             c = Config()
-            assert c.chat_model == "llama3:8b"
+            assert c.chat_model == ref
 
     def test_embedding_model_override(self):
-        with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_MODEL": "mxbai-embed-large"}):
+        ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_MODEL": ref}):
             c = Config()
-            assert c.embedding_model == "mxbai-embed-large:latest"
+            assert c.embedding_model == ref
 
-    def test_model_tag_normalized_on_assignment(self):
-        cfg.chat_model = "qwen3"
-        assert cfg.chat_model == "qwen3:latest"
-        cfg.chat_model = "qwen3:0.6b"
-        assert cfg.chat_model == "qwen3:0.6b"
+    def test_bare_name_tag_rejected_on_assignment(self):
+        """Bare ``name:tag`` strings are not accepted by the cfg validator."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="must be a HuggingFace ref"):
+            cfg.chat_model = "qwen3:0.6b"
 
     def test_normalize_model_tag_empty_string_passthrough(self):
         """The validator's empty-string guard returns immediately."""
@@ -158,28 +168,30 @@ class TestEnvVarOverrides:
 
 class TestTomlConfigFile:
     def test_toml_values_loaded(self, tmp_path):
+        ref = "ollama/my-saved-model:latest"
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('chat_model = "my-saved-model"\n')
+        toml_path.write_text(f'chat_model = "{ref}"\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "my-saved-model:latest"
+            assert c.chat_model == ref
 
     def test_env_var_overrides_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('chat_model = "toml-model"\n')
+        toml_path.write_text('chat_model = "ollama/toml-model:latest"\n')
+        env_ref = "ollama/env-model:latest"
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
-        env["LILBEE_CHAT_MODEL"] = "env-model"
+        env["LILBEE_CHAT_MODEL"] = env_ref
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "env-model:latest"
+            assert c.chat_model == env_ref
 
     def test_no_toml_uses_defaults(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:0.6b"
+            assert c.chat_model == _DEFAULT_CHAT_REF
 
     def test_corrupt_toml_uses_defaults(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -188,16 +200,17 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:0.6b"
+            assert c.chat_model == _DEFAULT_CHAT_REF
 
     def test_embedding_model_from_toml(self, tmp_path):
+        ref = "ollama/my-embed:latest"
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('embedding_model = "my-embed"\n')
+        toml_path.write_text(f'embedding_model = "{ref}"\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.embedding_model == "my-embed:latest"
+            assert c.embedding_model == ref
 
     def test_temperature_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -660,6 +673,7 @@ class TestLocalDotLilbee:
 
     def test_no_local_uses_platform_default(self):
         env = _clean_env()
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch("lilbee.platform.find_local_root", return_value=None),
@@ -759,6 +773,7 @@ class TestIgnoreDirs:
 
     def test_lilbee_ignore_dirs_empty_string(self):
         env = _clean_env()
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
@@ -798,6 +813,7 @@ class TestConceptAllowedEntTypes:
     def test_empty_env_falls_back_to_default(self):
         # Empty override should not silently deactivate the gate.
         env = _clean_env()
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         env["LILBEE_CONCEPT_ALLOWED_ENT_TYPES"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -823,7 +839,7 @@ class TestEmptyStringValidation:
                 lancedb_dir=tmp_path / "data" / "lancedb",
                 models_dir=tmp_path / "models",
                 chat_model="",
-                embedding_model="nomic-embed-text",
+                embedding_model=_DEFAULT_EMBED_REF,
                 embedding_dim=768,
                 chunk_size=512,
                 chunk_overlap=100,
@@ -842,7 +858,7 @@ class TestEmptyStringValidation:
                 data_dir=tmp_path / "data",
                 lancedb_dir=tmp_path / "data" / "lancedb",
                 models_dir=tmp_path / "models",
-                chat_model="qwen3",
+                chat_model=_DEFAULT_CHAT_REF,
                 embedding_model="",
                 embedding_dim=768,
                 chunk_size=512,
@@ -862,8 +878,8 @@ class TestEmptyStringValidation:
                 data_dir=tmp_path / "data",
                 lancedb_dir=tmp_path / "data" / "lancedb",
                 models_dir=tmp_path / "models",
-                chat_model="qwen3",
-                embedding_model="nomic-embed-text",
+                chat_model=_DEFAULT_CHAT_REF,
+                embedding_model=_DEFAULT_EMBED_REF,
                 embedding_dim=768,
                 chunk_size=512,
                 chunk_overlap=100,
@@ -882,8 +898,8 @@ class TestEmptyStringValidation:
             data_dir=tmp_path / "data",
             lancedb_dir=tmp_path / "data" / "lancedb",
             models_dir=tmp_path / "models",
-            chat_model="qwen3",
-            embedding_model="nomic-embed-text",
+            chat_model=_DEFAULT_CHAT_REF,
+            embedding_model=_DEFAULT_EMBED_REF,
             embedding_dim=768,
             chunk_size=512,
             chunk_overlap=100,
@@ -1129,7 +1145,7 @@ class TestPlainEnvSourceSkipsEmpty:
         env["LILBEE_CHAT_MODEL"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.chat_model == "qwen3:0.6b"  # default, not empty
+        assert c.chat_model == _DEFAULT_CHAT_REF  # default, not empty
 
 
 def _validator_env(tmp_path: Path) -> dict[str, str]:
@@ -1163,38 +1179,41 @@ class TestValidateModelTaskAssignment:
     def test_chat_slot_accepts_chat_model(self, _task_validation_enabled):
         from lilbee.config import validate_model_task_assignment
 
-        result = validate_model_task_assignment("chat_model", "qwen3:0.6b")
-        assert result.endswith("qwen3:0.6b")
+        result = validate_model_task_assignment("chat_model", _DEFAULT_CHAT_REF)
+        assert result == _DEFAULT_CHAT_REF
 
     def test_chat_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.config import validate_model_task_assignment
 
+        vision = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("chat_model", "lightonocr:2-1b")
+            validate_model_task_assignment("chat_model", vision)
 
     def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
         from lilbee.config import validate_model_task_assignment
 
+        rerank = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="rerank"):
-            validate_model_task_assignment("chat_model", "bge-reranker-v2-m3:latest")
+            validate_model_task_assignment("chat_model", rerank)
 
     def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.config import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("embedding_model", "qwen3:0.6b")
+            validate_model_task_assignment("embedding_model", _DEFAULT_CHAT_REF)
 
     def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.config import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("vision_model", "qwen3:0.6b")
+            validate_model_task_assignment("vision_model", _DEFAULT_CHAT_REF)
 
     def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.config import validate_model_task_assignment
 
+        vision = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("reranker_model", "lightonocr:2-1b")
+            validate_model_task_assignment("reranker_model", vision)
 
     def test_empty_string_passes_through(self, _task_validation_enabled):
         """Empty or whitespace refs bypass validation (role unset)."""
@@ -1203,21 +1222,23 @@ class TestValidateModelTaskAssignment:
         assert validate_model_task_assignment("vision_model", "") == ""
         assert validate_model_task_assignment("reranker_model", "   ") == "   "
 
-    def test_provider_prefix_canonicalized(self, _task_validation_enabled):
-        """Provider-prefixed refs canonicalize to the catalog ``name:tag``."""
+    def test_provider_prefix_bypasses_catalog(self, _task_validation_enabled):
+        """Provider-prefixed refs (ollama/, openai/, ...) bypass the featured
+        catalog check entirely; routing handles task taxonomy at the wire.
+        """
         from lilbee.config import validate_model_task_assignment
 
-        result = validate_model_task_assignment("chat_model", "ollama/qwen3:0.6b")
-        assert result == "qwen3:0.6b"
+        ref = "ollama/qwen3:0.6b"
+        assert validate_model_task_assignment("chat_model", ref) == ref
 
-    def test_hf_repo_canonicalized(self, _task_validation_enabled):
-        """``hf_repo`` form canonicalizes to the catalog ``name:tag``."""
+    def test_bare_hf_repo_canonicalizes_to_catalog_ref(self, _task_validation_enabled):
+        """A bare ``hf_repo`` resolves to the catalog entry's ref (= the repo)."""
         from lilbee.config import validate_model_task_assignment
 
         result = validate_model_task_assignment(
-            "reranker_model", "gpustack/bge-reranker-v2-m3-GGUF:latest"
+            "reranker_model", "gpustack/bge-reranker-v2-m3-GGUF"
         )
-        assert result == "bge-reranker-v2-m3:latest"
+        assert result == "gpustack/bge-reranker-v2-m3-GGUF"
 
     def test_out_of_catalog_rejected(self, _task_validation_enabled):
         """Out-of-catalog model names are rejected since we can't verify the role."""
@@ -1258,8 +1279,38 @@ class TestValidateModelTaskAssignment:
         from lilbee.models import ModelTask
         from lilbee.server.handlers import format_task_mismatch
 
+        vision = "noctrex/LightOnOCR-2-1B-GGUF"
         with pytest.raises(ValueError) as exc_info:
-            validate_model_task_assignment("chat_model", "lightonocr:2-1b")
+            validate_model_task_assignment("chat_model", vision)
 
-        handler_message = format_task_mismatch("lightonocr:2-1b", ModelTask.VISION, ModelTask.CHAT)
+        handler_message = format_task_mismatch(vision, ModelTask.VISION, ModelTask.CHAT)
         assert handler_message in str(exc_info.value)
+
+
+class TestBuildCfgFallback:
+    """The cfg-construction fallback recovers from a stale persisted config.toml."""
+
+    def test_falls_back_to_defaults_on_validation_error(self, tmp_path):
+        """A toml carrying an invalid model ref triggers the fallback path."""
+        from lilbee.config import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        # Bare ``name:tag`` is rejected by the new validator.
+        toml_path.write_text('chat_model = "qwen3:0.6b"\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "must be a HuggingFace ref" in str(error)
+        # Falls back to defaults — chat_model is the featured Qwen3 ref.
+        assert built_cfg.chat_model.endswith(".gguf")
+
+    def test_returns_none_error_on_clean_load(self, tmp_path):
+        from lilbee.config import _build_cfg
+
+        env = _clean_env(tmp_path)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        with mock.patch.dict(os.environ, env, clear=True):
+            _, error = _build_cfg()
+        assert error is None

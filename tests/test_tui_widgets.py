@@ -9,7 +9,13 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Static
 
-from conftest import make_test_catalog_model as _make_model
+from conftest import (
+    TEST_EMBED_REF,
+    TEST_LOCAL_REF,
+)
+from conftest import (
+    make_test_catalog_model as _make_model,
+)
 from lilbee.cli.tui.screens.catalog_utils import TableRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
@@ -21,8 +27,8 @@ def _isolated_cfg(tmp_path):
     cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -366,8 +372,8 @@ class TestModelBar:
     async def test_renders_select_widgets(self) -> None:
         from textual.widgets import Select
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -378,8 +384,8 @@ class TestModelBar:
     async def test_widget_exists_with_3_selects(self) -> None:
         from textual.widgets import Select
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -399,8 +405,8 @@ class TestModelBar:
         """
         from textual.widgets import Static
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -413,8 +419,8 @@ class TestModelBar:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
         from lilbee.store import SearchScope
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -427,8 +433,8 @@ class TestModelBar:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
         from lilbee.store import SearchScope
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -444,8 +450,8 @@ class TestModelBar:
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -470,8 +476,8 @@ class TestModelBar:
         from textual.css.query import NoMatches
         from textual.widgets import Select
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         cfg.wiki = False
         app = _ModelBarApp()
         async with app.run_test() as pilot:
@@ -484,8 +490,8 @@ class TestModelBar:
                 app.query_one("#scope-select", Select)
 
     async def test_cloud_warning_hidden_for_local_model(self) -> None:
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -494,7 +500,7 @@ class TestModelBar:
 
     async def test_cloud_warning_hidden_for_ollama_model(self) -> None:
         cfg.chat_model = "ollama/qwen3:8b"
-        cfg.embedding_model = "nomic"
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -503,7 +509,7 @@ class TestModelBar:
 
     async def test_cloud_warning_visible_and_names_provider(self) -> None:
         cfg.chat_model = "openai/gpt-4o"
-        cfg.embedding_model = "nomic"
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -545,30 +551,24 @@ class TestClassifyInstalledModels:
         from lilbee.registry import ModelManifest
 
         chat_manifest = ModelManifest(
-            name="qwen3",
-            tag="8b",
+            hf_repo="Qwen/Qwen3-8B-GGUF",
+            gguf_filename="Qwen3-8B-Q4_K_M.gguf",
             size_bytes=100,
             task="chat",
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
         embed_manifest = ModelManifest(
-            name="nomic-embed-text",
-            tag="latest",
+            hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
+            gguf_filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
             size_bytes=100,
             task="embedding",
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
         vision_manifest = ModelManifest(
-            name="llava",
-            tag="latest",
+            hf_repo="org/Llava-GGUF",
+            gguf_filename="llava-Q4_K_M.gguf",
             size_bytes=100,
             task="vision",
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
         cfg.models_dir = tmp_path / "models"
@@ -590,27 +590,25 @@ class TestClassifyInstalledModels:
 
         chat_refs = [ref for _, ref in chat]
         embed_refs = [ref for _, ref in embed]
-        assert "qwen3:8b" in chat_refs
-        assert "nomic-embed-text:latest" in embed_refs
+        assert chat_manifest.ref in chat_refs
+        assert embed_manifest.ref in embed_refs
 
     def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.model_manager import RemoteModel
         from lilbee.registry import ModelManifest
 
+        # Manifest whose filename contains "mmproj" must be filtered out;
+        # the picker only surfaces the main model files.
         mmproj_manifest = ModelManifest(
-            name="llava-mmproj",
-            tag="latest",
+            hf_repo="org/Llava-GGUF",
+            gguf_filename="llava-mmproj-f16.gguf",
             size_bytes=100,
             task="vision",
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        # Legacy mmproj .gguf file
-        (cfg.models_dir / "clip-mmproj-f16.gguf").write_text("fake")
 
         remote_mmproj = RemoteModel(
             name="mmproj-model:latest",
@@ -676,24 +674,21 @@ class TestClassifyInstalledModels:
         assert "ollama/nomic-embed-text:latest" in embed_refs
         assert any("llama3:8b" in lbl and "Ollama" in lbl for lbl in chat_labels)
 
-    def test_remote_ollama_coexists_with_native_tag_collision(self, tmp_path) -> None:
-        """When a tag collides with a native manifest, both stay visible.
+    def test_remote_ollama_coexists_with_native_repo(self, tmp_path) -> None:
+        """A native HF manifest and an Ollama listing for the same family coexist.
 
-        Regression coverage for the dedup bug: _collect_native_models added
-        the bare tag to seen first, which silently dropped the Ollama
-        duplicate. Prefixing the ref makes the two entries distinct.
+        Refs are distinct (``<repo>/<file>.gguf`` vs ``ollama/<name>``),
+        so both rows survive the dedup pass and appear in the picker.
         """
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.model_manager import RemoteModel
         from lilbee.registry import ModelManifest
 
         native = ModelManifest(
-            name="mistral",
-            tag="latest",
+            hf_repo="bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+            gguf_filename="Mistral-7B-Q4_K_M.gguf",
             size_bytes=100,
             task="chat",
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
         remote = RemoteModel(
@@ -718,7 +713,7 @@ class TestClassifyInstalledModels:
             chat, _ = _classify_installed_models()
 
         chat_refs = {ref for _, ref in chat}
-        assert "mistral:latest" in chat_refs
+        assert native.ref in chat_refs
         assert "ollama/mistral:latest" in chat_refs
 
     def test_remote_blank_name_dropped(self, tmp_path) -> None:
@@ -759,6 +754,44 @@ class TestClassifyInstalledModels:
         assert chat_refs == ["ollama/qwen3:8b"]
         assert all(lbl != " (Ollama)" and lbl.strip() != "(Ollama)" for lbl in chat_labels)
 
+    def test_multi_quant_same_repo_disambiguates_label(self, tmp_path) -> None:
+        """Two quants from the same repo render with quant suffixes."""
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.registry import ModelManifest
+
+        repo = "Qwen/Qwen3-0.6B-GGUF"
+        m_q4 = ModelManifest(
+            hf_repo=repo,
+            gguf_filename="Qwen3-0.6B-Q4_K_M.gguf",
+            size_bytes=100,
+            task="chat",
+            downloaded_at="",
+        )
+        m_q8 = ModelManifest(
+            hf_repo=repo,
+            gguf_filename="Qwen3-0.6B-Q8_0.gguf",
+            size_bytes=100,
+            task="chat",
+            downloaded_at="",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]
+            chat, _ = _classify_installed_models()
+
+        labels = sorted(label for label, _ in chat)
+        assert labels == ["Qwen3 0.6B (Q4_K_M)", "Qwen3 0.6B (Q8_0)"]
+        refs = sorted(ref for _, ref in chat)
+        assert refs == [m_q4.ref, m_q8.ref]
+
     def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
@@ -794,12 +827,10 @@ class TestClassifyInstalledModels:
         from lilbee.registry import ModelManifest
 
         bogus = ModelManifest(
-            name="mystery",
-            tag="latest",
+            hf_repo="org/Mystery-GGUF",
+            gguf_filename="mystery-Q4_K_M.gguf",
             size_bytes=100,
             task="unknown",  # untyped on purpose: task is a plain str on manifests
-            source_repo="",
-            source_filename="",
             downloaded_at="",
         )
         cfg.models_dir = tmp_path / "models"
@@ -821,8 +852,8 @@ class TestClassifyInstalledModels:
 
         chat_refs = [ref for _, ref in chat]
         embed_refs = [ref for _, ref in embed]
-        assert "mystery:latest" not in chat_refs
-        assert "mystery:latest" not in embed_refs
+        assert bogus.ref not in chat_refs
+        assert bogus.ref not in embed_refs
 
 
 class TestSlashSuggester:
@@ -1732,15 +1763,27 @@ class TestSetupWizard:
             assert setup_mod._pick_recommended(4.0)[0] is big
 
     def test_build_section_marks_installed_catalog_cards(self) -> None:
-        """Catalog cards whose name:tag is already installed come back with
+        """Catalog cards whose hf_repo is already installed come back with
         ``installed=True`` so the Enter-to-install hint stays hidden."""
         from lilbee.cli.tui.screens.setup import SetupWizard
 
-        a = _make_model("Qwen3 0.6B", tag="0.6b", featured=True, size_gb=0.6)
-        b = _make_model("Qwen3 4B", tag="4b", featured=True, size_gb=2.5)
+        a = _make_model(
+            "Qwen3 0.6B",
+            featured=True,
+            size_gb=0.6,
+            hf_repo="Qwen/Qwen3-0.6B-GGUF",
+        )
+        b = _make_model(
+            "Qwen3 4B",
+            featured=True,
+            size_gb=2.5,
+            hf_repo="Qwen/Qwen3-4B-GGUF",
+        )
         wizard = SetupWizard.__new__(SetupWizard)
         widgets: list = []
-        cards = SetupWizard._build_section(wizard, "Chat", (a, b), {"qwen3-0.6b:0.6b"}, widgets)
+        cards = SetupWizard._build_section(
+            wizard, "Chat", (a, b), {"Qwen/Qwen3-0.6B-GGUF"}, widgets
+        )
         assert cards[0].row.installed is True
         assert cards[1].row.installed is False
 
@@ -1752,15 +1795,15 @@ class TestSetupWizard:
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        fake_chat = mock.Mock(name="qwen3-0.6b", tag="0.6b", task=ModelTask.CHAT)
-        fake_chat.name = "qwen3-0.6b"
-        fake_embed = mock.Mock(name="nomic", tag="v1.5", task=ModelTask.EMBEDDING)
-        fake_embed.name = "nomic"
+        chat_ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        fake_chat = mock.Mock(ref=chat_ref, task=ModelTask.CHAT)
+        fake_embed = mock.Mock(ref=embed_ref, task=ModelTask.EMBEDDING)
         with mock.patch("lilbee.registry.ModelRegistry") as MockRegistry:
             MockRegistry.return_value.list_installed.return_value = [fake_chat, fake_embed]
             chat, embed = _scan_installed_models()
-        assert "qwen3-0.6b:0.6b" in chat
-        assert "nomic:v1.5" in embed
+        assert chat_ref in chat
+        assert embed_ref in embed
 
 
 class TestAllTasksFetched:
@@ -1914,8 +1957,8 @@ class TestViewTabs:
 
 class TestLilbeeAppViewTabs:
     async def test_screen_composes_status_bar(self) -> None:
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -1930,8 +1973,8 @@ class TestLilbeeAppViewTabs:
             assert bar is not None
 
     async def test_status_bar_default_is_chat(self) -> None:
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -1947,8 +1990,8 @@ class TestLilbeeAppViewTabs:
 
     async def test_view_tabs_uses_pill_for_active(self) -> None:
         """Active tab should render as a pill with half-block characters."""
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -1967,8 +2010,8 @@ class TestLilbeeAppViewTabs:
 
     async def test_view_tabs_dot_separators(self) -> None:
         """Inactive tabs should be separated by dot characters."""
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -2446,27 +2489,30 @@ class TestModelBarAdditional:
         """When current chat model IS in scanned list, value is preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
-                [ModelOption("test-embed", "test-embed")],
+                [
+                    ModelOption("Test Model", TEST_LOCAL_REF),
+                    ModelOption("Llama 7B", "ollama/llama3:8b"),
+                ],
+                [ModelOption("Test Embed", TEST_EMBED_REF)],
             )
             await pilot.pause()
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value == "qwen3:8b"
+            assert chat_sel.value == TEST_LOCAL_REF
 
     async def test_populate_no_models_found(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2477,14 +2523,14 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            # Bare name normalizes to name:latest via ensure_tag
-            assert chat_sel.value == "test-model:latest"
+            # The configured default survives even when nothing matched.
+            assert chat_sel.value == TEST_LOCAL_REF
 
     async def test_on_embed_model_changed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2493,14 +2539,15 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
-            embed_sel.set_options([ModelOption("new-embed", "new-embed")])
+            new_embed = "ollama/new-embed:latest"
+            embed_sel.set_options([ModelOption("new-embed", new_embed)])
             with (
                 mock.patch("lilbee.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
-                embed_sel.value = "new-embed"
+                embed_sel.value = new_embed
                 await pilot.pause()
-            assert cfg.embedding_model == "new-embed:latest"
+            assert cfg.embedding_model == new_embed
 
     async def test_populate_survives_auto_pick_race(self) -> None:
         """bb-zvrv primary regression: ``_populate`` must not let the
@@ -2516,8 +2563,8 @@ class TestModelBarAdditional:
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic-embed-text:v1.5"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2527,22 +2574,24 @@ class TestModelBarAdditional:
                 mock.patch("lilbee.settings.set_value", write_tracker),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
+                auto_chat = "ollama/auto-picked-alpha:latest"
+                auto_embed = "ollama/auto-embed-alpha:latest"
                 bar._populate(
                     [
-                        ModelOption("auto-picked-alpha", "auto-picked-alpha"),
-                        ModelOption("qwen3:8b", "qwen3:8b"),
+                        ModelOption("auto-picked-alpha", auto_chat),
+                        ModelOption("Test Model", TEST_LOCAL_REF),
                     ],
                     [
-                        ModelOption("auto-embed-alpha", "auto-embed-alpha"),
-                        ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5"),
+                        ModelOption("auto-embed-alpha", auto_embed),
+                        ModelOption("Test Embed", TEST_EMBED_REF),
                     ],
                 )
                 await pilot.pause()
-            assert cfg.chat_model == "qwen3:8b"
-            assert cfg.embedding_model == "nomic-embed-text:v1.5"
+            assert cfg.chat_model == TEST_LOCAL_REF
+            assert cfg.embedding_model == TEST_EMBED_REF
             assert bar._populating is False
             for call in write_tracker.call_args_list:
-                assert call.args[2] not in {"auto-picked-alpha", "auto-embed-alpha"}
+                assert call.args[2] not in {auto_chat, auto_embed}
 
     async def test_chat_model_change_noop_when_value_matches_config(self) -> None:
         """Secondary defense against duplicate same-value events.
@@ -2555,8 +2604,8 @@ class TestModelBarAdditional:
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2565,23 +2614,23 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            chat_sel.set_options([ModelOption("qwen3:8b", "qwen3:8b")])
+            chat_sel.set_options([ModelOption("Test", TEST_LOCAL_REF)])
             write_tracker = mock.Mock()
             with (
                 mock.patch("lilbee.settings.set_value", write_tracker),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
-                chat_sel.value = "qwen3:8b"
+                chat_sel.value = TEST_LOCAL_REF
                 await pilot.pause()
-            assert cfg.chat_model == "qwen3:8b"
+            assert cfg.chat_model == TEST_LOCAL_REF
             write_tracker.assert_not_called()
 
     async def test_embed_model_change_noop_when_value_matches_config(self) -> None:
         """Same bb-zvrv guard for the embedding-model Select."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "nomic-embed-text:v1.5"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2590,35 +2639,35 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
-            embed_sel.set_options([ModelOption("nomic-embed-text:v1.5", "nomic-embed-text:v1.5")])
+            embed_sel.set_options([ModelOption("Test Embed", TEST_EMBED_REF)])
             write_tracker = mock.Mock()
             with (
                 mock.patch("lilbee.settings.set_value", write_tracker),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
-                embed_sel.value = "nomic-embed-text:v1.5"
+                embed_sel.value = TEST_EMBED_REF
                 await pilot.pause()
-            assert cfg.embedding_model == "nomic-embed-text:v1.5"
+            assert cfg.embedding_model == TEST_EMBED_REF
             write_tracker.assert_not_called()
 
     async def test_populate_embed_model_in_scanned(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "nomic:latest"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [ModelOption("test-model", "test-model")],
-                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("Test Model", TEST_LOCAL_REF)],
+                [ModelOption("Test Embed", TEST_EMBED_REF)],
             )
             await pilot.pause()
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
-            assert embed_sel.value == "nomic:latest"
+            assert embed_sel.value == TEST_EMBED_REF
 
 
 class TestSyncSelectPrepend:
@@ -2628,26 +2677,25 @@ class TestSyncSelectPrepend:
         """Stale sel.value is discarded in favor of the configured default."""
         from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
 
+        ref_a = "ollama/mistral:latest"
+        ref_b = "ollama/smollm2:latest"
         sel = mock.MagicMock()
-        sel.value = "mistral:latest"
-        opts = [
-            ModelOption("mistral:latest", "mistral:latest"),
-            ModelOption("smollm2:135m", "smollm2:135m"),
-        ]
-        _sync_select(sel, opts, default="smollm2:135m")
-        assert sel.value == "smollm2:135m"
-        # Single set_options call since default is already in opts
+        sel.value = ref_a
+        opts = [ModelOption("mistral", ref_a), ModelOption("smollm2", ref_b)]
+        _sync_select(sel, opts, default=ref_b)
+        assert sel.value == ref_b
         assert sel.set_options.call_count == 1
 
     def test_default_used_when_select_is_disabled(self) -> None:
         """When Select has no value, use the configured default."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
+        ref = "ollama/qwen3:8b"
         sel = mock.MagicMock()
         sel.value = _DISABLED
-        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
-        _sync_select(sel, opts, default="qwen3:8b")
-        assert sel.value == "qwen3:8b"
+        opts = [ModelOption("Qwen3 8B", ref)]
+        _sync_select(sel, opts, default=ref)
+        assert sel.value == ref
 
     def test_default_prepended_when_not_in_opts(self) -> None:
         """A configured-but-uninstalled default is prepended with a clear label."""
@@ -2655,44 +2703,27 @@ class TestSyncSelectPrepend:
 
         sel = mock.MagicMock()
         sel.value = _DISABLED
-        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
-        _sync_select(sel, opts, default="llama3:8b")
+        opts = [ModelOption("Qwen3 8B", "ollama/qwen3:8b")]
+        missing = "ollama/llama3:8b"
+        _sync_select(sel, opts, default=missing)
         assert sel.set_options.call_count == 1
         passed = sel.set_options.call_args_list[0][0][0]
-        # Label should surface the uninstalled state, ref stays the same.
-        assert passed[0].ref == "llama3:8b"
+        assert passed[0].ref == missing
         assert "not installed" in passed[0].label
-        assert sel.value == "llama3:8b"
+        assert sel.value == missing
 
-    def test_bare_name_matches_latest_alias(self) -> None:
-        """A bare name like 'qwen3' normalizes to 'qwen3:latest' and matches the option."""
+    def test_unparseable_default_passes_through_unchanged(self) -> None:
+        """An unparseable default is used as-is so the picker stays usable;
+        the cfg validator is the proper place for the error to surface."""
         from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
 
         sel = mock.MagicMock()
-        sel.value = "qwen3"
-        opts = [
-            ModelOption("Qwen3 0.6B", "qwen3:0.6b"),
-            ModelOption("Qwen3", "qwen3:latest"),
-        ]
+        opts = [ModelOption("Qwen3 0.6B", "ollama/qwen3:0.6b")]
         _sync_select(sel, opts, default="qwen3")
-        # Should resolve to qwen3:latest, not create a broken fallback
-        assert sel.value == "qwen3:latest"
+        # Raw string passes through. Not normalised, not rejected.
+        assert sel.value == "qwen3"
         passed = sel.set_options.call_args_list[0][0][0]
-        # No fallback prepended since qwen3:latest is already in opts
-        assert len(passed) == 2
-        assert all(o.ref != "qwen3" for o in passed)
-
-    def test_bare_name_prepended_when_no_latest_alias(self) -> None:
-        """A bare name with no :latest match still prepends as fallback with the tag."""
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
-
-        sel = mock.MagicMock()
-        opts = [ModelOption("Qwen3 0.6B", "qwen3:0.6b")]
-        _sync_select(sel, opts, default="llama3")
-        # Should normalize to llama3:latest and prepend with an explicit label
-        assert sel.value == "llama3:latest"
-        passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0].ref == "llama3:latest"
+        assert passed[0].ref == "qwen3"
         assert "not installed" in passed[0].label
 
     def test_no_default_leaves_value_untouched(self) -> None:
@@ -2701,10 +2732,9 @@ class TestSyncSelectPrepend:
 
         sel = mock.MagicMock()
         sel.value = _DISABLED
-        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        opts = [ModelOption("Qwen3 8B", "ollama/qwen3:8b")]
         _sync_select(sel, opts)
         assert sel.set_options.call_count == 1
-        # value should not have been reassigned beyond the mock default
         assert sel.value == _DISABLED
 
     async def test_not_installed_label_renders_in_collapsed_select(self) -> None:
@@ -2863,6 +2893,34 @@ class TestCollectNativeModelsError:
         assert len(buckets["chat"]) == 1
         assert buckets["chat"][0].label == "gpt-4o (OpenAI)"
         assert buckets["chat"][0].ref == "openai/gpt-4o"
+
+    def test_collect_remote_models_skipped_when_litellm_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the SDK extra the picker can't route to remote models, so skip discovery."""
+        from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
+
+        monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
+        buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
+        seen: set[str] = set()
+        with mock.patch("lilbee.model_manager.classify_remote_models") as classify:
+            _collect_remote_models(buckets, seen)
+        classify.assert_not_called()
+        assert buckets["chat"] == []
+
+    def test_collect_api_models_skipped_when_litellm_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """API discovery is gated on the same SDK availability."""
+        from lilbee.cli.tui.widgets.model_bar import _collect_api_models
+
+        monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
+        buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
+        seen: set[str] = set()
+        with mock.patch("lilbee.model_manager.discover_api_models") as discover:
+            _collect_api_models(buckets, seen)
+        discover.assert_not_called()
+        assert buckets["chat"] == []
 
     def test_collect_api_models_exception_suppressed(self) -> None:
         import lilbee.model_manager as mm
@@ -3413,30 +3471,38 @@ class TestModelBarPopulateBranches:
         """When scanned models match config, values are preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model:7b"
-        cfg.embedding_model = "test-embed:v1"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
+            other_chat = "ollama/other:latest"
+            other_embed = "ollama/other-embed:latest"
             bar._populate(
-                [ModelOption("test-model:7b", "test-model:7b"), ModelOption("other", "other")],
-                [ModelOption("test-embed:v1", "test-embed:v1"), ModelOption("nomic", "nomic")],
+                [
+                    ModelOption("Test Model", TEST_LOCAL_REF),
+                    ModelOption("other", other_chat),
+                ],
+                [
+                    ModelOption("Test Embed", TEST_EMBED_REF),
+                    ModelOption("other-embed", other_embed),
+                ],
             )
             await pilot.pause()
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
             embed_sel = app.query_one("#embed-model-select", Select)
-            assert chat_sel.value == "test-model:7b"
-            assert embed_sel.value == "test-embed:v1"
+            assert chat_sel.value == TEST_LOCAL_REF
+            assert embed_sel.value == TEST_EMBED_REF
 
     async def test_populate_empty_lists_uses_config_default(self) -> None:
         """When no models found, configured default from cfg is used."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3446,15 +3512,14 @@ class TestModelBarPopulateBranches:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            # Bare name normalizes to name:latest via ensure_tag
-            assert chat_sel.value == "test-model:latest"
+            assert chat_sel.value == TEST_LOCAL_REF
 
     async def test_populate_retains_matching_value(self) -> None:
         """When current value matches a scanned model, it's preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic:latest"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3465,12 +3530,15 @@ class TestModelBarPopulateBranches:
             embed_sel = app.query_one("#embed-model-select", Select)
 
             bar._populate(
-                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
-                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [
+                    ModelOption("Test Model", TEST_LOCAL_REF),
+                    ModelOption("Llama 7B", "ollama/llama3:8b"),
+                ],
+                [ModelOption("Test Embed", TEST_EMBED_REF)],
             )
             await pilot.pause()
-            assert chat_sel.value == "qwen3:8b"
-            assert embed_sel.value == "nomic:latest"
+            assert chat_sel.value == TEST_LOCAL_REF
+            assert embed_sel.value == TEST_EMBED_REF
 
     async def test_populate_blank_value_uses_config_default(self) -> None:
         """When Select has no value, falls back to configured default from cfg.
@@ -3479,8 +3547,8 @@ class TestModelBarPopulateBranches:
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3502,7 +3570,6 @@ class TestModelBarPopulateBranches:
                         orig(opts)
                         cc[0] += 1
                         if cc[0] == 1:
-                            # Bypass validation to force NULL value
                             s._reactive_value = Select.NULL  # type: ignore[attr-defined]
 
                     return patched
@@ -3510,20 +3577,19 @@ class TestModelBarPopulateBranches:
                 sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]
 
             bar._populate(
-                [ModelOption("Qwen3 8B", "qwen3:8b")],
-                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("Test Model", TEST_LOCAL_REF)],
+                [ModelOption("Test Embed", TEST_EMBED_REF)],
             )
             await pilot.pause()
-            # Falls back to cfg values, normalized with :latest via ensure_tag
-            assert chat_sel.value == "test-model:latest"
-            assert embed_sel.value == "test-embed:latest"
+            assert chat_sel.value == TEST_LOCAL_REF
+            assert embed_sel.value == TEST_EMBED_REF
 
     async def test_refresh_models(self) -> None:
         """Cover line 267: refresh_models calls _scan_models."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3537,8 +3603,8 @@ class TestModelBarPopulateBranches:
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3555,8 +3621,8 @@ class TestModelBarPopulateBranches:
         """Reset services directly when not on a chat screen."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3583,8 +3649,12 @@ class TestModelBarCfgSourceOfTruth:
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "mistral:latest"
-        cfg.embedding_model = "nomic:latest"
+        chat_a = "ollama/qwen3:8b"
+        chat_b = "ollama/smollm2:latest"
+        embed_a = "ollama/nomic:latest"
+
+        cfg.chat_model = chat_a
+        cfg.embedding_model = embed_a
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3592,26 +3662,19 @@ class TestModelBarCfgSourceOfTruth:
             chat_sel = app.query_one("#chat-model-select", Select)
 
             bar._populate(
-                [
-                    ModelOption("mistral:latest", "mistral:latest"),
-                    ModelOption("smollm2:135m", "smollm2:135m"),
-                ],
-                [ModelOption("nomic:latest", "nomic:latest")],
+                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
+                [ModelOption(embed_a, embed_a)],
             )
             await pilot.pause()
-            assert chat_sel.value == "mistral:latest"
+            assert chat_sel.value == chat_a
 
-            cfg.chat_model = "smollm2:135m"
-
+            cfg.chat_model = chat_b
             bar._populate(
-                [
-                    ModelOption("mistral:latest", "mistral:latest"),
-                    ModelOption("smollm2:135m", "smollm2:135m"),
-                ],
-                [ModelOption("nomic:latest", "nomic:latest")],
+                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
+                [ModelOption(embed_a, embed_a)],
             )
             await pilot.pause()
-            assert chat_sel.value == "smollm2:135m"
+            assert chat_sel.value == chat_b
 
     async def test_refresh_follows_cfg_embedding_model_change(self) -> None:
         """Embedding dropdown also snaps to cfg on refresh."""
@@ -3619,8 +3682,12 @@ class TestModelBarCfgSourceOfTruth:
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic:latest"
+        chat_a = "ollama/qwen3:8b"
+        embed_a = "ollama/nomic:latest"
+        embed_b = "ollama/bge-small:latest"
+
+        cfg.chat_model = chat_a
+        cfg.embedding_model = embed_a
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3628,25 +3695,19 @@ class TestModelBarCfgSourceOfTruth:
             embed_sel = app.query_one("#embed-model-select", Select)
 
             bar._populate(
-                [ModelOption("qwen3:8b", "qwen3:8b")],
-                [
-                    ModelOption("nomic:latest", "nomic:latest"),
-                    ModelOption("bge-small:latest", "bge-small:latest"),
-                ],
+                [ModelOption(chat_a, chat_a)],
+                [ModelOption(embed_a, embed_a), ModelOption(embed_b, embed_b)],
             )
             await pilot.pause()
-            assert embed_sel.value == "nomic:latest"
+            assert embed_sel.value == embed_a
 
-            cfg.embedding_model = "bge-small:latest"
+            cfg.embedding_model = embed_b
             bar._populate(
-                [ModelOption("qwen3:8b", "qwen3:8b")],
-                [
-                    ModelOption("nomic:latest", "nomic:latest"),
-                    ModelOption("bge-small:latest", "bge-small:latest"),
-                ],
+                [ModelOption(chat_a, chat_a)],
+                [ModelOption(embed_a, embed_a), ModelOption(embed_b, embed_b)],
             )
             await pilot.pause()
-            assert embed_sel.value == "bge-small:latest"
+            assert embed_sel.value == embed_b
 
     async def test_manual_user_pick_writes_cfg_and_survives_refresh(self) -> None:
         """A real user pick flows through Select.Changed -> cfg, so refresh keeps it."""
@@ -3654,8 +3715,12 @@ class TestModelBarCfgSourceOfTruth:
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "mistral:latest"
-        cfg.embedding_model = "nomic:latest"
+        chat_a = "ollama/qwen3:8b"
+        chat_b = "ollama/smollm2:latest"
+        embed_a = "ollama/nomic:latest"
+
+        cfg.chat_model = chat_a
+        cfg.embedding_model = embed_a
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3663,33 +3728,27 @@ class TestModelBarCfgSourceOfTruth:
             chat_sel = app.query_one("#chat-model-select", Select)
 
             bar._populate(
-                [
-                    ModelOption("mistral:latest", "mistral:latest"),
-                    ModelOption("smollm2:135m", "smollm2:135m"),
-                ],
-                [ModelOption("nomic:latest", "nomic:latest")],
+                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
+                [ModelOption(embed_a, embed_a)],
             )
             await pilot.pause()
-            assert chat_sel.value == "mistral:latest"
+            assert chat_sel.value == chat_a
 
             with (
                 mock.patch("lilbee.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
-                chat_sel.value = "smollm2:135m"
+                chat_sel.value = chat_b
                 await pilot.pause()
 
-            assert cfg.chat_model == "smollm2:135m"
+            assert cfg.chat_model == chat_b
 
             bar._populate(
-                [
-                    ModelOption("mistral:latest", "mistral:latest"),
-                    ModelOption("smollm2:135m", "smollm2:135m"),
-                ],
-                [ModelOption("nomic:latest", "nomic:latest")],
+                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
+                [ModelOption(embed_a, embed_a)],
             )
             await pilot.pause()
-            assert chat_sel.value == "smollm2:135m"
+            assert chat_sel.value == chat_b
 
     async def test_chat_changed_ignores_null_event(self) -> None:
         """A Select.Changed event with NULL value is ignored (no cfg write)."""
@@ -3697,8 +3756,8 @@ class TestModelBarCfgSourceOfTruth:
 
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelBar
 
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic:latest"
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3712,7 +3771,7 @@ class TestModelBarCfgSourceOfTruth:
             bar._on_chat_model_changed(null_event)
 
             # cfg must not have been mutated (still the original value).
-            assert cfg.chat_model == "qwen3:8b"
+            assert cfg.chat_model == TEST_LOCAL_REF
 
     async def test_first_populate_respects_cfg_over_scanner_order(self) -> None:
         """First populate must honor cfg even when scanner lists other models first."""
@@ -3720,8 +3779,13 @@ class TestModelBarCfgSourceOfTruth:
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "smollm2:135m"
-        cfg.embedding_model = "nomic:latest"
+        chat_a = "ollama/mistral:latest"
+        chat_target = "ollama/smollm2:latest"
+        chat_c = "ollama/llama3:8b"
+        embed_a = "ollama/nomic:latest"
+
+        cfg.chat_model = chat_target
+        cfg.embedding_model = embed_a
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3730,14 +3794,14 @@ class TestModelBarCfgSourceOfTruth:
 
             bar._populate(
                 [
-                    ModelOption("mistral:latest", "mistral:latest"),
-                    ModelOption("smollm2:135m", "smollm2:135m"),
-                    ModelOption("llama3:8b", "llama3:8b"),
+                    ModelOption(chat_a, chat_a),
+                    ModelOption(chat_target, chat_target),
+                    ModelOption(chat_c, chat_c),
                 ],
-                [ModelOption("nomic:latest", "nomic:latest")],
+                [ModelOption(embed_a, embed_a)],
             )
             await pilot.pause()
-            assert chat_sel.value == "smollm2:135m"
+            assert chat_sel.value == chat_target
 
 
 class TestConfirmDialog:

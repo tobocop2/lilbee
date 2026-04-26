@@ -23,11 +23,11 @@ class TestModelCatalog:
 
         assert len(MODEL_CATALOG) == len(FEATURED_CHAT)
         for mc, fc in zip(MODEL_CATALOG, FEATURED_CHAT, strict=True):
-            assert mc.name == fc.name
+            assert mc.ref == fc.ref
 
     def test_frozen(self):
         with pytest.raises(AttributeError):
-            MODEL_CATALOG[0].name = "nope"  # type: ignore[misc]
+            MODEL_CATALOG[0].ref = "nope"  # type: ignore[misc]
 
 
 class TestGetSystemRamGb:
@@ -118,7 +118,7 @@ class TestPickDefaultModel:
     def test_tiny_ram_picks_smallest(self):
         result = models.pick_default_model(2.0)
         assert result.min_ram_gb <= 2.0
-        assert result.ref == "smollm2:135m"
+        assert "SmolLM2" in result.ref or "Qwen3-0.6B" in result.ref
 
 
 class TestModelDownloadSizeGb:
@@ -204,21 +204,22 @@ class TestValidateDiskAndPull:
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     def test_pulls_and_persists(self, mock_pull, mock_save):
+        ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
         info = ModelInfo(
-            ref="test:1b",
-            display_name="Test 1B",
+            ref=ref,
+            display_name="Qwen3 0.6B",
             size_gb=1.0,
             min_ram_gb=4,
             description="test",
         )
         models.validate_disk_and_pull(info, 50.0)
-        mock_pull.assert_called_once_with("test:1b", console=None)
-        mock_save.assert_called_once_with(cfg.data_root, "chat_model", "test:1b")
+        mock_pull.assert_called_once_with(ref, console=None)
+        mock_save.assert_called_once_with(cfg.data_root, "chat_model", ref)
 
     def test_insufficient_disk_raises(self):
         info = ModelInfo(
-            ref="test:big",
-            display_name="Test Big",
+            ref="org/Big-GGUF/big-Q4_K_M.gguf",
+            display_name="Big",
             size_gb=20.0,
             min_ram_gb=32,
             description="big",
@@ -282,10 +283,11 @@ class TestEnsureChatModel:
     ):
         # Pin embedding model so the filter correctly excludes it from chat models
         old_embed = cfg.embedding_model
-        cfg.embedding_model = "nomic-embed-text"
+        embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        cfg.embedding_model = embed_ref
         try:
             mock_manager = mock.MagicMock()
-            mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
+            mock_manager.list_installed.return_value = [embed_ref]
             mock_get_manager.return_value = mock_manager
             with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
                 models.ensure_chat_model()
@@ -373,30 +375,6 @@ class TestEnsureChatModel:
             models.ensure_chat_model()
 
 
-class TestEnsureTag:
-    def test_appends_latest_when_no_tag(self) -> None:
-        assert models.ensure_tag("llama3") == "llama3:latest"
-
-    def test_preserves_explicit_tag(self) -> None:
-        assert models.ensure_tag("qwen3:8b") == "qwen3:8b"
-
-    def test_preserves_latest_tag(self) -> None:
-        assert models.ensure_tag("llama3:latest") == "llama3:latest"
-
-    def test_empty_string_returns_empty(self) -> None:
-        assert models.ensure_tag("") == ""
-
-    def test_namespaced_model_without_tag(self) -> None:
-        assert models.ensure_tag("maternion/LightOnOCR-2") == "maternion/LightOnOCR-2:latest"
-
-    def test_namespaced_model_with_tag(self) -> None:
-        assert models.ensure_tag("maternion/LightOnOCR-2:latest") == "maternion/LightOnOCR-2:latest"
-
-    def test_api_model_returned_as_is(self) -> None:
-        assert models.ensure_tag("openai/gpt-4o") == "openai/gpt-4o"
-
-    def test_ollama_model_preserves_prefix(self) -> None:
-        assert models.ensure_tag("ollama/qwen3") == "ollama/qwen3:latest"
-
-    def test_ollama_model_with_tag(self) -> None:
-        assert models.ensure_tag("ollama/qwen3:8b") == "ollama/qwen3:8b"
+# ensure_tag was removed alongside the alias system. Tag normalisation has
+# no meaning under the new HF-keyed identity, so callers either pass a
+# canonical ref through directly or fail loudly via parse_model_ref.

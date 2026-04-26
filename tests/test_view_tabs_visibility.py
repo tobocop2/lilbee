@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config import cfg
@@ -19,8 +20,8 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir = tmp_path / "documents"
     cfg.models_dir = tmp_path / "models"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.chat_model = "test-chat-model.gguf"
-    cfg.embedding_model = "test-embed-model"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     cfg.subprocess_embed = False
     cfg.wiki = True
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +120,7 @@ async def test_view_tabs_no_stale_pill_after_navigation() -> None:
     model pill or stale tab content in the new screen's ViewTabs."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
-    cfg.chat_model = "qwen3:8b"
+    cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -132,12 +133,11 @@ async def test_view_tabs_no_stale_pill_after_navigation() -> None:
             await pilot.pause()
 
         # Back on chat: ModelBar shows the model, ViewTabs pill must be hidden,
-        # and no stale "qwen3:8b" string should leak into the tab strip from a
-        # prior screen's render.
+        # and no stale ref should leak into the tab strip from a prior screen.
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
         text = str(tabs.query_one("#view-tabs-content").render())
-        assert "qwen3:8b" not in text
+        assert TEST_LOCAL_REF not in text
         assert "Chat" in text  # active-view highlight present
 
 

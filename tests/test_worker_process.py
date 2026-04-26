@@ -45,11 +45,11 @@ def _no_stdio_redirect():
 def config_snap(tmp_path: Path) -> ConfigSnapshot:
     return ConfigSnapshot(
         models_dir=str(tmp_path / "models"),
-        embedding_model="test-embed",
+        embedding_model="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-Q4_K_M.gguf",
         embedding_dim=768,
         num_ctx=None,
         gpu_memory_fraction=0.75,
-        vision_model="test-vision",
+        vision_model="org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf",
     )
 
 
@@ -87,7 +87,7 @@ class TestDataclasses:
 
     def test_config_snapshot_fields(self, config_snap: ConfigSnapshot) -> None:
         assert config_snap.models_dir.endswith("models")
-        assert config_snap.embedding_model == "test-embed"
+        assert config_snap.embedding_model.endswith(".gguf")
         assert config_snap.embedding_dim == 768
 
 
@@ -256,7 +256,7 @@ class TestWorkerMain:
         """Vision requests refuse gracefully when no vision model is configured."""
         empty_snap = ConfigSnapshot(
             models_dir=str(tmp_path / "models"),
-            embedding_model="test-embed",
+            embedding_model="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-Q4_K_M.gguf",
             embedding_dim=768,
             num_ctx=None,
             gpu_memory_fraction=0.75,

@@ -54,6 +54,21 @@ def litellm_available() -> bool:
     return True
 
 
+_LITELLM_MISSING_MSG = (
+    "Remote and API models need the lilbee[litellm] extra. "
+    "Reinstall with: uv tool install --prerelease=allow 'lilbee[litellm]'"
+)
+
+
+def _require_litellm() -> Any:
+    """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
+    try:
+        import litellm
+    except ImportError as exc:
+        raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
+    return litellm
+
+
 def _cache_ollama_defaults(model: str, params_text: str) -> None:
     """Parse Ollama parameters and store in the model defaults cache."""
     from lilbee.model_defaults import parse_kv_parameters, set_defaults
@@ -127,8 +142,7 @@ class LitellmSdkBackend:
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
         """Run a single-shot completion through ``litellm.completion``."""
-        import litellm
-
+        litellm = _require_litellm()
         kwargs = self._completion_kwargs(request, stream=False)
         try:
             response = litellm.completion(**kwargs)
@@ -146,8 +160,7 @@ class LitellmSdkBackend:
 
     def complete_stream(self, request: CompletionRequest) -> Iterator[StreamChunk]:
         """Stream a completion through ``litellm.completion(stream=True)``."""
-        import litellm
-
+        litellm = _require_litellm()
         kwargs = self._completion_kwargs(request, stream=True)
         try:
             response = litellm.completion(**kwargs)
@@ -196,8 +209,7 @@ class LitellmSdkBackend:
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         """Embed inputs through ``litellm.embedding``."""
-        import litellm
-
+        litellm = _require_litellm()
         kwargs: dict[str, Any] = {
             "model": _route_model(request.ref, request.api_base),
             "input": request.inputs,
@@ -227,8 +239,7 @@ class LitellmSdkBackend:
         """
         if not request.candidates:
             return RerankResult(scores=[])
-        import litellm
-
+        litellm = _require_litellm()
         kwargs: dict[str, Any] = {
             "model": _route_model(request.ref, request.api_base),
             "query": request.query,
@@ -350,10 +361,13 @@ class LitellmSdkBackend:
         (newer Ollama versions) so callers can check for vision support.
         """
         clean_base = base_url.rstrip("/")
+        # Ollama's API uses bare model names; the routing-layer prefix has
+        # to come off before the request goes out.
+        ollama_name = model[len(OLLAMA_PREFIX) :] if model.startswith(OLLAMA_PREFIX) else model
         try:
             resp = httpx.post(
                 f"{clean_base}/api/show",
-                json={"name": model},
+                json={"name": ollama_name},
                 timeout=DEFAULT_HTTP_TIMEOUT,
             )
             resp.raise_for_status()

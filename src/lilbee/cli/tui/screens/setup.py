@@ -53,11 +53,10 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         chat: list[str] = []
         embed: list[str] = []
         for m in registry.list_installed():
-            name = f"{m.name}:{m.tag}"
             if m.task == ModelTask.EMBEDDING:
-                embed.append(name)
+                embed.append(m.ref)
             elif m.task == ModelTask.CHAT:
-                chat.append(name)
+                chat.append(m.ref)
         return sorted(chat), sorted(embed)
     except Exception:
         return [], []

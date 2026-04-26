@@ -1005,12 +1005,12 @@ class TestEmbeddingModelGate:
 
         store.add_chunks(_make_records())
         original_model = test_config.embedding_model
-        test_config.embedding_model = "different-model:v1"
+        test_config.embedding_model = "ollama/different-model:v1"
 
         with pytest.raises(EmbeddingModelMismatchError) as exc_info:
             store.add_chunks(_make_records())
         assert original_model in str(exc_info.value)
-        assert "different-model:v1" in str(exc_info.value)
+        assert "ollama/different-model:v1" in str(exc_info.value)
         assert "lilbee rebuild" in str(exc_info.value)
         assert "force_rebuild" in str(exc_info.value)
 
@@ -1019,7 +1019,7 @@ class TestEmbeddingModelGate:
         from lilbee.store import EmbeddingModelMismatchError
 
         store.add_chunks(_make_records())
-        test_config.embedding_model = "switched-model:latest"
+        test_config.embedding_model = "ollama/switched-model:latest"
 
         with pytest.raises(EmbeddingModelMismatchError):
             store.search([0.1] * test_config.embedding_dim)
@@ -1030,7 +1030,7 @@ class TestEmbeddingModelGate:
 
         store.add_chunks(_make_records())
         test_config.embedding_dim = test_config.embedding_dim + 16
-        test_config.embedding_model = "wider-model:v1"
+        test_config.embedding_model = "ollama/wider-model:v1"
 
         with pytest.raises(EmbeddingModelMismatchError):
             store.search([0.1] * test_config.embedding_dim)

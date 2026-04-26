@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Static
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.catalog import (
     FEATURED_EMBEDDING,
     CatalogModel,
@@ -53,8 +54,8 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.lancedb_dir = tmp_path / "lancedb"
-    cfg.chat_model = "test-model:latest"
-    cfg.embedding_model = "test-embed:latest"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     cfg.chunk_size = 512
     # Simulate "already-initialized" state so ChatScreen._needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
@@ -103,22 +104,28 @@ def _patch_chat_setup():
 
 
 def _make_catalog_model(
-    name: str = "test",
-    tag: str = "7b",
-    display_name: str = "Test 7B",
-    hf_repo: str = "org/test-7B-GGUF",
+    name: str | None = None,
+    hf_repo: str | None = None,
     task: str = "chat",
     featured: bool = False,
     downloads: int = 1000,
     size_gb: float = 4.0,
     description: str = "A test model",
+    gguf_filename: str = "test.gguf",
+    **_legacy: object,
 ) -> CatalogModel:
+    """Test factory tolerant of pre-refactor keyword args.
+
+    The old shape took ``name=``/``tag=``/``display_name=``; tests still
+    pass them. We map ``name`` into a synthetic ``hf_repo`` so call sites
+    don't all have to change in a single pass.
+    """
+    if hf_repo is None:
+        slug = (name or "test-7B").replace(" ", "-")
+        hf_repo = f"org/{slug}-GGUF"
     return CatalogModel(
-        name=name,
-        tag=tag,
-        display_name=display_name,
         hf_repo=hf_repo,
-        gguf_filename="test.gguf",
+        gguf_filename=gguf_filename,
         size_gb=size_gb,
         min_ram_gb=8.0,
         description=description,
@@ -178,7 +185,6 @@ class TestVariantToRowDedup:
             hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
             filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
             param_count="v1.5",
-            tag="v1.5",
             quant="Q4_K_M",
             size_mb=300,
             recommended=True,
@@ -200,7 +206,6 @@ class TestVariantToRowDedup:
             hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
             filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
             param_count="v1.5",
-            tag="v1.5",
             quant="Q4_K_M",
             size_mb=300,
             recommended=True,
@@ -222,7 +227,6 @@ class TestVariantToRowDedup:
             hf_repo="org/qwen3-0.6b-GGUF",
             filename="qwen3-0.6b.Q4_K_M.gguf",
             param_count="0.6B",
-            tag="0.6b",
             quant="Q4_K_M",
             size_mb=400,
             recommended=False,
@@ -364,7 +368,6 @@ class TestBackendField:
             hf_repo="org/qwen3-0.6b-GGUF",
             filename="qwen3-0.6b.Q4_K_M.gguf",
             param_count="0.6B",
-            tag="0.6b",
             quant="Q4_K_M",
             size_mb=400,
             recommended=False,
@@ -396,7 +399,9 @@ class TestBackendField:
         assert matches_search(row, "ollama") is False
 
     def test_matches_search_normalizes_hyphens_and_underscores(self):
-        model = _make_catalog_model(display_name="Deepseek R1 Distill Llama 70B")
+        # Display name is derived from clean_display_name(hf_repo): strip
+        # the org prefix and -GGUF suffix, swap hyphens for spaces.
+        model = _make_catalog_model(hf_repo="org/Deepseek-R1-Distill-Llama-70B-GGUF")
         row = catalog_to_row(model, installed=False)
         assert matches_search(row, "deepseek-r1-distill") is True
         assert matches_search(row, "deepseek_r1_distill") is True
@@ -417,9 +422,6 @@ class TestGroupRowsForGrid:
         from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
 
         model = CatalogModel(
-            name=f"{task}-model",
-            tag="v1",
-            display_name=f"{task.capitalize()} Model",
             hf_repo=f"org/{task}-model",
             gguf_filename="m.gguf",
             size_gb=1.0,
@@ -1705,7 +1707,7 @@ async def test_status_screen_arch_section(mock_svc):
 
 
 async def test_status_screen_arch_with_vision(mock_svc):
-    cfg.chat_model = "test-vision:latest"
+    cfg.chat_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         info = app.screen.query_one("#arch-info", Static)
@@ -1835,7 +1837,7 @@ def test_status_read_embed_arch_success():
 def test_status_read_vision_arch_success():
     from lilbee.model_info import ModelArchInfo, _read_vision_arch
 
-    cfg.vision_model = "test-vision:latest"
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
     with (
         patch(
@@ -1868,7 +1870,7 @@ def test_status_read_vision_arch_swallows_errors():
     """When GGUF probing fails, _read_vision_arch logs and leaves info unchanged."""
     from lilbee.model_info import ModelArchInfo, _read_vision_arch
 
-    cfg.vision_model = "test-vision:latest"
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
     with patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -1908,7 +1910,7 @@ async def test_app_title_has_model():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        assert "test-model:latest" in app.title
+        assert TEST_LOCAL_REF in app.title
 
 
 async def test_app_cycle_theme():
@@ -2086,11 +2088,12 @@ async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.settings.set_value"):
-            app.screen._handle_slash("/model new-model:latest")
+            new_ref = "ollama/new-model:latest"
+            app.screen._handle_slash(f"/model {new_ref}")
             await _pilot.pause()
             for worker in list(app.screen.workers):
                 await worker.wait()
-            assert cfg.chat_model == "new-model:latest"
+            assert cfg.chat_model == new_ref
 
 
 async def test_chat_slash_model_no_arg():
@@ -2330,7 +2333,7 @@ async def test_chat_slash_set_readonly_key():
             app.screen._cmd_set("chat_model some-model:latest")
             mock_notify.assert_called_once()
             assert "read-only" in mock_notify.call_args[0][0]
-        assert cfg.chat_model == "test-model:latest"
+        assert cfg.chat_model == TEST_LOCAL_REF
 
 
 async def test_chat_slash_add_empty_args():
@@ -2862,9 +2865,9 @@ async def test_command_provider_set_model():
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         with patch("lilbee.settings.set_value"):
-            provider._set_model("chat_model", "new-model:latest")
-            assert cfg.chat_model == "new-model:latest"
-            assert "new-model:latest" in app.title
+            provider._set_model("chat_model", "ollama/new-model:latest")
+            assert cfg.chat_model == "ollama/new-model:latest"
+            assert "ollama/new-model:latest" in app.title
 
 
 async def test_command_provider_open_wiki_action():
@@ -3238,10 +3241,10 @@ async def test_catalog_select_remote_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            om = _make_remote_model(name="remote-chat:latest")
+            om = _make_remote_model(name="ollama/remote-chat:latest")
             row = remote_to_row(om)
             screen._select_row(row)
-            assert cfg.chat_model == "remote-chat:latest"
+            assert cfg.chat_model == "ollama/remote-chat:latest"
 
 
 async def test_catalog_select_ollama_remote_row_stores_prefix():
@@ -4213,7 +4216,7 @@ def test_check_embedding_model_remote_available():
         patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
         patch(
             "lilbee.model_manager.detect_remote_embedding_models",
-            return_value=["test-embed"],
+            return_value=[cfg.embedding_model],
         ),
     ):
         from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
@@ -4221,9 +4224,8 @@ def test_check_embedding_model_remote_available():
         manager = get_model_manager()
         assert not manager.is_installed(cfg.embedding_model)
 
-        embed_base = cfg.embedding_model.split(":")[0]
         remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
-        assert any(embed_base in name for name in remote_embeds)
+        assert cfg.embedding_model in remote_embeds
 
 
 def test_check_embedding_model_not_found():
@@ -4239,10 +4241,8 @@ def test_check_embedding_model_not_found():
         manager = get_model_manager()
         assert not manager.is_installed(cfg.embedding_model)
 
-        embed_base = cfg.embedding_model.split(":")[0]
         remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
-        assert not any(embed_base in name for name in remote_embeds)
-        # Would call self.app.call_from_thread(self._show_setup_modal, remote_embeds)
+        assert cfg.embedding_model not in remote_embeds
 
 
 async def test_chat_slash_crawl_unavailable():
@@ -4776,8 +4776,8 @@ async def test_chat_normal_mode_dims_input():
 
 async def test_chat_escape_key_enters_normal_mode():
     """Escape key enters normal mode and focuses chat log."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.containers import VerticalScroll
@@ -4798,8 +4798,8 @@ async def test_chat_history_next_skips_in_normal_mode():
     """action_history_next raises SkipAction in normal mode."""
     from textual.actions import SkipAction
 
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -4812,8 +4812,8 @@ async def test_chat_history_prev_skips_in_normal_mode():
     """action_history_prev raises SkipAction in normal mode."""
     from textual.actions import SkipAction
 
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -4824,8 +4824,8 @@ async def test_chat_history_prev_skips_in_normal_mode():
 
 async def test_chat_enter_key_returns_to_insert_mode():
     """Enter key returns to insert mode from normal mode."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
@@ -4843,8 +4843,8 @@ async def test_chat_enter_key_returns_to_insert_mode():
 
 async def test_app_nav_prev_cycles_views():
     """App-level h/left binding cycles to previous view."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     cfg.wiki = True  # Keep Wiki in the nav cycle for this test.
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -4864,8 +4864,8 @@ async def test_app_nav_prev_cycles_views():
 
 async def test_app_nav_next_cycles_views():
     """App-level l/right binding cycles to next view."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -4884,8 +4884,8 @@ async def test_app_nav_next_cycles_views():
 
 async def test_app_nav_switches_all_views():
     """Nav prev/next cycles through all 5 views including Tasks."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -5149,8 +5149,8 @@ async def test_app_switch_to_tasks():
 
 async def test_chat_mode_indicator_shows_normal():
     """ViewTabs shows NORMAL when entering normal mode."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
@@ -5164,8 +5164,8 @@ async def test_chat_mode_indicator_shows_normal():
 
 async def test_chat_mode_indicator_shows_insert():
     """ViewTabs shows INSERT when returning to insert mode."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
@@ -5183,8 +5183,8 @@ async def test_chat_up_down_skip_in_normal_mode():
     """Up/down arrow keys raise SkipAction in normal mode (no focus cycling)."""
     from textual.actions import SkipAction
 
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -5197,8 +5197,8 @@ async def test_chat_up_down_skip_in_normal_mode():
 
 async def test_chat_vim_scroll_in_normal_mode():
     """j/k scroll the chat log in normal mode."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -5210,8 +5210,8 @@ async def test_chat_vim_scroll_in_normal_mode():
 
 async def test_chat_up_arrow_insert_mode_recalls_history():
     """Up arrow in insert mode still recalls input history."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
@@ -5289,8 +5289,8 @@ async def test_chat_status_line_empty_model():
 
 async def test_chat_screen_has_status_line():
     """ChatScreen compose includes a ChatStatusLine widget."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -5302,8 +5302,8 @@ async def test_chat_screen_has_status_line():
 
 async def test_chat_screen_has_prompt_area():
     """ChatScreen compose wraps input in a PromptArea container."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -5315,15 +5315,15 @@ async def test_chat_screen_has_prompt_area():
 
 async def test_chat_refresh_status_line():
     """_refresh_status_line sets the model name on the status widget."""
-    cfg.chat_model = "my-model"
-    cfg.embedding_model = "test-embed"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         from lilbee.cli.tui.screens.chat import ChatStatusLine
 
         status = app.screen.query_one("#chat-status-line", ChatStatusLine)
-        assert status.model_name == "my-model:latest"
+        assert status.model_name == TEST_LOCAL_REF
 
 
 async def test_settings_group_titles_present():
@@ -6637,20 +6637,16 @@ def test_scan_installed_models_returns_sorted_lists():
     """_scan_installed_models splits chat/embed from registry."""
     from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-    mock_model_chat = MagicMock(name="qwen3", tag="8b", task="chat")
-    mock_model_chat.name = "qwen3"
-    mock_model_chat.tag = "8b"
-    mock_model_chat.task = "chat"
-    mock_model_embed = MagicMock(name="nomic", tag="latest", task="embedding")
-    mock_model_embed.name = "nomic"
-    mock_model_embed.tag = "latest"
-    mock_model_embed.task = "embedding"
+    chat_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+    embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    mock_model_chat = MagicMock(ref=chat_ref, task="chat")
+    mock_model_embed = MagicMock(ref=embed_ref, task="embedding")
     mock_registry = MagicMock()
     mock_registry.list_installed.return_value = [mock_model_chat, mock_model_embed]
     with patch("lilbee.registry.ModelRegistry", return_value=mock_registry):
         chat, embed = _scan_installed_models()
-    assert "qwen3:8b" in chat
-    assert "nomic:latest" in embed
+    assert chat_ref in chat
+    assert embed_ref in embed
 
 
 def test_scan_installed_models_exception_returns_empty():
@@ -6723,7 +6719,7 @@ def test_pick_recommended_always_nomic_embed():
     from lilbee.cli.tui.screens.setup import _pick_recommended
 
     _, embed = _pick_recommended(4.0)
-    assert embed.name == FEATURED_EMBEDDING[0].name
+    assert embed.hf_repo == FEATURED_EMBEDDING[0].hf_repo
 
 
 def test_scan_installed_models_empty():
@@ -7168,7 +7164,6 @@ async def test_catalog_select_variant_row():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
-                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
@@ -7201,7 +7196,6 @@ async def test_catalog_install_variant_creates_catalog_model():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
-                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
@@ -7279,7 +7273,6 @@ async def test_catalog_get_highlighted_variant_name():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
-                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
@@ -7305,7 +7298,7 @@ async def test_catalog_get_highlighted_variant_name():
             items[0].focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
-            assert name == "testmodel:8b"
+            assert name == "org/model-GGUF"
 
 
 async def test_catalog_get_highlighted_remote_name():
@@ -7346,7 +7339,7 @@ async def test_catalog_get_highlighted_catalog_name():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            m = _make_catalog_model(name="hf-model")
+            m = _make_catalog_model(hf_repo="org/hf-model-GGUF")
             row = catalog_to_row(m, installed=False)
             screen._rows = [row]
             screen._grid_view = False
@@ -7359,7 +7352,7 @@ async def test_catalog_get_highlighted_catalog_name():
             items[0].focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
-            assert name == "hf-model:7b"
+            assert name == "org/hf-model-GGUF"
 
 
 async def test_catalog_run_delete_success():
@@ -8258,8 +8251,8 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
     The mock_svc autouse fixture injects a Services singleton; we configure its
     provider.list_models to return a model that matches the embedding config.
     """
-    mock_svc.provider.list_models.return_value = ["nomic-embed-text:latest"]
-    cfg.embedding_model = "nomic-embed-text"
+    mock_svc.provider.list_models.return_value = [TEST_EMBED_REF]
+    cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -8275,7 +8268,7 @@ def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
     registry path check. If resolve_model_path succeeds, it returns True.
     """
     mock_svc.provider.list_models.side_effect = RuntimeError("no provider")
-    cfg.embedding_model = "nomic-embed-text"
+    cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -8450,7 +8443,12 @@ def test_make_editor_with_choices():
 
 
 async def test_catalog_fetch_installed_names():
-    """_fetch_installed_names populates _installed_names from registry."""
+    """_fetch_installed_names populates _installed_names from registry.
+
+    The set carries both the canonical ``hf_repo/filename`` ref and the
+    bare ``hf_repo`` so catalog rows whose ref is the repo alone still
+    light up as installed.
+    """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -8461,17 +8459,16 @@ async def test_catalog_fetch_installed_names():
             await _pilot.pause()
 
             mock_manifest = MagicMock()
-            mock_manifest.name = "test-model"
-            mock_manifest.tag = "latest"
-            mock_manifest.source_repo = "org/test-model-GGUF"
-            mock_manifest.source_filename = "test.gguf"
+            mock_manifest.hf_repo = "org/test-model-GGUF"
+            mock_manifest.gguf_filename = "test.gguf"
+            mock_manifest.ref = "org/test-model-GGUF/test.gguf"
             mock_registry = MagicMock()
             mock_registry.list_installed.return_value = [mock_manifest]
 
             with patch("lilbee.registry.ModelRegistry", return_value=mock_registry):
                 screen._fetch_installed_names()
-            assert "test-model:latest" in screen._installed_names
             assert "org/test-model-GGUF/test.gguf" in screen._installed_names
+            assert "org/test-model-GGUF" in screen._installed_names
 
 
 async def test_catalog_worker_state_unknown_worker():
@@ -8566,7 +8563,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             app.push_screen(screen)
             await _pilot.pause()
 
-            cm = _make_catalog_model(name="qwen3", tag="8b", display_name="Qwen3 8B")
+            cm = _make_catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
             row = TableRow(
                 name="Qwen3 8B",
                 task="chat",
@@ -8592,7 +8589,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             items[0].focus()
             await _pilot.pause()
             result = screen._get_highlighted_model_name()
-            assert result == "qwen3:8b"
+            assert result == "Qwen/Qwen3-8B-GGUF"
 
 
 async def test_catalog_get_highlighted_model_name_fallback_none():

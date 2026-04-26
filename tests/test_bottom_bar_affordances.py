@@ -8,12 +8,15 @@ import pytest
 from textual.app import App
 from textual.widgets import Footer
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config import cfg
+
+_ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
 
 @pytest.fixture(autouse=True)
@@ -24,8 +27,8 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir = tmp_path / "documents"
     cfg.models_dir = tmp_path / "models"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.chat_model = "qwen3:8b"
-    cfg.embedding_model = "nomic-embed-text"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -82,19 +85,19 @@ def _rendered_tab_text(tabs: ViewTabs) -> str:
 async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
     """ModelBar already shows the active chat model on chat, so the ViewTabs
     pill would just duplicate it; it must hide there."""
-    cfg.chat_model = "qwen3:8b"
+    cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert "qwen3:8b" not in text
+        assert TEST_LOCAL_REF not in text
 
 
 async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup) -> None:
     """The model pill follows the user to non-chat screens; the bug 2 fix."""
-    cfg.chat_model = "llama3:8b"
+    cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -107,13 +110,13 @@ async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup
 
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert "llama3:8b" in text
+        assert TEST_LOCAL_REF in text
 
 
 async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_setup) -> None:
     """When chat_model is updated and the signal fires, the ViewTabs pill
     on a non-chat screen re-renders to the new value."""
-    cfg.chat_model = "qwen3:8b"
+    cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -124,14 +127,14 @@ async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_set
         await pilot.pause()
 
         tabs = app.screen.query_one(ViewTabs)
-        assert "qwen3:8b" in _rendered_tab_text(tabs)
+        assert TEST_LOCAL_REF in _rendered_tab_text(tabs)
 
-        cfg.chat_model = "gemma3:1b"
-        app.settings_changed_signal.publish(("chat_model", "gemma3:1b"))
+        cfg.chat_model = _ALT_CHAT_REF
+        app.settings_changed_signal.publish(("chat_model", _ALT_CHAT_REF))
         await pilot.pause()
 
-        assert "gemma3:1b" in _rendered_tab_text(tabs)
-        assert "qwen3:8b" not in _rendered_tab_text(tabs)
+        assert _ALT_CHAT_REF in _rendered_tab_text(tabs)
+        assert TEST_LOCAL_REF not in _rendered_tab_text(tabs)
 
 
 async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -> None:
@@ -140,7 +143,7 @@ async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -
     Asserted on a non-chat screen so the pill actually renders; on chat
     the pill is hidden regardless, so a regression would slip through.
     """
-    cfg.chat_model = "qwen3:8b"
+    cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -154,7 +157,7 @@ async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -
         before = _rendered_tab_text(tabs)
 
         # Change cfg out of band but only publish an unrelated key; pill must not flip.
-        cfg.chat_model = "should-not-show"
+        cfg.chat_model = _ALT_CHAT_REF
         app.settings_changed_signal.publish(("temperature", 0.5))
         await pilot.pause()
 
