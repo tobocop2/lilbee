@@ -12,6 +12,7 @@ from lilbee import settings as _settings_module
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg
+from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -79,7 +80,7 @@ def overlay_persisted_settings(root: Path) -> None:
 
     Public so the MCP ``init`` tool can call it after switching the session
     to a project-local KB — without this, the per-project config.toml is
-    silently ignored on every entry point other than the CLI.
+    silently ignored on every entry point other than the CLI's ``--data-dir``.
 
     The set of overlayable fields is derived dynamically from Config metadata
     rather than hand-enumerated: every field that ``settings.set_value`` and
@@ -88,26 +89,21 @@ def overlay_persisted_settings(root: Path) -> None:
     skipped — cfg keeps its current (validated) value rather than crashing
     startup.
     """
-    # Local imports keep cli.app independent of server.handlers' import order
-    # (handlers.py pulls in heavy deps; this module is loaded eagerly).
-    from lilbee.server.handlers import _MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-
+    log = logging.getLogger(__name__)
     try:
         persisted = _settings_module.load(root)
     except (OSError, ValueError):
-        log = logging.getLogger(__name__)
         log.warning("Failed to read %s/config.toml; using in-memory defaults", root)
         return
     if not persisted:
         return
-    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(_MODEL_ROLE_FIELDS)
+    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
     for key, raw in persisted.items():
         if key not in overlayable:
             continue
         try:
             setattr(cfg, key, raw)
         except (ValueError, TypeError) as exc:
-            log = logging.getLogger(__name__)
             log.warning(
                 "Ignoring invalid persisted value for %s in %s: %s",
                 key,
