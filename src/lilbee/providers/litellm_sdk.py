@@ -361,10 +361,13 @@ class LitellmSdkBackend:
         (newer Ollama versions) so callers can check for vision support.
         """
         clean_base = base_url.rstrip("/")
+        # Ollama's API uses bare model names; the routing-layer prefix has
+        # to come off before the request goes out.
+        ollama_name = model[len(OLLAMA_PREFIX) :] if model.startswith(OLLAMA_PREFIX) else model
         try:
             resp = httpx.post(
                 f"{clean_base}/api/show",
-                json={"name": model},
+                json={"name": ollama_name},
                 timeout=DEFAULT_HTTP_TIMEOUT,
             )
             resp.raise_for_status()
