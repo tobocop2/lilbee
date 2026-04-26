@@ -431,7 +431,7 @@ class Config(BaseSettings):
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
     # LLM-generated alternative queries for expansion. 0 disables.
-    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True, public=True)
+    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
 
     # Skip LLM expansion when tokenized query length ≤ this. The LLM round-trip
     # dominates latency on small local models; short queries already have strong

@@ -426,7 +426,16 @@ _INGEST_LOCK_REGISTRY: asyncio.Lock | None = None
 
 # Types that can carry script even within an "inline-rendered" category.
 # Keep the deny narrow and explicit — broadening it requires a security review.
-_RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset({"text/html", "image/svg+xml"})
+_RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset(
+    {
+        "text/html",
+        "text/javascript",
+        "application/javascript",
+        "application/xhtml+xml",
+        "text/css",
+        "image/svg+xml",
+    }
+)
 
 
 def _is_safe_for_inline_render(content_type: str) -> bool:

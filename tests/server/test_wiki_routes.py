@@ -323,6 +323,50 @@ class TestWikiEnabled:
         assert body["entities"] == 3
         assert body["paths"] == ["wiki/concepts/x.md"]
 
+    async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
+        """Concurrent build calls don't run in parallel — the lock serializes them.
+
+        Asserts that ``run_full_build`` is invoked from a non-loop thread
+        (so an LLM-blocking build won't freeze the event loop) and that
+        two concurrent POSTs run sequentially.
+        """
+        import asyncio
+        import threading
+        import time
+
+        # Reset the per-process build lock so this test isn't influenced by
+        # a leftover lock from a previous test in the same loop.
+        import lilbee.server.wiki as _wiki_mod
+
+        _wiki_mod._WIKI_BUILD_LOCK = None
+
+        loop_thread_id = threading.get_ident()
+        invocations: list[tuple[int, float, float]] = []
+
+        def fake_build(*args, **kwargs):
+            invocations.append((threading.get_ident(), time.monotonic(), 0.0))
+            time.sleep(0.05)
+            invocations[-1] = (invocations[-1][0], invocations[-1][1], time.monotonic())
+            return {"paths": [], "entities": 0, "count": 0}
+
+        monkeypatch.setattr("lilbee.server.wiki.run_full_build", fake_build)
+
+        async with AsyncTestClient(_create_app()) as client:
+            r1, r2 = await asyncio.gather(
+                client.post("/api/wiki/build", headers=_h()),
+                client.post("/api/wiki/build", headers=_h()),
+            )
+        assert r1.status_code == 201
+        assert r2.status_code == 201
+        assert len(invocations) == 2
+        # Worker thread is not the event-loop thread.
+        for tid, _start, _end in invocations:
+            assert tid != loop_thread_id
+        # Lock serialized: second invocation starts at or after first ends.
+        first_end = invocations[0][2]
+        second_start = invocations[1][1]
+        assert second_start >= first_end - 0.001  # tiny clock skew tolerance
+
     async def test_update_returns_summary(self, monkeypatch):
         monkeypatch.setattr(
             "lilbee.server.wiki.run_full_build",

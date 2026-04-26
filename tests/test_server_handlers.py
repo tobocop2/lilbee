@@ -2167,6 +2167,34 @@ class TestSourceContentRoute:
         assert "attachment" in resp.headers["content-disposition"]
         assert "evil.html" in resp.headers["content-disposition"]
 
+    @pytest.mark.parametrize(
+        ("filename", "body"),
+        [
+            ("evil.js", b"alert(1)"),
+            ("evil.mjs", b"export {};"),
+            ("evil.css", b"body { background: url(javascript:1); }"),
+            ("evil.xhtml", b"<x:y xmlns:x='ns' />"),
+        ],
+    )
+    async def test_raw_script_carrying_text_types_force_attachment(
+        self, isolated_env, filename, body
+    ):
+        """Text-category types that can carry script are denied inline."""
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / filename).write_bytes(body)
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": filename, "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/octet-stream")
+        assert "attachment" in resp.headers["content-disposition"]
+
     async def test_raw_svg_source_forces_octet_stream_attachment(self, isolated_env):
         """SVG can carry script; not in the allowlist → forced to octet-stream."""
         from litestar.testing import AsyncTestClient

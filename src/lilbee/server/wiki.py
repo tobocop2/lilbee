@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -200,11 +201,31 @@ async def wiki_prune_route() -> WikiPruneResult:
     )
 
 
+# Serialize wiki builds: ``run_full_build`` writes pages, the wiki index, and
+# the wiki log; two concurrent calls would corrupt those. The lock is created
+# lazily because ``Lock()`` requires a running event loop.
+_WIKI_BUILD_LOCK: asyncio.Lock | None = None
+
+
+def _wiki_build_lock() -> asyncio.Lock:
+    """Return the per-process wiki-build mutex, creating it on first call."""
+    global _WIKI_BUILD_LOCK
+    if _WIKI_BUILD_LOCK is None:
+        _WIKI_BUILD_LOCK = asyncio.Lock()
+    return _WIKI_BUILD_LOCK
+
+
 @post("/api/wiki/build")
 async def wiki_build_route() -> WikiBuildResult:
-    """Build the concept and entity wiki across all ingested sources."""
+    """Build the concept and entity wiki across all ingested sources.
+
+    The build is CPU- and IO-bound (LLM calls, embeddings, file writes) so
+    it runs in a worker thread; concurrent build/update requests serialize
+    on a per-process lock so they don't corrupt the wiki index.
+    """
     _require_wiki()
-    result = run_full_build(cfg)
+    async with _wiki_build_lock():
+        result = await asyncio.to_thread(run_full_build, cfg)
     return WikiBuildResult(**result)
 
 
@@ -212,7 +233,8 @@ async def wiki_build_route() -> WikiBuildResult:
 async def wiki_update_route() -> WikiBuildResult:
     """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
     _require_wiki()
-    result = run_full_build(cfg)
+    async with _wiki_build_lock():
+        result = await asyncio.to_thread(run_full_build, cfg)
     return WikiBuildResult(**result)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from litestar import Response, get, patch
@@ -83,8 +84,6 @@ async def source_content_route(
         # attacker-named files don't render inline anywhere.
         headers = {"X-Content-Type-Options": "nosniff"}
         if content_type == "application/octet-stream":
-            from pathlib import Path as _Path
-
-            headers["Content-Disposition"] = f'attachment; filename="{_Path(source).name}"'
+            headers["Content-Disposition"] = f'attachment; filename="{Path(source).name}"'
         return Response(content=body, media_type=content_type, status_code=200, headers=headers)
     return result
