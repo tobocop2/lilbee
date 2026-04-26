@@ -127,12 +127,12 @@ class TestHfToken:
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert _hf_token() is None
 
-    @patch("lilbee.catalog._hf_token", return_value=None)
+    @patch("lilbee.catalog.hf_client._hf_token", return_value=None)
     def test_headers_empty_when_no_token(self, _mock_token: MagicMock) -> None:
         """_hf_headers returns empty dict when no token available."""
         assert catalog._hf_headers() == {}
 
-    @patch("lilbee.catalog._hf_token", return_value="test-token-123")
+    @patch("lilbee.catalog.hf_client._hf_token", return_value="test-token-123")
     def test_headers_include_bearer_when_token_set(self, _mock_token: MagicMock) -> None:
         """_hf_headers returns Authorization header when token is available."""
         assert catalog._hf_headers() == {"Authorization": "Bearer test-token-123"}
@@ -458,7 +458,7 @@ class TestFetchHfModels:
 
 class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog()
         assert result.total == len(FEATURED_ALL)
         assert all(m.featured for m in result.models)
@@ -481,13 +481,13 @@ class TestGetCatalog:
         assert all(m.task == "chat" for m in result.models)
 
     def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task="embedding")
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task="vision")
         assert all(m.task == "vision" for m in result.models)
         assert result.total == len(FEATURED_VISION)
@@ -534,36 +534,36 @@ class TestGetCatalog:
         assert all(m.featured for m in result.models)
 
     def test_filter_featured_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(featured=False)
         assert result.total == 0
 
     def test_sort_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="featured")
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_downloads(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="downloads")
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_size_asc(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="size_asc")
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes)
 
     def test_sort_size_desc(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="size_desc")
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes, reverse=True)
 
     def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="name")
         names = [m.display_name.lower() for m in result.models]
         assert names == sorted(names)
@@ -606,7 +606,7 @@ class TestGetCatalog:
             )
         ]
         monkeypatch.setattr(
-            catalog,
+            catalog.hf_client,
             "_fetch_hf_models",
             lambda **kw: _HfPage(models=hf_models, has_more=False),
         )
@@ -629,7 +629,7 @@ class TestGetCatalog:
             )
         ]
         monkeypatch.setattr(
-            catalog,
+            catalog.hf_client,
             "_fetch_hf_models",
             lambda **kw: _HfPage(models=hf_models, has_more=False),
         )
@@ -641,7 +641,7 @@ class TestGetCatalog:
     def test_has_more_propagated_from_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CatalogResult.has_more reflects the HF API Link header."""
         monkeypatch.setattr(
-            catalog,
+            catalog.hf_client,
             "_fetch_hf_models",
             lambda **kw: _HfPage(models=[], has_more=True),
         )
@@ -654,7 +654,7 @@ class TestGetCatalog:
         assert result.has_more is False
 
     def test_has_more_false_when_no_more_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog()
         assert result.has_more is False
 
@@ -818,7 +818,7 @@ class TestDownloadModel:
         """tqdm_class-based callback is invoked during download."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
@@ -844,7 +844,7 @@ class TestDownloadModel:
         models_dir = tmp_path / "models"
         monkeypatch.setattr(catalog.cfg, "models_dir", models_dir)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         result = download_model(entry)
@@ -853,7 +853,7 @@ class TestDownloadModel:
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         progress_calls: list[tuple[int, int | None]] = []
 
@@ -881,7 +881,7 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         from huggingface_hub.utils import GatedRepoError
 
@@ -906,7 +906,7 @@ class TestDownloadModel:
 
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             raise TaskCancelled
@@ -920,7 +920,7 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -1093,14 +1093,15 @@ class TestFetchModelFileSize:
             {"path": "README.md", "size": 100},
         ]
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+        monkeypatch.setattr("lilbee.catalog.download.httpx.get", lambda *a, **kw: mock_resp)
 
         result = catalog.fetch_model_file_size("user/repo")
         assert result == round(5_000_000_000 / (1024**3), 1)
 
     def test_returns_zero_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "lilbee.catalog.httpx.get", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail"))
+            "lilbee.catalog.download.httpx.get",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail")),
         )
         assert catalog.fetch_model_file_size("user/repo") == 0.0
 
@@ -1110,7 +1111,7 @@ class TestFetchModelFileSize:
         mock_resp = MagicMock()
         mock_resp.json.return_value = [{"path": "README.md", "size": 100}]
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+        monkeypatch.setattr("lilbee.catalog.download.httpx.get", lambda *a, **kw: mock_resp)
 
         assert catalog.fetch_model_file_size("user/repo") == 0.0
 
@@ -1135,7 +1136,7 @@ class TestHfCacheEviction:
         mock_resp.status_code = 200
         mock_resp.json.return_value = []
         mock_resp.links = {}
-        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+        monkeypatch.setattr("lilbee.catalog.hf_client.httpx.get", lambda *a, **kw: mock_resp)
 
         catalog._fetch_hf_models(pipeline_tag="text-generation")
         assert "old:key:sort:50" not in _hf_cache
@@ -1160,7 +1161,7 @@ class TestHfCacheEviction:
         mock_resp.status_code = 200
         mock_resp.json.return_value = []
         mock_resp.links = {}
-        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+        monkeypatch.setattr("lilbee.catalog.hf_client.httpx.get", lambda *a, **kw: mock_resp)
 
         catalog._fetch_hf_models(pipeline_tag="unique")
         assert len(_hf_cache) == 50
@@ -1327,7 +1328,7 @@ class TestVisionMmprojFiles:
         """download_model downloads mmproj file for vision entries."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
 
         download_calls: list[dict] = []
 
@@ -1337,7 +1338,9 @@ class TestVisionMmprojFiles:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         monkeypatch.setattr(
-            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+            catalog.download,
+            "_resolve_mmproj_filename",
+            lambda repo, pat: "model-mmproj-f16.gguf",
         )
 
         download_model(entry)
@@ -1353,7 +1356,7 @@ class TestVisionMmprojFiles:
         """download_model does NOT download mmproj for chat entries."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         download_calls: list[dict] = []
 
@@ -1372,10 +1375,10 @@ class TestVisionMmprojFiles:
         """When mmproj resolution fails, model download still succeeds."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
-        monkeypatch.setattr(catalog, "_resolve_mmproj_filename", lambda repo, pat: None)
+        monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
 
         result = download_model(entry)
         assert result.exists()
@@ -1390,7 +1393,7 @@ class TestVisionMmprojFiles:
         """
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
 
         download_calls: list[dict] = []
 
@@ -1400,7 +1403,9 @@ class TestVisionMmprojFiles:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         monkeypatch.setattr(
-            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+            catalog.download,
+            "_resolve_mmproj_filename",
+            lambda repo, pat: "model-mmproj-f16.gguf",
         )
 
         download_model(entry)
@@ -1428,7 +1433,7 @@ class TestVisionMmprojFallback:
             downloads=0,
             task="vision",
         )
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "custom-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "custom-Q4_K_M.gguf")
 
         download_calls: list[dict] = []
 
@@ -1438,7 +1443,9 @@ class TestVisionMmprojFallback:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         monkeypatch.setattr(
-            catalog, "_resolve_mmproj_filename", lambda repo, pat: "custom-mmproj-f16.gguf"
+            catalog.download,
+            "_resolve_mmproj_filename",
+            lambda repo, pat: "custom-mmproj-f16.gguf",
         )
 
         download_model(custom_entry)
@@ -1458,9 +1465,11 @@ class TestVisionMmprojFallback:
         """
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
         monkeypatch.setattr(
-            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+            catalog.download,
+            "_resolve_mmproj_filename",
+            lambda repo, pat: "model-mmproj-f16.gguf",
         )
 
         # Pre-stage a cached blob so hf_hub_download resolves to it without
@@ -1686,7 +1695,7 @@ class TestFetchHfModelsSearchForwarding:
             captured_kwargs.update(kwargs)
             return _EMPTY_HF_PAGE
 
-        monkeypatch.setattr(catalog, "_fetch_hf_models", fake_fetch)
+        monkeypatch.setattr(catalog.hf_client, "_fetch_hf_models", fake_fetch)
         get_catalog(search="llama3", featured=False)
         assert captured_kwargs.get("search") == "llama3"
 
@@ -1697,7 +1706,7 @@ class TestGatedRepoShowsLoginMessage:
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         from huggingface_hub.utils import GatedRepoError
 
