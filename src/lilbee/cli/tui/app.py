@@ -87,7 +87,7 @@ def get_views() -> dict[str, Callable[[], Screen]]:
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes.
 
-    The provider Protocol gates this — litellm/remote backends inherit a
+    The provider Protocol gates this; litellm/remote backends inherit a
     no-op default since they have no local model cache. Only the native
     llama-cpp side actually evicts.
     """

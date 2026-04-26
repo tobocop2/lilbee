@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import cfg
+from lilbee.config import DEFAULT_NUM_CTX, cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
 from lilbee.services import get_services
@@ -67,11 +67,6 @@ LOAD_AFFECTING_KEYS = frozenset(
         "reranker_model",
     }
 )
-
-# Safety cap when num_ctx is unset. Modern chat GGUFs train at 128K+, and
-# letting llama.cpp allocate the full training context OOMs on most laptops.
-# 8192 is a sane default that mirrors common local-LLM tooling.
-_CHAT_DEFAULT_N_CTX = 8192
 
 
 @dataclass
@@ -580,14 +575,19 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
         # bounded by the model's training length. Metadata-read failures
         # fall through to the cap so the actual load attempt still runs
         # (and surfaces its own diagnostic if it fails).
-        training_ctx = _CHAT_DEFAULT_N_CTX
+        training_ctx = DEFAULT_NUM_CTX
         try:
             meta = read_gguf_metadata(model_path)
         except Exception:
+            log.debug(
+                "read_gguf_metadata failed for %s; using default n_ctx",
+                model_path,
+                exc_info=True,
+            )
             meta = None
         if meta:
-            training_ctx = int(meta.get("context_length", _CHAT_DEFAULT_N_CTX))
-        kwargs["n_ctx"] = min(training_ctx, _CHAT_DEFAULT_N_CTX)
+            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
+        kwargs["n_ctx"] = min(training_ctx, DEFAULT_NUM_CTX)
 
     if embedding:
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently

@@ -127,7 +127,7 @@ class LLMProvider(Protocol):
         entries for that file across all modes. Native llama-cpp uses
         this to react to load-affecting setting changes and to model
         switches. Backends without local model loading (litellm/remote)
-        inherit the no-op default — load-time settings like ``num_ctx``
+        inherit the no-op default; load-time settings like ``num_ctx``
         are the API server's concern, not lilbee's.
         """
         return

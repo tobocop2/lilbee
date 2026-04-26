@@ -3,7 +3,7 @@
 Verifies that publishing settings_changed_signal for a load-affecting key
 calls invalidate_load_cache() on the active provider, while ignoring
 sampling-only keys. The provider Protocol's no-op default keeps litellm
-backends untouched — only native llama-cpp evicts.
+backends untouched; only native llama-cpp evicts.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def test_model_name_change_evicts_cache():
 
 
 def test_sampling_param_change_does_not_evict():
-    """Temperature, top_p, etc. are read per-call — eviction would be wasted work."""
+    """Temperature, top_p, etc. are read per-call; eviction would be wasted work."""
     provider = _install_recording_provider()
     try:
         _on_settings_changed_evict_cache(("temperature", 0.7))
@@ -119,17 +119,13 @@ def test_unknown_key_does_not_evict():
 
 
 def test_protocol_default_is_safe_for_litellm_provider():
-    """SDK/litellm backends inherit the no-op default — settings changes don't poke them."""
+    """A backend that subclasses LLMProvider but doesn't override
+    invalidate_load_cache gets the Protocol's no-op default body."""
 
-    class _StubLitellmProvider:
-        """Concrete stand-in for a backend without a local cache."""
+    class _BackendWithNoOverride(LLMProvider):  # type: ignore[misc]
+        """Concrete subclass without an explicit invalidate_load_cache override."""
 
-        def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-            # Inherit the Protocol's default behavior explicitly to prove it returns None.
-            return LLMProvider.invalidate_load_cache(self, model_path)
-
-    backend = _StubLitellmProvider()
-    # Should not raise, should not error, should return None
+    backend = _BackendWithNoOverride()
     assert backend.invalidate_load_cache() is None
     assert backend.invalidate_load_cache(Path("/tmp/whatever.gguf")) is None
 

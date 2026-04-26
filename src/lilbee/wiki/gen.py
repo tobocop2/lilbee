@@ -23,7 +23,7 @@ import yaml
 
 from lilbee.chunk import chunk_text
 from lilbee.clustering import SourceClusterer
-from lilbee.config import CHUNKS_TABLE, Config, cfg
+from lilbee.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config, cfg
 from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
@@ -72,9 +72,6 @@ WikiProgressCallback = Callable[[str, dict[str, object]], None]
 
 _MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
-# Conservative default context window when num_ctx is not configured.
-# Most modern models support at least 8192 tokens.
-_DEFAULT_CONTEXT_WINDOW = 8192
 
 # Fraction of context window reserved for chunks. The remainder leaves
 # room for the system/user prompt template and generation output.
@@ -125,7 +122,7 @@ def _truncate_chunks_to_budget(
     Uses a chars/4 heuristic for token estimation. Returns the original list
     unchanged when all chunks fit.
     """
-    context_window = config.num_ctx or _DEFAULT_CONTEXT_WINDOW
+    context_window = config.num_ctx or DEFAULT_NUM_CTX
     budget_tokens = int(context_window * _CONTEXT_BUDGET_FRACTION)
     budget_chars = budget_tokens * _CHARS_PER_TOKEN
 
