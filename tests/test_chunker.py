@@ -306,10 +306,12 @@ class Greeter:
             path = Path(f.name)
 
         try:
-            # Force _ensure_language True so the no-symbols branch is reachable
-            # on CI hosts where tree-sitter Python isn't yet downloaded.
+            # Stub out _ensure_language and process so we land on the
+            # no-symbols branch deterministically, regardless of whether
+            # tree-sitter Python is installed on the host.
             with (
                 patch("lilbee.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.code_chunker.process", return_value={}),
                 patch("lilbee.code_chunker._extract_symbols", return_value=[]),
             ):
                 chunks = chunk_code(path)
