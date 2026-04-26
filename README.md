@@ -264,6 +264,16 @@ uv tool install --prerelease=allow lilbee \
 
 Don't know your CUDA version? `nvidia-smi` (look at the top-right corner). NVIDIA driver 555+ supports CUDA 12.5; older drivers may need cu124.
 
+### Intel Mac
+
+Intel Mac wheels ship from a separate index because they're cross-compiled and the lane is best-effort:
+
+```bash
+pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cpu/
+```
+
+If a wheel isn't available for your Python version, pip falls back to the sdist and builds locally (you'll need a working Xcode toolchain).
+
 ### Pre-built executables (no Python required)
 
 Download a single binary that bundles its own Python runtime — no `pip` needed:

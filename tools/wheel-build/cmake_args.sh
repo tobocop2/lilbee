@@ -64,7 +64,9 @@ case "${backend}_${runner_os}" in
     ;;
   cpu_macOS)
     if [ "${target_arch}" = "x86_64" ]; then
-      args="${common_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF"
+      # Disable OpenSSL find_package: arm64 runner has no x86_64 libssl,
+      # so cpp-httplib's TLS code fails to link. We don't ship llama-server.
+      args="${common_x86} -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_BLAS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
     else
       args="${common_arm} -DGGML_METAL=OFF -DGGML_BLAS=OFF"
     fi
