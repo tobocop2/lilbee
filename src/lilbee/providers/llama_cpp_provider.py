@@ -402,6 +402,7 @@ _STDERR_LOCK = threading.Lock()
 # this module-level handle keeps it alive for the process lifetime.
 _llama_log_callback: Any = None
 _llama_log_installed = False
+# Module-private buffer; not in Services because it's request-scoped state for a ctypes callback.
 _llama_log_pending: dict[int, str] = {}
 _llama_log_pending_level: int = _GGML_LOG_LEVEL_INFO
 
