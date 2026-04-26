@@ -1622,6 +1622,12 @@ graph = [
 litellm = [
     { name = "litellm" },
 ]
+release = [
+    { name = "crawl4ai" },
+    { name = "graspologic-native" },
+    { name = "litellm" },
+    { name = "spacy" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1651,6 +1657,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=2.11.3" },
     { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
+    { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "llama-cpp-python" },
@@ -1667,7 +1674,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["litellm", "graph", "crawler"]
+provides-extras = ["litellm", "graph", "crawler", "release"]
 
 [package.metadata.requires-dev]
 dev = [
