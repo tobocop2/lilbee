@@ -394,18 +394,18 @@ class TestInit:
         the CLI's --data-dir entry point. Without this, switching the MCP
         session to a project that has its own model preferences silently
         keeps the previously-active models."""
-        cfg.chat_model = "stale-global:latest"
-        cfg.embedding_model = "stale-embed:latest"
+        cfg.chat_model = "ollama/stale-global:latest"
+        cfg.embedding_model = "ollama/stale-embed:latest"
         target = tmp_path / "myproject"
         target.mkdir()
         (target / "config.toml").write_text(
-            'chat_model = "qwen3:4b"\nembedding_model = "nomic-embed-text:v1.5"\n'
+            'chat_model = "ollama/qwen3:4b"\nembedding_model = "ollama/nomic-embed-text:v1.5"\n'
         )
 
         init(str(target))
 
-        assert cfg.chat_model == "qwen3:4b"
-        assert cfg.embedding_model == "nomic-embed-text:v1.5"
+        assert cfg.chat_model == "ollama/qwen3:4b"
+        assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
 
 class TestAdd:
