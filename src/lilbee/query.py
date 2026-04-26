@@ -414,9 +414,14 @@ class Searcher:
         count = self._config.query_expansion_count
         if count <= 0 and not self._config.concept_graph:
             return []
+        # Short queries skip LLM expansion: BM25/vector signal is already strong
+        # and the LLM round-trip dominates latency on small local models.
+        # Concept-graph expansion still runs.
+        short_threshold = self._config.expansion_short_query_tokens
+        skip_llm = short_threshold > 0 and len(_tokenize(question)) <= short_threshold
         try:
             llm_variants: list[tuple[str, list[float]]] = []
-            if count > 0:
+            if count > 0 and not skip_llm:
                 llm_texts = list(self._llm_expand(question, count))
                 if llm_texts:
                     llm_vectors = self._embedder.embed_batch(llm_texts)
