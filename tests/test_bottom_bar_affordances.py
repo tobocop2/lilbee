@@ -1,10 +1,4 @@
-"""ViewTabs model pill + setup wizard exit affordances.
-
-Bug 2 (model pill): the active chat model is shown on every screen via
-ViewTabs, not just on chat where ModelBar lives.
-Bug 3 (setup exit): the wizard mounts a Footer so the Esc->Done binding
-is visible, and the hint text changes when models are already installed.
-"""
+"""ViewTabs model pill, setup wizard exit affordances, theme persistence."""
 
 from __future__ import annotations
 
@@ -219,9 +213,7 @@ async def test_setup_wizard_hint_when_models_already_installed() -> None:
 
 
 async def test_setup_wizard_hint_label_has_no_border_top_eating_its_row() -> None:
-    """Regression: setup.tcss had `border-top: solid` + `height: 1`. Textual
-    counts the border row toward the widget's height, so the only row was
-    eaten by the border and the hint text rendered into nothing."""
+    """Regression: border-top + height:1 left zero rows for the hint text."""
     with mock.patch(
         "lilbee.cli.tui.screens.setup._scan_installed_models",
         return_value=([], []),

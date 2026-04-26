@@ -24,6 +24,7 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
     TableRow,
@@ -607,8 +608,6 @@ class CatalogScreen(Screen[None]):
                 if row.remote_model.provider == OLLAMA_BACKEND_NAME
                 else row.remote_model.name
             )
-            from lilbee.cli.tui.app import apply_active_model
-
             apply_active_model(self.app, "chat_model", ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 

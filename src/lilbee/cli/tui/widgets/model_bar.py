@@ -14,6 +14,7 @@ from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
@@ -359,8 +360,6 @@ class ModelBar(Widget, can_focus=False):
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
         """Write the new chat model to cfg and settings."""
-        from lilbee.cli.tui.app import apply_active_model
-
         chat_sel = self.query_one("#chat-model-select", Select)
         value = self._extract_value(event, chat_sel)
         if value is None or value == cfg.chat_model:
@@ -382,8 +381,6 @@ class ModelBar(Widget, can_focus=False):
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:
         """Write the new embedding model to cfg and settings."""
-        from lilbee.cli.tui.app import apply_active_model
-
         embed_sel = self.query_one("#embed-model-select", Select)
         value = self._extract_value(event, embed_sel)
         if value is None or value == cfg.embedding_model:

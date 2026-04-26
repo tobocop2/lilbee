@@ -27,6 +27,7 @@ from textual.widgets import Label, Static
 
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     catalog_to_row,
@@ -155,12 +156,7 @@ class SetupWizard(Screen[str | None]):
             yield Footer()
 
     def _initial_hint_text(self) -> str:
-        """Pick the hint that matches the user's actual situation.
-
-        When both roles already have an installed model, the wizard is a
-        review screen rather than a first-run install path, so the hint
-        should tell the user how to leave instead of how to install.
-        """
+        """Return SETUP_RETURN_HINT when both roles already resolve, else SETUP_ENTER_HINT."""
         if self._chat_installed and self._embed_installed:
             return msg.SETUP_RETURN_HINT
         return msg.SETUP_ENTER_HINT
@@ -253,16 +249,12 @@ class SetupWizard(Screen[str | None]):
         Called when the user presses Enter on a card. Saves the config
         fragment eagerly so Esc mid-wizard doesn't lose the pick.
         """
-        from lilbee.cli.tui.app import LilbeeApp, apply_active_model
+        from lilbee.cli.tui.app import LilbeeApp
 
         self._mark_selection(card, task)
         ref = self._selections[task][0]
         if ref is None:
             return
-        # Write the fragment; embedding never overrides chat and vice versa.
-        # apply_active_model routes through LilbeeApp.set_active_model so
-        # cache eviction + ViewTabs pill refresh fire from the wizard
-        # path too, with a direct-write fallback for non-LilbeeApp hosts.
         if task == ModelTask.CHAT:
             apply_active_model(self.app, "chat_model", ref)
         elif task == ModelTask.EMBEDDING:

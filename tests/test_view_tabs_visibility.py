@@ -1,5 +1,4 @@
-"""Per-screen ViewTabs visibility. Guards against the page indicator
-being mounted in compose() but invisible at render time."""
+"""Per-screen ViewTabs visibility."""
 
 from __future__ import annotations
 
@@ -64,13 +63,7 @@ def _patch_chat_setup():
 
 @pytest.mark.parametrize("view_name", ["Catalog", "Status", "Settings", "Tasks", "Wiki"])
 async def test_view_tabs_visible_on_screen(view_name: str) -> None:
-    """ViewTabs must be mounted AND occupy a non-zero region on every main screen.
-
-    A passing test on every screen confirms the page indicator renders
-    correctly app-wide; a failure on any one would expose a real layout
-    regression where compose() yields the widget but CSS or sibling
-    layout hides it.
-    """
+    """ViewTabs must be mounted and occupy a non-zero region on every main screen."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -88,8 +81,7 @@ async def test_view_tabs_visible_on_screen(view_name: str) -> None:
 
 
 async def test_view_tabs_visible_on_chat() -> None:
-    """ViewTabs is also visible on the chat screen (the screen the friend
-    cited as the only one where it works)."""
+    """ViewTabs is also visible on the chat screen."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
@@ -103,10 +95,7 @@ async def test_view_tabs_visible_on_chat() -> None:
 
 
 async def test_view_tabs_docks_at_top_not_bottom() -> None:
-    """Airline-style header: ViewTabs sits at the top of every screen
-    (above the screen content), and the Footer keybindings stay at the
-    bottom. Asserting via region.y instead of compose-tree position so
-    the test catches CSS regressions too."""
+    """ViewTabs sits above the Footer (airline-style header)."""
     from textual.widgets import Footer
 
     from lilbee.cli.tui.screens.chat import ChatScreen
@@ -126,11 +115,7 @@ async def test_view_tabs_docks_at_top_not_bottom() -> None:
 
 
 async def test_view_tabs_active_view_tracks_screen_changes() -> None:
-    """Regression: ViewTabs.on_mount captured app.active_view once, but
-    switch_view's _finish callback updates app.active_view AFTER the new
-    screen mounts. The pill highlight lagged the actual screen by one
-    navigation step. Fix pushes the new active_view into the live ViewTabs
-    after _finish runs."""
+    """Regression: highlighted tab kept lagging the actual screen by one nav step."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()

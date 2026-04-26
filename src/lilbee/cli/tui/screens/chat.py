@@ -29,6 +29,7 @@ from lilbee import asyncio_loop, settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -608,8 +609,6 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            from lilbee.cli.tui.app import apply_active_model
-
             apply_active_model(self.app, "chat_model", args)
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))

@@ -19,20 +19,12 @@ _MODE_COLORS: dict[str, str] = {
 
 _DEFAULT_MODE_COLOR = "$error"
 
-# Settings keys that change what the model pill should render. Triggers
-# a refresh on settings_changed_signal without coupling ViewTabs to any
-# specific publisher (ModelBar dropdowns, Settings UI editor, etc.).
+# Settings keys that trigger a model-pill refresh.
 _MODEL_PILL_KEYS = frozenset({"chat_model"})
 
 
 class ViewTabs(Widget):
-    """View tab strip with mode + active-model indicator.
-
-    The active chat model is shown as a right-aligned pill so the user
-    can see which model is loaded on every screen, not just chat. The
-    chat ModelBar (which only mounts on the chat screen) used to be the
-    only place that surfaced the active model.
-    """
+    """View tab strip with mode and active-model indicator."""
 
     # NOTE: no ``dock: bottom`` here. ViewTabs is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
@@ -58,9 +50,8 @@ class ViewTabs(Widget):
         signal = getattr(self.app, "settings_changed_signal", None)
         if signal is not None:
             signal.subscribe(self, self._on_settings_changed)
-        # Defer the initial paint to the next tick so the inner Static is
-        # fully mounted; calling update() during on_mount can no-op when
-        # the Static's own mount cycle hasn't completed.
+        # Defer the initial paint: update() during on_mount can no-op while
+        # the inner Static is still completing its own mount cycle.
         self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
@@ -80,14 +71,12 @@ class ViewTabs(Widget):
             return
         parts: list[Content | str | tuple[str, str]] = []
 
-        # Build tab strip
         tab_parts: list[Content | str | tuple[str, str]] = []
         for name in msg.get_nav_views():
             if name == self.active_view:
                 tab_parts.append(pill(f" {name} ", "$primary", "$text"))
             else:
                 tab_parts.append((f" {name} ", "dim"))
-        # Join with dot separators
         joined: list[Content | str | tuple[str, str]] = []
         for i, part in enumerate(tab_parts):
             if i > 0:
@@ -95,13 +84,10 @@ class ViewTabs(Widget):
             joined.append(part)
         parts.extend(joined)
 
-        # Active-model pill (right-aligned, before the mode pill)
-        chat_model = cfg.chat_model
-        if chat_model:
+        if cfg.chat_model:
             parts.append("  ")
-            parts.append(pill(f" {chat_model} ", "$accent", "$text"))
+            parts.append(pill(f" {cfg.chat_model} ", "$accent", "$text"))
 
-        # Mode pill (right-aligned, last)
         if self.mode_text:
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")
