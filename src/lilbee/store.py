@@ -222,6 +222,9 @@ class StoreMeta(TypedDict):
     or ``cfg.embedding_dim`` drifts from the persisted row, the store refuses to serve
     until ``lilbee rebuild`` (CLI) or ``POST /api/sync {"force_rebuild": true}`` (HTTP)
     rewrites the chunks under the new model.
+
+    ``updated_at`` is an ISO 8601 UTC timestamp produced by ``datetime.isoformat()``;
+    kept as ``str`` to match the LanceDB ``utf8`` schema column.
     """
 
     embedding_model: str
