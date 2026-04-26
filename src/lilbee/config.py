@@ -131,7 +131,8 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     # the exact installed quant; fall back to the catalog ref otherwise.
     if ref.endswith(".gguf") and ref.count("/") >= 2:
         return ref
-    return entry.ref
+    canonical: str = entry.ref
+    return canonical
 
 
 _BOOL_TRUE = frozenset({"true", "1", "yes"})
