@@ -122,6 +122,11 @@ class TestWikiDisabled:
             resp = await client.patch("/api/wiki/update", headers=_h())
         assert resp.status_code == 404
 
+    async def test_synthesize_returns_404(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/synthesize", headers=_h())
+        assert resp.status_code == 404
+
     async def test_status_returns_disabled_marker(self):
         # Status is intentionally readable when wiki is off so the plugin
         # can render a disabled-state hint without polling /api/config.
@@ -334,18 +339,24 @@ class TestWikiEnabled:
         import threading
         import time
 
-        # Reset the per-process build lock so this test isn't influenced by
-        # a leftover lock from a previous test in the same loop.
-        import lilbee.server.wiki as _wiki_mod
+        from lilbee.server import wiki as _wiki_mod
 
-        _wiki_mod._WIKI_BUILD_LOCK = None
+        # Reset both before the test (so a leftover lock from a previous run
+        # doesn't share state) and after via finalizer (so this test's lock
+        # doesn't leak into the next).
+        _wiki_mod._reset_wiki_build_lock()
+        monkeypatch.setattr("lilbee.server.wiki._WIKI_BUILD_LOCK", None, raising=False)
 
         loop_thread_id = threading.get_ident()
         invocations: list[tuple[int, float, float]] = []
+        # Hold the worker for ~0.1s and tolerate ~0.01s skew so heavily-loaded
+        # CI doesn't false-trigger the serialization check.
+        sleep_s = 0.1
+        skew_s = 0.01
 
         def fake_build(*args, **kwargs):
             invocations.append((threading.get_ident(), time.monotonic(), 0.0))
-            time.sleep(0.05)
+            time.sleep(sleep_s)
             invocations[-1] = (invocations[-1][0], invocations[-1][1], time.monotonic())
             return {"paths": [], "entities": 0, "count": 0}
 
@@ -356,16 +367,19 @@ class TestWikiEnabled:
                 client.post("/api/wiki/build", headers=_h()),
                 client.post("/api/wiki/build", headers=_h()),
             )
-        assert r1.status_code == 201
-        assert r2.status_code == 201
-        assert len(invocations) == 2
-        # Worker thread is not the event-loop thread.
-        for tid, _start, _end in invocations:
-            assert tid != loop_thread_id
-        # Lock serialized: second invocation starts at or after first ends.
-        first_end = invocations[0][2]
-        second_start = invocations[1][1]
-        assert second_start >= first_end - 0.001  # tiny clock skew tolerance
+        try:
+            assert r1.status_code == 201
+            assert r2.status_code == 201
+            assert len(invocations) == 2
+            # Worker thread is not the event-loop thread.
+            for tid, _start, _end in invocations:
+                assert tid != loop_thread_id
+            # Lock serialized: second invocation starts at or after first ends.
+            first_end = invocations[0][2]
+            second_start = invocations[1][1]
+            assert second_start >= first_end - skew_s
+        finally:
+            _wiki_mod._reset_wiki_build_lock()
 
     async def test_update_returns_summary(self, monkeypatch):
         monkeypatch.setattr(
@@ -377,6 +391,28 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         body = resp.json()
         assert body["count"] == 0
+
+    async def test_synthesize_returns_summary(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.server.wiki.run_full_synthesize",
+            lambda *a, **kw: {"paths": ["wiki/synthesis/typing.md"], "count": 1},
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/synthesize", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["count"] == 1
+        assert body["paths"] == ["wiki/synthesis/typing.md"]
+
+    async def test_synthesize_no_clusters_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.server.wiki.run_full_synthesize",
+            lambda *a, **kw: {"paths": [], "count": 0},
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/synthesize", headers=_h())
+        assert resp.status_code == 201
+        assert resp.json()["count"] == 0
 
     async def test_status_empty_wiki(self, monkeypatch, tmp_path):
         from lilbee.wiki import lint as lint_mod

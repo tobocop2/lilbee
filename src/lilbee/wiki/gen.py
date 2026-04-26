@@ -1741,6 +1741,14 @@ def run_full_build(config: Config | None = None) -> WikiBuildSummary:
         REST routes do this with a per-process ``asyncio.Lock``; MCP and
         CLI run in their own processes and don't need one.
 
+        Running concurrently with ``/api/sync`` (an ingest write path
+        rather than a wiki write path) is permitted but not coherent: a
+        sync that lands between this function's source-scan and per-source
+        chunk-fetch may produce a wiki that's missing pages for sources
+        ingested mid-build. The result is incomplete, not corrupt, and
+        is repaired by re-running ``run_full_build`` after the sync
+        finishes.
+
     A crash mid-build leaves a partial wiki on disk; the next successful
     build is idempotent and re-emits any pages it would have written, so
     recovery is "run it again."
@@ -1770,4 +1778,30 @@ def run_full_build(config: Config | None = None) -> WikiBuildSummary:
         "paths": [str(p) for p in pages],
         "entities": len(entities),
         "count": len(pages),
+    }
+
+
+class WikiSynthesizeSummary(TypedDict):
+    """Result of running synthesis-page generation."""
+
+    paths: list[str]
+    count: int
+
+
+def run_full_synthesize(config: Config | None = None) -> WikiSynthesizeSummary:
+    """Generate synthesis pages for cross-source clusters of 3+ documents.
+
+    Shared entry point for MCP ``wiki_synthesize`` and ``POST
+    /api/wiki/synthesize``. Concurrency contract matches
+    :func:`run_full_build`: not safe to run in parallel with itself or
+    with other wiki write paths; callers serialize via an external lock
+    on shared event loops.
+    """
+    if config is None:
+        config = cfg
+    svc = get_services()
+    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer, config)
+    return {
+        "paths": [str(p) for p in paths],
+        "count": len(paths),
     }

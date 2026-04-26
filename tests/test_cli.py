@@ -2410,7 +2410,11 @@ class TestWikiBuild:
         def build_boom(*a, **kw):
             raise AssertionError("build_wiki must not run in --dry-run")
 
-        monkeypatch.setattr("lilbee.wiki.build_wiki", build_boom)
+        # Patch the impl, not the re-export — `run_full_build` resolves
+        # `build_wiki` from `lilbee.wiki.gen`, so a dry-run regression that
+        # accidentally fell through to the build path would only trip a
+        # boom installed there.
+        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", build_boom)
         result = runner.invoke(app, ["wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         assert "chevrolet" in result.output
@@ -2440,7 +2444,11 @@ class TestWikiBuild:
         def build_boom(*a, **kw):
             raise AssertionError("build_wiki must not run in --dry-run")
 
-        monkeypatch.setattr("lilbee.wiki.build_wiki", build_boom)
+        # Patch the impl, not the re-export — `run_full_build` resolves
+        # `build_wiki` from `lilbee.wiki.gen`, so a dry-run regression that
+        # accidentally fell through to the build path would only trip a
+        # boom installed there.
+        monkeypatch.setattr("lilbee.wiki.gen.build_wiki", build_boom)
         result = runner.invoke(app, ["--json", "wiki", "build", "--dry-run"])
         assert result.exit_code == 0
         data = json.loads(result.output)

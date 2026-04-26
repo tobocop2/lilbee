@@ -66,6 +66,7 @@ from lilbee.server.wiki import (
     wiki_prune_route,
     wiki_read_route,
     wiki_status_route,
+    wiki_synthesize_route,
     wiki_update_route,
 )
 from lilbee.services import get_services
@@ -149,6 +150,7 @@ def create_app() -> Litestar:
             wiki_build_route,
             wiki_update_route,
             wiki_status_route,
+            wiki_synthesize_route,
         ],
         request_max_body_size=10 * 1024 * 1024,
         cors_config=cors,

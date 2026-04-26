@@ -27,10 +27,11 @@ from lilbee.server.models import (
     WikiPruneRecordResponse,
     WikiPruneResult,
     WikiStatusResult,
+    WikiSynthesizeResult,
 )
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
-from lilbee.wiki import run_full_build
+from lilbee.wiki import run_full_build, run_full_synthesize
 from lilbee.wiki.browse import (
     find_page,
     list_pages,
@@ -215,6 +216,16 @@ def _wiki_build_lock() -> asyncio.Lock:
     return _WIKI_BUILD_LOCK
 
 
+def _reset_wiki_build_lock() -> None:
+    """Test hook: clear the per-process wiki-build mutex.
+
+    Mirrors ``handlers._reset_ingest_locks`` so a test that creates the
+    lock under one event loop doesn't leak it into the next test.
+    """
+    global _WIKI_BUILD_LOCK
+    _WIKI_BUILD_LOCK = None
+
+
 @post("/api/wiki/build")
 async def wiki_build_route() -> WikiBuildResult:
     """Build the concept and entity wiki across all ingested sources.
@@ -236,6 +247,19 @@ async def wiki_update_route() -> WikiBuildResult:
     async with _wiki_build_lock():
         result = await asyncio.to_thread(run_full_build, cfg)
     return WikiBuildResult(**result)
+
+
+@post("/api/wiki/synthesize")
+async def wiki_synthesize_route() -> WikiSynthesizeResult:
+    """Generate synthesis pages for concept clusters spanning 3+ sources.
+
+    Shares the wiki-build mutex so synthesis can't race a build/update
+    over the same on-disk wiki tree.
+    """
+    _require_wiki()
+    async with _wiki_build_lock():
+        result = await asyncio.to_thread(run_full_synthesize, cfg)
+    return WikiSynthesizeResult(**result)
 
 
 @get("/api/wiki/status")

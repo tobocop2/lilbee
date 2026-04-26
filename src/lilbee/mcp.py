@@ -410,16 +410,9 @@ def wiki_synthesize() -> dict[str, Any]:
     """
     if not cfg.wiki:
         return {"error": WIKI_DISABLED_ERROR}
+    from lilbee.wiki import run_full_synthesize
 
-    from lilbee.wiki.gen import generate_synthesis_pages
-
-    svc = get_services()
-    paths = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
-    return {
-        "command": "wiki_synthesize",
-        "paths": [str(p) for p in paths],
-        "count": len(paths),
-    }
+    return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
 
 
 @mcp.tool()

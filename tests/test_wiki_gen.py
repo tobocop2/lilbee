@@ -1458,3 +1458,27 @@ class TestRunFullBuild:
         result = run_full_build()
         assert captured["config"] is cfg
         assert result == {"paths": [], "entities": 0, "count": 0}
+
+
+class TestRunFullSynthesize:
+    def test_defaults_to_global_cfg_when_called_with_no_args(self, monkeypatch, tmp_path):
+        """run_full_synthesize() with no arg falls back to lilbee.config.cfg."""
+        from lilbee.wiki.gen import run_full_synthesize
+
+        captured: dict[str, object] = {}
+
+        def fake_get_services():
+            svc = MagicMock()
+            return svc
+
+        def fake_generate(provider, store, clusterer, config):
+            captured["config"] = config
+            return [tmp_path / "wiki" / "synthesis" / "typing.md"]
+
+        monkeypatch.setattr("lilbee.wiki.gen.get_services", fake_get_services)
+        monkeypatch.setattr("lilbee.wiki.gen.generate_synthesis_pages", fake_generate)
+
+        result = run_full_synthesize()
+        assert captured["config"] is cfg
+        assert result["count"] == 1
+        assert result["paths"][0].endswith("typing.md")

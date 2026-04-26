@@ -396,6 +396,13 @@ class WikiStatusResult(BaseModel):
     lint_warnings: int = 0
 
 
+class WikiSynthesizeResult(BaseModel):
+    """Result of generating synthesis pages for cross-source concept clusters."""
+
+    paths: list[str] = []
+    count: int = 0
+
+
 class DraftInfoResponse(BaseModel):
     """Metadata about a single wiki draft, mirroring ``DraftInfo.to_dict()``.
 
