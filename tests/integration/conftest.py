@@ -15,6 +15,8 @@ from lilbee.platform import canonical_models_dir
 # SmolLM2-135M is fast enough; Qwen3-0.6B is too slow.
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
+# Back-compat alias: existing integration test modules import this name.
+_CI_CHAT_MODEL = _CI_CHAT_REPO
 
 # Assertions that depend on the LLM producing specific factual content are
 # unreliable on 135M-param models, which collapse into repetition even with
