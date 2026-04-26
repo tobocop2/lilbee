@@ -919,11 +919,32 @@ class TestRoutingProvider:
 
 
 class TestLitellmAvailable:
+    @pytest.mark.real_litellm_probe
     def test_returns_false_when_not_installed(self) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
         with mock.patch.dict("sys.modules", {"litellm": None}):
             assert litellm_available() is False
+
+    @pytest.mark.real_litellm_probe
+    def test_returns_true_when_module_present(self) -> None:
+        from lilbee.providers.litellm_sdk import litellm_available
+
+        with mock.patch.dict("sys.modules", {"litellm": mock.MagicMock()}):
+            assert litellm_available() is True
+
+
+class TestRequireLitellm:
+    @pytest.mark.real_litellm_probe
+    def test_raises_provider_error_with_install_hint(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        with (
+            mock.patch.dict("sys.modules", {"litellm": None}),
+            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
+        ):
+            _require_litellm()
 
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError

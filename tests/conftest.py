@@ -116,14 +116,17 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _assume_litellm_available(monkeypatch):
+def _assume_litellm_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
     Production code now gates remote-model discovery on
     ``litellm_available()``. Dev environments without ``lilbee[litellm]``
-    would otherwise short-circuit every remote-discovery test. Tests that
-    cover the missing-extra path patch this back to False explicitly.
+    would otherwise short-circuit every remote-discovery test. Tests
+    that cover the missing-extra path skip this fixture with
+    ``@pytest.mark.real_litellm_probe``.
     """
+    if "real_litellm_probe" in {m.name for m in request.node.iter_markers()}:
+        return
     monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
 
 

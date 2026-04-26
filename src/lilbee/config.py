@@ -177,9 +177,13 @@ DEFAULT_ALLOWED_NER_LABELS = frozenset(
 # Timeout for backend catalog / management HTTP calls.
 DEFAULT_HTTP_TIMEOUT = 30.0
 
+# Safe default + cap for chat-mode n_ctx; full 128K+ training contexts OOM laptops.
+DEFAULT_NUM_CTX = 8192
+
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
+META_TABLE = "_meta"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"

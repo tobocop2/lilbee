@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import cfg
+from lilbee.config import DEFAULT_NUM_CTX, cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
 from lilbee.services import get_services
@@ -52,6 +52,18 @@ _GGML_TO_PY_LEVEL = {
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
+
+# Settings baked into Llama() at load time, or whose change picks a
+# different model file. Sampling params are read per-call and excluded.
+LOAD_AFFECTING_KEYS = frozenset(
+    {
+        "num_ctx",
+        "chat_model",
+        "embedding_model",
+        "vision_model",
+        "reranker_model",
+    }
+)
 
 
 @dataclass
@@ -319,6 +331,13 @@ class LlamaCppProvider(LLMProvider):
             self._subprocess_worker = None
         self._cache.unload_all()
 
+    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
+        """Evict cached models so the next call reloads with current settings."""
+        if model_path is None:
+            self._cache.unload_all()
+        else:
+            self._cache.unload_path(model_path)
+
 
 class _LockedStreamIterator:
     """Wraps a streaming response so the chat lock is held until iteration ends.
@@ -538,11 +557,20 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     }
     if cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
-    else:
-        # n_ctx=0 tells llama.cpp to use the model's training context.
-        # Without this, llama.cpp defaults to 512 tokens which is too small
-        # for most embedding models (e.g. nomic-embed-text trains at 2048).
+    elif embedding:
+        # n_ctx=0 -> llama.cpp uses the model's training context (else 512).
         kwargs["n_ctx"] = 0
+    else:
+        # Cap chat at DEFAULT_NUM_CTX so 128K+ training contexts don't OOM.
+        training_ctx = DEFAULT_NUM_CTX
+        try:
+            meta = read_gguf_metadata(model_path)
+        except Exception:
+            log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
+            meta = None
+        if meta:
+            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
+        kwargs["n_ctx"] = min(training_ctx, DEFAULT_NUM_CTX)
 
     if embedding:
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently

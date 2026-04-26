@@ -407,14 +407,21 @@ def chat_stream(
     )
 
 
-async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:
+async def _run_sync_with_sentinel(
+    sse: SseStream, enable_ocr: bool | None, force_rebuild: bool = False
+) -> SyncResult:
     """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
     try:
         with temporary_ocr_config(enable_ocr):
-            return await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            return await sync(
+                quiet=True,
+                on_progress=sse.callback,
+                cancel=sse.cancel,
+                force_rebuild=force_rebuild,
+            )
     finally:
         sse.queue.put_nowait(None)
 
@@ -489,10 +496,16 @@ def _canonical_source_name(p_str: str) -> str:
     return Path(p_str).name
 
 
-async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
-    """Trigger sync, yield SSE progress events, then done event."""
+async def sync_stream(
+    *, enable_ocr: bool | None = None, force_rebuild: bool = False
+) -> AsyncGenerator[str, None]:
+    """Trigger sync, yield SSE progress events, then done event.
+
+    When ``force_rebuild`` is true, the underlying sync drops every table and
+    re-ingests from ``cfg.documents_dir`` (the REST equivalent of ``lilbee rebuild``).
+    """
     sse = SseStream()
-    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr))
+    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr, force_rebuild))
     async for event in sse.drain(task, "Sync stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
@@ -767,9 +780,26 @@ async def set_chat_model(model: str) -> SetModelResponse:
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
-    """Switch embedding model. Validates installation and catalog task."""
+    """Switch embedding model. Validates installation and catalog task.
+
+    Returns ``reindex_required=True`` when the new model differs from the
+    embedding model that built the persisted vector store. The caller is
+    expected to trigger a rebuild (``lilbee rebuild`` or ``POST /api/sync``
+    with ``force_rebuild=true``). Search and ingest will refuse to operate
+    until that happens.
+
+    Pins a legacy store's identity to the OLD cfg before mutating it. Without
+    this step, a pre-upgrade store with chunks but no ``_meta`` row would have
+    its meta lazy-initialized from the NEW cfg on the next read, hiding the
+    drift the caller just introduced.
+    """
     normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
-    return await _set_model("embedding_model", normalized)
+    store = get_services().store
+    store.initialize_meta_if_legacy()
+    await _set_model("embedding_model", normalized)
+    meta = store.get_meta()
+    reindex_required = meta is not None and meta["embedding_model"] != normalized
+    return SetModelResponse(model=normalized, reindex_required=reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:

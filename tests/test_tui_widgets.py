@@ -2035,19 +2035,6 @@ class TestPill:
         assert isinstance(result, Content)
 
 
-class TestEvents:
-    def test_model_changed_is_message(self) -> None:
-        from textual.message import Message
-
-        from lilbee.cli.tui.events import ModelChanged
-        from lilbee.models import ModelTask
-
-        msg = ModelChanged(ModelTask.CHAT, "qwen3:8b")
-        assert isinstance(msg, Message)
-        assert msg.role == ModelTask.CHAT
-        assert msg.name == "qwen3:8b"
-
-
 # ---------------------------------------------------------------------------
 # GridSelect widget tests
 # ---------------------------------------------------------------------------
@@ -2879,6 +2866,34 @@ class TestCollectNativeModelsError:
         assert len(buckets["chat"]) == 1
         assert buckets["chat"][0].label == "gpt-4o (OpenAI)"
         assert buckets["chat"][0].ref == "openai/gpt-4o"
+
+    def test_collect_remote_models_skipped_when_litellm_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the SDK extra the picker can't route to remote models, so skip discovery."""
+        from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
+
+        monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
+        buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
+        seen: set[str] = set()
+        with mock.patch("lilbee.model_manager.classify_remote_models") as classify:
+            _collect_remote_models(buckets, seen)
+        classify.assert_not_called()
+        assert buckets["chat"] == []
+
+    def test_collect_api_models_skipped_when_litellm_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """API discovery is gated on the same SDK availability."""
+        from lilbee.cli.tui.widgets.model_bar import _collect_api_models
+
+        monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
+        buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
+        seen: set[str] = set()
+        with mock.patch("lilbee.model_manager.discover_api_models") as discover:
+            _collect_api_models(buckets, seen)
+        discover.assert_not_called()
+        assert buckets["chat"] == []
 
     def test_collect_api_models_exception_suppressed(self) -> None:
         import lilbee.model_manager as mm

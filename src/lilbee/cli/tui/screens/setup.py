@@ -36,7 +36,7 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.models import ModelTask, get_system_ram_gb
-from lilbee.services import reset_services
+from lilbee.services import get_services, reset_services
 
 log = logging.getLogger(__name__)
 
@@ -246,6 +246,10 @@ class SetupWizard(Screen[str | None]):
             cfg.chat_model = ref
             settings.set_value(cfg.data_root, "chat_model", ref)
         elif task == ModelTask.EMBEDDING:
+            # Pin a legacy store's identity to the OLD model BEFORE the cfg
+            # mutation so the gate in store.search/add_chunks correctly detects
+            # drift on the next op. See bb-x1qa.
+            get_services().store.initialize_meta_if_legacy()
             cfg.embedding_model = ref
             settings.set_value(cfg.data_root, "embedding_model", ref)
 

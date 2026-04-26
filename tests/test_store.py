@@ -4,7 +4,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.config import META_TABLE, cfg
 from lilbee.store import (
     CitationRecord,
     SearchChunk,
@@ -983,3 +983,146 @@ class TestChunkTypePredicate:
         pred = _chunk_type_predicate("wiki")
         assert "IS NULL" not in pred
         assert pred == "chunk_type = 'wiki'"
+
+
+class TestEmbeddingModelGate:
+    """Refuse search/ingest when cfg.embedding_model drifts from the persisted _meta row."""
+
+    def test_first_add_chunks_initializes_meta_from_cfg(self, store, test_config):
+        """A fresh store has no _meta row; first ingest writes one from current cfg."""
+        assert store.get_meta() is None
+        store.add_chunks(_make_records())
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == test_config.embedding_model
+        assert meta["embedding_dim"] == test_config.embedding_dim
+        assert meta["schema_version"] == 1
+        assert meta["updated_at"]
+
+    def test_add_chunks_raises_when_model_drifts_same_dim(self, store, test_config):
+        """Same dim, different model = silent corruption today; the gate refuses now."""
+        from lilbee.store import EmbeddingModelMismatchError
+
+        store.add_chunks(_make_records())
+        original_model = test_config.embedding_model
+        test_config.embedding_model = "ollama/different-model:v1"
+
+        with pytest.raises(EmbeddingModelMismatchError) as exc_info:
+            store.add_chunks(_make_records())
+        assert original_model in str(exc_info.value)
+        assert "ollama/different-model:v1" in str(exc_info.value)
+        assert "lilbee rebuild" in str(exc_info.value)
+        assert "force_rebuild" in str(exc_info.value)
+
+    def test_search_raises_when_model_drifts(self, store, test_config):
+        """Search refuses to serve under a different embedding model than the persisted one."""
+        from lilbee.store import EmbeddingModelMismatchError
+
+        store.add_chunks(_make_records())
+        test_config.embedding_model = "ollama/switched-model:latest"
+
+        with pytest.raises(EmbeddingModelMismatchError):
+            store.search([0.1] * test_config.embedding_dim)
+
+    def test_search_raises_when_dim_drifts(self, store, test_config):
+        """Switching to a different-dim model is rejected by the meta gate."""
+        from lilbee.store import EmbeddingModelMismatchError
+
+        store.add_chunks(_make_records())
+        test_config.embedding_dim = test_config.embedding_dim + 16
+        test_config.embedding_model = "ollama/wider-model:v1"
+
+        with pytest.raises(EmbeddingModelMismatchError):
+            store.search([0.1] * test_config.embedding_dim)
+
+    def test_search_short_circuits_on_missing_chunks_table(self, store, test_config):
+        """Empty stores (no chunks table) return [] before the gate runs."""
+        assert store.search([0.1] * test_config.embedding_dim) == []
+
+    def test_legacy_store_search_writes_meta_with_warning(self, store, test_config, caplog):
+        """First search on a pre-upgrade store (chunks present, no _meta) lazy-inits meta."""
+        import logging
+
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+
+        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+        assert store.get_meta() is None
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.store"):
+            results = store.search([0.1] * test_config.embedding_dim)
+
+        assert isinstance(results, list)
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == test_config.embedding_model
+        assert any("Legacy store" in r.message for r in caplog.records)
+
+    def test_drop_all_includes_meta(self, store):
+        """drop_all wipes _meta along with the other tables."""
+        store.add_chunks(_make_records())
+        assert store.get_meta() is not None
+        store.drop_all()
+        assert store.get_meta() is None
+
+    def test_meta_row_is_overwritten_not_appended(self, store, test_config):
+        """Re-ingesting after drop_all writes a single fresh _meta row, not a second one."""
+        store.add_chunks(_make_records())
+        store.drop_all()
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        assert meta_table.count_rows() == 1
+
+    def test_initialize_meta_if_legacy_pins_old_identity(self, store, test_config):
+        """Pinning legacy meta uses the cfg present at the time of the call.
+
+        This is the bb-x1qa upgrade-window protection: ``set_embedding_model``
+        calls this BEFORE mutating cfg, so the recorded model identity is the
+        OLD model. The next search/ingest then detects drift instead of silently
+        adopting the new model as if it had built the store.
+        """
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+
+        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+        original_model = test_config.embedding_model
+
+        wrote = store.initialize_meta_if_legacy()
+        assert wrote is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == original_model
+
+        # Second call is a no-op: meta already pinned.
+        assert store.initialize_meta_if_legacy() is False
+
+    def test_initialize_meta_if_legacy_noop_on_empty_store(self, store):
+        """No chunks, no meta = nothing to pin."""
+        assert store.initialize_meta_if_legacy() is False
+        assert store.get_meta() is None
+
+    def test_initialize_meta_if_legacy_skips_when_another_caller_won_the_race(
+        self, store, test_config
+    ):
+        """Defensive re-check inside the lock: if a concurrent caller already wrote
+        meta between the unlocked pre-check and acquiring the lock, do not double-write."""
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+
+        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+
+        winning_meta = {
+            "embedding_model": "winner-model:v1",
+            "embedding_dim": test_config.embedding_dim,
+            "schema_version": 1,
+            "updated_at": "2026-04-26T00:00:00+00:00",
+        }
+        with mock.patch.object(store, "get_meta", side_effect=[None, winning_meta]):
+            assert store.initialize_meta_if_legacy() is False
