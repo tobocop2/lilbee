@@ -675,6 +675,34 @@ class TestProviderInvalidateLoadCache:
         assert _StubSdk().invalidate_load_cache() is None
         assert _StubSdk().invalidate_load_cache(Path("/tmp/anything.gguf")) is None
 
+    def test_routing_provider_forwards_only_to_native_side(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """RoutingProvider forwards invalidate_load_cache to the lazily-built
+        native provider only — never wakes the SDK side, even after both
+        sub-providers have been instantiated."""
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        cfg.num_ctx = 8192
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        routing = RoutingProvider()
+        try:
+            # No native side built yet -> invalidation is a no-op (does not eagerly construct).
+            routing.invalidate_load_cache()
+            assert routing._llama_cpp is None
+
+            # Force the native side to instantiate via a method that touches it.
+            from lilbee.providers.model_cache import MODE_CHAT
+
+            native = routing._get_llama_cpp()
+            native._cache.load_model(models_dir / "test-model.gguf", mode=MODE_CHAT)  # type: ignore[attr-defined]
+            assert native._cache.get_stats()["loaded_models"] == 1  # type: ignore[attr-defined]
+
+            routing.invalidate_load_cache()
+            assert native._cache.get_stats()["loaded_models"] == 0  # type: ignore[attr-defined]
+        finally:
+            routing.shutdown()
+
 
 class TestSuppressStderrThreadSafety:
     def test_concurrent_suppress_native_stderr_no_corruption(self) -> None:

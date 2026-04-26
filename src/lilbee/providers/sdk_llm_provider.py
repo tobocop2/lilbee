@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 from lilbee.config import cfg
@@ -252,3 +253,12 @@ class SdkLLMProvider(LLMProvider):
 
     def shutdown(self) -> None:
         """SDK-backed providers hold no lilbee-side resources."""
+
+    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
+        """No-op: cloud/remote backends have no local model cache to evict.
+
+        Load-time settings like ``num_ctx`` are the API server's concern
+        on this path, not lilbee's. The explicit override keeps SDK
+        backends symmetric with the other ``LLMProvider`` implementations
+        (see also ``supports_rerank``).
+        """
