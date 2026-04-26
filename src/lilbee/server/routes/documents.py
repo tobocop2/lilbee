@@ -27,10 +27,16 @@ class RemoveRequest(BaseModel):
 
 @post("/api/sync")
 async def sync_route(data: SyncRequest | None = None) -> Stream:
-    """Re-index changed documents with streaming SSE progress events."""
+    """Re-index changed documents with streaming SSE progress events.
+
+    Pass ``{"force_rebuild": true}`` to wipe the store and re-ingest every file
+    under the current ``cfg.embedding_model``. This is the recovery path after
+    a ``PUT /api/models/embedding`` that returned ``reindex_required=true``.
+    """
     enable_ocr = data.enable_ocr if data else None
+    force_rebuild = data.force_rebuild if data else False
     return Stream(
-        handlers.sync_stream(enable_ocr=enable_ocr),
+        handlers.sync_stream(enable_ocr=enable_ocr, force_rebuild=force_rebuild),
         media_type="text/event-stream",
     )
 
