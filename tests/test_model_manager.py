@@ -10,13 +10,13 @@ import pytest
 from lilbee.model_manager import (
     ModelManager,
     ModelSource,
-    ModelTask,
     RemoteModel,
     _has_provider_key,
     discover_api_models,
     get_model_manager,
     reset_model_manager,
 )
+from lilbee.models import ModelTask
 from lilbee.providers.sdk_backend import detect_backend_name
 
 
@@ -189,11 +189,11 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        import lilbee.model_manager as mm_mod
+        from lilbee.model_manager import core as mm_core
 
         with (
             mock.patch("httpx.get", return_value=mock_response) as mock_get,
-            mock.patch.object(mm_mod.time, "monotonic") as mock_clock,
+            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
         ):
             # One clock tick per list_installed call — second tick is past TTL.
             mock_clock.side_effect = [0.0, 100.0]
