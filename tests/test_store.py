@@ -1098,7 +1098,7 @@ class TestEmbeddingModelGate:
         assert meta is not None
         assert meta["embedding_model"] == original_model
 
-        # Second call is a no-op — meta already pinned.
+        # Second call is a no-op: meta already pinned.
         assert store.initialize_meta_if_legacy() is False
 
     def test_initialize_meta_if_legacy_noop_on_empty_store(self, store):
