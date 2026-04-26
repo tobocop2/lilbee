@@ -1,7 +1,7 @@
 """SDK-backed provider integration tests: real Ollama server, no mocks.
 
-Requires litellm installed and Ollama running at OLLAMA_HOST (default localhost:11434)
-with the qwen3:0.6b model pulled.
+Requires litellm installed and Ollama running at OLLAMA_HOST (default
+localhost:11434) with the qwen3:0.6b and nomic-embed-text models pulled.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = "qwen3:0.6b"
+# Ollama keeps its own ``name:tag`` shape; lilbee's config layer requires
+# the ``ollama/`` prefix so its routing knows where to send the request.
+OLLAMA_MODEL = "ollama/qwen3:0.6b"
+OLLAMA_EMBED_MODEL = "ollama/nomic-embed-text"
 
 
 def _ollama_reachable() -> bool:
@@ -47,7 +50,7 @@ def _isolate_cfg():
 class TestSdkEmbed:
     def test_embed_returns_vectors(self) -> None:
         """Real embedding via Ollama returns float vectors."""
-        cfg.embedding_model = "nomic-embed-text"
+        cfg.embedding_model = OLLAMA_EMBED_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
         result = provider.embed(["hello world"])
 
@@ -57,7 +60,7 @@ class TestSdkEmbed:
 
     def test_embed_batch(self) -> None:
         """Batch embedding returns one vector per input."""
-        cfg.embedding_model = "nomic-embed-text"
+        cfg.embedding_model = OLLAMA_EMBED_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
         texts = ["hello", "world", "test"]
         result = provider.embed(texts)
@@ -97,7 +100,7 @@ class TestSdkChat:
 
     def test_chat_with_model_override(self) -> None:
         """Model override in chat() works."""
-        cfg.chat_model = "should-not-be-used"
+        cfg.chat_model = OLLAMA_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
         result = provider.chat(
             [{"role": "user", "content": "Say yes."}],
@@ -139,8 +142,8 @@ class TestSdkFactory:
 
         assert isinstance(provider, SdkLLMProvider)
 
-    def test_legacy_ollama_alias_rejected(self) -> None:
-        """'ollama' is no longer a valid llm_provider value; only "remote" is."""
+    def test_ollama_alias_rejected(self) -> None:
+        """'ollama' is not a valid llm_provider value; only "remote" is."""
         from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
 

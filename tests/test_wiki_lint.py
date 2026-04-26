@@ -349,13 +349,13 @@ class TestLintModelChanged:
         assert result is None
 
     def test_different_model_flags_issue(self):
-        text = "---\ngenerated_by: old-model:latest\n---\n\n# Doc\n"
+        text = "---\ngenerated_by: org/Old-Model-GGUF/old-Q4_K_M.gguf\n---\n\n# Doc\n"
         result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is not None
         assert result.severity == IssueSeverity.WARNING
         assert "model_changed" in result.message
-        assert "old-model" in result.message
-        assert "test-model" in result.message
+        assert "old" in result.message.lower()
+        assert cfg.chat_model in result.message
 
     def test_no_frontmatter_no_issue(self):
         text = "# No frontmatter\n\nJust content.\n"

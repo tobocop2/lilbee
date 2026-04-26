@@ -12,6 +12,7 @@ from unittest import mock
 import pytest
 from textual.widgets import Footer, Input
 
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
@@ -29,8 +30,8 @@ def _isolated_cfg(tmp_path):
     cfg.documents_dir = tmp_path / "documents"
     cfg.models_dir = tmp_path / "models"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.chat_model = "test-chat-model.gguf"
-    cfg.embedding_model = "test-embed-model"
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
     cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)

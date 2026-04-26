@@ -53,9 +53,6 @@ class TestDownloadFailureMessages:
     def test_nonexistent_repo_gives_clear_error(self) -> None:
         """Downloading from a nonexistent repo raises RuntimeError with details."""
         bad_model = CatalogModel(
-            name="nonexistent",
-            tag="latest",
-            display_name="Nonexistent Model",
             hf_repo="this-user-does-not-exist-abc123/fake-model-xyz",
             gguf_filename="fake.gguf",
             size_gb=0.001,
