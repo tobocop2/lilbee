@@ -607,12 +607,9 @@ class CatalogScreen(Screen[None]):
                 if row.remote_model.provider == OLLAMA_BACKEND_NAME
                 else row.remote_model.name
             )
-            from lilbee.cli.tui.app import LilbeeApp
+            from lilbee.cli.tui.app import apply_active_model
 
-            if isinstance(self.app, LilbeeApp):
-                self.app.set_active_model("chat_model", ref)
-            else:
-                cfg.chat_model = ref
+            apply_active_model(self.app, "chat_model", ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:

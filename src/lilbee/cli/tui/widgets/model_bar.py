@@ -13,7 +13,6 @@ from textual.widget import Widget
 from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
-from lilbee import settings
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -360,11 +359,13 @@ class ModelBar(Widget, can_focus=False):
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
         """Write the new chat model to cfg and settings."""
+        from lilbee.cli.tui.app import apply_active_model
+
         chat_sel = self.query_one("#chat-model-select", Select)
         value = self._extract_value(event, chat_sel)
         if value is None or value == cfg.chat_model:
             return
-        self._persist_model_change("chat_model", value)
+        apply_active_model(self.app, "chat_model", value)
         self._refresh_cloud_warning()
         self._after_model_change()
 
@@ -381,27 +382,14 @@ class ModelBar(Widget, can_focus=False):
     @on(Select.Changed, "#embed-model-select")
     def _on_embed_model_changed(self, event: Select.Changed) -> None:
         """Write the new embedding model to cfg and settings."""
+        from lilbee.cli.tui.app import apply_active_model
+
         embed_sel = self.query_one("#embed-model-select", Select)
         value = self._extract_value(event, embed_sel)
         if value is None or value == cfg.embedding_model:
             return
-        self._persist_model_change("embedding_model", value)
+        apply_active_model(self.app, "embedding_model", value)
         self._after_model_change()
-
-    def _persist_model_change(self, key: str, value: str) -> None:
-        """Route the change through LilbeeApp.set_active_model so subscribers fire.
-
-        Falls back to a direct write when the host App isn't a LilbeeApp
-        (e.g. a minimal test harness) so the existing widget unit tests
-        still pass without booting the full app.
-        """
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.set_active_model(key, value)
-        else:
-            setattr(cfg, key, value)
-            settings.set_value(cfg.data_root, key, value)
 
     @on(Select.Changed, "#scope-select")
     def _on_scope_changed(self, event: Select.Changed) -> None:

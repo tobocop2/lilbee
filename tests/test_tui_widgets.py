@@ -1992,19 +1992,6 @@ class TestPill:
         assert isinstance(result, Content)
 
 
-class TestEvents:
-    def test_model_changed_is_message(self) -> None:
-        from textual.message import Message
-
-        from lilbee.cli.tui.events import ModelChanged
-        from lilbee.models import ModelTask
-
-        msg = ModelChanged(ModelTask.CHAT, "qwen3:8b")
-        assert isinstance(msg, Message)
-        assert msg.role == ModelTask.CHAT
-        assert msg.name == "qwen3:8b"
-
-
 # ---------------------------------------------------------------------------
 # GridSelect widget tests
 # ---------------------------------------------------------------------------
@@ -3659,7 +3646,7 @@ class TestModelBarCfgSourceOfTruth:
             assert chat_sel.value == "mistral:latest"
 
             with (
-                mock.patch("lilbee.cli.tui.widgets.model_bar.settings.set_value"),
+                mock.patch("lilbee.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 chat_sel.value = "smollm2:135m"

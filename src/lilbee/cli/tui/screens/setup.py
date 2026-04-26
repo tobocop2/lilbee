@@ -253,24 +253,20 @@ class SetupWizard(Screen[str | None]):
         Called when the user presses Enter on a card. Saves the config
         fragment eagerly so Esc mid-wizard doesn't lose the pick.
         """
-        from lilbee import settings
-        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 
         self._mark_selection(card, task)
         ref = self._selections[task][0]
         if ref is None:
             return
         # Write the fragment; embedding never overrides chat and vice versa.
-        # Routes through LilbeeApp.set_active_model so cache eviction and
-        # ViewTabs pill refresh fire from the wizard path too. Falls back
-        # to the direct write when the host App isn't a LilbeeApp.
-        key = "chat_model" if task == ModelTask.CHAT else "embedding_model"
-        if task in (ModelTask.CHAT, ModelTask.EMBEDDING):
-            if isinstance(self.app, LilbeeApp):
-                self.app.set_active_model(key, ref)
-            else:
-                setattr(cfg, key, ref)
-                settings.set_value(cfg.data_root, key, ref)
+        # apply_active_model routes through LilbeeApp.set_active_model so
+        # cache eviction + ViewTabs pill refresh fire from the wizard
+        # path too, with a direct-write fallback for non-LilbeeApp hosts.
+        if task == ModelTask.CHAT:
+            apply_active_model(self.app, "chat_model", ref)
+        elif task == ModelTask.EMBEDDING:
+            apply_active_model(self.app, "embedding_model", ref)
 
         pending = _pending_download(card)
         if (

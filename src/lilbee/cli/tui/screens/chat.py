@@ -608,13 +608,9 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            from lilbee.cli.tui.app import LilbeeApp
+            from lilbee.cli.tui.app import apply_active_model
 
-            if isinstance(self.app, LilbeeApp):
-                self.app.set_active_model("chat_model", args)
-            else:
-                cfg.chat_model = args
-                settings.set_value(cfg.data_root, "chat_model", cfg.chat_model)
+            apply_active_model(self.app, "chat_model", args)
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
