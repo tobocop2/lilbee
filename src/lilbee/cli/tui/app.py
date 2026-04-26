@@ -15,9 +15,8 @@ from textual.signal import Signal
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
-from lilbee.cli.tui.events import ModelChanged
 from lilbee.config import cfg
-from lilbee.services import reset_services
+from lilbee.services import get_services, reset_services
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +83,16 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
+def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
+    """Drop loaded-model state when a load-affecting setting changes."""
+    # Lazy: llama_cpp_provider's transitive imports cost ~500ms.
+    from lilbee.providers.llama_cpp_provider import LOAD_AFFECTING_KEYS
+
+    key, _value = payload
+    if key in LOAD_AFFECTING_KEYS:
+        get_services().provider.invalidate_load_cache()
+
+
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -132,7 +141,6 @@ class LilbeeApp(App[None]):
         self._theme_index = 0
         self.last_quit_time: float = 0.0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
-        self.model_changed_signal: Signal[ModelChanged] = Signal(self, "model_changed")
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
         self.task_bar = TaskBarController(self)
@@ -143,6 +151,8 @@ class LilbeeApp(App[None]):
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
+
+        self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 

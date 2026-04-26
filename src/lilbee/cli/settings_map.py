@@ -122,7 +122,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group="Generation",
-        help_text="Context window size in tokens",
+        help_text="Context window size in tokens. Leave empty for the safe chat default (8192).",
     ),
     "seed": SettingDef(
         int,
