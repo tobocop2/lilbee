@@ -1422,6 +1422,25 @@ class TestSetEmbeddingModel:
         result = await handlers.set_embedding_model("nomic-embed-text:v1.5")
         assert result.reindex_required is False
 
+    @patch("lilbee.server.handlers.get_services")
+    async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc, tmp_path):
+        """A pre-upgrade store with chunks but no _meta is pinned under the OLD cfg.
+
+        This is the bb-x1qa upgrade-window protection: without the pin, lazy-init
+        on the next op would adopt the NEW cfg as the legacy identity, hiding the
+        drift the caller just introduced.
+        """
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:v1.5"]
+        store_mock = mock_svc.return_value.store
+        store_mock.get_meta.return_value = {
+            "embedding_model": "previous-model:v1",
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        await handlers.set_embedding_model("nomic-embed-text:v1.5")
+        store_mock.initialize_meta_if_legacy.assert_called_once()
+
 
 class TestGetConfig:
     async def test_returns_all_config_keys(self):

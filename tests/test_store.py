@@ -4,7 +4,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.config import META_TABLE, cfg
 from lilbee.store import (
     CitationRecord,
     SearchChunk,
@@ -1035,20 +1035,20 @@ class TestEmbeddingModelGate:
         with pytest.raises(EmbeddingModelMismatchError):
             store.search([0.1] * test_config.embedding_dim)
 
-    def test_search_returns_empty_on_fresh_store_no_gate_trip(self, store, test_config):
-        """An empty store (no chunks table) returns [] without consulting _meta."""
+    def test_search_short_circuits_on_missing_chunks_table(self, store, test_config):
+        """Empty stores (no chunks table) return [] before the gate runs."""
         assert store.search([0.1] * test_config.embedding_dim) == []
 
-    def test_legacy_store_with_chunks_but_no_meta_lazy_inits(self, store, test_config, caplog):
-        """Pre-upgrade stores have chunks but no _meta row; first op writes it with a warning."""
+    def test_legacy_store_search_writes_meta_with_warning(self, store, test_config, caplog):
+        """First search on a pre-upgrade store (chunks present, no _meta) lazy-inits meta."""
         import logging
 
         store.add_chunks(_make_records())
-        meta_table = store.open_table("_meta")
+        meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _safe_delete_unlocked
+        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
 
-        _safe_delete_unlocked(meta_table, "schema_version >= 0")
+        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
         assert store.get_meta() is None
 
         with caplog.at_level(logging.WARNING, logger="lilbee.store"):
@@ -1072,6 +1072,57 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         store.drop_all()
         store.add_chunks(_make_records())
-        meta_table = store.open_table("_meta")
+        meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
         assert meta_table.count_rows() == 1
+
+    def test_initialize_meta_if_legacy_pins_old_identity(self, store, test_config):
+        """Pinning legacy meta uses the cfg present at the time of the call.
+
+        This is the bb-x1qa upgrade-window protection: ``set_embedding_model``
+        calls this BEFORE mutating cfg, so the recorded model identity is the
+        OLD model. The next search/ingest then detects drift instead of silently
+        adopting the new model as if it had built the store.
+        """
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+
+        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+        original_model = test_config.embedding_model
+
+        wrote = store.initialize_meta_if_legacy()
+        assert wrote is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == original_model
+
+        # Second call is a no-op — meta already pinned.
+        assert store.initialize_meta_if_legacy() is False
+
+    def test_initialize_meta_if_legacy_noop_on_empty_store(self, store):
+        """No chunks, no meta = nothing to pin."""
+        assert store.initialize_meta_if_legacy() is False
+        assert store.get_meta() is None
+
+    def test_initialize_meta_if_legacy_skips_when_another_caller_won_the_race(
+        self, store, test_config
+    ):
+        """Defensive re-check inside the lock: if a concurrent caller already wrote
+        meta between the unlocked pre-check and acquiring the lock, do not double-write."""
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+
+        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+
+        winning_meta = {
+            "embedding_model": "winner-model:v1",
+            "embedding_dim": test_config.embedding_dim,
+            "schema_version": 1,
+            "updated_at": "2026-04-26T00:00:00+00:00",
+        }
+        with mock.patch.object(store, "get_meta", side_effect=[None, winning_meta]):
+            assert store.initialize_meta_if_legacy() is False
