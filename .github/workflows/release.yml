@@ -90,7 +90,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync && uv pip install pyinstaller
+          uv sync --extra release && uv pip install pyinstaller
           # python-multipart ships a multipart/ shim that shadows the real
           # multipart.py in PyInstaller builds. Remove it so litestar gets
           # the real module.
@@ -116,18 +116,35 @@ jobs:
           set -euxo pipefail
           uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
 
+      - name: Verify extras installed in build venv
+        shell: bash
+        run: uv run python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
+
       - name: Build executable
+        # Bundles the optional extras (crawler, litellm, graph) so the
+        # released binary matches a source install. Adds roughly 150-250MB
+        # per platform. Chromium (crawl4ai) and en_core_web_sm (spacy) are
+        # still runtime downloads on first use.
         run: >
           ${{ matrix.pyinstaller }}
           --onefile
           --name ${{ matrix.asset_name }}
           --copy-metadata lilbee
+          --copy-metadata litellm
+          --copy-metadata crawl4ai
+          --copy-metadata spacy
+          --copy-metadata catalogue
           --collect-data lilbee
           --collect-all lancedb
           --collect-all tree_sitter_language_pack
           --collect-all tiktoken_ext
           --collect-all pypdfium2
           --collect-all llama_cpp
+          --collect-all crawl4ai
+          --collect-all litellm
+          --collect-submodules litellm.llms
+          --collect-all spacy
+          --collect-all graspologic_native
           src/lilbee/__main__.py
 
       - name: Smoke test
@@ -224,6 +241,19 @@ jobs:
             exit 1
           fi
           python tools/wheel-build/parse_self_check.py "$SELF_CHECK_LOG"
+
+          # Confirm the optional extras were bundled. Their runtime guards
+          # keep them off the cold-start import path, so self-check above
+          # wouldn't notice if PyInstaller dropped them.
+          python - "$EXE" <<'PY'
+          import pathlib, sys
+          data = pathlib.Path(sys.argv[1]).read_bytes()
+          missing = [m for m in (b"litellm", b"crawl4ai", b"spacy", b"graspologic_native") if m not in data]
+          if missing:
+              print(f"FAIL: missing markers in frozen binary: {missing}")
+              sys.exit(1)
+          print("extras markers present in frozen binary")
+          PY
 
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference all green"
         shell: bash
