@@ -400,8 +400,8 @@ class TestSetRerankerModelRoute:
         assert resp.status_code == 422
         assert "not rerank" in resp.json()["detail"]
 
-    @mock.patch("lilbee.server.handlers._require_model_available")
-    @mock.patch("lilbee.server.handlers._set_model", new_callable=AsyncMock)
+    @mock.patch("lilbee.server.handlers.models._require_model_available")
+    @mock.patch("lilbee.server.handlers.models._set_model", new_callable=AsyncMock)
     def test_route_resolves_bare_repo_to_installed_quant(self, mock_set, mock_available, client):
         """POSTing a bare ``hf_repo`` resolves to whichever quant is installed.
 
