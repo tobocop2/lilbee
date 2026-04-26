@@ -42,7 +42,7 @@ from lilbee.wiki.citation import (
     render_citation_block,
     strip_citation_block,
 )
-from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
+from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity, get_entity_extractor
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
@@ -57,6 +57,7 @@ from lilbee.wiki.shared import (
     SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
+    WIKI_LOG_ACTION_BUILD,
     WIKI_LOG_ACTION_GENERATED,
     PageTarget,
     clean_label_for_display,
@@ -1720,9 +1721,6 @@ def run_full_build(config: Config | None = None) -> WikiBuildSummary:
     """Extract entities and build wiki pages for every ingested source."""
     if config is None:
         config = cfg
-    from lilbee.wiki.entity_extractor import get_entity_extractor
-    from lilbee.wiki.shared import WIKI_LOG_ACTION_BUILD
-
     svc = get_services()
     chunks: list[SearchChunk] = []
     for record in svc.store.get_sources():
