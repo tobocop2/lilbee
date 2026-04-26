@@ -27,6 +27,7 @@ from textual.widgets import Label, Static
 
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     catalog_to_row,
@@ -136,15 +137,28 @@ class SetupWizard(Screen[str | None]):
         return self._selections[ModelTask.EMBEDDING][0]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from textual.widgets import Footer
 
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
+
+        with TopBars():
+            yield ViewTabs()
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_INTRO, id="setup-intro")
         yield VerticalScroll(id="setup-grid-container")
         with BottomBars():
-            yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
+            yield Label(self._initial_hint_text(), id="setup-enter-hint")
             yield TaskBar()
+            yield Footer()
+
+    def _initial_hint_text(self) -> str:
+        """Return SETUP_RETURN_HINT when both roles already resolve, else SETUP_ENTER_HINT."""
+        if self._chat_installed and self._embed_installed:
+            return msg.SETUP_RETURN_HINT
+        return msg.SETUP_ENTER_HINT
 
     def on_mount(self) -> None:
         self._build_grid()
@@ -234,24 +248,20 @@ class SetupWizard(Screen[str | None]):
         Called when the user presses Enter on a card. Saves the config
         fragment eagerly so Esc mid-wizard doesn't lose the pick.
         """
-        from lilbee import settings
         from lilbee.cli.tui.app import LilbeeApp
 
         self._mark_selection(card, task)
         ref = self._selections[task][0]
         if ref is None:
             return
-        # Write the fragment; embedding never overrides chat and vice versa.
         if task == ModelTask.CHAT:
-            cfg.chat_model = ref
-            settings.set_value(cfg.data_root, "chat_model", ref)
+            apply_active_model(self.app, "chat_model", ref)
         elif task == ModelTask.EMBEDDING:
             # Pin a legacy store's identity to the OLD model BEFORE the cfg
             # mutation so the gate in store.search/add_chunks correctly detects
             # drift on the next op. See bb-x1qa.
             get_services().store.initialize_meta_if_legacy()
-            cfg.embedding_model = ref
-            settings.set_value(cfg.data_root, "embedding_model", ref)
+            apply_active_model(self.app, "embedding_model", ref)
 
         pending = _pending_download(card)
         if (

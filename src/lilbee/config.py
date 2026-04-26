@@ -552,14 +552,16 @@ class Config(BaseSettings):
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
 
+    # TUI theme name; persists the last Ctrl+T pick across sessions.
+    theme: str = ConfigField(default="gruvbox", writable=True)
+
     # Per-model generation defaults set via apply_model_defaults().
     _model_defaults: Any = None
 
     # Wiki layer. LLM-maintained synthesis pages with citation provenance.
-    # On by default, no extras required. Set to False to hide the Wiki view
-    # and disable wiki generation/sync. Writable so the HTTP /api/config
-    # route, TUI /settings, and LILBEE_WIKI env var all round-trip.
-    wiki: bool = ConfigField(default=True, writable=True)
+    # Off by default; flip to True (or set LILBEE_WIKI=1) to enable. When off,
+    # the Wiki view tab and the chat ModelBar's scope picker are both hidden.
+    wiki: bool = ConfigField(default=False, writable=True)
     wiki_dir: str = "wiki"
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
 

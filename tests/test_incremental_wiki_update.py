@@ -152,6 +152,30 @@ class TestIncrementalWikiUpdate:
         assert "changed.txt" in log_path.read_text()
 
     @pytest.mark.asyncio
+    async def test_returns_when_no_entities_touched(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
+    ) -> None:
+        """Sources exist but every extracted entity has an existing page and is
+        unrelated to changed_sources -> touched stays empty -> early return.
+
+        Exercises both the source-iteration branch (chunks.extend on a non-empty
+        get_sources()) and the empty-touched-list early return.
+        """
+        unrelated = _entity("unrelated", EntityKind.ENTITY, ["other.txt"])
+        wiki_root = _isolated_wiki / "wiki"
+        (wiki_root / "entities").mkdir(parents=True)
+        (wiki_root / "entities" / "unrelated.md").write_text("existing\n")
+
+        _extractor, services = _install_service_stubs(monkeypatch, [unrelated])
+        services.store.get_sources.return_value = [{"filename": "other.txt"}]
+        services.store.get_chunks_by_source.return_value = []
+
+        with patch("lilbee.wiki.build_wiki") as build:
+            await _incremental_wiki_update({"changed.txt"})
+        build.assert_not_called()
+        services.store.get_chunks_by_source.assert_called_once_with("other.txt")
+
+    @pytest.mark.asyncio
     async def test_build_wiki_extract_concepts_false_on_incremental(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:

@@ -6,15 +6,18 @@ import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.signal import Signal
 
+from lilbee import settings
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config import cfg
 from lilbee.services import get_services, reset_services
 
@@ -107,7 +110,7 @@ class LilbeeApp(App[None]):
         Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
-        Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
         # priority=True is required: even though NavAwareInput lets [ and ]
         # bubble past Input.check_consume_key, Textual's focused Input still
@@ -150,7 +153,11 @@ class LilbeeApp(App[None]):
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
-        self.theme = _DEFAULT_THEME
+        # Restore the persisted theme so the TUI opens in whatever the user
+        # picked last session, not always the gruvbox default.
+        persisted = cfg.theme or _DEFAULT_THEME
+        self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
+        self._sync_theme_index_to_current()
 
         self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
 
@@ -165,13 +172,35 @@ class LilbeeApp(App[None]):
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
         name = DARK_THEMES[self._theme_index]
-        self.theme = name
+        self._apply_and_persist_theme(name)
         self.notify(msg.THEME_SET.format(name=name))
 
     def set_theme(self, name: str) -> None:
-        """Set theme by name (used by /theme command)."""
+        """Set theme by name (used by /theme command). Persists across sessions."""
         if name in self.available_themes:
-            self.theme = name
+            self._apply_and_persist_theme(name)
+            self._sync_theme_index_to_current()
+
+    def _apply_and_persist_theme(self, name: str) -> None:
+        """Apply *name* live and write it to config.toml."""
+        self.theme = name
+        cfg.theme = name
+        settings.set_value(cfg.data_root, "theme", name)
+
+    def set_active_model(self, key: str, value: str) -> None:
+        """Single write boundary for active model refs; persists the
+        post-validator value so subscribers see the normalized form."""
+        setattr(cfg, key, value)
+        normalized = getattr(cfg, key)
+        settings.set_value(cfg.data_root, key, normalized)
+        self.settings_changed_signal.publish((key, normalized))
+
+    def _sync_theme_index_to_current(self) -> None:
+        """Align the cycle index with the active theme so Ctrl+T moves from there."""
+        try:
+            self._theme_index = DARK_THEMES.index(self.theme)
+        except ValueError:
+            self._theme_index = 0
 
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel active task > cancel stream > quit.
@@ -241,6 +270,10 @@ class LilbeeApp(App[None]):
         def _finish() -> None:
             self.active_view = view_name
             self._switching = False
+            # ViewTabs.on_mount captured active_view before this callback
+            # runs, so the highlight would lag by one step without this push.
+            with contextlib.suppress(NoMatches):
+                self.screen.query_one(ViewTabs).active_view = view_name
 
         self.call_later(_finish)
 
@@ -265,3 +298,12 @@ class LilbeeApp(App[None]):
         view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx + 1) % len(view_names)])
+
+
+def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
+    """Route model writes through LilbeeApp.set_active_model; bare-App fallback for tests."""
+    if isinstance(host_app, LilbeeApp):
+        host_app.set_active_model(key, value)
+        return
+    setattr(cfg, key, value)
+    settings.set_value(cfg.data_root, key, getattr(cfg, key))

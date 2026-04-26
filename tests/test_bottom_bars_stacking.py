@@ -123,16 +123,17 @@ async def test_chat_screen_taskbar_row_is_distinct_from_footer() -> None:
         view_tabs = app.screen.query_one(ViewTabs)
         footer = app.screen.query_one(Footer)
 
-        # Each bottom-bar row must occupy a distinct y. If dock-bottom
-        # siblings overlap, they share one y and the user sees only
-        # the last one composed.
+        # Each row must occupy a distinct y. If dock siblings overlap,
+        # they share one y and the user sees only the last one composed.
         ys = {bar.region.y, view_tabs.region.y, footer.region.y}
         assert len(ys) == 3, (
             f"TaskBar/ViewTabs/Footer must not overlap; ys={ys}, "
             f"task_bar={bar.region}, view_tabs={view_tabs.region}, footer={footer.region}"
         )
-        # Natural stacking order: TaskBar above ViewTabs above Footer.
-        assert bar.region.y < view_tabs.region.y < footer.region.y
+        # Airline-style stacking: ViewTabs lives in TopBars at the top of
+        # the screen; TaskBar + Footer live in BottomBars at the bottom
+        # (TaskBar above Footer because Footer is composed last).
+        assert view_tabs.region.y < bar.region.y < footer.region.y
 
 
 async def test_chat_screen_taskbar_does_not_overlap_prompt_area() -> None:

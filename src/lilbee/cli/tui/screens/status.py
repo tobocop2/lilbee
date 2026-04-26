@@ -144,7 +144,10 @@ class StatusScreen(Screen[None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
             Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
@@ -154,7 +157,6 @@ class StatusScreen(Screen[None]):
         )
         with BottomBars():
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:

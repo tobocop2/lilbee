@@ -24,6 +24,7 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
     TableRow,
@@ -126,15 +127,17 @@ class CatalogScreen(Screen[None]):
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.top_bars import TopBars
 
+        with TopBars():
+            yield ViewTabs()
+            yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield VerticalScroll(id="catalog-list")
-        yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()
-            yield ViewTabs()
             yield Footer()
 
     def on_mount(self) -> None:
@@ -607,7 +610,7 @@ class CatalogScreen(Screen[None]):
                 if row.remote_model.provider == OLLAMA_BACKEND_NAME
                 else row.remote_model.name
             )
-            cfg.chat_model = ref
+            apply_active_model(self.app, "chat_model", ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:

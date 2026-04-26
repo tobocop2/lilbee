@@ -273,6 +273,15 @@ class TestEnsureSpacyModel:
             with pytest.raises(ImportError, match="auto-download failed"):
                 _ensure_spacy_model()
 
+    def test_load_spacy_pipeline_delegates_to_ensure(self):
+        """Public wrapper just forwards to the private loader."""
+        from lilbee.concepts import load_spacy_pipeline
+
+        sentinel = object()
+        with patch("lilbee.concepts._ensure_spacy_model", return_value=sentinel) as ensure:
+            assert load_spacy_pipeline() is sentinel
+            ensure.assert_called_once_with()
+
 
 class TestGracefulDegradation:
     @patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model"))
