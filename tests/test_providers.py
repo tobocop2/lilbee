@@ -2480,6 +2480,14 @@ class TestRouteModel:
         ref = parse_model_ref("anthropic/claude-sonnet-4-6")
         assert _route_model(ref, "https://api.anthropic.com") == "anthropic/claude-sonnet-4-6"
 
+    def test_local_ref_on_non_ollama_url_returns_bare_name(self) -> None:
+        """Local HF refs route bare (no prefix) when the api_base isn't Ollama."""
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref("Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf")
+        assert _route_model(ref, "https://example.com/v1") == ref.name
+
 
 class TestInjectProviderKeys:
     def test_injects_keys_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:

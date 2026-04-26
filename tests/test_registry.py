@@ -318,6 +318,36 @@ class TestModelRegistryList:
         (repo_dir / f"{_FILENAME}.json").write_text("{not json")
         assert registry.list_installed() == []
 
+    def test_list_skips_non_directory_entry(self, tmp_path: Path) -> None:
+        """A stray file at the top of manifests/ is ignored, not crashed on."""
+        registry = ModelRegistry(tmp_path)
+        manifests_dir = tmp_path / "manifests"
+        manifests_dir.mkdir()
+        (manifests_dir / "stray-file.txt").write_text("not a repo dir")
+        assert registry.list_installed() == []
+
+
+class TestModelRegistryWriteManifestErrors:
+    def test_write_failure_cleans_up_temp_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If os.replace fails, the temp file is unlinked instead of leaking."""
+        from lilbee import registry as registry_mod
+
+        registry = ModelRegistry(tmp_path)
+        manifest = _make_manifest()
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr(registry_mod.os, "replace", boom)
+        with pytest.raises(OSError, match="simulated rename failure"):
+            registry._write_manifest(manifest)
+
+        repo_dir = tmp_path / "manifests" / repo_to_dir(_REPO)
+        leftovers = [p for p in repo_dir.iterdir() if p.suffix == ".tmp"]
+        assert leftovers == []
+
 
 class TestModelRegistryGetManifest:
     def test_get_manifest(self, tmp_path: Path) -> None:

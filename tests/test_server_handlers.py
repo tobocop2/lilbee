@@ -819,6 +819,20 @@ class TestSetChatModel:
         with pytest.raises(ValueError, match="not chat"):
             await handlers.set_chat_model(_VISION_REF)
 
+    async def test_rejects_unparseable_legacy_ref(self, tmp_path, mock_svc):
+        """A leftover legacy `name:tag` ref errors with the standard not-available message."""
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_chat_model("qwen3:0.6b")
+
+    async def test_provider_prefixed_bare_form_resolves_via_parse(self, tmp_path, mock_svc):
+        """An ``ollama/<name>`` resolves to bare ``<name>`` when that's what list_models returns."""
+        mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
+        with pytest.raises(ValueError, match="featured catalog"):
+            # parse path: "ollama/qwen3:0.6b" -> name="qwen3:0.6b" which is in
+            # available; the downstream catalog check rejects it for chat role.
+            await handlers.set_chat_model("ollama/qwen3:0.6b")
+
 
 class TestModelsCatalog:
     @staticmethod

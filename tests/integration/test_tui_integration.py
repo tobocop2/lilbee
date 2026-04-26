@@ -215,16 +215,16 @@ class TestModelSwitch:
     """Model switch via /model."""
 
     async def test_model_switch_updates_config(self, rag_pipeline) -> None:
-        """'/model qwen3:0.6b' updates cfg.chat_model."""
+        """'/model ollama/qwen3:0.6b' updates cfg.chat_model."""
         original_model = cfg.chat_model
         try:
             app = _IntegrationChatApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                await _submit_slash(pilot, app, "/model qwen3:0.6b")
+                await _submit_slash(pilot, app, "/model ollama/qwen3:0.6b")
 
-            assert cfg.chat_model == "qwen3:0.6b", (
-                f"Expected chat_model='qwen3:0.6b', got '{cfg.chat_model}'"
+            assert cfg.chat_model == "ollama/qwen3:0.6b", (
+                f"Expected chat_model='ollama/qwen3:0.6b', got '{cfg.chat_model}'"
             )
         finally:
             cfg.chat_model = original_model
