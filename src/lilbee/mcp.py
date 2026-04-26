@@ -10,6 +10,7 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from lilbee.cli.app import overlay_persisted_settings
 from lilbee.cli.helpers import clean_result
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
@@ -227,11 +228,14 @@ def init(path: str = "") -> dict[str, Any]:
         (root / ".gitignore").write_text("data/\n")
         created = True
 
-    # Switch MCP session to this project's KB
+    # Switch MCP session to this project's KB. Overlay any persisted
+    # config.toml in the project base so per-vault model / generation
+    # settings take effect, matching the CLI's --data-dir behaviour.
     cfg.data_root = base
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
+    overlay_persisted_settings(base)
     reset_services()
 
     return {"command": "init", "path": str(root), "created": created}
