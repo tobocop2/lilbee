@@ -90,7 +90,7 @@ class TestTokenCommand:
 
 
 class TestServeCommand:
-    @mock.patch("lilbee.cli.commands.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_default_host_port(self, mock_create_app, mock_asyncio_run):
         mock_create_app.return_value = "fake_app"
@@ -98,7 +98,7 @@ class TestServeCommand:
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.commands.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_custom_host_port(self, mock_create_app, mock_asyncio_run):
         mock_create_app.return_value = "fake_app"
@@ -106,7 +106,7 @@ class TestServeCommand:
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.commands.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_short_flags(self, mock_create_app, mock_asyncio_run):
         mock_create_app.return_value = "fake_app"
@@ -117,14 +117,14 @@ class TestServeCommand:
 
 class TestPortFile:
     def test_port_file_path(self):
-        from lilbee.cli.commands import _port_file
+        from lilbee.cli.commands.servers import _port_file
 
         assert _port_file() == cfg.data_dir / "server.port"
 
 
 class TestRunServer:
     def test_writes_and_cleans_port_file(self):
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         sock = mock.MagicMock()
         sock.getsockname.return_value = ("127.0.0.1", 54321)
@@ -147,7 +147,7 @@ class TestRunServer:
         fake_server_obj.shutdown.assert_awaited_once()
 
     def test_writes_correct_port(self):
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         sock = mock.MagicMock()
         sock.getsockname.return_value = ("127.0.0.1", 9999)
@@ -173,7 +173,7 @@ class TestRunServer:
         assert written_port == "9999"
 
     def test_cleans_port_file_on_error(self):
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         sock = mock.MagicMock()
         sock.getsockname.return_value = ("127.0.0.1", 12345)
@@ -192,7 +192,7 @@ class TestRunServer:
         assert not (cfg.data_dir / "server.port").exists()
 
     def test_no_servers_skips_port_file(self):
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         fake_server_obj = mock.MagicMock()
         fake_server_obj.servers = []
@@ -207,7 +207,7 @@ class TestRunServer:
         assert not (cfg.data_dir / "server.port").exists()
 
     def test_loads_config_when_not_loaded(self):
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         fake_server_obj = mock.MagicMock()
         fake_server_obj.servers = []
@@ -223,7 +223,7 @@ class TestRunServer:
         fake_config.load.assert_called_once()
 
     def test_creates_data_dir_for_port_file(self, tmp_path):
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         cfg.data_dir = tmp_path / "nonexistent" / "data"
 
@@ -247,7 +247,7 @@ class TestRunServer:
     @mock.patch("atexit.register")
     def test_registers_atexit_cleanup(self, mock_atexit):
         """Port file cleanup is registered via atexit for SIGTERM resilience."""
-        from lilbee.cli.commands import _run_server
+        from lilbee.cli.commands.servers import _run_server
 
         sock = mock.MagicMock()
         sock.getsockname.return_value = ("127.0.0.1", 11111)

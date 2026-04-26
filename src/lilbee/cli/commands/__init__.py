@@ -1,0 +1,43 @@
+"""CLI command subpackage.
+
+Top-level Typer commands are split across submodules by domain. This
+``__init__`` registers each command function on the shared ``app`` in the
+exact order the original ``commands.py`` did so ``lilbee --help`` is
+unchanged. Sub-typers (``setup``, ``wiki``) are then attached so they
+appear after all top-level commands in the help.
+"""
+
+from __future__ import annotations
+
+from lilbee.cli.app import app
+from lilbee.cli.commands import ingest_sync, meta, search_chat, servers, wiki
+from lilbee.cli.commands import setup as setup_module
+from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+
+# Top-level command registration. Order here is the order shown in
+# `lilbee --help` and must match the original commands.py definition order.
+app.command()(search_chat.search)
+app.command(name="sync")(ingest_sync.sync_cmd)
+app.command()(ingest_sync.rebuild)
+app.command()(ingest_sync.add)
+app.command()(ingest_sync.chunks)
+app.command()(ingest_sync.remove)
+app.command()(search_chat.ask)
+app.command()(search_chat.chat)
+app.command()(meta.version)
+app.command(name="self-check")(setup_module.self_check_cmd)
+app.command()(meta.status)
+app.command()(meta.reset)
+app.command()(meta.init)
+app.command()(servers.serve)
+app.command()(setup_module.token)
+app.command()(search_chat.topics)
+app.command()(setup_module.login)
+app.command(name="mcp")(servers.mcp_cmd)
+
+# Sub-typers come last so `setup` and `wiki` follow the top-level commands
+# in `--help`.
+app.add_typer(setup_module.setup_app, name="setup")
+app.add_typer(wiki.wiki_app, name="wiki")
+
+__all__ = ["CHUNK_PREVIEW_LEN", "app"]

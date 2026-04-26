@@ -525,9 +525,9 @@ class TestCLIIntegration:
         """TTY environment launches TUI."""
         mock_stdin.isatty.return_value = True
         mock_stdout.isatty.return_value = True
-        from lilbee.cli.commands import chat
+        from lilbee.cli.commands.search_chat import chat
 
-        with mock.patch("lilbee.cli.commands.apply_overrides"):
+        with mock.patch("lilbee.cli.commands.search_chat.apply_overrides"):
             chat(
                 data_dir=None,
                 model=None,

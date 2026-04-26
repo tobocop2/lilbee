@@ -735,7 +735,7 @@ class TestChatLaunchesTui:
             with mock.patch("sys.stdin") as mock_in, mock.patch("sys.stdout") as mock_out:
                 mock_in.isatty.return_value = True
                 mock_out.isatty.return_value = True
-                from lilbee.cli.commands import chat
+                from lilbee.cli.commands.search_chat import chat
 
                 # Call with minimal defaults
                 chat(
@@ -1981,7 +1981,7 @@ class TestAddWithUrls:
     """Tests for URL crawling through the add CLI command."""
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_triggers_crawl(self, mock_sync, mock_crawl, mock_avail):
         """Adding a URL calls the crawler instead of copying files."""
@@ -1992,7 +1992,7 @@ class TestAddWithUrls:
         assert args[0][0] == ["https://example.com"]
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl, mock_avail):
         """--crawl flag is passed through to the crawler."""
@@ -2001,7 +2001,7 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["crawl"] is True
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_depth(self, mock_sync, mock_crawl, mock_avail):
         """--depth is passed through to the crawler."""
@@ -2010,7 +2010,7 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["depth"] == 3
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_max_pages(self, mock_sync, mock_crawl, mock_avail):
         """--max-pages is passed through to the crawler."""
@@ -2019,7 +2019,7 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["max_pages"] == 10
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_defaults_include_subdomains_false(self, mock_sync, mock_crawl, mock_avail):
         """default scope is the starting host only, no subdomains."""
@@ -2028,7 +2028,7 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["include_subdomains"] is False
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_opt_in_include_subdomains(self, mock_sync, mock_crawl, mock_avail):
         """--include-subdomains broadens scope to sibling subdomains."""
@@ -2039,7 +2039,7 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["include_subdomains"] is True
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """URL add in JSON mode returns structured output."""
@@ -2053,7 +2053,7 @@ class TestAddWithUrls:
         assert data["crawled"] == 1
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_output_is_clean(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """--json add with a URL produces clean JSON with no crawl4ai prefix text."""
@@ -2069,7 +2069,7 @@ class TestAddWithUrls:
         assert data["command"] == "add"
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
     def test_add_mixed_urls_and_files(
         self, mock_crawl, mock_avail, isolated_env, tmp_path, mock_svc
     ):
@@ -2125,21 +2125,21 @@ class TestIsUrl:
 
 class TestPartitionInputs:
     def test_separates_urls_and_paths(self):
-        from lilbee.cli.commands import _partition_inputs
+        from lilbee.cli.commands.ingest_sync import _partition_inputs
 
         paths, urls = _partition_inputs(["/some/a.txt", "https://example.com", "/some/b.txt"])
         assert len(paths) == 2
         assert urls == ["https://example.com"]
 
     def test_all_urls(self):
-        from lilbee.cli.commands import _partition_inputs
+        from lilbee.cli.commands.ingest_sync import _partition_inputs
 
         paths, urls = _partition_inputs(["https://a.com", "http://b.com"])
         assert len(paths) == 0
         assert len(urls) == 2
 
     def test_all_paths(self):
-        from lilbee.cli.commands import _partition_inputs
+        from lilbee.cli.commands.ingest_sync import _partition_inputs
 
         paths, urls = _partition_inputs(["/a.txt", "/b.txt"])
         assert len(paths) == 2
@@ -2151,7 +2151,7 @@ class TestCrawlUrlsBlocking:
     def test_single_url(self, mock_crawl, isolated_env):
         from pathlib import Path
 
-        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         async def _fake_crawl(url, **kwargs):
             # Call the on_progress callback to cover the closure body
@@ -2171,7 +2171,7 @@ class TestCrawlUrlsBlocking:
 
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     def test_with_crawl_flag(self, mock_crawl, isolated_env):
-        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         mock_crawl.return_value = []
         _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
@@ -2180,7 +2180,7 @@ class TestCrawlUrlsBlocking:
 
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     def test_with_explicit_depth(self, mock_crawl, isolated_env):
-        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         mock_crawl.return_value = []
         _crawl_urls_blocking(["https://example.com"], crawl=True, depth=5, max_pages=20)
@@ -2191,7 +2191,7 @@ class TestCrawlUrlsBlocking:
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     def test_json_mode_passes_quiet(self, mock_crawl, isolated_env):
         """In JSON mode, quiet=True is passed to crawl_and_save."""
-        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         mock_crawl.return_value = []
         cfg.json_mode = True
@@ -2199,10 +2199,10 @@ class TestCrawlUrlsBlocking:
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["quiet"] is True
 
-    @mock.patch("lilbee.cli.commands._run_crawl_with_signal_cancel")
+    @mock.patch("lilbee.cli.commands.ingest_sync._run_crawl_with_signal_cancel")
     def test_cancel_event_breaks_multi_url_loop(self, mock_run, isolated_env):
         """If the SIGINT handler sets cancel mid-run, the next URL is skipped."""
-        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         call_log = []
 
@@ -2236,7 +2236,7 @@ class TestCrawlUrlsBlocking:
         import signal
         import threading
 
-        from lilbee.cli.commands import _run_crawl_with_signal_cancel
+        from lilbee.cli.commands.ingest_sync import _run_crawl_with_signal_cancel
 
         cancel_event = threading.Event()
 
@@ -3007,7 +3007,7 @@ class TestCrawlProgressCallback:
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     def test_crawl_callback_wrong_type_real_code(self, mock_crawl, isolated_env):
         """Exercise the real _make_callback with a bad event type."""
-        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
         from lilbee.progress import EventType, FileStartEvent
 
         async def _fake_crawl(url, **kwargs):
@@ -3192,7 +3192,7 @@ class TestSetupCrawlerCommand:
     """bb-wq8g: 'lilbee setup crawler' installs Chromium."""
 
     def test_noop_when_already_installed(self):
-        with mock.patch("lilbee.cli.commands.chromium_installed", return_value=True):
+        with mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=True):
             result = runner.invoke(app, ["setup", "crawler"])
         assert result.exit_code == 0
         assert "already installed" in result.stdout.lower()
@@ -3202,8 +3202,8 @@ class TestSetupCrawlerCommand:
             return None
 
         with (
-            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
-            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+            mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.setup.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["setup", "crawler"])
         assert result.exit_code == 0
@@ -3216,15 +3216,15 @@ class TestSetupCrawlerCommand:
             raise CrawlerBrowserMissing("offline")
 
         with (
-            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
-            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+            mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.setup.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["setup", "crawler"])
         assert result.exit_code == 1
 
     def test_already_installed_json_mode(self):
         """--json with chromium present yields already_installed=True."""
-        with mock.patch("lilbee.cli.commands.chromium_installed", return_value=True):
+        with mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=True):
             result = runner.invoke(app, ["--json", "setup", "crawler"])
         assert result.exit_code == 0
         assert '"already_installed": true' in result.stdout
@@ -3268,8 +3268,8 @@ class TestSetupCrawlerCommand:
             on_progress(EventType.SETUP_DONE, object())
 
         with (
-            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
-            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+            mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.setup.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["--json", "setup", "crawler"])
         assert result.exit_code == 0
@@ -3289,8 +3289,8 @@ class TestSetupCrawlerCommand:
             )
 
         with (
-            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
-            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+            mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.setup.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["setup", "crawler"])
         assert result.exit_code == 0
@@ -3306,8 +3306,8 @@ class TestSetupCrawlerCommand:
             raise CrawlerBrowserMissing("offline")
 
         with (
-            mock.patch("lilbee.cli.commands.chromium_installed", return_value=False),
-            mock.patch("lilbee.cli.commands.bootstrap_chromium", new=_fake_bootstrap),
+            mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
+            mock.patch("lilbee.cli.commands.setup.bootstrap_chromium", new=_fake_bootstrap),
         ):
             result = runner.invoke(app, ["--json", "setup", "crawler"])
         assert result.exit_code == 1
@@ -3347,7 +3347,7 @@ class TestSelfCheck:
         emb.write_bytes(b"emb")
         with (
             mock.patch(
-                "lilbee.cli.commands._download_self_check_model",
+                "lilbee.cli.commands.setup._download_self_check_model",
                 side_effect=AssertionError("must not download when --model-path given"),
             ),
             mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
@@ -3380,7 +3380,7 @@ class TestSelfCheck:
         # Two calls expected: chat first, embed second.
         with (
             mock.patch(
-                "lilbee.cli.commands._download_self_check_model",
+                "lilbee.cli.commands.setup._download_self_check_model",
                 side_effect=[chat, emb],
             ),
             mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
@@ -3394,7 +3394,7 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         download = mock.Mock(return_value=chat)
         with (
-            mock.patch("lilbee.cli.commands._download_self_check_model", download),
+            mock.patch("lilbee.cli.commands.setup._download_self_check_model", download),
             mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
         ):
             result = runner.invoke(app, ["--json", "self-check", "--skip-embedding"])
@@ -3407,7 +3407,7 @@ class TestSelfCheck:
 
     def test_chat_download_failure_emits_json_error(self) -> None:
         with mock.patch(
-            "lilbee.cli.commands._download_self_check_model",
+            "lilbee.cli.commands.setup._download_self_check_model",
             side_effect=RuntimeError("network is down"),
         ):
             result = runner.invoke(app, ["--json", "self-check"])
@@ -3582,7 +3582,7 @@ class TestDownloadSelfCheckModel:
     """`_download_self_check_model` retries URLError up to 3 times."""
 
     def test_successful_download_returns_path(self, tmp_path: Path) -> None:
-        from lilbee.cli import commands as cmds
+        from lilbee.cli.commands import setup as cmds
 
         payload = b"gguf-bytes"
 
@@ -3608,7 +3608,7 @@ class TestDownloadSelfCheckModel:
     def test_retries_then_raises_after_three_attempts(self, tmp_path: Path) -> None:
         import urllib.error
 
-        from lilbee.cli import commands as cmds
+        from lilbee.cli.commands import setup as cmds
 
         err = urllib.error.URLError("dns failed")
         with (
@@ -3623,7 +3623,7 @@ class TestDownloadSelfCheckModel:
     def test_retry_then_succeed(self, tmp_path: Path) -> None:
         import urllib.error
 
-        from lilbee.cli import commands as cmds
+        from lilbee.cli.commands import setup as cmds
 
         class _Resp:
             def __enter__(self):
