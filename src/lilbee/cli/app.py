@@ -71,11 +71,15 @@ def _apply_data_root(root: Path) -> None:
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
-    _overlay_persisted_settings(root)
+    overlay_persisted_settings(root)
 
 
-def _overlay_persisted_settings(root: Path) -> None:
+def overlay_persisted_settings(root: Path) -> None:
     """Re-apply persisted scalar fields from ``<root>/config.toml`` onto cfg.
+
+    Public so the MCP ``init`` tool can call it after switching the session
+    to a project-local KB — without this, the per-project config.toml is
+    silently ignored on every entry point other than the CLI.
 
     The set of overlayable fields is derived dynamically from Config metadata
     rather than hand-enumerated: every field that ``settings.set_value`` and
