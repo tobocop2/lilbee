@@ -183,6 +183,42 @@ Other rules:
 - Only validate at system boundaries (user input, external APIs) — trust internal code
 - No backwards-compatibility shims — if something is unused, delete it
 
+### No Back-Compat Scaffolding
+
+Refactors update consumers, not the other way around. lilbee is a beta with no
+external pinned consumers; old import paths and old method names disappear the
+moment a refactor lands. Anything below is a code smell and must not appear in
+review:
+
+- **Private symbols re-exported at `__init__.py`.** If a private helper (`_foo`)
+  lives in `pkg/sub.py`, callers (including tests) import it as
+  `from lilbee.pkg.sub import _foo`, not through the package facade. The
+  `__init__.py` exposes only the genuine public API — everything else stays
+  inside its host submodule.
+- **Module re-imports inside `__init__.py` purely so test patches still fire.**
+  `import time` or `from somewhere import settings` at the top of a package
+  `__init__.py` because a test patches `pkg.time` or `pkg.settings` is back-
+  compat for stale tests. Update the test to patch where the symbol actually
+  lives.
+- **Docstrings and comments framed as preservation.** Phrases like
+  "preserves the historical X API", "kept for backwards compatibility",
+  "legacy mock target", "so existing imports keep working" are warning lights.
+  If a comment is justifying the existence of code, the code is probably
+  scaffolding and should be deleted, not annotated.
+- **Shim modules at old paths after a move.** A `gen.py` file that just re-
+  exports from `generation.py` exists only so stale `from lilbee.x.gen import`
+  callers keep compiling. Update the callers and delete the shim.
+- **`# noqa: F401` blocks on `__init__.py` re-exports.** A correct package
+  facade lists its surface in `__all__` and ruff respects that natively. If
+  noqa is fighting ruff, the imports are probably scaffolding.
+- **Methods or attributes labeled "(for backward compat)" / "Prefer X
+  instead".** Delete the legacy alias and update the few internal callers, or
+  delete the method entirely if it has no callers. Do not leave a tombstone.
+
+When you refactor: grep every consumer (including tests, MCP tools, CLI
+commands, server routes, docs) and update them in the same commit. The old
+paths fully disappear; there is no migration window to soften.
+
 ### Git & Workflow
 - Every change tracked as a beads task (`bd create` → `bd close`)
 - Run `make check` before closing any task — it mirrors CI exactly
@@ -261,6 +297,7 @@ Run this mentally or explicitly before claiming work is done:
 6. **Test coverage** — every new code path has a test with meaningful assertions. No untested branches.
 7. **Type changes** — field added/removed? All constructors, factories, serializers updated?
 8. **Export changes** — new export actually needed? Removed export has no dangling imports?
+9. **No back-compat scaffolding** — `grep -rni "historical\|backwards compat\|legacy mock\|preserves the.*api\|so existing imports keep working\|for backward compat" src/ tests/`. Every hit is either real legacy data-migration code (allowed) or refactor scaffolding (delete). If a comment justifies the existence of code, the code is probably the scaffolding.
 
 ### Behavior Learning (floop)
 - `floop` captures corrections and learned behaviors across sessions
