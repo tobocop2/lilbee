@@ -354,6 +354,34 @@ class TestCrawlAndSaveOrchestration:
             await crawl_and_save("https://example.com", depth=1)
         mock_sync.assert_awaited_once()
 
+    async def test_drains_periodic_sync_background_task(self):
+        """The fire-and-forget periodic-sync task is drained before returning so
+        the CLI's event-loop teardown doesn't destroy a pending sync mid-flight.
+        """
+        import asyncio
+
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
+            return []
+
+        sync_completed = asyncio.Event()
+
+        async def _slow_sync() -> None:
+            await asyncio.sleep(0.05)
+            sync_completed.set()
+
+        runner_mod._state.reset()
+        task = asyncio.create_task(_slow_sync())
+        runner_mod._state.background_tasks.add(task)
+        task.add_done_callback(runner_mod._state.background_tasks.discard)
+
+        with (
+            patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
+            patch("lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock),
+        ):
+            await crawl_and_save("https://example.com", depth=1)
+        assert sync_completed.is_set()
+        assert not runner_mod._state.background_tasks
+
 
 class TestConcurrencySemaphore:
     """The process-wide crawl semaphore gates concurrent crawl_and_save calls."""

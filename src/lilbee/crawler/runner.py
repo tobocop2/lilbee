@@ -414,3 +414,8 @@ async def crawl_and_save(
     finally:
         if sem is not None:
             sem.release()
+        # Drain any periodic-sync background task before the caller closes
+        # the event loop. Without this, CLI invocations fire 'Task was
+        # destroyed but it is pending!' when the loop tears down mid-sync.
+        if _state.background_tasks:
+            await asyncio.gather(*_state.background_tasks, return_exceptions=True)
