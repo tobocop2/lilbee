@@ -1,0 +1,7 @@
+UserMessage {
+    height: auto;
+}
+
+AssistantMessage {
+    height: auto;
+}

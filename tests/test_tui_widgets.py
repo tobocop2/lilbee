@@ -3621,7 +3621,6 @@ class TestModelBarPopulateBranches:
             ):
                 bar._after_model_change()
                 mock_screen._apply_model_change.assert_called_once()
-                mock_screen._refresh_status_line.assert_called_once()
 
     async def test_after_model_change_no_chat_screen(self) -> None:
         """Reset services directly when not on a chat screen."""

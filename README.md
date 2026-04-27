@@ -1,6 +1,8 @@
-# [lilbee](https://tobocop2.github.io/lilbee/)
+# lilbee — terminal-first local RAG for files, code, and the web
 
-A terminal-first local search engine for your own files, websites, and scanned documents. One install, no sidecar services, fully offline by default.
+[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)
+
+A terminal-first local RAG and search engine for your own files, code, websites, and scanned documents. One install, no sidecar services, fully offline by default.
 
 <p align="center">
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
@@ -56,22 +58,24 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 
 ```
  ┌─ lilbee ──────────────────────────────────────────────────────┐
- │ [💬 Qwen3 0.6B ▾] [🗄 Nomic Embed ▾] [OCR] [All|Wiki|Raw]     │
- │───────────────────────────────────────────────────────────────│
+ │ [Chat]  Catalog  Status  Settings  Tasks         [INSERT]     │
  │                                                               │
  │ You:    what does the oil pressure warning mean?              │
  │                                                               │
  │ lilbee: The oil pressure warning indicates low oil            │
- │         pressure.[¹] When the light stays on, stop the        │
- │         engine immediately.[²]                                │
+ │         pressure.[1] When the light stays on, stop the        │
+ │         engine immediately.[2]                                │
  │         ─────────────────────                                 │
  │         Sources                                               │
- │         [¹ owners-manual.pdf:42]   ← click to open            │
- │         [² owners-manual.pdf:43]                              │
+ │         [1 owners-manual.pdf:42]   <- click to open           │
+ │         [2 owners-manual.pdf:43]                              │
  │                                                               │
- │───────────────────────────────────────────────────────────────│
- │ Ask anything...                                       [Send]  │
- │ SYNC vault   ████████░░░░░░  42%                              │
+ │ ┌───────────────────────────────────────────────────────────┐ │
+ │ │ Ask anything...                                           │ │
+ │ │                                                           │ │
+ │ │ Chat: [Qwen3 0.6B v]    Embed: [Nomic v1.5 v]             │ │
+ │ └───────────────────────────────────────────────────────────┘ │
+ │ SYNC vault   [============------------]  42%                  │
  └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,14 +84,14 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 ```
  ┌─ Task Center ─────────────── [cap 3/3] [Clear]┐
  │ ACTIVE (2)                                    │
- │   ████████████░░░░░░░░░  42%  PULL  Qwen3 8B  │
- │   ██████░░░░░░░░░░░░░░░  18%  SYNC  vault     │
+ │   [============-----]  42%  PULL  Qwen3 8B    │
+ │   [======-----------]  18%  SYNC  vault       │
  │ QUEUED (1)                                    │
  │   CRAWL  https://docs.example.com             │
  │ COMPLETED                                     │
- │   ✓ SYNC  vault                      2 min ago│
- │   ✗ PULL  mistral                    5 min ago│
- │   ✓ ADD   cv-manual.pdf             12 min ago│
+ │   [v] SYNC  vault                  2 min ago  │
+ │   [x] PULL  mistral                5 min ago  │
+ │   [v] ADD   cv-manual.pdf         12 min ago  │
  └───────────────────────────────────────────────┘
 ```
 
@@ -95,7 +99,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 
 ```
  ┌─ Wiki ────────────────────────────────────────┐
- │ 🔍 Filter pages...                            │
+ │ Filter pages...                               │
  │                                               │
  │ Concepts (8)                                  │
  │   Braking Systems               5 src         │
@@ -104,42 +108,42 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │   Henry Ford                    3 src         │
  │ Drafts (2)                                    │
  │   Tire Pressure                 1 src         │
- │───────────────────────────────────────────────│
+ ├───────────────────────────────────────────────┤
  │ ┌─ Braking Systems ────────────────────────┐  │
- │ │ 5 sources · faithfulness 0.92            │  │
+ │ │ 5 sources | faithfulness 0.92            │  │
  │ │                                          │  │
  │ │ Modern braking systems combine hydraulic │  │
  │ │ actuation with ABS to prevent wheel      │  │
- │ │ lockup under heavy deceleration.[¹]      │  │
+ │ │ lockup under heavy deceleration.[1]      │  │
  │ │                                          │  │
- │ │ [¹ brake-primer.pdf:8]  ← click          │  │
+ │ │ [1 brake-primer.pdf:8]  <- click         │  │
  │ └──────────────────────────────────────────┘  │
  └───────────────────────────────────────────────┘
 ```
 
-**Model catalog.** Browse, install, and switch roles without leaving the terminal. `★` indicates the developer's recommendation for each role.
+**Model catalog.** Browse, install, and switch roles without leaving the terminal. `*` indicates the developer's recommendation for each role.
 
 ```
- ┌─ Model Catalog ───────────────────────────────┐
- │ [All tasks ▾] [All sizes ▾] [Featured ▾]      │
- │ 🔍 search...                  [Grid | List]   │
- │                                               │
- │ Our picks                                     │
- │ ┌────────────┐ ┌────────────┐ ┌────────────┐  │
- │ │ Qwen3 0.6B★│ │ Nomic      │ │ BGE Rerank │  │
- │ │ ▌chat ▐    │ │ ▌embed▐    │ │ ▌rerank▐   │  │
- │ │ 450 MB ✓   │ │ 274 MB ✓   │ │ 1.2 GB     │  │
- │ │ [Use]      │ │ [Use]      │ │ [Pull]     │  │
- │ └────────────┘ └────────────┘ └────────────┘  │
- │                                               │
- │ Chat                                          │
- │ ┌────────────┐ ┌────────────┐                 │
- │ │ Qwen3 8B   │ │ Phi-4 14B  │                 │
- │ │ 4.9 GB     │ │ 9.1 GB     │                 │
- │ │ [Pull]     │ │ [Pull]     │                 │
- │ └────────────┘ └────────────┘                 │
- │               [Load more]                     │
- └───────────────────────────────────────────────┘
+ ┌─ Model Catalog ───────────────────────────────────┐
+ │ [All tasks v] [All sizes v] [Featured v]          │
+ │ search...                       [Grid | List]     │
+ │                                                   │
+ │ Our picks                                         │
+ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
+ │ │ Qwen3 0.6B *│ │ Nomic v1.5  │ │ BGE Rerank  │   │
+ │ │ [chat]      │ │ [embed]     │ │ [rerank]    │   │
+ │ │ 450 MB  ok  │ │ 274 MB  ok  │ │ 1.2 GB      │   │
+ │ │ [Use]       │ │ [Use]       │ │ [Pull]      │   │
+ │ └─────────────┘ └─────────────┘ └─────────────┘   │
+ │                                                   │
+ │ Chat                                              │
+ │ ┌─────────────┐ ┌─────────────┐                   │
+ │ │ Qwen3 8B    │ │ Phi-4 14B   │                   │
+ │ │ 4.9 GB      │ │ 9.1 GB      │                   │
+ │ │ [Pull]      │ │ [Pull]      │                   │
+ │ └─────────────┘ └─────────────┘                   │
+ │                  [Load more]                      │
+ └───────────────────────────────────────────────────┘
 ```
 
 ## What you can do with it
@@ -348,7 +352,7 @@ See [docs/agent-integration.md](docs/agent-integration.md) for MCP client config
 
 See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema and the [usage guide](docs/usage.md) for `serve` options.
 
-An Obsidian plugin that pairs with lilbee is coming soon. It has full feature parity with the TUI but is aimed at GUI users, especially for workflows where seeing the source matters: index a stack of PDFs, ask a question, and preview the exact page the citation points to without leaving the editor. The plugin runs `lilbee serve` as a managed sidecar (starting it, stopping it, and talking to it over the REST API), so there's no separate service for you to babysit. Track progress in [this PR](https://github.com/tobocop2/obsidian-lilbee/pull/7).
+An [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document — useful when seeing the source matters more than just being told where it is. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for the four-step setup.
 
 ## Interactive chat
 

@@ -23,7 +23,8 @@ import logging
 import threading
 from collections.abc import Callable
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.timer import Timer
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from lilbee.catalog import CatalogModel
 
 log = logging.getLogger(__name__)
+
+_CSS_FILE = Path(__file__).parent / "task_bar.tcss"
 
 _DONE_FLASH_SECONDS = 2.0
 _POLL_INTERVAL_SECONDS = 0.1
@@ -424,14 +427,7 @@ class TaskBar(Static):
     # NOTE: no ``dock: bottom`` here. TaskBar is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
     # siblings overlap at the same row in Textual (see BottomBars docstring).
-    DEFAULT_CSS = """
-    TaskBar {
-        height: 1;
-        max-height: 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]

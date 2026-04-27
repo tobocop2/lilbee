@@ -1,0 +1,5 @@
+TopBars {
+    dock: top;
+    height: auto;
+    width: 100%;
+}
