@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 

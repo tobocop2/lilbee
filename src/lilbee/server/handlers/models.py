@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
-from lilbee import settings
 from lilbee.catalog import find_catalog_entry
-from lilbee.config import cfg
+from lilbee.core import settings
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.model_manager import ModelSource, get_model_manager
 from lilbee.models import ModelTask
 from lilbee.progress import SseEvent
@@ -28,7 +29,6 @@ from lilbee.server.models import (
     ModelsShowResponse,
     SetModelResponse,
 )
-from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.catalog import CatalogModel
@@ -180,7 +180,7 @@ def _require_model_available(model: str) -> str:
 
 def _build_task_to_field() -> dict[ModelTask, str]:
     """Invert config's ``_MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
-    from lilbee.config import _MODEL_FIELD_TO_TASK
+    from lilbee.core.config import _MODEL_FIELD_TO_TASK
 
     return {ModelTask(task): field for field, task in _MODEL_FIELD_TO_TASK.items()}
 
@@ -195,7 +195,7 @@ def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: boo
     task validation delegates to ``validate_model_task_assignment`` so
     the handler and config paths share a single implementation.
     """
-    from lilbee.config import validate_model_task_assignment
+    from lilbee.core.config import validate_model_task_assignment
 
     if allow_empty and not model.strip():
         return ""

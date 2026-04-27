@@ -20,7 +20,7 @@ from lilbee.cli.helpers import (
     perform_reset,
     render_status,
 )
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
 

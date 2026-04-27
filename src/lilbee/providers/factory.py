@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
-    from lilbee.config import Config
+    from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
 
 

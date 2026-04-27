@@ -15,7 +15,7 @@ import pytest
 
 crawl4ai = pytest.importorskip("crawl4ai")
 
-from lilbee.config import cfg  # noqa: E402
+from lilbee.core.config import cfg  # noqa: E402
 from lilbee.crawler import api as crawler_api  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
     crawl_and_save,

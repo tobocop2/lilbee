@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref

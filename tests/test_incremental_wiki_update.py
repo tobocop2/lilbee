@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.ingest import _incremental_wiki_update
 from lilbee.wiki.entity_extractor import (
     ChunkRef,

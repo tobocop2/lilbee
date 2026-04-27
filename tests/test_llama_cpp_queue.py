@@ -12,13 +12,13 @@ from unittest import mock
 import pytest
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    from lilbee.services import reset_services
+    from lilbee.core.services import reset_services
 
     reset_services()
     yield

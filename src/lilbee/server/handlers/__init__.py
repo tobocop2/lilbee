@@ -16,11 +16,17 @@ from __future__ import annotations
 # resolves to the same module object the submodule uses.
 import time
 
+from lilbee.cli.helpers import gather_status, get_version
+
 # Re-export the ``settings`` and ``time`` modules under the package namespace so
 # legacy ``mock.patch("lilbee.server.handlers.settings.set_value")`` and
 # ``mock.patch("lilbee.server.handlers.time")`` patches keep working.
-from lilbee import settings
-from lilbee.cli.helpers import gather_status, get_version
+from lilbee.core import settings
+
+# ``get_services`` is patched by tests at the legacy
+# ``lilbee.server.handlers.get_services`` path for the few tests that target
+# the package-level binding instead of a submodule.
+from lilbee.core.services import get_services
 from lilbee.model_manager import get_model_manager
 from lilbee.server.handlers import models as _models_module
 from lilbee.server.handlers.config import (
@@ -102,11 +108,6 @@ from lilbee.server.handlers.sse import (
     sse_event,
 )
 from lilbee.server.models import HealthResponse, StatusResponse
-
-# ``get_services`` is patched by tests at the legacy
-# ``lilbee.server.handlers.get_services`` path for the few tests that target
-# the package-level binding instead of a submodule.
-from lilbee.services import get_services
 
 
 async def health() -> HealthResponse:

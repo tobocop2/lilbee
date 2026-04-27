@@ -18,7 +18,7 @@ from conftest import (
 )
 from lilbee.cli.tui.screens.catalog_utils import TableRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -1678,7 +1678,7 @@ class TestSetupWizard:
             app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
             # Preselected chat+embed survive; action_cancel should return completed.
-            with mock.patch("lilbee.services.reset_services"):
+            with mock.patch("lilbee.core.services.reset_services"):
                 app.screen.action_cancel()
             await pilot.pause()
         assert "completed" in results
@@ -2542,7 +2542,7 @@ class TestModelBarAdditional:
             new_embed = "ollama/new-embed:latest"
             embed_sel.set_options([ModelOption("new-embed", new_embed)])
             with (
-                mock.patch("lilbee.settings.set_value"),
+                mock.patch("lilbee.core.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 embed_sel.value = new_embed
@@ -2571,7 +2571,7 @@ class TestModelBarAdditional:
             bar = app.query_one(ModelBar)
             write_tracker = mock.Mock()
             with (
-                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.core.settings.set_value", write_tracker),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 auto_chat = "ollama/auto-picked-alpha:latest"
@@ -2617,7 +2617,7 @@ class TestModelBarAdditional:
             chat_sel.set_options([ModelOption("Test", TEST_LOCAL_REF)])
             write_tracker = mock.Mock()
             with (
-                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.core.settings.set_value", write_tracker),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 chat_sel.value = TEST_LOCAL_REF
@@ -2642,7 +2642,7 @@ class TestModelBarAdditional:
             embed_sel.set_options([ModelOption("Test Embed", TEST_EMBED_REF)])
             write_tracker = mock.Mock()
             with (
-                mock.patch("lilbee.settings.set_value", write_tracker),
+                mock.patch("lilbee.core.settings.set_value", write_tracker),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 embed_sel.value = TEST_EMBED_REF
@@ -3735,7 +3735,7 @@ class TestModelBarCfgSourceOfTruth:
             assert chat_sel.value == chat_a
 
             with (
-                mock.patch("lilbee.settings.set_value"),
+                mock.patch("lilbee.core.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 chat_sel.value = chat_b

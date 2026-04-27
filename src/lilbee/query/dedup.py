@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.query.formatting import format_source
 from lilbee.store import CitationRecord, SearchChunk
 

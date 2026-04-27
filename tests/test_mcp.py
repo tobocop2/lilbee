@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import lilbee.services as svc_mod
-from lilbee.config import cfg
+import lilbee.core.services as svc_mod
+from lilbee.core.config import cfg
 from lilbee.crawl_task import clear_tasks
 from lilbee.ingest import SyncResult
 from lilbee.mcp import (

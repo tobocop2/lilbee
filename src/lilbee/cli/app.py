@@ -8,11 +8,11 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from lilbee import settings as _settings_module
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.config import cfg, config_load_error
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
+from lilbee.core import settings as _settings_module
+from lilbee.core.config import cfg, config_load_error
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -112,7 +112,7 @@ def apply_overrides(
         raise typer.BadParameter("Cannot use --global with --data-dir")
 
     if use_global:
-        from lilbee.platform import default_data_dir
+        from lilbee.core.platform import default_data_dir
 
         _apply_data_root(default_data_dir())
     elif data_dir is not None:

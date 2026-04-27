@@ -12,7 +12,7 @@ from textual.widgets import Collapsible, Markdown, Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 # Minimum interval (seconds) between markdown widget updates during streaming
 _MD_UPDATE_INTERVAL = 0.1

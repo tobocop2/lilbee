@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.services import Services, set_services
+from lilbee.core.services import Services, set_services
 
 
 @pytest.fixture(autouse=True)
@@ -246,7 +246,7 @@ class TestExtractPdfVision:
         """With concurrency=1, a 5-page PDF must drain inflight futures
         mid-loop (max_inflight=2) instead of submitting all pages up-front.
         Exercises the vision.py inflight-full branch."""
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "vision_concurrency", 1)
         mock_iter = _mock_iterator(num_pages=5)

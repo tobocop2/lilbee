@@ -16,7 +16,7 @@ from lilbee.concepts.schema import (
     _concept_edges_schema,
     _concept_nodes_schema,
 )
-from lilbee.config import (
+from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
     CONCEPT_EDGES_TABLE,
     CONCEPT_NODES_TABLE,

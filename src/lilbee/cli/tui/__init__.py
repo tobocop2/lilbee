@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from lilbee.cli.sync import shutdown_executor
-from lilbee.services import reset_services
+from lilbee.core.services import reset_services
 
 
 def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None:

@@ -35,9 +35,9 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services, reset_services
 from lilbee.models import ModelTask, get_system_ram_gb
-from lilbee.services import get_services, reset_services
 
 log = logging.getLogger(__name__)
 

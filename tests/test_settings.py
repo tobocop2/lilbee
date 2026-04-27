@@ -1,6 +1,6 @@
 """Tests for persistent settings (config.toml)."""
 
-from lilbee import settings
+from lilbee.core import settings
 
 
 class TestLoad:
@@ -112,7 +112,7 @@ class TestTomlEscaping:
         assert settings.get(tmp_path, "key") == ""
 
     def test_escape_toml_string_function(self):
-        from lilbee.settings import _escape_toml_string
+        from lilbee.core.settings import _escape_toml_string
 
         assert _escape_toml_string('say "hi"') == r"say \"hi\""
         assert _escape_toml_string(r"C:\path") == r"C:\\path"

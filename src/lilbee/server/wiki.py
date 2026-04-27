@@ -10,8 +10,8 @@ from litestar import delete, get, patch, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 
-from lilbee import services as svc_mod
-from lilbee.config import cfg
+from lilbee.core import services as svc_mod
+from lilbee.core.config import cfg
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,

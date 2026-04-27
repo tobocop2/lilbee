@@ -14,7 +14,7 @@ from pathlib import Path
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 

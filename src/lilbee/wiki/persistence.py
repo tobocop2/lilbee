@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from lilbee.config import Config
+from lilbee.core.config import Config
 from lilbee.store import CitationRecord, Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (

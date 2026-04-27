@@ -14,7 +14,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ def _mock_resolve():
 @pytest.fixture()
 def _mock_services():
     """Mock services to prevent real provider initialization."""
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -2759,7 +2759,7 @@ class TestChatEmbeddingReadyCoverage:
         before substring-matching.
         """
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.services import set_services
+        from lilbee.core.services import set_services
 
         snapshot_embed = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
@@ -2782,7 +2782,7 @@ class TestChatEmbeddingReadyCoverage:
         without falling through to the native registry probe.
         """
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.services import set_services
+        from lilbee.core.services import set_services
 
         snapshot_embed = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"

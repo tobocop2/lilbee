@@ -13,10 +13,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from lilbee.config import ClustererBackend
+from lilbee.core.config import ClustererBackend
 
 if TYPE_CHECKING:
-    from lilbee.config import Config
+    from lilbee.core.config import Config
     from lilbee.store import Store
 
 log = logging.getLogger(__name__)

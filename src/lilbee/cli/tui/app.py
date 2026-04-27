@@ -14,12 +14,12 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.signal import Signal
 
-from lilbee import settings
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.config import cfg
-from lilbee.services import get_services, reset_services
+from lilbee.core import settings
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services, reset_services
 
 log = logging.getLogger(__name__)
 

@@ -13,7 +13,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.progress import (
     DetailedProgressCallback,
     EventType,
@@ -21,7 +22,6 @@ from lilbee.progress import (
     noop_callback,
     shared_progress,
 )
-from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 

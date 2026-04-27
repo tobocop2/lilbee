@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,

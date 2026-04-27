@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+from lilbee.core.services import reset_services as reset_provider
 from lilbee.ingest import sync
-from lilbee.services import get_services
-from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
 

@@ -517,7 +517,7 @@ async def test_cmd_add_submits_task_to_controller(tmp_path: Path) -> None:
 async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) -> None:
     """A duplicate in documents_dir opens ConfirmDialog; confirm spawns the task."""
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.config import cfg as _cfg
+    from lilbee.core.config import cfg as _cfg
 
     # Seed a copy already in documents_dir so _cmd_add detects a duplicate.
     _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -558,7 +558,7 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
 async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) -> None:
     """When the user answers No to the overwrite dialog, no task is spawned."""
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.config import cfg as _cfg
+    from lilbee.core.config import cfg as _cfg
 
     _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     (_cfg.documents_dir / "doc.pdf").write_bytes(b"existing")

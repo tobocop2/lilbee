@@ -16,7 +16,7 @@ from conftest import (
 from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -487,7 +487,7 @@ class TestStatusScreenAsync:
         mock_svc.store.get_sources.return_value = []
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
-        from lilbee.services import set_services
+        from lilbee.core.services import set_services
 
         set_services(mock_svc)
         try:
@@ -669,7 +669,7 @@ class TestSetupWizard:
 
 class TestCanonicalModelsDir:
     def test_returns_platform_path(self) -> None:
-        from lilbee.platform import canonical_models_dir
+        from lilbee.core.platform import canonical_models_dir
 
         result = canonical_models_dir()
         assert result.name == "models"

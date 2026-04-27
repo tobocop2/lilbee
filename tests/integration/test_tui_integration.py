@@ -14,8 +14,8 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Input
 
-from lilbee.config import cfg
-from lilbee.services import get_services
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 
 pytestmark = pytest.mark.slow
 
@@ -71,7 +71,7 @@ class TestChatFlow:
 
     async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
         """Type a question about indexed docs, get a real streamed answer."""
-        from lilbee.services import reset_services
+        from lilbee.core.services import reset_services
 
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:

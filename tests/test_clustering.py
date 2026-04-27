@@ -23,7 +23,7 @@ from lilbee.clustering_embedding import (
     mutual_knn,
     normalize_rows,
 )
-from lilbee.config import ClustererBackend, cfg
+from lilbee.core.config import ClustererBackend, cfg
 
 
 @pytest.fixture(autouse=True)

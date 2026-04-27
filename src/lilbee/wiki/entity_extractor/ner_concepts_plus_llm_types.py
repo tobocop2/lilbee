@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from lilbee.wiki.entity_extractor.base import ExtractedEntity
 
 if TYPE_CHECKING:
-    from lilbee.config import Config
+    from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
     from lilbee.store import SearchChunk
 

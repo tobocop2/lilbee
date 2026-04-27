@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from lilbee.security import validate_path_within
+from lilbee.core.security import validate_path_within
 
 log = logging.getLogger(__name__)
 

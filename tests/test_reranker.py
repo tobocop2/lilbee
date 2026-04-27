@@ -4,7 +4,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.reranker import _BLEND_SCHEDULE, Reranker
 from lilbee.store import SearchChunk
 
@@ -51,7 +51,7 @@ def _patch_provider(rerank_fn):
     provider = mock.MagicMock()
     provider.rerank.side_effect = rerank_fn
     services = mock.MagicMock(provider=provider)
-    return mock.patch("lilbee.services.get_services", return_value=services)
+    return mock.patch("lilbee.core.services.get_services", return_value=services)
 
 
 class TestRerank:

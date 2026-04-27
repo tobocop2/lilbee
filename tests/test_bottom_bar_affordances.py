@@ -14,7 +14,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
@@ -42,7 +42,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -266,7 +266,7 @@ def test_theme_keybinding_is_visible_in_app_bindings() -> None:
 
 async def test_cycle_theme_persists_to_config(_patch_chat_setup) -> None:
     """Pressing the cycle binding writes the new theme name to config.toml."""
-    from lilbee import settings
+    from lilbee.core import settings
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -284,7 +284,7 @@ async def test_cycle_theme_persists_to_config(_patch_chat_setup) -> None:
 
 async def test_set_theme_persists_to_config(_patch_chat_setup) -> None:
     """The /theme command path also persists across sessions."""
-    from lilbee import settings
+    from lilbee.core import settings
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:

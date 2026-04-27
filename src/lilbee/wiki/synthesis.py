@@ -23,7 +23,7 @@ from typing import cast
 
 import yaml
 
-from lilbee.config import Config
+from lilbee.core.config import Config
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
 from lilbee.store import CitationRecord, SearchChunk, Store

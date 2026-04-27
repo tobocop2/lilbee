@@ -2,8 +2,9 @@
 
 import pytest
 
-import lilbee.services as svc_mod
-from lilbee.config import cfg
+import lilbee.core.services as svc_mod
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.query import (
     Searcher,
     _extract_cited_indices,
@@ -16,7 +17,6 @@ from lilbee.query import (
     sort_by_relevance,
     strip_llm_citations,
 )
-from lilbee.services import get_services
 from lilbee.store import SearchChunk
 from tests.conftest import make_citation
 

@@ -629,7 +629,7 @@ class TestSingleton:
         reset_model_manager()
 
     def test_creates_singleton(self, tmp_path: Path) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -639,7 +639,7 @@ class TestSingleton:
         assert mgr._remote_base_url == "http://localhost:11434"
 
     def test_returns_same_instance(self, tmp_path: Path) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -648,7 +648,7 @@ class TestSingleton:
         assert mgr1 is mgr2
 
     def test_reset_creates_new_instance(self, tmp_path: Path) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -825,14 +825,14 @@ class TestHasProviderKey:
         assert _has_provider_key("openai_api_key", "OPENAI_API_KEY") is True
 
     def test_env_var_absent_config_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg.openai_api_key = "sk-from-config"
         assert _has_provider_key("openai_api_key", "OPENAI_API_KEY") is True
 
     def test_neither_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         cfg.anthropic_api_key = ""
@@ -852,8 +852,8 @@ class TestDiscoverApiModels:
         # sys.modules["litellm"] patch these tests rely on can take effect.
         # Developers whose config.toml pins llm_provider="llama-cpp" would
         # otherwise see these tests fail locally while passing in CI.
-        from lilbee.config import cfg
-        from lilbee.services import reset_services
+        from lilbee.core.config import cfg
+        from lilbee.core.services import reset_services
 
         cfg.llm_provider = "auto"
         reset_services()
@@ -881,7 +881,7 @@ class TestDiscoverApiModels:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.anthropic_api_key = ""
         cfg.gemini_api_key = ""
@@ -908,7 +908,7 @@ class TestDiscoverApiModels:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.openai_api_key = ""
         cfg.anthropic_api_key = ""
@@ -932,7 +932,7 @@ class TestDiscoverApiModels:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.gemini_api_key = ""
 
@@ -950,7 +950,7 @@ class TestDiscoverApiModels:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.openai_api_key = ""
         cfg.gemini_api_key = ""

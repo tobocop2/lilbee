@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.cli.tui.app import LilbeeApp, _on_settings_changed_evict_cache
 from lilbee.cli.tui.screens.chat import ChatScreen
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider
 
 
@@ -46,7 +46,7 @@ def _isolated_cfg(tmp_path):
 
 def _install_recording_provider() -> _RecordingProvider:
     """Replace the services container with one whose provider records eviction calls."""
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     provider = _RecordingProvider()
     services = mock.MagicMock()
@@ -56,7 +56,7 @@ def _install_recording_provider() -> _RecordingProvider:
 
 
 def _restore_services() -> None:
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     set_services(None)
 

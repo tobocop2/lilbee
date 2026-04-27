@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 def _cfg() -> Any:
     """Lazy accessor for the global ``cfg`` singleton (see circular-import note)."""
     # circular: lilbee.catalog -> lilbee.config via cfg
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
 
     return cfg
 

@@ -7,7 +7,7 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 CMD_UNKNOWN = "Unknown command: {cmd}"

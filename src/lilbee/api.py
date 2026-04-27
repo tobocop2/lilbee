@@ -22,13 +22,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lilbee.concepts import ConceptGraph
-from lilbee.config import Config, cfg
+from lilbee.core.config import Config, cfg
+from lilbee.core.security import validate_path_within
+from lilbee.core.services import reset_services
 from lilbee.embedder import Embedder
 from lilbee.providers.factory import create_provider
 from lilbee.query import Searcher
 from lilbee.reranker import Reranker
-from lilbee.security import validate_path_within
-from lilbee.services import reset_services
 from lilbee.store import Store
 
 if TYPE_CHECKING:

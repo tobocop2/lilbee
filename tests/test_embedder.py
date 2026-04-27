@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.embedder import MAX_BATCH_CHARS, Embedder
 
 
@@ -134,7 +134,7 @@ class TestValidateModel:
 
     def test_embedding_available_empty_string(self, mock_provider):
         """embedding_available returns False when model is empty string."""
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         old = cfg.embedding_model
         # Bypass pydantic validation to simulate edge case
@@ -152,7 +152,7 @@ class TestValidateModel:
         ollama/ prefix, so the availability check must compare on the
         stripped name.
         """
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         old = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
@@ -165,7 +165,7 @@ class TestValidateModel:
 
     def test_embedding_available_false_for_prefixed_model_skips_native_probe(self, mock_provider):
         """ollama/ ref not in list_models returns False without resolve_model_path."""
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         old = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"

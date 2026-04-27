@@ -8,8 +8,6 @@ from typing import Any
 
 from pydantic_core import PydanticUndefined
 
-from lilbee import settings
-from lilbee.config import Config, cfg
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
 )
@@ -20,6 +18,8 @@ from lilbee.config_meta import (
     REINDEX_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
+from lilbee.core import settings
+from lilbee.core.config import Config, cfg
 from lilbee.providers.sdk_backend import API_KEY_FIELDS
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.models import ConfigResponse, ConfigUpdateResponse

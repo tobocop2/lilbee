@@ -14,7 +14,7 @@ from textual.widgets import Select
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 class _ModelBarApp(App[None]):

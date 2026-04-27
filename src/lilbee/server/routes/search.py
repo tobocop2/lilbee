@@ -7,8 +7,8 @@ from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
 
+from lilbee.core.results import DocumentResult
 from lilbee.query import ChatMessage as ChatMessageDict
-from lilbee.results import DocumentResult
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.models import (

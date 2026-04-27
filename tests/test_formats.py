@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.services import set_services
+from lilbee.core.config import cfg
+from lilbee.core.services import set_services
 
 
 @pytest.fixture(autouse=True)

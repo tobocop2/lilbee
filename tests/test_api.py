@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 def _fake_embed(text):

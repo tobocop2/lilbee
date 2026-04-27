@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from multiprocessing import get_context
 from typing import Any, TypeVar
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 

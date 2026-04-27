@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 
 from lilbee.cli.tui.screens.chat import ChatScreen
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
 
 @pytest.fixture
 def mock_services():
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     svc = mock.MagicMock()
     svc.provider.list_models.return_value = []

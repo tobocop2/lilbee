@@ -14,9 +14,9 @@ from textual.screen import Screen
 from textual.widgets import Collapsible, DataTable, Static
 
 from lilbee.cli.tui.pill import pill
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.model_info import ModelArchInfo, get_model_architecture
-from lilbee.services import get_services
 from lilbee.store import SourceRecord
 
 log = logging.getLogger(__name__)

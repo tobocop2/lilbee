@@ -19,7 +19,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +47,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []

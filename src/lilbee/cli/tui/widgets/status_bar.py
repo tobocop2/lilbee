@@ -10,7 +10,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import DOT_SEP, pill
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 _MODE_COLORS: dict[str, str] = {
     msg.MODE_NORMAL: "$primary",

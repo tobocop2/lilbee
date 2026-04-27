@@ -18,7 +18,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed
 from lilbee.progress import EventType, SetupProgressEvent
 

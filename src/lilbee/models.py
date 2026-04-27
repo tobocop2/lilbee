@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from lilbee import settings
+from lilbee.core import settings
 
 # circular: config -> models via ModelTask. cfg is imported lazily.
 
@@ -173,7 +173,7 @@ def display_model_picker(
 
 def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
 
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
@@ -204,7 +204,7 @@ def validate_disk_and_pull(
     model_info: ModelInfo, free_gb: float, *, console: Console | None = None
 ) -> None:
     """Check disk space, pull the model, and persist the choice."""
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
 
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
@@ -252,7 +252,7 @@ def ensure_chat_model() -> None:
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
     from lilbee.model_manager import get_model_manager
 
     manager = get_model_manager()
@@ -292,7 +292,7 @@ def list_installed_models() -> list[str]:
     (embedding, vision, rerank) are excluded so TUI pickers don't offer
     refs that fail pydantic task validation at assignment time.
     """
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
     from lilbee.model_manager import classify_remote_models
     from lilbee.registry import ModelRegistry
 

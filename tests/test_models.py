@@ -5,7 +5,7 @@ from unittest import mock
 import pytest
 
 from lilbee import models
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.models import MODEL_CATALOG, ModelInfo
 
 
@@ -201,7 +201,7 @@ class TestPromptModelChoice:
 
 
 class TestValidateDiskAndPull:
-    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.core.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     def test_pulls_and_persists(self, mock_pull, mock_save):
         ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
@@ -273,7 +273,7 @@ class TestEnsureChatModel:
         with pytest.raises(RuntimeError, match="Cannot list models"):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.core.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
@@ -297,7 +297,7 @@ class TestEnsureChatModel:
         finally:
             cfg.embedding_model = old_embed
 
-    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.core.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
@@ -313,7 +313,7 @@ class TestEnsureChatModel:
         expected = models.pick_default_model(8.0)
         mock_pull.assert_called_once_with(expected.ref, console=None)
 
-    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.core.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
@@ -346,7 +346,7 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.core.settings.set_value")
     @mock.patch("lilbee.model_manager.get_model_manager")
     def test_empty_model_list_triggers_pull(self, mock_get_manager, _mock_save):
         mock_manager = mock.MagicMock()
@@ -360,7 +360,7 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.core.settings.set_value")
     @mock.patch("lilbee.model_manager.get_model_manager")
     def test_only_embedding_model_triggers_pull(self, mock_get_manager, _mock_save):
         mock_manager = mock.MagicMock()

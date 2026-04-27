@@ -745,7 +745,7 @@ class TestWorkerProcessVision:
         120s cap when the user has explicitly raised LILBEE_OCR_TIMEOUT
         / cfg.ocr_timeout for a slow vision model.
         """
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         wp = WorkerProcess(config_snap)
         wp._started = True
@@ -770,7 +770,7 @@ class TestWorkerProcessVision:
         """cfg.ocr_timeout == 0 ("no limit") is translated to the day-long
         ``_NO_CAP_TIMEOUT_S`` substitute for the round-trip deadline loop.
         """
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         wp = WorkerProcess(config_snap)
         wp._started = True

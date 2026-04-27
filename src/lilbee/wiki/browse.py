@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from lilbee.security import validate_path_within
+from lilbee.core.security import validate_path_within
 from lilbee.wiki.grammar import CODE_FENCE_RE, H1_RE
 from lilbee.wiki.index import parse_source_count
 from lilbee.wiki.shared import (

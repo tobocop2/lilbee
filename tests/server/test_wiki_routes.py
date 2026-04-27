@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from litestar.testing import AsyncTestClient
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.server import auth as _auth_mod
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 

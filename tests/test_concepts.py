@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import lilbee.services as svc_mod
+import lilbee.core.services as svc_mod
 from lilbee.concepts import ConceptGraph
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.store import SearchChunk
 
 
@@ -725,7 +725,7 @@ class TestGetClusterSources:
         ]
 
         def open_table(name):
-            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+            from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
 
             if name == CONCEPT_NODES_TABLE:
                 return nodes_table
@@ -752,7 +752,7 @@ class TestGetClusterSources:
         ]
 
         def open_table(name):
-            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+            from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
 
             if name == CONCEPT_NODES_TABLE:
                 return nodes_table
@@ -780,7 +780,7 @@ class TestGetClusterSources:
         ]
 
         def open_table(name):
-            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+            from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
 
             if name == CONCEPT_NODES_TABLE:
                 return nodes_table

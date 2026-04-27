@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.platform import canonical_models_dir
+from lilbee.core.config import cfg
+from lilbee.core.platform import canonical_models_dir
 
 # macOS CI runners use CPU-only inference (no Metal GPU passthrough).
 # SmolLM2-135M is fast enough; Qwen3-0.6B is too slow.
@@ -101,9 +101,9 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     yields pipeline data, then restores config.
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+    from lilbee.core.services import reset_services as reset_provider
     from lilbee.ingest import sync
     from lilbee.model_manager import reset_model_manager
-    from lilbee.services import reset_services as reset_provider
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("rag_integration")
@@ -164,9 +164,9 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     runs sync, yields pipeline data, then restores config.
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+    from lilbee.core.services import reset_services as reset_provider
     from lilbee.ingest import sync
     from lilbee.model_manager import reset_model_manager
-    from lilbee.services import reset_services as reset_provider
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("wiki_integration")

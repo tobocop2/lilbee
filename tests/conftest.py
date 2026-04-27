@@ -20,7 +20,7 @@ import pytest
 os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 
 from lilbee.catalog import CatalogModel
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.ingest import file_hash
 from lilbee.store import CitationRecord
 
@@ -189,9 +189,9 @@ def _isolate_cfg(tmp_path, request):
 
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs."""
+    from lilbee.core.services import Services
     from lilbee.providers.base import LLMProvider
     from lilbee.query import Searcher
-    from lilbee.services import Services
 
     provider = overrides.pop("provider", None)
     if provider is None:

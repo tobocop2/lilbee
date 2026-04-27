@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.store import SearchChunk
 from lilbee.wiki.batch import _chunks_for_source
 from lilbee.wiki.entity_extractor import (

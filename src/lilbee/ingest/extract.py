@@ -14,7 +14,8 @@ if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
 from lilbee.chunk import build_chunking_config, chunk_text
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.ingest.types import (
     _MARKDOWN_OUTPUT,
     _MIN_MEANINGFUL_CHARS,
@@ -24,7 +25,6 @@ from lilbee.ingest.types import (
     ExtractMode,
 )
 from lilbee.progress import DetailedProgressCallback, noop_callback
-from lilbee.services import get_services
 from lilbee.store import CHUNK_TYPE_RAW
 from lilbee.vision import extract_pdf_vision
 

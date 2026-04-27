@@ -1986,7 +1986,7 @@ class TestRegisterModelFailure:
         from unittest.mock import patch
 
         from lilbee.catalog import CatalogModel, _register_model
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         entry = CatalogModel(
             hf_repo="user/test",

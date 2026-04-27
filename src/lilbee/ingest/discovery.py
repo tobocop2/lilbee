@@ -8,10 +8,10 @@ import os
 from pathlib import Path
 
 from lilbee.code_chunker import is_code_file
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.platform import is_ignored_dir
+from lilbee.core.security import validate_path_within
 from lilbee.ingest.types import _DOCUMENT_EXTENSION_MAP
-from lilbee.platform import is_ignored_dir
-from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 

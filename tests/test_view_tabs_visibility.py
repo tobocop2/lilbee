@@ -9,7 +9,7 @@ import pytest
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []

@@ -6,7 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lilbee.cli import app
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.server.auth import server_json_path
 
 runner = CliRunner()

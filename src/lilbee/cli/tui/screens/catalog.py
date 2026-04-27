@@ -38,7 +38,7 @@ from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX

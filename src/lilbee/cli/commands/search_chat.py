@@ -28,9 +28,9 @@ from lilbee.cli.helpers import (
     clean_result,
     json_output,
 )
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.providers.base import ProviderError
-from lilbee.services import get_services
 from lilbee.store import SearchScope, scope_to_chunk_type
 
 _scope_option = typer.Option(

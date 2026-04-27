@@ -6,7 +6,7 @@ import pytest
 from rich.console import Console
 
 from lilbee.cli.helpers import copy_files, copy_paths
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)

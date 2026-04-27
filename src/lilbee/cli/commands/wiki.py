@@ -17,8 +17,8 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
-from lilbee.config import cfg
-from lilbee.services import get_services
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from lilbee.config import Config
+from lilbee.core.config import Config
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
 from lilbee.query.dedup import (

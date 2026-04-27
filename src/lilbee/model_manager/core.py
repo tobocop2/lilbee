@@ -8,9 +8,9 @@ from pathlib import Path
 
 import httpx
 
-from lilbee.config import DEFAULT_HTTP_TIMEOUT
+from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
+from lilbee.core.security import validate_path_within
 from lilbee.model_manager.types import ModelNotFoundError, ModelSource
-from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 

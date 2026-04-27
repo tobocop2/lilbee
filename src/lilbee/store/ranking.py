@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 from .types import SearchChunk
 

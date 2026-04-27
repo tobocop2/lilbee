@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from conftest import make_citation, source_hash, write_source, write_wiki_page
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.store import Store
 from lilbee.wiki.prune import (
     PruneAction,

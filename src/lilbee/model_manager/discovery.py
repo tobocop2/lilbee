@@ -87,7 +87,7 @@ def _has_provider_key(cfg_field: str, env_var: str) -> bool:
     # circular: model_manager -> config via cfg; config.py's catalog
     # imports pull model_manager in transitively, so we defer cfg access
     # to call time to avoid a module-init cycle.
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
 
     return bool(getattr(cfg, cfg_field, ""))
 
@@ -111,7 +111,7 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
     if not active:
         return {}
 
-    from lilbee.services import get_services
+    from lilbee.core.services import get_services
 
     provider = get_services().provider
 

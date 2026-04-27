@@ -25,7 +25,7 @@ from textual.widgets import Footer, Input, Label, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee import asyncio_loop, settings
+from lilbee import asyncio_loop
 from lilbee.catalog import display_label_for_ref
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
@@ -40,13 +40,14 @@ from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
-from lilbee.config import cfg
+from lilbee.core import settings
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.embedder import is_model_available
 from lilbee.progress import EventType, ProgressEvent
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.query import ChatMessage
-from lilbee.services import get_services, reset_services
 from lilbee.store import scope_to_chunk_type
 
 if TYPE_CHECKING:

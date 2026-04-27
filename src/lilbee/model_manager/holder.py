@@ -11,7 +11,7 @@ class _ManagerHolder:
 
     def get(self) -> ModelManager:
         if self._instance is None:
-            from lilbee.config import cfg
+            from lilbee.core.config import cfg
 
             self._instance = ModelManager(cfg.models_dir, cfg.remote_base_url)
         return self._instance

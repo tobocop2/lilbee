@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
     from kreuzberg import ChunkingConfig

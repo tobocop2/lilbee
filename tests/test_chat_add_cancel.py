@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.cli.tui.screens.chat import _remove_copied_files
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture

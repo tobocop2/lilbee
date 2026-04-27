@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from lilbee.config import DEFAULT_HTTP_TIMEOUT
+from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.providers.base import ProviderError
 from lilbee.providers.model_ref import OLLAMA_PREFIX, ProviderModelRef
 from lilbee.providers.sdk_backend import (

@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from typer.testing import CliRunner
 
-import lilbee.services as svc_mod
+import lilbee.core.services as svc_mod
 from lilbee.cli import (
     app,
     clean_result,
     get_version,
 )
 from lilbee.cli.tui import messages as msg
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.ingest import SyncResult
 from lilbee.models import list_installed_models
 from lilbee.store import SearchChunk
@@ -419,7 +419,7 @@ class TestApplyOverrides:
 
     def test_use_global_resets_to_platform_default(self):
         from lilbee.cli import apply_overrides
-        from lilbee.platform import default_data_dir
+        from lilbee.core.platform import default_data_dir
 
         apply_overrides(use_global=True)
         expected = default_data_dir()
@@ -462,7 +462,7 @@ class TestApplyOverrides:
     def test_lilbee_data_env_ignored_when_global(self, monkeypatch, tmp_path):
         """--global takes precedence over LILBEE_DATA."""
         from lilbee.cli import apply_overrides
-        from lilbee.platform import default_data_dir
+        from lilbee.core.platform import default_data_dir
 
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "should-be-ignored"))
         apply_overrides(use_global=True)
@@ -554,7 +554,7 @@ class TestApplyOverrides:
         fake_global = tmp_path / "global"
         fake_global.mkdir()
         (fake_global / "config.toml").write_text('chat_model = "ollama/from-global:latest"\n')
-        monkeypatch.setattr("lilbee.platform.default_data_dir", lambda: fake_global)
+        monkeypatch.setattr("lilbee.core.platform.default_data_dir", lambda: fake_global)
 
         apply_overrides(use_global=True)
 
@@ -606,8 +606,8 @@ class TestApplyOverrides:
 
     def test_data_dir_overlay_handles_unreadable_config_toml(self, tmp_path, monkeypatch, caplog):
         """A read failure on config.toml is logged and treated as 'no overlay'."""
-        from lilbee import settings as settings_mod
         from lilbee.cli import apply_overrides
+        from lilbee.core import settings as settings_mod
 
         cfg.chat_model = "ollama/kept:latest"
 
@@ -627,7 +627,7 @@ class TestGlobalFlag:
     """Tests for the --global / -g CLI flag."""
 
     def test_global_flag_on_status(self):
-        from lilbee.platform import default_data_dir
+        from lilbee.core.platform import default_data_dir
 
         result = runner.invoke(app, ["--json", "status", "--global"])
         assert result.exit_code == 0
@@ -636,7 +636,7 @@ class TestGlobalFlag:
         assert data["config"]["documents_dir"] == expected
 
     def test_global_short_flag_on_status(self):
-        from lilbee.platform import default_data_dir
+        from lilbee.core.platform import default_data_dir
 
         result = runner.invoke(app, ["--json", "status", "-g"])
         assert result.exit_code == 0

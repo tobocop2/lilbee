@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.lock import (
     LockTimeoutError,
     _lock_path,

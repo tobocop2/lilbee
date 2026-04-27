@@ -23,9 +23,9 @@ from lilbee.cli.helpers import (
     json_output,
     sync_result_to_json,
 )
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.crawler import is_url
-from lilbee.services import get_services
 
 _ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Force vision OCR on/off for scanned PDFs.")
 _ocr_timeout_option = typer.Option(

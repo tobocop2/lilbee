@@ -30,7 +30,7 @@ from lilbee.cli.app import (
     global_option,
 )
 from lilbee.cli.helpers import json_output
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
     from collections.abc import Callable

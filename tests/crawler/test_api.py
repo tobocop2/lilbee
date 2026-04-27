@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.crawler import api as api_mod
 from lilbee.crawler import crawl4ai_fetcher as crawl4ai_fetcher_mod
 from lilbee.crawler.api import crawl_and_save, crawl_recursive

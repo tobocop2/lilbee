@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.config import ClustererBackend, WikiEntityMode, cfg
+from lilbee.core.config import ClustererBackend, WikiEntityMode, cfg
 
 
 class RenderStyle(StrEnum):

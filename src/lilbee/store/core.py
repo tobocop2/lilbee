@@ -10,15 +10,15 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from lilbee.config import (
+from lilbee.core.config import (
     CHUNKS_TABLE,
     CITATIONS_TABLE,
     META_TABLE,
     SOURCES_TABLE,
     Config,
 )
+from lilbee.core.security import validate_path_within
 from lilbee.lock import write_lock
-from lilbee.security import validate_path_within
 
 from .lance_helpers import (
     _chunk_type_predicate,

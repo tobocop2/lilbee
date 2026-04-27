@@ -19,7 +19,7 @@ from lilbee.wiki.entity_extractor.base import (
 from lilbee.wiki.shared import is_valid_label, make_slug
 
 if TYPE_CHECKING:
-    from lilbee.config import Config
+    from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
     from lilbee.store import SearchChunk
 

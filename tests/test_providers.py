@@ -11,7 +11,7 @@ from unittest import mock
 import httpx
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
     from lilbee.providers.routing_provider import RoutingProvider
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
     import lilbee.providers.llama_cpp_provider as lcp
-    from lilbee.services import reset_services
+    from lilbee.core.services import reset_services
 
     reset_services()
     lcp._registry = None
@@ -565,7 +565,7 @@ class TestFactory:
             create_provider(cfg)
 
     def test_services_singleton(self) -> None:
-        from lilbee.services import get_services, reset_services
+        from lilbee.core.services import get_services, reset_services
 
         reset_services()
         cfg.llm_provider = "llama-cpp"
@@ -575,7 +575,7 @@ class TestFactory:
         reset_services()
 
     def test_services_reset_clears_singleton(self) -> None:
-        from lilbee.services import get_services, reset_services
+        from lilbee.core.services import get_services, reset_services
 
         reset_services()
         cfg.llm_provider = "llama-cpp"
@@ -601,9 +601,9 @@ class TestConfigProvider:
         env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
         with (
             mock.patch.dict(__import__("os").environ, env, clear=True),
-            mock.patch("lilbee.settings.get", return_value=None),
+            mock.patch("lilbee.core.settings.get", return_value=None),
         ):
-            from lilbee.config import Config
+            from lilbee.core.config import Config
 
             c = Config()
             assert c.llm_provider == "auto"
@@ -621,7 +621,7 @@ class TestConfigProvider:
                 "LILBEE_LLM_API_KEY": "sk-key",
             },
         ):
-            from lilbee.config import Config
+            from lilbee.core.config import Config
 
             c = Config()
             assert c.llm_provider == "remote"
@@ -632,10 +632,10 @@ class TestConfigProvider:
         """models_dir always uses the canonical shared location, not data_root."""
         import os
 
-        from lilbee.platform import canonical_models_dir
+        from lilbee.core.platform import canonical_models_dir
 
         with mock.patch.dict(os.environ, {"LILBEE_DATA": str(tmp_path / "test-lilbee")}):
-            from lilbee.config import Config
+            from lilbee.core.config import Config
 
             c = Config()
             assert c.models_dir == canonical_models_dir()

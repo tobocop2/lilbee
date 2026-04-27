@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from lilbee.config import Config, cfg
+from lilbee.core.config import Config, cfg
+from lilbee.core.security import validate_path_within
 from lilbee.ingest import file_hash
-from lilbee.security import validate_path_within
 from lilbee.store import CitationRecord, Store
 from lilbee.wiki.citation import (
     CitationStatus,

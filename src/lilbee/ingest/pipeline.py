@@ -19,7 +19,8 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.ingest.code import ingest_code_sync
 from lilbee.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.ingest.extract import ingest_document, ingest_markdown
@@ -34,7 +35,6 @@ from lilbee.progress import (
     noop_callback,
     shared_progress,
 )
-from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 

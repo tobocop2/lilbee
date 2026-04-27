@@ -18,10 +18,10 @@ from rich.console import Console, RenderableType
 from rich.table import Table
 
 from lilbee.cli import theme
-from lilbee.config import cfg
-from lilbee.platform import is_ignored_dir
-from lilbee.security import validate_path_within
-from lilbee.services import get_services
+from lilbee.core.config import cfg
+from lilbee.core.platform import is_ignored_dir
+from lilbee.core.security import validate_path_within
+from lilbee.core.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus

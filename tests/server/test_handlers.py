@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 import pytest
 from litestar.testing import AsyncTestClient
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import set_services
 from lilbee.server import auth as _auth_mod
 from lilbee.server.handlers import MAX_ADD_FILES
-from lilbee.services import set_services
 from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 

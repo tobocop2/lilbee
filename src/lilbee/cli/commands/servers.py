@@ -14,7 +14,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
     import uvicorn

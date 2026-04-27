@@ -14,10 +14,10 @@ from collections import Counter
 import pytest
 
 from lilbee.catalog import FEATURED_EMBEDDING, download_model
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+from lilbee.core.services import reset_services as reset_provider
 from lilbee.ingest import sync
-from lilbee.services import get_services
-from lilbee.services import reset_services as reset_provider
 from tests.integration.conftest import skip_if_small_chat_model
 
 pytestmark = pytest.mark.slow

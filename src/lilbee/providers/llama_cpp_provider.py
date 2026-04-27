@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Any
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import DEFAULT_NUM_CTX, cfg
+from lilbee.core.config import DEFAULT_NUM_CTX, cfg
+from lilbee.core.services import get_services
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
-from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.providers.worker_process import WorkerProcess

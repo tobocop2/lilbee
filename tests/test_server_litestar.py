@@ -7,7 +7,7 @@ import pytest
 from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.models import ModelTask
 from lilbee.server.handlers import format_task_mismatch
 
@@ -493,7 +493,7 @@ class TestConfigRoute:
 
 class TestConfigDefaultsRoute:
     def test_returns_writable_defaults(self, client):
-        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         resp = client.get("/api/config/defaults")
         assert resp.status_code == 200

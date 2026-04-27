@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import CHUNKS_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, cfg
 from lilbee.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.batch import (
     _group_chunks_by_page,

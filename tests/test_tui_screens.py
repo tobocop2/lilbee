@@ -34,9 +34,9 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import set_services
 from lilbee.model_manager import RemoteModel
-from lilbee.services import set_services
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
@@ -720,7 +720,7 @@ async def test_settings_crawl_exclude_patterns_renders_collapsible():
     """crawl_exclude_patterns renders as a Collapsible with line count in title."""
     from textual.widgets import Collapsible
 
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -823,7 +823,7 @@ async def test_settings_list_editor_restore_defaults():
     from textual.widgets import Button
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-    from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+    from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -863,10 +863,10 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     """
     from textual.widgets import Input
 
-    from lilbee import settings
     from lilbee.cli.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+    from lilbee.core import settings
 
     cfg.data_root = tmp_path
     app = SettingsTestApp()
@@ -1069,7 +1069,7 @@ async def test_settings_select_save():
 def test_get_default_for_scalar():
     """get_default returns the cfg default for a simple scalar field."""
     from lilbee.cli.settings_map import get_default
-    from lilbee.config import Config
+    from lilbee.core.config import Config
 
     expected = Config.model_fields["top_k"].default
     assert get_default("top_k") == expected
@@ -1086,7 +1086,7 @@ def test_get_default_for_nullable_scalar():
 def test_get_default_for_list_factory():
     """List-valued fields built by a factory return a fresh copy of the default list."""
     from lilbee.cli.settings_map import get_default
-    from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+    from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
     result = get_default("crawl_exclude_patterns")
     assert result == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
@@ -1099,7 +1099,7 @@ def test_get_default_handles_pydantic_undefined():
     from pydantic_core import PydanticUndefined
 
     from lilbee.cli.settings_map import get_default
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
 
     fake = SimpleNamespace(default=PydanticUndefined, default_factory=None)
     original = dict(type(cfg).model_fields)
@@ -2087,7 +2087,7 @@ async def test_chat_slash_version():
 async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.settings.set_value"):
+        with patch("lilbee.core.settings.set_value"):
             new_ref = "ollama/new-model:latest"
             app.screen._handle_slash(f"/model {new_ref}")
             await _pilot.pause()
@@ -2864,7 +2864,7 @@ async def test_command_provider_set_model():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.settings.set_value"):
+        with patch("lilbee.core.settings.set_value"):
             provider._set_model("chat_model", "ollama/new-model:latest")
             assert cfg.chat_model == "ollama/new-model:latest"
             assert "ollama/new-model:latest" in app.title
@@ -6865,7 +6865,7 @@ async def test_setup_wizard_commit_chat_selection_writes_settings():
             assert isinstance(screen, SetupWizard)
             chat_cards = [c for c in screen.query(ModelCard) if c.row.task == "chat"]
             assert chat_cards
-            with patch("lilbee.settings.set_value") as mock_set:
+            with patch("lilbee.core.settings.set_value") as mock_set:
                 screen._commit_selection(chat_cards[0], "chat")
             assert mock_set.called
             assert cfg.chat_model == (chat_cards[0].row.ref or chat_cards[0].row.name)
@@ -6884,7 +6884,7 @@ async def test_setup_wizard_commit_embed_selection_writes_settings():
             assert isinstance(screen, SetupWizard)
             embed_cards = [c for c in screen.query(ModelCard) if c.row.task == "embedding"]
             assert embed_cards
-            with patch("lilbee.settings.set_value") as mock_set:
+            with patch("lilbee.core.settings.set_value") as mock_set:
                 screen._commit_selection(embed_cards[0], "embedding")
             assert mock_set.called
             assert cfg.embedding_model == (embed_cards[0].row.ref or embed_cards[0].row.name)

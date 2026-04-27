@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 

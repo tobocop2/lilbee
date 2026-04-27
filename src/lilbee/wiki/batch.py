@@ -17,7 +17,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from lilbee.config import Config
+from lilbee.core.config import Config
 from lilbee.ingest import file_hash
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import (

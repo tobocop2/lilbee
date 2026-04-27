@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.cli.helpers import copy_files
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.security import validate_path_within
 from lilbee.progress import SseEvent
-from lilbee.security import validate_path_within
 from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 

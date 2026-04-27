@@ -56,7 +56,7 @@ def get_services() -> Services:
 
     from lilbee.clustering import Clusterer
     from lilbee.concepts import ConceptGraph
-    from lilbee.config import cfg
+    from lilbee.core.config import cfg
     from lilbee.embedder import Embedder
     from lilbee.providers.factory import create_provider
     from lilbee.query import Searcher

@@ -56,7 +56,7 @@ class TestChunkText:
 
     def test_semantic_disabled_uses_char_budget(self, monkeypatch):
         """When cfg.semantic_chunking is False, chunker falls back to fixed char budget."""
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         chunks = chunk_text("Plain text chunked without the semantic branch.")
@@ -66,7 +66,7 @@ class TestChunkText:
     def test_use_semantic_false_bypasses_semantic(self, monkeypatch):
         """Caller can opt out of semantic chunking even when cfg has it enabled."""
         from lilbee.chunk import build_chunking_config
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         bypassed = build_chunking_config(use_semantic=False)
@@ -79,7 +79,7 @@ class TestBuildChunkingConfig:
     def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
         """Semantic path requires an EmbeddingConfig or kreuzberg silently falls back."""
         from lilbee.chunk import build_chunking_config
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "topic_threshold", 0.6)
@@ -91,7 +91,7 @@ class TestBuildChunkingConfig:
     def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
         """With an embedding attached kreuzberg honors max_chars on the semantic path."""
         from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
@@ -100,7 +100,7 @@ class TestBuildChunkingConfig:
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
@@ -114,7 +114,7 @@ class TestBuildChunkingConfig:
     def test_disabled_does_not_attach_embedding(self, monkeypatch):
         """When semantic is off, no EmbeddingConfig is built; avoids the ONNX download."""
         from lilbee.chunk import build_chunking_config
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         result = build_chunking_config()

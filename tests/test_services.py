@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +19,7 @@ def isolated_cfg():
 
 class TestServicesDataclass:
     def test_fields_are_immutable(self):
-        from lilbee.services import Services
+        from lilbee.core.services import Services
 
         services = Services(
             provider=MagicMock(),

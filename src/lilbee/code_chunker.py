@@ -18,7 +18,7 @@ from tree_sitter_language_pack import (
 )
 
 from lilbee.chunk import chunk_text
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 

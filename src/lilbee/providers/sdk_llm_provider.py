@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.model_ref import parse_model_ref, translate_options
 from lilbee.providers.sdk_backend import (

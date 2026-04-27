@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.store import CHUNK_TYPE_WIKI, CitationRecord, SearchChunk
 
 CONTEXT_TEMPLATE = """Context:

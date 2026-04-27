@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import lilbee.services as svc_mod
-from lilbee.config import cfg
+import lilbee.core.services as svc_mod
+from lilbee.core.config import cfg
 from lilbee.ingest import SyncResult
 from lilbee.server import handlers
 from lilbee.store import SearchChunk
@@ -1219,7 +1219,7 @@ class TestUpdateConfig:
         assert result.updated == ["temperature"]
         assert cfg.temperature is None
         # Verify delete_value was called (file should not contain temperature)
-        from lilbee import settings as s
+        from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert "temperature" not in stored
@@ -1293,7 +1293,7 @@ class TestUpdateConfig:
         assert cfg.temperature == 0.7
         assert cfg.top_k == 5
         # Verify both persisted
-        from lilbee import settings as s
+        from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert stored["temperature"] == "0.7"
@@ -1341,7 +1341,7 @@ class TestSetEmbeddingModel:
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.model == _EMBED_REF
         assert cfg.embedding_model == _EMBED_REF
-        from lilbee import settings as s
+        from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert stored["embedding_model"] == _EMBED_REF

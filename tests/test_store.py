@@ -4,7 +4,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import META_TABLE, cfg
+from lilbee.core.config import META_TABLE, cfg
 from lilbee.store import (
     CitationRecord,
     SearchChunk,

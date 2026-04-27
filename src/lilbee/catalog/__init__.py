@@ -108,7 +108,7 @@ def __getattr__(name: str) -> Any:
     """Expose ``catalog.cfg`` lazily so ``monkeypatch.setattr(catalog.cfg, ...)`` still works."""
     if name == "cfg":
         # circular: lilbee.catalog -> lilbee.config via cfg
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         return cfg
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

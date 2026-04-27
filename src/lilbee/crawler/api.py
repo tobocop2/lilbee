@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import CrawlerBrowserMissing
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher

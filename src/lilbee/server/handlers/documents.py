@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import mimetypes
 
-from lilbee.config import cfg
-from lilbee.security import validate_path_within
+from lilbee.core.config import cfg
+from lilbee.core.security import validate_path_within
+from lilbee.core.services import get_services
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
     DocumentRemoveResponse,
     SourceContentResponse,
 )
-from lilbee.services import get_services
 
 # Windows mimetypes reads from the registry, which may not define ``.md``
 # as ``text/markdown``. Pin the mapping at import time; ``add_type`` is

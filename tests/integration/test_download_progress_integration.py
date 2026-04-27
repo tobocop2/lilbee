@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.catalog import FEATURED_EMBEDDING, CatalogModel, download_model
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 pytestmark = pytest.mark.slow
 

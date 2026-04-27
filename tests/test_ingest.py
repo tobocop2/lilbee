@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import lilbee.services as svc_mod
-from lilbee.config import cfg
+import lilbee.core.services as svc_mod
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -825,7 +825,7 @@ class TestExtractionConfig:
 
     def test_topic_threshold_propagates_to_every_mode(self, monkeypatch):
         """Every ExtractMode carries the semantic chunking config, not just PDF."""
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
         from lilbee.ingest import ExtractMode, extraction_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
