@@ -14,9 +14,8 @@ from lilbee.retrieval.clustering import (
     SourceCluster,
     SourceClusterer,
 )
-from lilbee.retrieval.clustering_embedding import (
-    ChunkRecord,
-    EmbeddingClusterer,
+from lilbee.retrieval.clustering_embedding import EmbeddingClusterer
+from lilbee.retrieval.clustering_embedding.helpers import (
     _tokenize_for_tf,
     auto_k,
     communities_by_label,
@@ -24,6 +23,7 @@ from lilbee.retrieval.clustering_embedding import (
     mutual_knn,
     normalize_rows,
 )
+from lilbee.retrieval.clustering_embedding.types import ChunkRecord
 
 
 @pytest.fixture(autouse=True)
