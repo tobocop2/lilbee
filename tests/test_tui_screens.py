@@ -5074,6 +5074,24 @@ async def test_chat_action_complete_next():
             assert inp.value == "/help"
 
 
+async def test_chat_action_complete_next_noop_when_input_unfocused():
+    """Ctrl+N must not move focus when the input is not focused."""
+    from textual.widgets import Select
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        chat_sel = screen.query_one("#chat-model-select", Select)
+        chat_sel.focus()
+        await pilot.pause()
+        screen.action_complete_next()
+        await pilot.pause()
+        assert chat_sel.has_focus
+
+
 async def test_chat_action_complete_prev_opens_overlay():
     """Ctrl+P (action_complete_prev) opens overlay when not visible."""
     app = ChatTestApp()
@@ -5249,55 +5267,140 @@ async def test_chat_screen_has_css_path():
     assert ChatScreen.CSS_PATH == "chat.tcss"
 
 
-async def test_chat_status_line_updates_on_model_change():
-    """ChatStatusLine renders a pill when model_name is set."""
-    from textual.app import App
-
-    from lilbee.cli.tui.screens.chat import ChatStatusLine
-
-    class StatusApp(App[None]):
-        def compose(self):  # type: ignore[override]
-            yield ChatStatusLine(id="status")
-
-    app = StatusApp()
-    async with app.run_test(size=(80, 10)) as pilot:
-        widget = app.query_one("#status", ChatStatusLine)
-        widget.model_name = "qwen3:8b"
-        await pilot.pause()
-        assert widget.model_name == "qwen3:8b"
-        # Label.content holds the plain-text form of the last update() call
-        assert "qwen3:8b" in str(widget.content)
-
-
-async def test_chat_status_line_empty_model():
-    """ChatStatusLine renders empty when model_name is empty."""
-    from textual.app import App
-
-    from lilbee.cli.tui.screens.chat import ChatStatusLine
-
-    class StatusApp(App[None]):
-        def compose(self):  # type: ignore[override]
-            yield ChatStatusLine(id="status")
-
-    app = StatusApp()
-    async with app.run_test(size=(80, 10)) as pilot:
-        widget = app.query_one("#status", ChatStatusLine)
-        widget.model_name = ""
-        await pilot.pause()
-        assert widget.model_name == ""
-
-
-async def test_chat_screen_has_status_line():
-    """ChatScreen compose includes a ChatStatusLine widget."""
+async def test_chat_screen_welcome_shown_when_empty():
+    """ChatWelcome is mounted inside #chat-log on a fresh chat screen."""
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        from lilbee.cli.tui.screens.chat import ChatStatusLine
+        from lilbee.cli.tui import messages as msg_const
+        from lilbee.cli.tui.screens.chat import ChatWelcome
 
-        status = app.screen.query_one("#chat-status-line", ChatStatusLine)
-        assert status is not None
+        welcome = app.screen.query_one("#chat-welcome", ChatWelcome)
+        assert welcome.parent is not None
+        assert welcome.parent.id == "chat-log"
+        rendered = str(welcome.render())
+        assert msg_const.CHAT_WELCOME_TITLE in rendered
+        assert msg_const.CHAT_WELCOME_TAGLINE in rendered
+        assert msg_const.CHAT_WELCOME_HINT in rendered
+
+
+async def test_chat_screen_welcome_removed_on_first_message():
+    """The first user message removes the welcome entry."""
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.screens.chat import ChatScreen, ChatWelcome
+
+        screen = app.screen
+        assert isinstance(screen, ChatScreen)
+        with patch.object(screen, "_stream_response"):
+            screen._send_message("hello")
+        await pilot.pause()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#chat-welcome", ChatWelcome)
+
+
+async def test_chat_send_message_tolerates_missing_welcome():
+    """Re-sending a message after the welcome is gone is a no-op for cleanup."""
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.screens.chat import ChatScreen, ChatWelcome
+
+        screen = app.screen
+        assert isinstance(screen, ChatScreen)
+        with patch.object(screen, "_stream_response"):
+            screen._send_message("hello")
+            await pilot.pause()
+            screen._send_message("again")
+            await pilot.pause()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#chat-welcome", ChatWelcome)
+
+
+async def test_chat_tab_from_input_jumps_to_model_select():
+    """With an empty input and no completions, Tab moves focus to the chat dropdown."""
+    from textual.widgets import Input, Select
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#chat-input", Input).focus()
+        await pilot.press("tab")
+        await pilot.pause()
+        chat_sel = screen.query_one("#chat-model-select", Select)
+        assert chat_sel.has_focus
+
+
+async def test_chat_tab_cycles_between_model_selects():
+    """Tab on a focused Select advances to the next Select."""
+    from textual.widgets import Select
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#chat-model-select", Select).focus()
+        await pilot.press("tab")
+        await pilot.pause()
+        embed_sel = screen.query_one("#embed-model-select", Select)
+        assert embed_sel.has_focus
+
+
+async def test_chat_tab_in_normal_mode_jumps_to_model_select():
+    """Tab from the chat log (normal mode) jumps straight to the chat dropdown."""
+    from textual.widgets import Select
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        chat_sel = screen.query_one("#chat-model-select", Select)
+        assert chat_sel.has_focus
+
+
+async def test_chat_enter_on_focused_select_does_not_enter_insert_mode():
+    """Enter on a focused dropdown bubbles to the Select instead of insert mode."""
+    from textual.widgets import Select
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = app.screen
+        assert isinstance(screen, ChatScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        screen.query_one("#chat-model-select", Select).focus()
+        await pilot.pause()
+        assert screen._insert_mode is False
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._insert_mode is False
 
 
 async def test_chat_screen_has_prompt_area():
@@ -5311,19 +5414,6 @@ async def test_chat_screen_has_prompt_area():
 
         prompt_area = app.screen.query_one("#chat-prompt-area", PromptArea)
         assert prompt_area is not None
-
-
-async def test_chat_refresh_status_line():
-    """_refresh_status_line sets the model name on the status widget."""
-    cfg.chat_model = TEST_LOCAL_REF
-    cfg.embedding_model = TEST_EMBED_REF
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        from lilbee.cli.tui.screens.chat import ChatStatusLine
-
-        status = app.screen.query_one("#chat-status-line", ChatStatusLine)
-        assert status.model_name == TEST_LOCAL_REF
 
 
 async def test_settings_group_titles_present():

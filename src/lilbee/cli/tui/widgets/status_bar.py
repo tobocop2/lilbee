@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import ClassVar
+
 from textual.app import ComposeResult
 from textual.content import Content
 from textual.reactive import reactive
@@ -11,6 +14,8 @@ from textual.widgets import Static
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.config import cfg
+
+_CSS_FILE = Path(__file__).parent / "status_bar.tcss"
 
 _MODE_COLORS: dict[str, str] = {
     msg.MODE_NORMAL: "$primary",
@@ -29,16 +34,7 @@ class ViewTabs(Widget):
     # NOTE: no ``dock: bottom`` here. ViewTabs is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
     # siblings overlap at the same row in Textual (see BottomBars docstring).
-    DEFAULT_CSS = """
-    ViewTabs {
-        height: 1;
-        width: 100%;
-        background: $surface;
-    }
-    ViewTabs > Static {
-        width: auto;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
     active_view: reactive[str] = reactive(msg.DEFAULT_VIEW)
     mode_text: reactive[str] = reactive("")
 

@@ -1,0 +1,5 @@
+BottomBars {
+    dock: bottom;
+    height: auto;
+    width: 100%;
+}

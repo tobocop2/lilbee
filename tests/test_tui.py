@@ -810,7 +810,8 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
-        assert len(visible) <= 3
+        # Tab is shown so keyboard users can discover model dropdown navigation.
+        assert len(visible) <= 4
 
     def test_catalog_tab_bindings_removed(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
