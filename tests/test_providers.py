@@ -1726,7 +1726,7 @@ class TestLlamaCppProviderMethods:
         """_get_subprocess_worker lazy-creates a WorkerManager."""
         provider = _make_provider_no_thread()
 
-        with mock.patch("lilbee.providers.llama_cpp_provider.WorkerManager") as mock_wp_cls:
+        with mock.patch("lilbee.providers.llama_cpp.provider.WorkerManager") as mock_wp_cls:
             result = provider._get_subprocess_worker()
 
         assert result == mock_wp_cls.return_value
