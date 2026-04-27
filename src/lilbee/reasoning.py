@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -124,7 +124,9 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
         _close_iterator(tokens)
 
 
-def _stream_until_cap(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
+def _stream_until_cap(
+    parser: _TagParser, tokens: Iterator[str]
+) -> Generator[StreamToken, None, bool]:
     """Yield from *tokens* until the reasoning cap fires. Returns True if truncated."""
     for token in tokens:
         for st in parser.feed(token):
