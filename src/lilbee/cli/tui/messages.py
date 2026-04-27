@@ -75,7 +75,7 @@ CRAWL_DIALOG_INVALID_URL = "Invalid URL: {error}"
 CRAWL_DIALOG_INVALID_NUMBER = "{field} must be a positive integer or blank"
 EMBEDDING_MISSING = (
     "No embedding model, search disabled. "
-    "Run /models to install one, or: lilbee models install nomic-embed-text"
+    "Run /pull to install one, or: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 )
 THEME_SET = "Theme: {name}"
 HEADING_OUR_PICKS = "Our picks"

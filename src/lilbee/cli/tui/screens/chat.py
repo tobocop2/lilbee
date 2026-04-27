@@ -193,6 +193,10 @@ class ChatScreen(Screen[None]):
 
         dismiss()
         self.refresh_model_bar()
+        # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
+        # via [/] navigation needs an explicit focus restore.
+        with contextlib.suppress(Exception):
+            self.set_focus(self.query_one("#chat-input", Input))
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.

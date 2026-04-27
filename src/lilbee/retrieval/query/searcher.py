@@ -412,7 +412,7 @@ class Searcher:
 
     _NO_EMBED_WARNING = (
         "Chat only: no document search configured. "
-        "Install an embedding model: lilbee models install nomic-embed-text\n\n"
+        "Install an embedding model: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF\n\n"
     )
     _NO_RESULTS_MESSAGE = "No relevant documents found for this query."
 

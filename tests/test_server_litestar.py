@@ -839,12 +839,15 @@ class TestCrawlRoute:
 class TestSetupCrawlerRoutes:
     """bb-wq8g: GET /setup/crawler/status + POST /setup/crawler."""
 
+    @mock.patch("lilbee.server.routes.setup.crawler_available", return_value=True)
     @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=True)
-    def test_status_when_installed(self, _mock, client):
+    def test_status_when_installed(self, _mock_chromium, _mock_pkg, client):
         resp = client.get("/setup/crawler/status")
         assert resp.status_code == 200
         body = resp.json()
         assert body["installed"] is True
+        assert body["package_installed"] is True
+        assert body["chromium_installed"] is True
         assert body["component"] == "chromium"
         assert "browsers_path" in body
 

@@ -392,7 +392,7 @@ def resolve_model_path(model: str) -> Path:
 
     raise ProviderError(
         f"Model {model!r} not found in registry. "
-        f"Install it via the catalog or 'lilbee models install'.",
+        f"Install it via the catalog or 'lilbee model pull'.",
         provider="llama-cpp",
     )
 
