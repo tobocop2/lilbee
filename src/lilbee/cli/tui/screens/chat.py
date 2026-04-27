@@ -76,12 +76,7 @@ def _remove_copied_files(names: list[str]) -> None:
 
 
 class ChatWelcome(Static):
-    """Empty-state welcome shown inside the chat log until the first message arrives.
-
-    Posted into ``#chat-log`` like a normal entry so the conversation has no
-    separate "empty" mode. Removed the first time a real message is mounted.
-    Styled in ``chat.tcss``.
-    """
+    """Empty-state welcome posted into the chat log; removed on first message."""
 
     def __init__(self, *, id: str | None = None) -> None:
         title = Content.styled(msg.CHAT_WELCOME_TITLE, "bold $primary")

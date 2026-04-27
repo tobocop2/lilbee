@@ -265,10 +265,6 @@ _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
-    # CSS lives in model_bar.tcss; Widget has no CSS_PATH so we read the file
-    # at import time. SelectOverlay max-height + inflect keeps the dropdown on
-    # screen and a paired screen.refresh() on collapse stops border cells from
-    # leaking into terminal scrollback.
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, id: str | None = None) -> None:
