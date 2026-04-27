@@ -23,7 +23,7 @@ from lilbee.core.config import cfg
 from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
-from lilbee.crawler.discovery import _build_concurrency_spec, _build_filter_spec
+from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
     _drain_page_stream,
     _fetched_to_result,
@@ -48,9 +48,11 @@ class CrawlerState:
     """Per-process mutable state for the crawler (semaphore, periodic sync tracking).
 
     Encapsulates state that would otherwise live as bare module-level globals.
-    A single module-level instance (``_state``) is used because this state is
-    inherently per-process (threading primitives, asyncio tasks tied to the
-    running loop). Test isolation is via :meth:`reset`.
+    Held as a module-level singleton (``_state``) rather than under
+    :class:`lilbee.core.services.Services`: the asyncio.Semaphore is bound to
+    whichever event loop happens to be running, and Services may be rebuilt
+    across event-loop boundaries via ``reset_services``. Test isolation is via
+    :meth:`reset`.
     """
 
     def __init__(self) -> None:
@@ -178,8 +180,8 @@ async def crawl_recursive(
         sitemap._count_sitemap_urls, url, include_subdomains=include_subdomains
     )
 
-    concurrency = _build_concurrency_spec()
-    filters = _build_filter_spec(include_subdomains=include_subdomains)
+    concurrency = build_concurrency_spec()
+    filters = build_filter_spec(include_subdomains=include_subdomains)
 
     results: list[CrawlResult] = []
     try:

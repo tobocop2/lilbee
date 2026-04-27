@@ -2,15 +2,15 @@
 
 Two related orchestrators live here:
 
-- ``_generate_synthesis_page`` and friends produce a single
+- ``generate_synthesis_page`` and friends produce a single
   cross-source page from a concept cluster spanning 3+ documents.
-- ``_generate_source_batch`` issues one LLM call per source that
+- ``generate_source_batch`` issues one LLM call per source that
   emits sections for every pre-extracted entity plus 3-5 LLM-curated
   concepts; the response is split into per-section bodies and each
-  section is finalized via :func:`_finalize_section`.
+  section is finalized via :func:`finalize_section`.
 
 The shared output-parsing helpers (``_split_batched_output``,
-``_prefix_heading``, ``_match_label``) cover both paths.
+``_prefix_heading``, ``match_label``) cover both paths.
 """
 
 from __future__ import annotations
@@ -28,20 +28,20 @@ from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.reasoning import strip_reasoning
 from lilbee.wiki.batch import (
-    _finalize_section,
-    _hash_existing_sources,
-    _match_label,
+    finalize_section,
+    hash_existing_sources,
+    match_label,
 )
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations
-from lilbee.wiki.citations import _resolve_multi_source_citations
+from lilbee.wiki.citations import resolve_multi_source_citations
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.page import (
-    _build_wiki_messages,
-    _chunks_to_text,
-    _generate_page,
-    _truncate_chunks_to_budget,
+    build_wiki_messages,
+    chunks_to_text,
+    generate_page,
+    truncate_chunks_to_budget,
 )
-from lilbee.wiki.persistence import _write_pending_marker
+from lilbee.wiki.persistence import write_pending_marker
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     PENDING_KIND_PARSE,
@@ -66,7 +66,7 @@ _SECTION_HEADER_RE = re.compile(
 _PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
 
 
-def _generate_synthesis_page(
+def generate_synthesis_page(
     topic: str,
     source_names: list[str],
     chunks_by_source: dict[str, list[SearchChunk]],
@@ -85,8 +85,8 @@ def _generate_synthesis_page(
         log.warning("No chunks for synthesis topic %r, skipping", topic)
         return None
 
-    all_chunks = _truncate_chunks_to_budget(all_chunks, config)
-    chunks_text = _chunks_to_text(all_chunks)
+    all_chunks = truncate_chunks_to_budget(all_chunks, config)
+    chunks_text = chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
     template = config.wiki_synthesis_prompt
     display_topic = clean_label_for_display(topic)
@@ -100,11 +100,9 @@ def _generate_synthesis_page(
             source_hashes[name] = file_hash(source_path)
 
     def resolver(parsed: list[ParsedCitation]) -> list[CitationRecord]:
-        return _resolve_multi_source_citations(
-            parsed, source_names, source_hashes, chunks_by_source
-        )
+        return resolve_multi_source_citations(parsed, source_names, source_hashes, chunks_by_source)
 
-    return _generate_page(
+    return generate_page(
         label=topic,
         prompt=prompt,
         chunks=all_chunks,
@@ -148,9 +146,9 @@ def _split_batched_output(
         if not body:
             continue
         lowered = name.lower()
-        kind_label = _match_label(lowered, expected_entity_labels, EntityKind.ENTITY)
+        kind_label = match_label(lowered, expected_entity_labels, EntityKind.ENTITY)
         if kind_label is None:
-            kind_label = _match_label(lowered, concepts, EntityKind.CONCEPT)
+            kind_label = match_label(lowered, concepts, EntityKind.CONCEPT)
         if kind_label is None:
             # Concept labels come from the LLM itself: tag any
             # unmatched section as CONCEPT only when the caller is
@@ -212,7 +210,7 @@ def _build_batch_prompt(
     )
 
 
-def _group_entities_by_primary_source(
+def group_entities_by_primary_source(
     entities: list[ExtractedEntity],
 ) -> dict[str, list[ExtractedEntity]]:
     """Group entities under the source that mentions them most.
@@ -234,7 +232,7 @@ def _group_entities_by_primary_source(
     return grouped
 
 
-def _generate_source_batch(
+def generate_source_batch(
     source: str,
     entities: list[ExtractedEntity],
     chunks: list[SearchChunk],
@@ -261,10 +259,10 @@ def _generate_source_batch(
     """
     if not chunks:
         return []
-    budgeted = _truncate_chunks_to_budget(chunks, config)
-    chunks_text = _chunks_to_text(budgeted)
+    budgeted = truncate_chunks_to_budget(chunks, config)
+    chunks_text = chunks_to_text(budgeted)
     prompt = _build_batch_prompt(source, entities, chunks_text, extract_concepts, config)
-    messages = _build_wiki_messages(prompt, provider, config)
+    messages = build_wiki_messages(prompt, provider, config)
     options = config.generation_options(
         temperature=config.wiki_temperature,
         max_tokens=config.wiki_summary_max_tokens,
@@ -287,7 +285,7 @@ def _generate_source_batch(
     wiki_root = config.data_root / config.wiki_dir
     drafts_dir = wiki_root / DRAFTS_SUBDIR
     source_names = [source]
-    source_hashes = _hash_existing_sources(source_names, config.documents_dir)
+    source_hashes = hash_existing_sources(source_names, config.documents_dir)
     chunks_by_source = {source: budgeted}
 
     # Citation definitions live in the trailing block of the WHOLE
@@ -302,12 +300,12 @@ def _generate_source_batch(
     for header_label, (kind, body) in parsed.items():
         seen_labels.add(header_label)
         resolver = functools.partial(
-            _resolve_multi_source_citations,
+            resolve_multi_source_citations,
             source_names=source_names,
             source_hashes=source_hashes,
             chunks_by_source=chunks_by_source,
         )
-        page = _finalize_section(
+        page = finalize_section(
             header_label=header_label,
             kind=kind,
             body=body,
@@ -343,7 +341,7 @@ def _generate_source_batch(
                 sort_keys=False,
             )
             frontmatter = f"---\n{frontmatter_body}---\n"
-            path = _write_pending_marker(drafts_dir, entity.slug, marker, frontmatter)
+            path = write_pending_marker(drafts_dir, entity.slug, marker, frontmatter)
             log.info("Wrote PENDING-PARSE marker for %s -> %s", entity.slug, path)
 
     return pages

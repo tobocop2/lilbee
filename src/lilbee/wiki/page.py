@@ -36,15 +36,15 @@ from lilbee.wiki.citation import (
     strip_citation_block,
 )
 from lilbee.wiki.citations import (
-    _render_provenance,
-    _verify_citations,
+    render_provenance,
+    verify_citations,
 )
 from lilbee.wiki.persistence import (
-    _divert_to_drafts,
-    _persist_and_finalize,
-    _subdir_from_wiki_source,
+    divert_to_drafts,
+    persist_and_finalize,
+    subdir_from_wiki_source,
 )
-from lilbee.wiki.quality import _check_faithfulness, _content_change_ratio, _diff_summary
+from lilbee.wiki.quality import check_faithfulness, content_change_ratio, diff_summary
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
@@ -76,9 +76,7 @@ _NO_THINK_DIRECTIVE = "/no_think"
 _CAPABILITY_THINKING = "thinking"
 
 
-def _build_wiki_messages(
-    prompt: str, provider: LLMProvider, config: Config
-) -> list[dict[str, str]]:
+def build_wiki_messages(prompt: str, provider: LLMProvider, config: Config) -> list[dict[str, str]]:
     """Build the chat messages list for a wiki-gen call.
 
     When the provider reports the ``thinking`` capability for the active
@@ -91,7 +89,7 @@ def _build_wiki_messages(
     return [{"role": "user", "content": prompt}]
 
 
-def _truncate_chunks_to_budget(
+def truncate_chunks_to_budget(
     chunks: list[SearchChunk],
     config: Config,
 ) -> list[SearchChunk]:
@@ -123,7 +121,7 @@ def _truncate_chunks_to_budget(
     return kept
 
 
-def _chunks_to_text(chunks: list[SearchChunk]) -> str:
+def chunks_to_text(chunks: list[SearchChunk]) -> str:
     """Format chunks as numbered text blocks for the LLM prompt."""
     parts: list[str] = []
     for i, chunk in enumerate(chunks):
@@ -136,7 +134,7 @@ def _chunks_to_text(chunks: list[SearchChunk]) -> str:
     return "\n\n".join(parts)
 
 
-def _build_frontmatter(
+def build_frontmatter(
     config: Config,
     source_names: list[str],
     score: float,
@@ -154,7 +152,7 @@ def _build_frontmatter(
     """
     sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
     hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
-    provenance_block = _render_provenance(config, chunks) if chunks is not None else ""
+    provenance_block = render_provenance(config, chunks) if chunks is not None else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
@@ -167,7 +165,7 @@ def _build_frontmatter(
     )
 
 
-def _write_page(
+def write_page(
     wiki_root: Path,
     subdir: str,
     slug: str,
@@ -184,17 +182,17 @@ def _write_page(
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
-        ratio = _content_change_ratio(old_content, full_content)
+        ratio = content_change_ratio(old_content, full_content)
         if ratio > drift_threshold:
             drafts_dir = wiki_root / DRAFTS_SUBDIR
-            diff_text = _diff_summary(old_content, full_content)
-            return _divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
+            diff_text = diff_summary(old_content, full_content)
+            return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
 
     page_path.write_text(full_content, encoding="utf-8")
     return page_path
 
 
-def _assemble_content(
+def assemble_content(
     frontmatter: str,
     wiki_text: str,
     citation_block: str,
@@ -225,7 +223,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     ``lilbee.data.ingest``: ``content_type="text"``, all four page/line
     positions ``0`` (wiki pages are not paginated).
     """
-    subdir = _subdir_from_wiki_source(wiki_source)
+    subdir = subdir_from_wiki_source(wiki_source)
     if subdir is None:
         log.warning("index_wiki_page: malformed wiki_source %r (no subdir)", wiki_source)
         return 0
@@ -264,7 +262,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     return len(records)
 
 
-def _generate_page(
+def generate_page(
     label: str,
     prompt: str,
     chunks: list[SearchChunk],
@@ -286,7 +284,7 @@ def _generate_page(
 
     _emit("preparing", chunks=len(chunks), source=label)
 
-    messages = _build_wiki_messages(prompt, provider, config)
+    messages = build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
     options = config.generation_options(
         temperature=config.wiki_temperature,
@@ -306,23 +304,23 @@ def _generate_page(
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
-    verified = _verify_citations(citation_resolver(parsed_citations), chunks, label, config)
+    verified = verify_citations(citation_resolver(parsed_citations), chunks, label, config)
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
         _emit("failed", error="No valid citations found")
         return None
 
     _emit("faithfulness_check")
-    score = _check_faithfulness(chunks, wiki_text, label, config)
+    score = check_faithfulness(chunks, wiki_text, label, config)
     threshold = config.wiki_embedding_faithfulness_threshold
     subdir = page_type if score >= threshold else DRAFTS_SUBDIR
     if subdir == DRAFTS_SUBDIR:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)
-    frontmatter = _build_frontmatter(config, source_names, score, leaf_hash, chunks=chunks)
+    frontmatter = build_frontmatter(config, source_names, score, leaf_hash, chunks=chunks)
     citation_block = render_citation_block(verified)
-    full_content = _assemble_content(frontmatter, wiki_text, citation_block)
+    full_content = assemble_content(frontmatter, wiki_text, citation_block)
 
     wiki_root = config.data_root / config.wiki_dir
     target = PageTarget(
@@ -333,7 +331,7 @@ def _generate_page(
         page_type=page_type,
         label=label,
     )
-    page_path = _persist_and_finalize(full_content, target, verified, source_names, store, config)
+    page_path = persist_and_finalize(full_content, target, verified, source_names, store, config)
 
     log.info(
         "Generated wiki page for %s -> %s (score=%.2f, citations=%d)",

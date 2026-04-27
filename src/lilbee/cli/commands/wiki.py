@@ -323,11 +323,10 @@ _DRY_RUN_CONCEPT_NOTE = (
 def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
     """Render the extraction result as JSON or table without calling any LLM.
 
-    Phase D: concepts come from the per-source batched LLM call, so
-    listing them would require the call we are trying to avoid. The
-    dry-run surface is NER-entity only, with a trailing note so a
-    user who expected concepts in the output knows why they are
-    missing.
+    Concepts come from the per-source batched LLM call, so listing
+    them would require the call we are trying to avoid. The dry-run
+    surface is NER-entity only, with a trailing note so a user who
+    expected concepts in the output knows why they are missing.
     """
     rows: list[dict[str, Any]] = [
         {

@@ -80,7 +80,7 @@ def quant_tier(quant: str) -> str:
     return QUANT_TIERS.get(quant, "--")
 
 
-def _derive_param_count(model: CatalogModel) -> str:
+def derive_param_count(model: CatalogModel) -> str:
     """Parse the ``7B``-style param count from the display name; ``""`` if absent."""
     match = PARAM_COUNT_RE.search(model.display_name)
     return match.group(1) if match else ""
@@ -126,7 +126,7 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
                 downloads=m.downloads,
                 task=m.task,
                 display_name=m.display_name,
-                param_count=_derive_param_count(m),
+                param_count=derive_param_count(m),
                 quality_tier=quant_tier(extract_quant(m.gguf_filename)),
                 installed=m.hf_repo in installed_repos,
                 source=ModelSource.NATIVE.value,

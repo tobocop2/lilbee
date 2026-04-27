@@ -276,8 +276,8 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         drafts = resp.json()
         assert len(drafts) == 1
-        # The Phase D DraftInfo slug is relative to the drafts subdir, not
-        # the wiki root: matches the CLI / service-layer contract.
+        # The DraftInfo slug is relative to the drafts subdir, not the
+        # wiki root: matches the CLI / service-layer contract.
         assert drafts[0]["slug"] == "failed-page"
         assert drafts[0]["pending_kind"] is None
         assert drafts[0]["faithfulness_score"] == 0.9
@@ -481,7 +481,7 @@ def _make_draft(
 
 
 class TestWikiDraftsEndpoints:
-    """Phase D draft review endpoints: list (upgraded), diff, accept, reject."""
+    """Draft review endpoints: list (upgraded), diff, accept, reject."""
 
     @pytest.fixture(autouse=True)
     def enable_wiki(self):

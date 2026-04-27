@@ -1,11 +1,12 @@
-"""Per-source batched-generation helpers and Phase D archive migration.
+"""Per-source batched-generation helpers and legacy concept-page archival.
 
 The batched build (one LLM call per source that emits sections for
 every pre-extracted entity plus 3-5 LLM-curated concepts) lives here:
 section-finalization, label matching, source hashing, and the page
 splitter that turns the model's response into per-section bodies.
-Also owns the one-time Phase D migration that archives pre-Phase-D
-concept pages and unwraps stale ``[[archived-slug]]`` links.
+Also owns the one-time migration that archives legacy concept pages
+(written before per-source batched generation) and unwraps stale
+``[[archived-slug]]`` links.
 """
 
 from __future__ import annotations
@@ -26,15 +27,15 @@ from lilbee.wiki.citation import (
     render_citation_block,
     strip_citation_block,
 )
-from lilbee.wiki.citations import _verify_citations
+from lilbee.wiki.citations import verify_citations
 from lilbee.wiki.entity_extractor import EntityKind
-from lilbee.wiki.page import _assemble_content, _build_frontmatter
+from lilbee.wiki.page import assemble_content, build_frontmatter
 from lilbee.wiki.persistence import (
-    _delete_pending_marker_if_present,
-    _divert_concept_collision,
-    _persist_and_finalize,
+    delete_pending_marker_if_present,
+    divert_concept_collision,
+    persist_and_finalize,
 )
-from lilbee.wiki.quality import _check_faithfulness
+from lilbee.wiki.quality import check_faithfulness
 from lilbee.wiki.shared import (
     ARCHIVE_SUBDIR,
     CONCEPTS_SUBDIR,
@@ -48,21 +49,22 @@ from lilbee.wiki.shared import (
 log = logging.getLogger(__name__)
 
 # In-body ``[^keyN]`` footnote-marker pattern. Module-scope so the
-# batched-generation hot path (`_finalize_section`) does not recompile
+# batched-generation hot path (`finalize_section`) does not recompile
 # it on every recovered section.
 _FOOTNOTE_MARKER_RE = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
 
-# Phase D: archive-migration sentinel and helpers. The sentinel lives
-# under data_dir (NOT inside wiki/) so Obsidian sync and wiki
-# tree-walkers never surface it.
-_PHASE_D_SENTINEL_NAME = ".phase-d-migrated"
+# Sentinel file for the one-time legacy-concepts archival. Lives under
+# data_dir (NOT inside wiki/) so Obsidian sync and wiki tree-walkers
+# never surface it. The on-disk filename is preserved across renames so
+# upgrading installs do not re-run the migration.
+_LEGACY_CONCEPTS_MIGRATED_SENTINEL = ".phase-d-migrated"
 
-# Pre-Phase-D wiki concepts that we move to archive/ as part of the
-# one-time migration. Matches wiki/<CONCEPTS_SUBDIR>/*.md recursively.
+# Legacy wiki concepts that we move to archive/ as part of the one-time
+# migration. Matches wiki/<CONCEPTS_SUBDIR>/*.md recursively.
 _ARCHIVE_CONCEPTS_SUBPATH = Path(ARCHIVE_SUBDIR) / CONCEPTS_SUBDIR
 
 
-def _hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict[str, str]:
+def hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict[str, str]:
     """Hash each source file that still exists on disk (used for citation staleness)."""
     out: dict[str, str] = {}
     for name in source_names:
@@ -72,7 +74,7 @@ def _hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict
     return out
 
 
-def _match_label(
+def match_label(
     lowered_name: str,
     expected: set[str],
     kind: EntityKind,
@@ -90,12 +92,12 @@ def _match_label(
     return None
 
 
-def _chunks_for_source(chunks: list[SearchChunk], source: str) -> list[SearchChunk]:
+def chunks_for_source(chunks: list[SearchChunk], source: str) -> list[SearchChunk]:
     """Return the subset of *chunks* whose ``source`` matches, preserving order."""
     return [c for c in chunks if c.source == source]
 
 
-def _short_source_hash(source: str) -> str:
+def short_source_hash(source: str) -> str:
     """8-char sha256 digest of *source* (stable collision-marker suffix)."""
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
 
@@ -116,8 +118,8 @@ def _group_chunks_by_page(
     return sorted(grouped.items())
 
 
-def _maybe_run_phase_d_migration(wiki_root: Path, data_dir: Path) -> None:
-    """One-time migration: archive pre-Phase-D concept pages.
+def archive_legacy_concept_pages(wiki_root: Path, data_dir: Path) -> None:
+    """One-time migration: archive legacy concept pages.
 
     Runs idempotently, gated by ``{data_dir}/.phase-d-migrated``:
 
@@ -129,10 +131,10 @@ def _maybe_run_phase_d_migration(wiki_root: Path, data_dir: Path) -> None:
        404. Archived slugs become plain text.
     3. Write the sentinel so future builds skip this path.
 
-    D3's freshly LLM-curated concept pages written AFTER the sentinel
-    exists are never touched.
+    Freshly LLM-curated concept pages written AFTER the sentinel exists
+    are never touched.
     """
-    sentinel = data_dir / _PHASE_D_SENTINEL_NAME
+    sentinel = data_dir / _LEGACY_CONCEPTS_MIGRATED_SENTINEL
     if sentinel.exists():
         return
     concepts_dir = wiki_root / CONCEPTS_SUBDIR
@@ -153,7 +155,7 @@ def _maybe_run_phase_d_migration(wiki_root: Path, data_dir: Path) -> None:
     sentinel.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
     if archived_slugs:
         log.info(
-            "Phase D migration: archived %d concept pages, sentinel written at %s",
+            "Legacy-concepts migration: archived %d concept pages, sentinel written at %s",
             len(archived_slugs),
             sentinel,
         )
@@ -185,7 +187,7 @@ def _unwrap_archived_links(wiki_root: Path, archived_slugs: list[str]) -> None:
                 md_path.write_text(rewritten, encoding="utf-8")
 
 
-def _finalize_section(
+def finalize_section(
     *,
     header_label: str,
     kind: EntityKind,
@@ -223,12 +225,12 @@ def _finalize_section(
     # marker against the shared definition set.
     section_keys.update(_FOOTNOTE_MARKER_RE.findall(body))
     relevant = [c for c in shared_parsed_citations if c.citation_key in section_keys]
-    verified = _verify_citations(citation_resolver(relevant), chunks, header_label, config)
+    verified = verify_citations(citation_resolver(relevant), chunks, header_label, config)
     if not verified:
         log.info("No valid citations for batched section %s, skipping", header_label)
         return None
 
-    score = _check_faithfulness(chunks, body, header_label, config)
+    score = check_faithfulness(chunks, body, header_label, config)
     threshold = config.wiki_embedding_faithfulness_threshold
     page_type = CONCEPTS_SUBDIR if kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
     subdir = page_type if score >= threshold else DRAFTS_SUBDIR
@@ -241,9 +243,9 @@ def _finalize_section(
         )
 
     clean_body = strip_citation_block(body)
-    frontmatter = _build_frontmatter(config, source_names, score, chunks=chunks)
+    frontmatter = build_frontmatter(config, source_names, score, chunks=chunks)
     citation_block = render_citation_block(verified)
-    full_content = _assemble_content(frontmatter, clean_body, citation_block)
+    full_content = assemble_content(frontmatter, clean_body, citation_block)
 
     # Concept collision: the second source proposing a slug loses
     # and writes to a drafts collision marker; the winning source's
@@ -251,7 +253,7 @@ def _finalize_section(
     if kind is EntityKind.CONCEPT and subdir == CONCEPTS_SUBDIR:
         first_source = written_concept_slugs.get(slug)
         if first_source is not None and first_source != source:
-            return _divert_concept_collision(
+            return divert_concept_collision(
                 slug=slug,
                 source=source,
                 first_source=first_source,
@@ -262,7 +264,7 @@ def _finalize_section(
 
     # Successful regen of a previously-PENDING slug: remove the old
     # marker so the drafts surface no longer lists it.
-    _delete_pending_marker_if_present(drafts_dir, slug)
+    delete_pending_marker_if_present(drafts_dir, slug)
 
     wiki_root = config.data_root / config.wiki_dir
     target = PageTarget(
@@ -273,7 +275,7 @@ def _finalize_section(
         page_type=page_type,
         label=header_label,
     )
-    page_path = _persist_and_finalize(full_content, target, verified, source_names, store, config)
+    page_path = persist_and_finalize(full_content, target, verified, source_names, store, config)
     log.info(
         "Generated batched page for %s -> %s (score=%.2f, citations=%d)",
         header_label,

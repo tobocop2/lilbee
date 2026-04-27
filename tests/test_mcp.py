@@ -882,7 +882,7 @@ class TestMcpSubcommand:
 
 
 class TestWikiDraftsMcp:
-    """Phase D: drafts MCP tools surface the same data as the CLI list/diff."""
+    """Drafts MCP tools surface the same data as the CLI list/diff."""
 
     def test_wiki_drafts_list_returns_entries(self, isolated_env):
         cfg.wiki = True

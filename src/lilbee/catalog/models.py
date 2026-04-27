@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 
-class _HfGgufMeta(BaseModel):
+class HfGgufMeta(BaseModel):
     """GGUF metadata returned by the HF API when expand=gguf is requested.
 
     ModelInfo.gguf is typed as ``dict | None`` upstream, so we validate it ourselves.
@@ -70,8 +70,8 @@ class CatalogResult:
 
 
 @dataclass(frozen=True)
-class _HfPage:
-    """Internal: one page of HuggingFace API results."""
+class HfPage:
+    """One page of HuggingFace API results."""
 
     models: list[CatalogModel]
     has_more: bool

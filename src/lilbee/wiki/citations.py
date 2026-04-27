@@ -16,7 +16,7 @@ import yaml
 
 from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, SearchChunk
-from lilbee.wiki.cache import _normalize_whitespace
+from lilbee.wiki.cache import normalize_whitespace
 from lilbee.wiki.citation import ParsedCitation
 
 log = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ def _resolve_citations(
     return records
 
 
-def _verify_citations(
+def verify_citations(
     citation_records: list[CitationRecord],
     chunks: list[SearchChunk],
     label: str,
@@ -146,7 +146,7 @@ def _verify_citations(
 ) -> list[CitationRecord]:
     """Filter citation records, keeping only those whose excerpts are in the chunks."""
     wiki_prefix = config.wiki_dir + "/"
-    all_chunk_text = _normalize_whitespace(" ".join(c.chunk for c in chunks))
+    all_chunk_text = normalize_whitespace(" ".join(c.chunk for c in chunks))
     verified: list[CitationRecord] = []
     for rec in citation_records:
         if rec["source_filename"].startswith(wiki_prefix):
@@ -155,14 +155,14 @@ def _verify_citations(
         if rec["claim_type"] == "inference" or not rec["excerpt"]:
             verified.append(rec)
             continue
-        if _normalize_whitespace(rec["excerpt"]) in all_chunk_text:
+        if normalize_whitespace(rec["excerpt"]) in all_chunk_text:
             verified.append(rec)
         else:
             log.debug("Citation %s excerpt not found in %s, dropping", rec["citation_key"], label)
     return verified
 
 
-def _render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
+def render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
     """Render the provenance block: chunk references + extraction method.
 
     Routes through ``yaml.safe_dump`` rather than hand-rolled string
@@ -179,7 +179,7 @@ def _render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
     return yaml.safe_dump(block, sort_keys=False)
 
 
-def _resolve_multi_source_citations(
+def resolve_multi_source_citations(
     parsed_citations: list[ParsedCitation],
     source_names: list[str],
     source_hashes: dict[str, str],

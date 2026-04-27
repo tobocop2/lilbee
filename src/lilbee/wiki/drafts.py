@@ -53,13 +53,13 @@ _DRIFT_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Phase D: batched-generation pending markers. The per-source batched
-# call writes one of these when the parser could not recover a
-# requested section, or when two sources proposed the same concept
-# slug and the second write lost the race. The keyword phrases live
-# in ``wiki.shared`` so writer (gen) and reader (drafts) agree on the
-# exact wording; this regex adds the ``<!--`` wrapper plus ``\s+`` in
-# place of each literal space, so the reader tolerates double-space
+# Batched-generation pending markers. The per-source batched call
+# writes one of these when the parser could not recover a requested
+# section, or when two sources proposed the same concept slug and the
+# second write lost the race. The keyword phrases live in
+# ``wiki.shared`` so writer (generation) and reader (drafts) agree on
+# the exact wording; this regex adds the ``<!--`` wrapper plus ``\s+``
+# in place of each literal space, so the reader tolerates double-space
 # variations in cached markers. Keywords carry no regex metacharacters
 # so ``re.escape`` is unnecessary.
 _PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
@@ -89,7 +89,7 @@ _PUBLISHED_SUBDIRS: tuple[str, ...] = (
 class DraftInfo:
     """Metadata about a single draft, surfaced in ``wiki drafts list``.
 
-    Phase D: ``pending_kind`` distinguishes drift drafts (None) from
+    ``pending_kind`` distinguishes drift drafts (None) from
     batched-generation markers (``"parse"``, ``"collision"``). Callers
     can render the kind in the list view and branch on it when
     deciding how to surface the draft (e.g. a collision needs the

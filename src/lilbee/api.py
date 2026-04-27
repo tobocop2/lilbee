@@ -21,6 +21,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+# app.ingest stays at module top: it is a thin wrapper over shutil + the
+# config singleton (~50ms cumulative beyond core.config). data.ingest is
+# deferred at each callsite below because it transitively imports spaCy via
+# the wiki package and adds ~3s on first touch.
 from lilbee.app.ingest import copy_files
 from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within

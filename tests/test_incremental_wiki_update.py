@@ -179,9 +179,8 @@ class TestIncrementalWikiUpdate:
     async def test_build_wiki_extract_concepts_false_on_incremental(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:
-        """Phase D: the incremental hook passes ``extract_concepts=False``
-        so a sync does not churn LLM-curated concept slugs per source
-        touch.
+        """The incremental hook passes ``extract_concepts=False`` so a
+        sync does not churn LLM-curated concept slugs per source touch.
         """
         cfg.wiki_ingest_update_cap = 10
         touched = _entity("braking", EntityKind.ENTITY, ["changed.txt"])

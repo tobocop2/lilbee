@@ -22,11 +22,11 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.services import get_services
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.llama_cpp.batching import (
-    _BATCH_WINDOW_S,
-    _EMBED_FUTURE_TIMEOUT_S,
-    _RERANK_FUTURE_TIMEOUT_S,
-    _EmbedRequest,
-    _RerankRequest,
+    BATCH_WINDOW_S,
+    EMBED_FUTURE_TIMEOUT_S,
+    RERANK_FUTURE_TIMEOUT_S,
+    EmbedRequest,
+    RerankRequest,
     compute_rerank_scores,
     embed_one,
 )
@@ -38,7 +38,13 @@ from lilbee.providers.llama_cpp.log_dispatch import (
     install_llama_log_handler,
     suppress_native_stderr,
 )
-from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
+from lilbee.providers.model_cache import (
+    MODE_CHAT,
+    MODE_EMBED,
+    MODE_RERANK,
+    LoaderMode,
+    MemoryAwareModelCache,
+)
 from lilbee.providers.worker import WorkerManager
 
 log = logging.getLogger(__name__)
@@ -65,15 +71,13 @@ class LlamaCppProvider(LLMProvider):
     """
 
     def __init__(self) -> None:
-        from lilbee.providers.model_cache import MemoryAwareModelCache
-
         self._cache = MemoryAwareModelCache(
             max_memory_fraction=cfg.gpu_memory_fraction,
             keep_alive_seconds=cfg.model_keep_alive,
             loader=load_llama,
         )
-        self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
-        self._rerank_queue: queue.Queue[_RerankRequest | None] = queue.Queue()
+        self._embed_queue: queue.Queue[EmbedRequest | None] = queue.Queue()
+        self._rerank_queue: queue.Queue[RerankRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
         self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
         self._embed_thread.start()
@@ -89,9 +93,9 @@ class LlamaCppProvider(LLMProvider):
             if first is None:
                 break
 
-            batch: list[_EmbedRequest] = [first]
+            batch: list[EmbedRequest] = [first]
             shutting_down = False
-            deadline = time.monotonic() + _BATCH_WINDOW_S
+            deadline = time.monotonic() + BATCH_WINDOW_S
             while time.monotonic() < deadline:
                 try:
                     req = self._embed_queue.get_nowait()
@@ -107,7 +111,7 @@ class LlamaCppProvider(LLMProvider):
             if shutting_down:
                 break
 
-    def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
+    def _dispatch_batch(self, batch: list[EmbedRequest]) -> None:
         """Serialize embedding requests and resolve all futures.
         Embeds one text at a time because some model architectures (e.g.
         nomic-bert) fail with llama_decode -1 on multi-text batches.
@@ -142,7 +146,7 @@ class LlamaCppProvider(LLMProvider):
                 break
             self._dispatch_rerank(req)
 
-    def _dispatch_rerank(self, req: _RerankRequest) -> None:
+    def _dispatch_rerank(self, req: RerankRequest) -> None:
         """Run a single rerank request and resolve its future."""
         try:
             llm = self._get_rerank_llm()
@@ -198,16 +202,16 @@ class LlamaCppProvider(LLMProvider):
                 log.warning("Subprocess embed failed, falling back to in-process: %s", exc)
                 self._subprocess_enabled = False
         fut: Future[list[list[float]]] = Future()
-        self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
-        return fut.result(timeout=_EMBED_FUTURE_TIMEOUT_S)
+        self._embed_queue.put(EmbedRequest(texts=texts, future=fut))
+        return fut.result(timeout=EMBED_FUTURE_TIMEOUT_S)
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Score *candidates* by relevance to *query*, queued through a single worker."""
         if not candidates:
             return []
         fut: Future[list[float]] = Future()
-        self._rerank_queue.put(_RerankRequest(query=query, candidates=candidates, future=fut))
-        return fut.result(timeout=_RERANK_FUTURE_TIMEOUT_S)
+        self._rerank_queue.put(RerankRequest(query=query, candidates=candidates, future=fut))
+        return fut.result(timeout=RERANK_FUTURE_TIMEOUT_S)
 
     def supports_rerank(self) -> bool:
         """llama-cpp can rerank iff llama-cpp-python exposes the rank pooling type."""

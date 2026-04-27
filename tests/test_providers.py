@@ -1066,7 +1066,7 @@ class TestDispatchBatch:
         from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         mock_llm = mock.MagicMock()
         mock_llm.create_embedding.side_effect = [
@@ -1077,7 +1077,7 @@ class TestDispatchBatch:
         provider = LlamaCppProvider()
         fut: Future[list[list[float]]] = Future()
         with mock.patch.object(provider, "_get_embed_llm", return_value=mock_llm):
-            provider._dispatch_batch([_EmbedRequest(texts=["a", "b"], future=fut)])
+            provider._dispatch_batch([EmbedRequest(texts=["a", "b"], future=fut)])
         assert fut.result() == [[0.1], [0.2]]
 
     def test_exception_sets_future_exception(self, mock_llama_cpp: mock.MagicMock) -> None:
@@ -1085,7 +1085,7 @@ class TestDispatchBatch:
         from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         mock_llm = mock.MagicMock()
         mock_llm.create_embedding.side_effect = RuntimeError("GPU OOM")
@@ -1093,7 +1093,7 @@ class TestDispatchBatch:
         provider = LlamaCppProvider()
         fut: Future[list[list[float]]] = Future()
         with mock.patch.object(provider, "_get_embed_llm", return_value=mock_llm):
-            provider._dispatch_batch([_EmbedRequest(texts=["a"], future=fut)])
+            provider._dispatch_batch([EmbedRequest(texts=["a"], future=fut)])
         with pytest.raises(RuntimeError, match="GPU OOM"):
             fut.result()
 
@@ -1102,7 +1102,7 @@ class TestEmbedSubprocessFallback:
     def test_oserror_disables_subprocess(self, mock_llama_cpp: mock.MagicMock) -> None:
         """OSError from subprocess worker falls back to in-process embedding."""
         from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         provider = LlamaCppProvider()
         provider._subprocess_enabled = True
@@ -1115,7 +1115,7 @@ class TestEmbedSubprocessFallback:
         original_put = provider._embed_queue.put
 
         def _intercept_put(item):
-            if isinstance(item, _EmbedRequest):
+            if isinstance(item, EmbedRequest):
                 item.future.set_result([[0.5]])
             else:
                 original_put(item)
@@ -2008,7 +2008,7 @@ class TestEmbedWorker:
         from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         with mock.patch("threading.Thread.start"):
             provider = LlamaCppProvider()
@@ -2019,7 +2019,7 @@ class TestEmbedWorker:
             provider._embed_queue.get_nowait()
 
         fut: Future[list[list[float]]] = Future()
-        provider._embed_queue.put(_EmbedRequest(texts=["hello"], future=fut))
+        provider._embed_queue.put(EmbedRequest(texts=["hello"], future=fut))
         provider._embed_queue.put(None)  # shutdown signal
 
         with mock.patch.object(provider, "_dispatch_batch") as mock_dispatch:
@@ -2035,7 +2035,7 @@ class TestEmbedWorker:
         from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         with mock.patch("threading.Thread.start"):
             provider = LlamaCppProvider()
@@ -2046,7 +2046,7 @@ class TestEmbedWorker:
             provider._embed_queue.get_nowait()
 
         fut: Future[list[list[float]]] = Future()
-        provider._embed_queue.put(_EmbedRequest(texts=["a"], future=fut))
+        provider._embed_queue.put(EmbedRequest(texts=["a"], future=fut))
         # After first item, put shutdown while batching
         provider._embed_queue.put(None)
 
@@ -2058,7 +2058,7 @@ class TestEmbedWorker:
         """_dispatch_batch resolves futures with embedding vectors."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         provider = _make_provider_no_thread()
         mock_llm = mock.MagicMock()
@@ -2071,7 +2071,7 @@ class TestEmbedWorker:
         ):
             cfg.embedding_model = "org/Test-GGUF/test.gguf"
             fut: Future[list[list[float]]] = Future()
-            batch = [_EmbedRequest(texts=["hello"], future=fut)]
+            batch = [EmbedRequest(texts=["hello"], future=fut)]
             provider._dispatch_batch(batch)
 
         assert fut.result() == [[0.1]]
@@ -2080,7 +2080,7 @@ class TestEmbedWorker:
         """_dispatch_batch sets exception on future when embed fails."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         provider = _make_provider_no_thread()
         mock_llm = mock.MagicMock()
@@ -2098,7 +2098,7 @@ class TestEmbedWorker:
         ):
             cfg.embedding_model = "org/Test-GGUF/test.gguf"
             fut: Future[list[list[float]]] = Future()
-            batch = [_EmbedRequest(texts=["hello"], future=fut)]
+            batch = [EmbedRequest(texts=["hello"], future=fut)]
             provider._dispatch_batch(batch)
 
         with pytest.raises(RuntimeError, match="embed broken"):
@@ -2112,7 +2112,7 @@ class TestDispatchBatchGetEmbedLlmError:
         """When _get_embed_llm raises, all futures in the batch get the exception."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         provider = _make_provider_no_thread()
 
@@ -2122,8 +2122,8 @@ class TestDispatchBatchGetEmbedLlmError:
             fut1: Future[list[list[float]]] = Future()
             fut2: Future[list[list[float]]] = Future()
             batch = [
-                _EmbedRequest(texts=["a"], future=fut1),
-                _EmbedRequest(texts=["b"], future=fut2),
+                EmbedRequest(texts=["a"], future=fut1),
+                EmbedRequest(texts=["b"], future=fut2),
             ]
             provider._dispatch_batch(batch)
 

@@ -11,8 +11,8 @@ import httpx
 from pydantic import BaseModel
 
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
-from lilbee.catalog.featured import _DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
-from lilbee.catalog.hf_client import _DEFAULT_TIMEOUT, _hf_headers, _hf_token
+from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
+from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, hf_headers, hf_token
 from lilbee.catalog.models import CatalogModel
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.models import ModelTask
@@ -88,7 +88,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
     config = DownloadConfig(
         repo_id=entry.hf_repo,
         filename=filename,
-        token=_hf_token(),
+        token=hf_token(),
         cache_dir=str(cfg.models_dir),
         tqdm_class=tracker.make_tqdm_class() if tracker else None,
     )
@@ -143,7 +143,7 @@ def _download_mmproj(
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
-    mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
+    mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
 
     mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, mmproj_pattern)
     if not mmproj_filename:
@@ -159,7 +159,7 @@ def _download_mmproj(
             repo_id=entry.hf_repo,
             filename=mmproj_filename,
             cache_dir=str(cfg.models_dir),
-            token=_hf_token(),
+            token=hf_token(),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
     )
@@ -178,8 +178,8 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     try:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{hf_repo}",
-            timeout=_DEFAULT_TIMEOUT,
-            headers=_hf_headers(),
+            timeout=DEFAULT_TIMEOUT,
+            headers=hf_headers(),
         )
         resp.raise_for_status()
         siblings = resp.json().get("siblings", [])
@@ -227,7 +227,7 @@ def find_mmproj_file(model_ref: str) -> Path | None:
     for entry in FEATURED_VISION:
         if model_ref not in entry.hf_repo and entry.hf_repo not in model_ref:
             continue
-        pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
+        pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
         match = _mmproj_in_models_dir_matching(pattern)
         if match is not None:
             return match
@@ -248,8 +248,8 @@ def resolve_filename(entry: CatalogModel) -> str:
     try:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{entry.hf_repo}",
-            timeout=_DEFAULT_TIMEOUT,
-            headers=_hf_headers(),
+            timeout=DEFAULT_TIMEOUT,
+            headers=hf_headers(),
         )
         if resp.status_code == HTTPStatus.UNAUTHORIZED:
             raise PermissionError(
@@ -288,8 +288,8 @@ def fetch_model_file_size(hf_repo: str) -> float:
     try:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{hf_repo}/tree/main",
-            timeout=_DEFAULT_TIMEOUT,
-            headers=_hf_headers(),
+            timeout=DEFAULT_TIMEOUT,
+            headers=hf_headers(),
         )
         resp.raise_for_status()
         files = resp.json()

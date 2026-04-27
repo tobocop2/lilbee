@@ -393,7 +393,7 @@ class TestBuildSpecs:
         cfg.crawl_retry_base_delay_max = 2.0
         cfg.crawl_retry_max_backoff = 30.0
         cfg.crawl_retry_max_attempts = 4
-        spec = discovery_mod._build_concurrency_spec()
+        spec = discovery_mod.build_concurrency_spec()
         assert spec.semaphore_count == 11
         assert spec.mean_delay == pytest.approx(2.5)
         assert spec.max_delay_range == pytest.approx(3.5)
@@ -405,7 +405,7 @@ class TestBuildSpecs:
 
     def test_filter_spec_copies_patterns(self):
         cfg.crawl_exclude_patterns = ["/a/", "/b/"]
-        spec = discovery_mod._build_filter_spec(include_subdomains=True)
+        spec = discovery_mod.build_filter_spec(include_subdomains=True)
         assert spec.exclude_patterns == ["/a/", "/b/"]
         assert spec.include_subdomains is True
         # Mutating the spec list must not feed back into cfg.

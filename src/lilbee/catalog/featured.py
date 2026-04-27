@@ -49,10 +49,10 @@ FEATURED_CHAT, FEATURED_EMBEDDING, FEATURED_VISION, FEATURED_RERANK = _load_feat
 # Vision models need both the main GGUF and the mmproj file to work.
 # Keys are hf_repo identifiers; values are glob patterns resolved at download time.
 # Every FEATURED_VISION entry MUST have a corresponding key here.
-_DEFAULT_MMPROJ_PATTERN = "*mmproj*.gguf"
+DEFAULT_MMPROJ_PATTERN = "*mmproj*.gguf"
 
 VISION_MMPROJ_FILES: dict[str, str] = {
-    "noctrex/LightOnOCR-2-1B-GGUF": _DEFAULT_MMPROJ_PATTERN,
+    "noctrex/LightOnOCR-2-1B-GGUF": DEFAULT_MMPROJ_PATTERN,
 }
 
 FEATURED_ALL: tuple[CatalogModel, ...] = (

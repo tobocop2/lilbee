@@ -3,7 +3,7 @@
 Two public entry points live here:
 
 - :func:`build_wiki` produces entity and LLM-curated concept pages
-  per source, runs the one-time Phase D archive migration first,
+  per source, runs the one-time legacy-concept-page archival first,
   then rewrites ``[[link]]`` slugs across all wiki content subdirs.
 - :func:`generate_synthesis_pages` produces cross-source synthesis
   pages from concept clusters spanning 3+ documents.
@@ -23,7 +23,7 @@ from lilbee.core.services import get_services
 from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.clustering import SourceClusterer
-from lilbee.wiki.batch import _maybe_run_phase_d_migration
+from lilbee.wiki.batch import archive_legacy_concept_pages
 from lilbee.wiki.entity_extractor import ExtractedEntity, get_entity_extractor
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
@@ -35,9 +35,9 @@ from lilbee.wiki.shared import (
     WIKI_LOG_ACTION_BUILD,
 )
 from lilbee.wiki.synthesis import (
-    _generate_source_batch,
-    _generate_synthesis_page,
-    _group_entities_by_primary_source,
+    generate_source_batch,
+    generate_synthesis_page,
+    group_entities_by_primary_source,
 )
 
 log = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _generate_for_cluster(
     if len(chunks_by_source) < MIN_CLUSTER_SOURCES:
         return None
 
-    return _generate_synthesis_page(label, source_names, chunks_by_source, provider, store, config)
+    return generate_synthesis_page(label, source_names, chunks_by_source, provider, store, config)
 
 
 def generate_synthesis_pages(
@@ -205,29 +205,28 @@ def build_wiki(
 ) -> list[Path]:
     """Produce entity and LLM-curated concept pages per source.
 
-    Phase D replaces the per-entity / per-concept fan-out with a
-    per-source batched call: for each source in ``entities``' chunk
-    refs, one LLM call identifies 3-5 concepts AND writes a wiki
-    section for every pre-extracted entity belonging to that source.
-    Output sections are split, citation-verified, embedding-scored,
-    and landed under ``wiki/entities/`` or ``wiki/concepts/``
-    depending on kind.
+    Per-entity / per-concept fan-out is collapsed into a per-source
+    batched call: for each source in ``entities``' chunk refs, one LLM
+    call identifies 3-5 concepts AND writes a wiki section for every
+    pre-extracted entity belonging to that source. Output sections are
+    split, citation-verified, embedding-scored, and landed under
+    ``wiki/entities/`` or ``wiki/concepts/`` depending on kind.
 
     ``extract_concepts=False`` (used by the incremental-ingest hook)
     drops the concept-curation paragraph from the prompt so a
     touched source does not churn concept slugs.
 
     A one-time archive migration runs first (idempotently, gated by
-    ``{data_dir}/.phase-d-migrated``), moving pre-Phase-D concept
-    pages under ``wiki/archive/concepts/`` and unwrapping stale
+    ``{data_dir}/.phase-d-migrated``), moving legacy concept pages
+    under ``wiki/archive/concepts/`` and unwrapping stale
     ``[[archived-slug]]`` links across the remaining pages.
     """
     if config is None:
         config = cfg
     wiki_root = config.data_root / config.wiki_dir
-    _maybe_run_phase_d_migration(wiki_root, config.data_dir)
+    archive_legacy_concept_pages(wiki_root, config.data_dir)
 
-    grouped = _group_entities_by_primary_source(entities)
+    grouped = group_entities_by_primary_source(entities)
     all_sources = _all_sources_in_scope(entities, grouped, store, config, extract_concepts)
     written_concept_slugs: dict[str, str] = {}
     pages: list[Path] = []
@@ -247,7 +246,7 @@ def build_wiki(
                 source_extract,
             )
             continue
-        source_pages = _generate_source_batch(
+        source_pages = generate_source_batch(
             source=source,
             entities=source_entities,
             chunks=chunks,

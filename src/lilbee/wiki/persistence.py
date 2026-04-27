@@ -4,7 +4,7 @@ Owns the orchestrator that lands a generated page on disk plus the
 draft-routing helpers (drift redirects, PENDING markers for parse
 failures, collision markers for duplicate concept slugs). Higher-level
 code in :mod:`lilbee.wiki.page` calls into here for the publish step;
-the actual ``_write_page`` lives there to keep file-handling close to
+the actual ``write_page`` lives there to keep file-handling close to
 content assembly.
 """
 
@@ -38,7 +38,7 @@ _PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 _WIKI_SOURCE_MIN_PARTS = 2
 
 
-def _divert_to_drafts(
+def divert_to_drafts(
     new_content: str,
     drafts_dir: Path,
     slug: str,
@@ -59,7 +59,7 @@ def _divert_to_drafts(
     return draft_path
 
 
-def _subdir_from_wiki_source(wiki_source: str) -> str | None:
+def subdir_from_wiki_source(wiki_source: str) -> str | None:
     """Return the subdir component (``summaries``, ``concepts``, ...) of *wiki_source*.
 
     ``wiki_source`` is the ``<wiki_dir>/<subdir>/<slug>.md`` path
@@ -70,7 +70,7 @@ def _subdir_from_wiki_source(wiki_source: str) -> str | None:
     return parts[1] if len(parts) >= _WIKI_SOURCE_MIN_PARTS else None
 
 
-def _persist_and_finalize(
+def persist_and_finalize(
     content: str,
     target: PageTarget,
     verified: list[CitationRecord],
@@ -79,10 +79,10 @@ def _persist_and_finalize(
     config: Config,
 ) -> Path:
     """Write page to disk, persist citations, index body chunks, update index and log."""
-    # circular: page -> persistence via _persist_and_finalize
-    from lilbee.wiki.page import _write_page, index_wiki_page
+    # circular: page -> persistence via persist_and_finalize
+    from lilbee.wiki.page import index_wiki_page, write_page
 
-    page_path = _write_page(
+    page_path = write_page(
         target.wiki_root, target.subdir, target.slug, content, config.wiki_drift_threshold
     )
     for rec in verified:
@@ -105,7 +105,7 @@ def _persist_and_finalize(
     return page_path
 
 
-def _write_pending_marker(
+def write_pending_marker(
     drafts_dir: Path,
     slug: str,
     marker_line: str,
@@ -127,7 +127,7 @@ def _write_pending_marker(
     return draft_path
 
 
-def _delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
+def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     """Delete an existing PENDING marker for *slug*; return whether one was removed.
 
     Match is slug-equality (not fuzzy): an LLM that rephrases a
@@ -153,7 +153,7 @@ def _delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     return True
 
 
-def _divert_concept_collision(
+def divert_concept_collision(
     *,
     slug: str,
     source: str,
@@ -168,11 +168,11 @@ def _divert_concept_collision(
     retry on the same two sources lands at the same draft path,
     letting the user iterate without marker sprawl.
     """
-    # circular: persistence -> batch via _short_source_hash (batch imports
-    # _persist_and_finalize / _divert_concept_collision from persistence).
-    from lilbee.wiki.batch import _short_source_hash
+    # circular: persistence -> batch via short_source_hash (batch imports
+    # persist_and_finalize / divert_concept_collision from persistence).
+    from lilbee.wiki.batch import short_source_hash
 
-    short = _short_source_hash(source)
+    short = short_source_hash(source)
     collision_slug = f"{slug}-collision-{short}"
     marker = (
         f"{_PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "

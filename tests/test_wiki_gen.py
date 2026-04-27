@@ -11,8 +11,8 @@ from lilbee.core.config import CHUNKS_TABLE, cfg
 from lilbee.data.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.batch import (
     _group_chunks_by_page,
-    _maybe_run_phase_d_migration,
     _unwrap_archived_links,
+    archive_legacy_concept_pages,
 )
 from lilbee.wiki.cache import _find_cached_leaf, _leaf_hash
 from lilbee.wiki.citation import ParsedCitation
@@ -21,19 +21,19 @@ from lilbee.wiki.citations import (
     _find_excerpt_source,
     _match_citation_source,
     _resolve_citations,
-    _resolve_multi_source_citations,
-    _verify_citations,
+    resolve_multi_source_citations,
+    verify_citations,
 )
 from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.generation import generate_synthesis_pages
-from lilbee.wiki.page import _chunks_to_text, _truncate_chunks_to_budget, index_wiki_page
-from lilbee.wiki.persistence import _divert_to_drafts
+from lilbee.wiki.page import chunks_to_text, index_wiki_page, truncate_chunks_to_budget
+from lilbee.wiki.persistence import divert_to_drafts
 from lilbee.wiki.quality import (
-    _check_faithfulness,
-    _content_change_ratio,
-    _diff_summary,
     _embedding_faithfulness_score,
     _mean_vector,
+    check_faithfulness,
+    content_change_ratio,
+    diff_summary,
 )
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
@@ -41,7 +41,7 @@ from lilbee.wiki.shared import (
     PageTarget,
     make_slug,
 )
-from lilbee.wiki.synthesis import _generate_synthesis_page, _group_entities_by_primary_source
+from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ def isolated_env(wiki_isolated_env: Path):
 @pytest.fixture(autouse=True)
 def _stub_wiki_index_services(monkeypatch):
     """Stub ``get_services`` inside the wiki page + quality modules so tests
-    that drive ``_persist_and_finalize`` don't hit the real provider when the
+    that drive ``persist_and_finalize`` don't hit the real provider when the
     wiki-body indexer or the embedding faithfulness scorer runs.
     ``TestWikiIndexing`` re-patches explicitly to exercise the indexer's
     own assertions.
@@ -109,19 +109,19 @@ def _mock_store() -> MagicMock:
 class TestChunksToText:
     def test_basic_formatting(self):
         chunks = [_make_chunk("Hello world"), _make_chunk("Second chunk", chunk_index=1)]
-        result = _chunks_to_text(chunks)
+        result = chunks_to_text(chunks)
         assert "[Chunk 1]:" in result
         assert "Hello world" in result
         assert "[Chunk 2]:" in result
 
     def test_includes_page_location(self):
         chunks = [_make_chunk("PDF content", page_start=5)]
-        result = _chunks_to_text(chunks)
+        result = chunks_to_text(chunks)
         assert "(page 5)" in result
 
     def test_includes_line_location(self):
         chunks = [_make_chunk("Code", line_start=10, line_end=20)]
-        result = _chunks_to_text(chunks)
+        result = chunks_to_text(chunks)
         assert "(lines 10-20)" in result
 
 
@@ -129,7 +129,7 @@ class TestTruncateChunksToBudget:
     def test_small_chunks_unchanged(self):
         """Chunks that fit within budget are returned as-is."""
         chunks = [_make_chunk("short text")]
-        result = _truncate_chunks_to_budget(chunks, cfg)
+        result = truncate_chunks_to_budget(chunks, cfg)
         assert result == chunks
 
     def test_truncates_when_exceeding_budget(self):
@@ -137,14 +137,14 @@ class TestTruncateChunksToBudget:
         cfg.num_ctx = 100  # 100 tokens * 0.75 * 4 chars = 300 chars budget
         big_text = "x" * 200  # 200 chars each, only one fits in 300
         chunks = [_make_chunk(big_text, chunk_index=i) for i in range(5)]
-        result = _truncate_chunks_to_budget(chunks, cfg)
+        result = truncate_chunks_to_budget(chunks, cfg)
         assert len(result) == 1
 
     def test_always_keeps_at_least_one_chunk(self):
         """Even if the first chunk exceeds the budget, it is kept."""
         cfg.num_ctx = 10  # tiny budget: 10 * 0.75 * 4 = 30 chars
         huge_chunk = _make_chunk("x" * 10000)
-        result = _truncate_chunks_to_budget([huge_chunk], cfg)
+        result = truncate_chunks_to_budget([huge_chunk], cfg)
         assert len(result) == 1
 
     def test_uses_default_context_when_num_ctx_none(self):
@@ -152,7 +152,7 @@ class TestTruncateChunksToBudget:
         cfg.num_ctx = None
         # Default 8192 * 0.75 * 4 = 24576 chars budget
         small_chunks = [_make_chunk("hello", chunk_index=i) for i in range(10)]
-        result = _truncate_chunks_to_budget(small_chunks, cfg)
+        result = truncate_chunks_to_budget(small_chunks, cfg)
         assert len(result) == 10  # all fit easily
 
     def test_logs_warning_on_truncation(self, caplog: pytest.LogCaptureFixture):
@@ -160,12 +160,12 @@ class TestTruncateChunksToBudget:
         cfg.num_ctx = 100
         chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(5)]
         with caplog.at_level("WARNING", logger="lilbee.wiki.page"):
-            _truncate_chunks_to_budget(chunks, cfg)
+            truncate_chunks_to_budget(chunks, cfg)
         assert "Truncated chunks from 5 to 1" in caplog.text
 
 
 class TestEmbeddingFaithfulness:
-    """Phase D: deterministic cosine-similarity faithfulness scoring."""
+    """Deterministic cosine-similarity faithfulness scoring."""
 
     def test_mean_vector_of_empty_list_is_empty(self):
         assert _mean_vector([]) == []
@@ -269,7 +269,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test", cfg)
+        verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 1
 
     def test_keeps_excerpts_that_differ_only_in_whitespace(self):
@@ -301,7 +301,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test", cfg)
+        verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 1
 
     def test_drops_unmatched_excerpts(self):
@@ -324,7 +324,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test", cfg)
+        verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
 
     def test_keeps_inference_citations(self):
@@ -347,7 +347,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test", cfg)
+        verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 1
 
     def test_skips_wiki_sourced_citations(self):
@@ -370,19 +370,19 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test", cfg)
+        verified = verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
 
 
 class TestBuildWikiMessages:
     def test_thinking_capability_prepends_no_think_directive(self):
-        from lilbee.wiki.page import _build_wiki_messages
+        from lilbee.wiki.page import build_wiki_messages
 
         provider = MagicMock()
         provider.get_capabilities.return_value = ["completion", "thinking"]
         cfg.chat_model = "ollama/any-model:latest"
 
-        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+        messages = build_wiki_messages("Summarize these chunks.", provider, cfg)
 
         assert len(messages) == 1
         content = messages[0]["content"]
@@ -391,24 +391,24 @@ class TestBuildWikiMessages:
         provider.get_capabilities.assert_called_once()
 
     def test_no_thinking_capability_passes_prompt_through(self):
-        from lilbee.wiki.page import _build_wiki_messages
+        from lilbee.wiki.page import build_wiki_messages
 
         provider = MagicMock()
         provider.get_capabilities.return_value = ["completion"]
         cfg.chat_model = "ollama/any-model:latest"
 
-        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+        messages = build_wiki_messages("Summarize these chunks.", provider, cfg)
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
 
     def test_empty_capabilities_passes_prompt_through(self):
         """Backends that don't report capabilities leave the prompt untouched."""
-        from lilbee.wiki.page import _build_wiki_messages
+        from lilbee.wiki.page import build_wiki_messages
 
         provider = MagicMock()
         provider.get_capabilities.return_value = []
         cfg.chat_model = "ollama/any-model:latest"
 
-        messages = _build_wiki_messages("Summarize these chunks.", provider, cfg)
+        messages = build_wiki_messages("Summarize these chunks.", provider, cfg)
         assert messages == [{"role": "user", "content": "Summarize these chunks."}]
 
 
@@ -420,7 +420,7 @@ def _chunk_with_vector(vector: list[float], text: str = "t", **kw) -> SearchChun
 
 
 class TestCheckFaithfulness:
-    """Phase D: embedding-based faithfulness replacing the LLM call.
+    """Embedding-based faithfulness scoring.
 
     The cosine-similarity path uses the chunk's own .vector (set by
     LanceDB for every SearchChunk) and an embedder call for the body
@@ -433,7 +433,7 @@ class TestCheckFaithfulness:
         svc.embedder.embed_batch.return_value = [[1.0, 0.0]]
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
-        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        score = check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == pytest.approx(1.0)
         # Only ONE call, and its argument is the body text list: no
         # chunks_text batch embedding.
@@ -447,7 +447,7 @@ class TestCheckFaithfulness:
         svc.embedder.embed_batch.return_value = [[0.0, 1.0]]
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
-        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        score = check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == pytest.approx(0.0)
 
     def test_coherence_failure_returns_zero(self, monkeypatch):
@@ -456,7 +456,7 @@ class TestCheckFaithfulness:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# | | bad\n\nbody"
         chunks = [_chunk_with_vector([1.0])]
-        score = _check_faithfulness(chunks, wiki, "bad")
+        score = check_faithfulness(chunks, wiki, "bad")
         assert score == 0.0
         svc.embedder.embed_batch.assert_not_called()
 
@@ -465,7 +465,7 @@ class TestCheckFaithfulness:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# Brakes\n\nThis page talks about tires and wheels."
         chunks = [_chunk_with_vector([1.0])]
-        score = _check_faithfulness(chunks, wiki, "brakes")
+        score = check_faithfulness(chunks, wiki, "brakes")
         assert score == 0.0
 
     def test_missing_h1_returns_zero(self, monkeypatch):
@@ -473,7 +473,7 @@ class TestCheckFaithfulness:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "No heading here, just prose about brakes."
         chunks = [_chunk_with_vector([1.0])]
-        score = _check_faithfulness(chunks, wiki, "brakes")
+        score = check_faithfulness(chunks, wiki, "brakes")
         assert score == 0.0
 
     def test_coherent_page_uses_embedding_score(self, monkeypatch):
@@ -482,7 +482,7 @@ class TestCheckFaithfulness:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# Chevrolet\n\nChevrolet is a manufacturer of vehicles."
         chunks = [_chunk_with_vector([1.0, 0.0])]
-        score = _check_faithfulness(chunks, wiki, "Chevrolet")
+        score = check_faithfulness(chunks, wiki, "Chevrolet")
         assert score == pytest.approx(1.0)
 
     def test_display_name_cleanup_before_comparison(self, monkeypatch):
@@ -492,7 +492,7 @@ class TestCheckFaithfulness:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# Designer\n\nThe designer of the Caprice was Irv Rybicki."
         chunks = [_chunk_with_vector([1.0, 0.0])]
-        score = _check_faithfulness(chunks, wiki, "| | designer")
+        score = check_faithfulness(chunks, wiki, "| | designer")
         assert score == pytest.approx(1.0)
 
     def test_embedder_failure_returns_zero(self, monkeypatch):
@@ -500,13 +500,13 @@ class TestCheckFaithfulness:
         svc.embedder.embed_batch.side_effect = RuntimeError("down")
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
-        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        score = check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == 0.0
 
     def test_empty_source_vectors_returns_zero(self, monkeypatch):
         svc = MagicMock()
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
-        score = _check_faithfulness([], _COHERENT_WIKI, "test")
+        score = check_faithfulness([], _COHERENT_WIKI, "test")
         assert score == 0.0
 
     def test_empty_display_label_returns_zero(self, monkeypatch):
@@ -517,7 +517,7 @@ class TestCheckFaithfulness:
         # A label made entirely of structural chars reduces to empty
         # display under clean_label_for_display, hitting the guard
         # in _title_content_coherence.
-        score = _check_faithfulness(chunks, "# anything\n\nbody", "|||")
+        score = check_faithfulness(chunks, "# anything\n\nbody", "|||")
         assert score == 0.0
         # Embedder is never called because coherence already failed.
         svc.embedder.embed_batch.assert_not_called()
@@ -547,7 +547,7 @@ class TestCheckFaithfulness:
         # the title-coherence gate semantics.
         monkeypatch.setattr("lilbee.wiki.quality.strip_citation_block", lambda _: "   ")
         chunks = [_chunk_with_vector([1.0])]
-        score = _check_faithfulness(chunks, wiki, "test")
+        score = check_faithfulness(chunks, wiki, "test")
         assert score == 0.0
         svc.embedder.embed_batch.assert_not_called()
 
@@ -557,7 +557,7 @@ class TestCheckFaithfulness:
         svc.embedder.embed_batch.return_value = []
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk_with_vector([1.0, 0.0])]
-        score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
+        score = check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == 0.0
 
 
@@ -569,7 +569,7 @@ class TestTitleContentCoherence:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         wiki = "# | | designer\n\nThe designer refers to an individual."
         chunks = [_chunk_with_vector([1.0])]
-        score = _check_faithfulness(chunks, wiki, "designer")
+        score = check_faithfulness(chunks, wiki, "designer")
         assert score == 0.0
 
     def test_logs_info_on_coherence_failure(self, monkeypatch, caplog: pytest.LogCaptureFixture):
@@ -577,7 +577,7 @@ class TestTitleContentCoherence:
         monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         caplog.set_level("INFO", logger="lilbee.wiki.quality")
         chunks = [_chunk_with_vector([1.0])]
-        _check_faithfulness(chunks, "# bad\n\nbody", "brakes")
+        check_faithfulness(chunks, "# bad\n\nbody", "brakes")
         assert any("coherence failed" in r.message for r in caplog.records)
 
 
@@ -734,7 +734,7 @@ class TestResolveMultiSourceCitations:
             ParsedCitation("src1", 'a.md, excerpt: "Alpha fact."', 1),
             ParsedCitation("src2", 'b.md, excerpt: "Beta fact."', 2),
         ]
-        records = _resolve_multi_source_citations(
+        records = resolve_multi_source_citations(
             parsed,
             ["a.md", "b.md"],
             {"a.md": "h1", "b.md": "h2"},
@@ -748,7 +748,7 @@ class TestResolveMultiSourceCitations:
     def test_falls_back_to_excerpt_search(self):
         chunks = {"a.md": [_make_chunk("Special text", source="a.md")]}
         parsed = [ParsedCitation("src1", 'excerpt: "Special text"', 1)]
-        records = _resolve_multi_source_citations(
+        records = resolve_multi_source_citations(
             parsed,
             ["a.md"],
             {"a.md": "h"},
@@ -758,7 +758,7 @@ class TestResolveMultiSourceCitations:
 
     def test_falls_back_to_first_source(self):
         parsed = [ParsedCitation("src1", 'excerpt: "Not found anywhere"', 1)]
-        records = _resolve_multi_source_citations(
+        records = resolve_multi_source_citations(
             parsed,
             ["fallback.md"],
             {},
@@ -799,7 +799,7 @@ class TestGenerateSynthesisPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "gradual typing",
             sources,
             chunks_by_source,
@@ -814,9 +814,9 @@ class TestGenerateSynthesisPage:
         content = result.read_text()
         assert f"generated_by: {cfg.chat_model}" in content
         assert 'sources: ["a.md", "b.md", "c.md"]' in content
-        # Phase D: faithfulness is now a cosine-similarity score between
-        # the body embedding and the mean of the source chunk vectors.
-        # Matching stub vectors produce a score of 1.00 (identical).
+        # Faithfulness is a cosine-similarity score between the body
+        # embedding and the mean of the source chunk vectors. Matching
+        # stub vectors produce a score of 1.00 (identical).
         assert "faithfulness_score: 1.00" in content
         store.add_citations.assert_called_once()
 
@@ -832,7 +832,7 @@ class TestGenerateSynthesisPage:
         provider = _mock_provider(wiki_text, faith_score="0.3")
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "topic",
             sources,
             chunks_by_source,
@@ -846,7 +846,7 @@ class TestGenerateSynthesisPage:
     def test_no_chunks_returns_none(self):
         provider = MagicMock()
         store = _mock_store()
-        result = _generate_synthesis_page("topic", ["a.md"], {}, provider, store, cfg)
+        result = generate_synthesis_page("topic", ["a.md"], {}, provider, store, cfg)
         assert result is None
         provider.chat.assert_not_called()
 
@@ -856,7 +856,7 @@ class TestGenerateSynthesisPage:
         provider.chat.side_effect = ConnectionError("down")
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "topic",
             ["a.md"],
             chunks_by_source,
@@ -878,7 +878,7 @@ class TestGenerateSynthesisPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "topic",
             ["a.md"],
             chunks_by_source,
@@ -889,18 +889,18 @@ class TestGenerateSynthesisPage:
         assert result is None
 
     def test_faithfulness_failure_uses_zero(self, tmp_path: Path, _stub_wiki_index_services):
-        """Phase D: body-embedding failure routes to drafts (score 0.0)."""
+        """Body-embedding failure routes to drafts (score 0.0)."""
         sources = ["a.md"]
         (tmp_path / "documents" / "a.md").write_text("Fact from a.md.")
         chunks_by_source = {"a.md": [_make_chunk("Fact from a.md.", source="a.md")]}
         wiki_text = _synthesis_wiki_text(sources)
         provider = _mock_provider(wiki_text)
         store = _mock_store()
-        # The body-side embed call crashes so _check_faithfulness
+        # The body-side embed call crashes so check_faithfulness
         # returns 0.0 and the page routes to drafts.
         _stub_wiki_index_services.embedder.embed_batch.side_effect = ConnectionError("down")
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "topic",
             sources,
             chunks_by_source,
@@ -916,7 +916,7 @@ class TestGenerateSynthesisPage:
         provider = _mock_provider("   ")
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "topic",
             ["a.md"],
             chunks_by_source,
@@ -940,7 +940,7 @@ class TestGenerateSynthesisPage:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "topic",
             sources,
             chunks_by_source,
@@ -1046,34 +1046,34 @@ class TestGenerateSynthesisPages:
 
 class TestContentChangeRatio:
     def test_identical_texts(self):
-        assert _content_change_ratio("a\nb\nc", "a\nb\nc") == 0.0
+        assert content_change_ratio("a\nb\nc", "a\nb\nc") == 0.0
 
     def test_completely_different(self):
-        assert _content_change_ratio("a\nb\nc", "x\ny\nz") == 1.0
+        assert content_change_ratio("a\nb\nc", "x\ny\nz") == 1.0
 
     def test_partial_change(self):
         old = "line1\nline2\nline3\nline4"
         new = "line1\nchanged\nline3\nline4"
-        ratio = _content_change_ratio(old, new)
+        ratio = content_change_ratio(old, new)
         assert 0.0 < ratio < 1.0
 
     def test_empty_old(self):
         # empty -> something = 100% change
-        assert _content_change_ratio("", "new content") == 1.0
+        assert content_change_ratio("", "new content") == 1.0
 
     def test_empty_both(self):
-        assert _content_change_ratio("", "") == 0.0
+        assert content_change_ratio("", "") == 0.0
 
 
 class TestDiffSummary:
     def test_produces_unified_diff(self):
-        result = _diff_summary("old line", "new line")
+        result = diff_summary("old line", "new line")
         assert "---" in result or "-old line" in result
 
     def test_truncates_long_diff(self):
         old = "\n".join(f"line{i}" for i in range(50))
         new = "\n".join(f"changed{i}" for i in range(50))
-        result = _diff_summary(old, new)
+        result = diff_summary(old, new)
         assert "more lines" in result
 
 
@@ -1081,7 +1081,7 @@ class TestDivertToDrafts:
     def test_writes_draft_with_note(self, tmp_path: Path):
         drafts_dir = tmp_path / "drafts"
         content = "# New Page\n\nNew content."
-        result = _divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text")
+        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text")
         assert result.exists()
         assert result.parent == drafts_dir
         text = result.read_text()
@@ -1113,7 +1113,7 @@ class TestSynthesisDriftDetection:
         provider = _mock_provider(wiki_text)
         store = _mock_store()
 
-        result = _generate_synthesis_page(
+        result = generate_synthesis_page(
             "gradual typing", sources, chunks_by_source, provider, store, cfg
         )
         assert result is not None
@@ -1276,19 +1276,19 @@ class TestBuildFrontmatter:
     """B2: frontmatter carries a provenance block when chunks are provided."""
 
     def test_no_chunks_omits_provenance(self):
-        from lilbee.wiki.page import _build_frontmatter
+        from lilbee.wiki.page import build_frontmatter
 
-        fm = _build_frontmatter(cfg, ["doc.md"], 0.9)
+        fm = build_frontmatter(cfg, ["doc.md"], 0.9)
         assert "provenance:" not in fm
 
     def test_with_chunks_renders_provenance_block(self):
-        from lilbee.wiki.page import _build_frontmatter
+        from lilbee.wiki.page import build_frontmatter
 
         chunks = [
             _make_chunk("body a", source="doc.md", chunk_index=0),
             _make_chunk("body b", source="doc.md", chunk_index=1),
         ]
-        fm = _build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
+        fm = build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
         assert "provenance:" in fm
         assert f"extraction_method: {cfg.wiki_entity_mode.value}" in fm
         # yaml.safe_dump emits block style; unquoted scalars on safe names.
@@ -1297,11 +1297,11 @@ class TestBuildFrontmatter:
         assert "chunk_index: 1" in fm
 
     def test_provenance_round_trips_through_parse_frontmatter(self):
-        from lilbee.wiki.page import _build_frontmatter
+        from lilbee.wiki.page import build_frontmatter
         from lilbee.wiki.shared import parse_frontmatter
 
         chunks = [_make_chunk("a", source="foo.pdf", chunk_index=5)]
-        fm = _build_frontmatter(cfg, ["foo.pdf"], 0.7, chunks=chunks)
+        fm = build_frontmatter(cfg, ["foo.pdf"], 0.7, chunks=chunks)
         parsed = parse_frontmatter(fm + "body\n")
         assert parsed["provenance"]["extraction_method"] == cfg.wiki_entity_mode.value
         assert parsed["provenance"]["chunks"] == [{"source": "foo.pdf", "chunk_index": 5}]
@@ -1335,12 +1335,12 @@ class TestBuildFrontmatter:
         (not part of this PR); pass a benign value for the sources
         list so the test isolates the provenance-block behavior.
         """
-        from lilbee.wiki.page import _build_frontmatter
+        from lilbee.wiki.page import build_frontmatter
         from lilbee.wiki.shared import parse_frontmatter
 
         pathological = 'weird "name": with\\slash\n'
         chunks = [_make_chunk("body", source=pathological, chunk_index=0)]
-        fm = _build_frontmatter(cfg, ["benign.md"], 0.5, chunks=chunks)
+        fm = build_frontmatter(cfg, ["benign.md"], 0.5, chunks=chunks)
         parsed = parse_frontmatter(fm + "body\n")
         assert parsed["provenance"]["chunks"] == [{"source": pathological, "chunk_index": 0}]
 
@@ -1358,7 +1358,7 @@ class TestGroupEntitiesByPrimarySource:
                 ChunkRef("b.md", 0),
             ),
         )
-        grouped = _group_entities_by_primary_source([ent])
+        grouped = group_entities_by_primary_source([ent])
         assert list(grouped) == ["a.md"]
 
     def test_lexicographic_tiebreak(self):
@@ -1369,7 +1369,7 @@ class TestGroupEntitiesByPrimarySource:
             type_hint="PERSON",
             chunk_refs=(ChunkRef("b.md", 0), ChunkRef("a.md", 0)),
         )
-        grouped = _group_entities_by_primary_source([ent])
+        grouped = group_entities_by_primary_source([ent])
         assert list(grouped) == ["a.md"]
 
     def test_empty_refs_dropped(self):
@@ -1380,16 +1380,16 @@ class TestGroupEntitiesByPrimarySource:
             type_hint="PERSON",
             chunk_refs=(),
         )
-        assert _group_entities_by_primary_source([ent]) == {}
+        assert group_entities_by_primary_source([ent]) == {}
 
 
-class TestPhaseDMigration:
+class TestLegacyConceptsMigration:
     def test_archives_concept_pages(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "foo.md").write_text("original")
         data_dir = tmp_path / "data"
-        _maybe_run_phase_d_migration(wiki_root, data_dir)
+        archive_legacy_concept_pages(wiki_root, data_dir)
         assert not (wiki_root / "concepts" / "foo.md").exists()
         assert (wiki_root / "archive" / "concepts" / "foo.md").read_text() == "original"
         assert (data_dir / ".phase-d-migrated").exists()
@@ -1399,12 +1399,12 @@ class TestPhaseDMigration:
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "foo.md").write_text("original")
         data_dir = tmp_path / "data"
-        _maybe_run_phase_d_migration(wiki_root, data_dir)
+        archive_legacy_concept_pages(wiki_root, data_dir)
         # Second run: nothing to archive; should not touch disk state.
         (wiki_root / "concepts").mkdir(parents=True, exist_ok=True)
         (wiki_root / "concepts" / "new.md").write_text("fresh")
-        _maybe_run_phase_d_migration(wiki_root, data_dir)
-        # Fresh D3 page stayed put.
+        archive_legacy_concept_pages(wiki_root, data_dir)
+        # Freshly written page stayed put.
         assert (wiki_root / "concepts" / "new.md").exists()
 
 

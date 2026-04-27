@@ -14,15 +14,15 @@ from typing import Any
 from lilbee.providers.base import ProviderError
 from lilbee.providers.llama_cpp.log_dispatch import suppress_native_stderr
 
-_BATCH_WINDOW_S = 0.01  # 10ms: collect concurrent requests before dispatching
-_EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
-_RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
+BATCH_WINDOW_S = 0.01  # 10ms: collect concurrent requests before dispatching
+EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
+RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
 _RERANK_PAIR_SEPARATOR = "</s></s>"
 
 
 @dataclass
-class _EmbedRequest:
+class EmbedRequest:
     """A single embedding request submitted to the batch queue."""
 
     texts: list[str]
@@ -30,7 +30,7 @@ class _EmbedRequest:
 
 
 @dataclass
-class _RerankRequest:
+class RerankRequest:
     """A single rerank request submitted to the batch queue."""
 
     query: str

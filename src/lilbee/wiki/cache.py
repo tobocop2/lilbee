@@ -2,7 +2,7 @@
 
 Provides ``_leaf_hash`` (SHA-256 over chunk content as cache key) and
 ``_find_cached_leaf`` (look up a previously-written page whose
-``leaf_hash`` frontmatter matches), plus ``_normalize_whitespace`` for
+``leaf_hash`` frontmatter matches), plus ``normalize_whitespace`` for
 robust excerpt comparison across PDF line wrapping.
 """
 
@@ -48,7 +48,7 @@ def _find_cached_leaf(wiki_root: Path, slug: str, leaf_hash: str) -> Path | None
     return None
 
 
-def _normalize_whitespace(text: str) -> str:
+def normalize_whitespace(text: str) -> str:
     """Collapse runs of whitespace to a single space and strip the edges.
 
     PDF extractors preserve line breaks mid-sentence (``vehicle,\\nthe greater``)

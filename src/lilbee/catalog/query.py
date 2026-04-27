@@ -127,7 +127,7 @@ _PIPELINE_TO_TASK: dict[str, str] = {
 }
 
 
-def _pipeline_to_task(pipeline_tag: str) -> str:
+def pipeline_to_task(pipeline_tag: str) -> str:
     """Map HuggingFace pipeline tag to internal task name."""
     return _PIPELINE_TO_TASK.get(pipeline_tag, ModelTask.CHAT)
 

@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 _MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
 
-def _content_change_ratio(old_text: str, new_text: str) -> float:
+def content_change_ratio(old_text: str, new_text: str) -> float:
     """Fraction of lines that changed between two texts (0.0 = identical, 1.0 = total rewrite)."""
     old_lines = old_text.splitlines()
     new_lines = new_text.splitlines()
@@ -36,7 +36,7 @@ def _content_change_ratio(old_text: str, new_text: str) -> float:
     return changed / total
 
 
-def _diff_summary(old_text: str, new_text: str) -> str:
+def diff_summary(old_text: str, new_text: str) -> str:
     """Human-readable unified diff summary (first 20 diff lines)."""
     diff = difflib.unified_diff(
         old_text.splitlines(),
@@ -144,7 +144,7 @@ def _embedding_faithfulness_score(
     return max(0.0, cosine_sim(body_vec, mean_vec))
 
 
-def _check_faithfulness(
+def check_faithfulness(
     chunks: list[SearchChunk],
     wiki_text: str,
     label: str,
@@ -152,12 +152,12 @@ def _check_faithfulness(
 ) -> float:
     """Score the wiki body's similarity to its source chunks, 0.0 on failure.
 
-    Phase D: replaces the LLM-based faithfulness call with a
-    deterministic cosine-similarity score between the page body and
-    the mean of its source chunk vectors. The B3 title/body coherence
-    pre-check still runs first as a hard gate: a garbage H1 returns
-    0.0 regardless of embedding similarity, so structurally broken
-    pages route to drafts even when the prose happens to be coherent.
+    Faithfulness is a deterministic cosine-similarity score between
+    the page body and the mean of its source chunk vectors. The B3
+    title/body coherence pre-check still runs first as a hard gate: a
+    garbage H1 returns 0.0 regardless of embedding similarity, so
+    structurally broken pages route to drafts even when the prose
+    happens to be coherent.
 
     ``chunks`` carries ``.vector`` populated by LanceDB (see
     ``SearchChunk`` in ``lilbee.data.store``), so no extra embedder call is

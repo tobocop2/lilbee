@@ -12,13 +12,13 @@ import httpx
 from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
-from lilbee.catalog.models import CatalogModel, _HfGgufMeta, _HfPage
+from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
 
 log = logging.getLogger(__name__)
 
 HF_API_URL = "https://huggingface.co/api/models"
 
-_DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 30.0
 
 # Fields requested from the HF listing API via ``?expand=``. Without this
 # expand, the default response omits siblings, cardData, and gguf.
@@ -29,12 +29,12 @@ _HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag",
 # space-joined onto the GGUF filter into one param value.
 _HF_GGUF_SEARCH_TERM = "GGUF"
 
-_EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
+_EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
 
 _BYTES_PER_GB = 1024**3
 
 
-def _hf_token() -> str | None:
+def hf_token() -> str | None:
     """Read HuggingFace token from env vars or huggingface_hub login cache."""
     token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
     if token:
@@ -47,9 +47,9 @@ def _hf_token() -> str | None:
         return None
 
 
-def _hf_headers() -> dict[str, str]:
+def hf_headers() -> dict[str, str]:
     """Build HTTP headers for HuggingFace API requests."""
-    token = _hf_token()
+    token = hf_token()
     if token:
         return {"Authorization": f"Bearer {token}"}
     return {}
@@ -91,7 +91,7 @@ class HfClient:
     CACHE_MAX_ENTRIES: int = 50
 
     def __init__(self) -> None:
-        self._cache: dict[str, tuple[float, _HfPage]] = {}
+        self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
 
     def fetch_models(
@@ -102,16 +102,16 @@ class HfClient:
         offset: int = 0,
         library: str | None = None,
         search: str = "",
-    ) -> _HfPage:
+    ) -> HfPage:
         """Fetch GGUF models from HuggingFace API with TTL cache.
 
-        Returns an ``_HfPage`` with a ``has_more`` flag derived from the
+        Returns an ``HfPage`` with a ``has_more`` flag derived from the
         ``Link: <...>; rel="next"`` response header (RFC 5988), the same
         mechanism the ``huggingface_hub`` library uses internally.
         """
         # Local import to avoid a cycle: query imports hf_client (this
-        # module), and hf_client uses _pipeline_to_task from query.
-        from lilbee.catalog.query import _pipeline_to_task
+        # module), and hf_client uses pipeline_to_task from query.
+        from lilbee.catalog.query import pipeline_to_task
 
         search_value = _hf_search_value(search)
         cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{search_value}"
@@ -137,7 +137,7 @@ class HfClient:
             params = params.add("library", library)
         try:
             resp = httpx.get(
-                HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers()
+                HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
             )
             if resp.status_code >= HTTPStatus.BAD_REQUEST:
                 log.warning("HuggingFace API returned HTTP %d", resp.status_code)
@@ -155,12 +155,12 @@ class HfClient:
                 continue
             item = ModelInfo(**raw)
             card_desc = item.card_data.get("description", "") if item.card_data else ""
-            gguf_meta = _HfGgufMeta(**(item.gguf or {}))
+            gguf_meta = HfGgufMeta(**(item.gguf or {}))
             if gguf_meta.total > 0:
                 size_gb = round(gguf_meta.total / _BYTES_PER_GB, 1)
             else:
                 size_gb = _estimate_size_from_siblings(item.siblings or [])
-            task = _pipeline_to_task(item.pipeline_tag or "")
+            task = pipeline_to_task(item.pipeline_tag or "")
             models.append(
                 CatalogModel(
                     hf_repo=item.id,
@@ -173,7 +173,7 @@ class HfClient:
                     task=task,
                 )
             )
-        page = _HfPage(models=models, has_more=has_more)
+        page = HfPage(models=models, has_more=has_more)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)
             if len(self._cache) > self.CACHE_MAX_ENTRIES:

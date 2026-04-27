@@ -45,12 +45,12 @@ from lilbee.catalog import (
 from lilbee.catalog import (
     query as _query,
 )
-from lilbee.catalog.hf_client import _hf_token
-from lilbee.catalog.models import _HfPage
+from lilbee.catalog.hf_client import hf_token
+from lilbee.catalog.models import HfPage
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 
-_EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
+_EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
 
 
 @pytest.fixture(autouse=True)
@@ -123,12 +123,12 @@ class TestCatalogResultDataclass:
 class TestHfToken:
     def test_env_var_takes_priority(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LILBEE_HF_TOKEN", "env-token")
-        assert _hf_token() == "env-token"
+        assert hf_token() == "env-token"
 
     def test_hf_token_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
         monkeypatch.setenv("HF_TOKEN", "hf-env-token")
-        assert _hf_token() == "hf-env-token"
+        assert hf_token() == "hf-env-token"
 
     def test_falls_back_to_huggingface_hub_get_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
@@ -136,7 +136,7 @@ class TestHfToken:
         fake_hf_hub = MagicMock()
         fake_hf_hub.get_token.return_value = "cached-token"
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
-        assert _hf_token() == "cached-token"
+        assert hf_token() == "cached-token"
 
     def test_returns_none_when_all_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
@@ -144,17 +144,17 @@ class TestHfToken:
         fake_hf_hub = MagicMock()
         fake_hf_hub.get_token.side_effect = Exception("no token")
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
-        assert _hf_token() is None
+        assert hf_token() is None
 
-    @patch("lilbee.catalog.hf_client._hf_token", return_value=None)
+    @patch("lilbee.catalog.hf_client.hf_token", return_value=None)
     def test_headers_empty_when_no_token(self, _mock_token: MagicMock) -> None:
-        """_hf_headers returns empty dict when no token available."""
-        assert _hf_client._hf_headers() == {}
+        """hf_headers returns empty dict when no token available."""
+        assert _hf_client.hf_headers() == {}
 
-    @patch("lilbee.catalog.hf_client._hf_token", return_value="test-token-123")
+    @patch("lilbee.catalog.hf_client.hf_token", return_value="test-token-123")
     def test_headers_include_bearer_when_token_set(self, _mock_token: MagicMock) -> None:
-        """_hf_headers returns Authorization header when token is available."""
-        assert _hf_client._hf_headers() == {"Authorization": "Bearer test-token-123"}
+        """hf_headers returns Authorization header when token is available."""
+        assert _hf_client.hf_headers() == {"Authorization": "Bearer test-token-123"}
 
 
 class TestFeaturedModels:
@@ -627,7 +627,7 @@ class TestGetCatalog:
         monkeypatch.setattr(
             get_services().hf_client,
             "fetch_models",
-            lambda **kw: _HfPage(models=hf_models, has_more=False),
+            lambda **kw: HfPage(models=hf_models, has_more=False),
         )
         result = get_catalog()
         repos = [m.hf_repo for m in result.models]
@@ -650,7 +650,7 @@ class TestGetCatalog:
         monkeypatch.setattr(
             get_services().hf_client,
             "fetch_models",
-            lambda **kw: _HfPage(models=hf_models, has_more=False),
+            lambda **kw: HfPage(models=hf_models, has_more=False),
         )
         result = get_catalog()
         qwen3_models = [m for m in result.models if m.hf_repo == "Qwen/Qwen3-8B-GGUF"]
@@ -662,7 +662,7 @@ class TestGetCatalog:
         monkeypatch.setattr(
             get_services().hf_client,
             "fetch_models",
-            lambda **kw: _HfPage(models=[], has_more=True),
+            lambda **kw: HfPage(models=[], has_more=True),
         )
         result = get_catalog()
         assert result.has_more is True
@@ -1032,33 +1032,33 @@ class TestTaskToPipeline:
 
 class TestPipelineToTask:
     def test_text_generation(self) -> None:
-        assert _query._pipeline_to_task("text-generation") == "chat"
+        assert _query.pipeline_to_task("text-generation") == "chat"
 
     def test_feature_extraction(self) -> None:
-        assert _query._pipeline_to_task("feature-extraction") == "embedding"
+        assert _query.pipeline_to_task("feature-extraction") == "embedding"
 
     def test_image_text_to_text(self) -> None:
-        assert _query._pipeline_to_task("image-text-to-text") == "vision"
+        assert _query.pipeline_to_task("image-text-to-text") == "vision"
 
     def test_image_to_text(self) -> None:
-        assert _query._pipeline_to_task("image-to-text") == "vision"
+        assert _query.pipeline_to_task("image-to-text") == "vision"
 
     def test_unknown_defaults_to_chat(self) -> None:
-        assert _query._pipeline_to_task("unknown-tag") == "chat"
+        assert _query.pipeline_to_task("unknown-tag") == "chat"
 
     def test_empty_defaults_to_chat(self) -> None:
-        assert _query._pipeline_to_task("") == "chat"
+        assert _query.pipeline_to_task("") == "chat"
 
     def test_text_ranking_maps_to_rerank(self) -> None:
         """HF's canonical cross-encoder pipeline tag is ``text-ranking``."""
-        assert _query._pipeline_to_task("text-ranking") == "rerank"
+        assert _query.pipeline_to_task("text-ranking") == "rerank"
 
     def test_text_classification_maps_to_rerank(self) -> None:
         """``text-classification`` is the HF tag used by GGUF rerankers."""
-        assert _query._pipeline_to_task("text-classification") == "rerank"
+        assert _query.pipeline_to_task("text-classification") == "rerank"
 
     def test_sentence_similarity_maps_to_embedding(self) -> None:
-        assert _query._pipeline_to_task("sentence-similarity") == "embedding"
+        assert _query.pipeline_to_task("sentence-similarity") == "embedding"
 
 
 class TestFeaturedVisionModel:
@@ -1710,7 +1710,7 @@ class TestFetchHfModelsSearchForwarding:
         """The top-level catalog API must pass search through to the HF fetcher."""
         captured_kwargs: dict[str, Any] = {}
 
-        def fake_fetch(**kwargs: Any) -> _models._HfPage:
+        def fake_fetch(**kwargs: Any) -> _models.HfPage:
             captured_kwargs.update(kwargs)
             return _EMPTY_HF_PAGE
 

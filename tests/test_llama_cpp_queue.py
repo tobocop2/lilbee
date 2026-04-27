@@ -427,10 +427,10 @@ class TestShutdown:
         # during the batch window of the second request.
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp.batching import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         fut: Future[list[list[float]]] = Future()
-        provider._embed_queue.put(_EmbedRequest(texts=["world"], future=fut))
+        provider._embed_queue.put(EmbedRequest(texts=["world"], future=fut))
         provider._embed_queue.put(None)
 
         # The worker should process "world" then see sentinel and exit

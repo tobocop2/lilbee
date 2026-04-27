@@ -5734,7 +5734,7 @@ def _write_published(wiki_root, slug: str, body: str) -> None:
 
 
 class TestWikiDraftsScreen:
-    """Phase D drafts review screen: list, diff, accept, reject."""
+    """Wiki drafts review screen: list, diff, accept, reject."""
 
     async def test_opens_from_wiki_screen_via_D(self, tmp_path):
         """Pressing capital D on the wiki screen pushes WikiDraftsScreen."""

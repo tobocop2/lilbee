@@ -30,12 +30,12 @@ def _extract_family_name(model_name: str) -> str:
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
     """Convert a CatalogModel to a ModelVariant."""
     # Local import to avoid pulling formatting helpers into hf_client/featured.
-    from lilbee.catalog.formatting import _derive_param_count
+    from lilbee.catalog.formatting import derive_param_count
 
     return ModelVariant(
         hf_repo=model.hf_repo,
         filename=model.gguf_filename,
-        param_count=_derive_param_count(model),
+        param_count=derive_param_count(model),
         quant=extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
         recommended=model.recommended,

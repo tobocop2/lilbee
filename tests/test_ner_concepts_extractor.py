@@ -1,8 +1,7 @@
-"""Tests for :class:`NerConceptsExtractor` (Phase D: entities only).
+"""Tests for :class:`NerConceptsExtractor` (entities-only output).
 
-Phase D removed the noun-chunk concept loop. The extractor now emits
-only ``EntityKind.ENTITY`` records. Concept pages are proposed by the
-LLM inside the per-source batched call downstream.
+The extractor emits only ``EntityKind.ENTITY`` records. Concept pages
+are proposed by the LLM inside the per-source batched call downstream.
 """
 
 from __future__ import annotations
@@ -33,9 +32,8 @@ class _FakeSpan:
 @dataclass
 class _FakeDoc:
     """Stand-in for a spaCy ``Doc``. ``noun_chunks`` is accepted and
-    ignored: the Phase D extractor does not read it: so older
-    fixtures and integration tests that still populate it keep
-    compiling."""
+    ignored: the extractor does not read it, so older fixtures and
+    integration tests that still populate it keep compiling."""
 
     ents: list[_FakeSpan] = field(default_factory=list)
     noun_chunks: list[_FakeSpan] = field(default_factory=list)
@@ -160,8 +158,8 @@ class TestNerExtraction:
         assert {e.type_hint for e in result} == set(allowed)
 
 
-class TestPhaseDOnlyEntityKind:
-    """Phase D: the extractor emits ENTITY records exclusively."""
+class TestOnlyEntityKind:
+    """The extractor emits ENTITY records exclusively."""
 
     def test_extractor_never_emits_concept_kind(self) -> None:
         """Even with noun_chunks populated, no CONCEPT records appear."""
@@ -367,7 +365,7 @@ class TestEntityTypeFilter:
 
 
 class TestFunnelLogging:
-    """Phase D: concept counters are gone; entity counters remain."""
+    """Concept counters are absent; entity counters remain."""
 
     def test_funnel_logged_once_at_debug_entities_only(
         self, caplog: pytest.LogCaptureFixture
@@ -390,7 +388,7 @@ class TestFunnelLogging:
         assert "type_filter_dropped=1" in message
         assert "label_sanity_dropped_entities=1" in message
         assert "kept_entity_surfaces=1" in message
-        # Phase D: these counters no longer exist.
+        # The extractor does not emit concept counters.
         assert "raw_noun_chunks" not in message
         assert "label_sanity_dropped_concepts" not in message
         assert "kept_concept_surfaces" not in message

@@ -18,7 +18,7 @@ from lilbee.core.config import cfg
 from lilbee.crawler.models import ConcurrencySpec, FilterSpec
 
 
-def _build_concurrency_spec() -> ConcurrencySpec:
+def build_concurrency_spec() -> ConcurrencySpec:
     """Snapshot the crawl-concurrency settings from ``cfg`` into a spec."""
     return ConcurrencySpec(
         semaphore_count=cfg.crawl_concurrent_requests,
@@ -32,7 +32,7 @@ def _build_concurrency_spec() -> ConcurrencySpec:
     )
 
 
-def _build_filter_spec(*, include_subdomains: bool) -> FilterSpec:
+def build_filter_spec(*, include_subdomains: bool) -> FilterSpec:
     """Snapshot the filter settings from ``cfg`` + caller flags."""
     return FilterSpec(
         exclude_patterns=list(cfg.crawl_exclude_patterns),
