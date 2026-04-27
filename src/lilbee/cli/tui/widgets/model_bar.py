@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import NamedTuple
+from pathlib import Path
+from typing import ClassVar, NamedTuple
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -13,7 +14,7 @@ from textual.widget import Widget
 from textual.widgets import Select, Static
 from textual.widgets._select import SelectCurrent
 
-from lilbee.catalog import clean_display_name, extract_quant
+from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.pill import pill
@@ -220,7 +221,8 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
         if ref is not None:
             default = ref.for_openai_prefix()
     if default and not any(o.ref == default for o in opts):
-        opts.insert(0, ModelOption(f"{default} (not installed)", default))
+        shown = display_label_for_ref(default) or default
+        opts.insert(0, ModelOption(f"{shown} (not installed)", default))
     sel.set_options(opts)
     if default:
         sel.value = default
@@ -249,6 +251,8 @@ def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> N
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 
+_CSS_FILE = Path(__file__).parent / "model_bar.tcss"
+
 # Presentation labels for the scope toggle. Values match ``SearchScope``
 # so the widget's ``.value`` feeds directly into ``scope_to_chunk_type``.
 _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -261,51 +265,7 @@ _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
-    # Textual's SelectOverlay floats with overlay: screen and can leak
-    # border cells into terminal scrollback on collapse. Capping the
-    # height and constraining inside the screen keeps the overlay from
-    # crossing the viewport; the refresh in _watch_overlay_collapse
-    # forces the compositor to re-paint the covered region.
-    DEFAULT_CSS = """
-    ModelBar {
-        height: auto;
-        padding: 0 1;
-    }
-    ModelBar Horizontal {
-        height: 1;
-        width: 100%;
-    }
-    ModelBar .model-bar-pill {
-        width: auto;
-        padding: 0 1 0 0;
-    }
-    ModelBar Select {
-        width: 1fr;
-        height: 1;
-        max-height: 1;
-        margin: 0 1 0 0;
-        border: none;
-        padding: 0;
-    }
-    ModelBar Select > SelectCurrent {
-        height: 1;
-        padding: 0;
-        border: none;
-    }
-    ModelBar Select > SelectOverlay {
-        max-height: 8;
-        constrain: inside inside;
-    }
-    ModelBar .cloud-warning {
-        display: none;
-        color: $warning;
-        text-style: bold;
-        padding: 0 1;
-    }
-    ModelBar .cloud-warning.-visible {
-        display: block;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -318,8 +278,10 @@ class ModelBar(Widget, can_focus=False):
         return self._scope
 
     def compose(self) -> ComposeResult:
-        chat_opts = [(cfg.chat_model, cfg.chat_model)] if cfg.chat_model else []
-        embed_opts = [(cfg.embedding_model, cfg.embedding_model)] if cfg.embedding_model else []
+        chat_label = display_label_for_ref(cfg.chat_model) or cfg.chat_model
+        embed_label = display_label_for_ref(cfg.embedding_model) or cfg.embedding_model
+        chat_opts = [(chat_label, cfg.chat_model)] if cfg.chat_model else []
+        embed_opts = [(embed_label, cfg.embedding_model)] if cfg.embedding_model else []
         with Horizontal():
             yield Static(pill("Chat", "$primary", "$text"), classes="model-bar-pill")
             yield Select[str](
@@ -481,7 +443,6 @@ class ModelBar(Widget, can_focus=False):
         screen = self.app.screen
         if isinstance(screen, ChatScreen):
             screen._apply_model_change()
-            screen._refresh_status_line()
         else:
             reset_services()
 

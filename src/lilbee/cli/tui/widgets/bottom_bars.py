@@ -10,7 +10,12 @@ so they stack vertically instead of colliding.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import ClassVar
+
 from textual.containers import Vertical
+
+_CSS_FILE = Path(__file__).parent / "bottom_bars.tcss"
 
 
 class BottomBars(Vertical):
@@ -21,10 +26,4 @@ class BottomBars(Vertical):
     at the screen's bottom edge.
     """
 
-    DEFAULT_CSS = """
-    BottomBars {
-        dock: bottom;
-        height: auto;
-        width: 100%;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")

@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 _SLASH_COMMANDS = completion_names()
 _MAX_VISIBLE = 8  # max dropdown items shown at once
 
+_CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
+
 
 def get_completions(text: str) -> list[str]:
     """Return completion options for the current input text."""
@@ -128,22 +130,7 @@ class CompletionOverlay(Vertical):
         Binding("escape", "dismiss_overlay", show=False),
     ]
 
-    DEFAULT_CSS = """
-    CompletionOverlay {
-        dock: bottom;
-        height: auto;
-        max-height: 10;
-        layer: overlay;
-        offset-y: -3;
-        background: $surface;
-        border: tall $primary;
-        display: none;
-    }
-    CompletionOverlay OptionList {
-        height: auto;
-        max-height: 8;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
