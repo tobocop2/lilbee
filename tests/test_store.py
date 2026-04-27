@@ -108,7 +108,7 @@ class TestEnsureFtsIndex:
 class TestHasFtsIndex:
     def test_returns_false_on_fresh_table(self, store):
         store.add_chunks(_make_records())
-        from lilbee.store import _has_fts_index
+        from lilbee.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
@@ -117,7 +117,7 @@ class TestHasFtsIndex:
     def test_returns_true_after_create(self, store):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        from lilbee.store import _has_fts_index
+        from lilbee.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
@@ -125,7 +125,7 @@ class TestHasFtsIndex:
 
     def test_returns_false_on_list_indices_error(self, store):
         store.add_chunks(_make_records())
-        from lilbee.store import _has_fts_index
+        from lilbee.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
@@ -182,7 +182,7 @@ class TestHybridSearch:
         store.add_chunks(records)
         store.ensure_fts_index()
         query_vec = [0.5] * test_config.embedding_dim
-        with mock.patch("lilbee.store._hybrid_search", side_effect=RuntimeError("boom")):
+        with mock.patch("lilbee.store.core._hybrid_search", side_effect=RuntimeError("boom")):
             results = store.search(query_vec, top_k=3, query_text="chunk")
         assert len(results) > 0
         assert results[0].distance is not None
@@ -870,7 +870,7 @@ class TestAdaptiveFilterFinalPass:
 class TestTableNamesAttributeError:
     def test_fallback_to_list_when_no_tables_attr(self, store):
         """_table_names falls back to list() when result has no .tables attribute."""
-        from lilbee.store import _table_names
+        from lilbee.store.lance_helpers import _table_names
 
         mock_db = mock.MagicMock()
         mock_db.list_tables.return_value = ["chunks", "sources"]
@@ -971,14 +971,14 @@ class TestChunkTypePredicate:
     """The SQL predicate for scope filtering tolerates NULL for raw."""
 
     def test_raw_matches_null_for_legacy_rows(self):
-        from lilbee.store import _chunk_type_predicate
+        from lilbee.store.lance_helpers import _chunk_type_predicate
 
         pred = _chunk_type_predicate("raw")
         assert "IS NULL" in pred
         assert "'raw'" in pred
 
     def test_wiki_does_not_match_null(self):
-        from lilbee.store import _chunk_type_predicate
+        from lilbee.store.lance_helpers import _chunk_type_predicate
 
         pred = _chunk_type_predicate("wiki")
         assert "IS NULL" not in pred
@@ -1046,7 +1046,8 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+        from lilbee.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.store.types import _META_DELETE_ALL_PREDICATE
 
         _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
         assert store.get_meta() is None
@@ -1087,7 +1088,8 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+        from lilbee.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.store.types import _META_DELETE_ALL_PREDICATE
 
         _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
         original_model = test_config.embedding_model
@@ -1114,7 +1116,8 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+        from lilbee.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.store.types import _META_DELETE_ALL_PREDICATE
 
         _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
 

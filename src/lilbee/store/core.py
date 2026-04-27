@@ -1,24 +1,14 @@
-"""LanceDB vector store operations."""
+"""The ``Store`` class: high-level LanceDB read/write API used across lilbee."""
 
 from __future__ import annotations
 
 import logging
-import math
-import threading
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
-import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-if TYPE_CHECKING:
-    import lancedb
-    import lancedb.table
 
 from lilbee.config import (
     CHUNKS_TABLE,
@@ -26,337 +16,39 @@ from lilbee.config import (
     META_TABLE,
     SOURCES_TABLE,
     Config,
-    cfg,
 )
 from lilbee.lock import write_lock
 from lilbee.security import validate_path_within
 
+from .lance_helpers import (
+    _chunk_type_predicate,
+    _embedding_mismatch_message,
+    _has_fts_index,
+    _safe_delete_unlocked,
+    _sources_search_filter,
+    _table_names,
+    ensure_table,
+    escape_sql_string,
+)
+from .ranking import mmr_rerank
+from .schema import _citations_schema, _meta_schema, _sources_schema
+from .types import (
+    _META_DELETE_ALL_PREDICATE,
+    META_SCHEMA_VERSION,
+    READ_CONSISTENCY_INTERVAL,
+    CitationRecord,
+    EmbeddingModelMismatchError,
+    RemoveResult,
+    SearchChunk,
+    SourceRecord,
+    StoreMeta,
+)
+
+if TYPE_CHECKING:
+    import lancedb
+    import lancedb.table
+
 log = logging.getLogger(__name__)
-
-
-def install_lancedb_thread_error_suppressor() -> None:
-    """Install a ``threading.excepthook`` that swallows lancedb shutdown noise.
-    lancedb has no ``close()`` API and its internal event loop thread crashes
-    during Python interpreter teardown. The exception is harmless (the process
-    is exiting anyway) but pollutes CLI/TUI output. This is opt-in so importing
-    ``lilbee.store`` has no hidden side effects; call it once from the CLI/TUI
-    bootstrap.
-    """
-    original = threading.excepthook
-
-    def _hook(args: threading.ExceptHookArgs) -> None:
-        if args.thread and "LanceDB" in args.thread.name:
-            return
-        original(args)
-
-    threading.excepthook = _hook
-
-
-# How often readers re-check the manifest for new versions from other processes.
-# Zero means strong consistency (every read checks); higher values reduce disk I/O
-# on slow media (HDD) at the cost of serving slightly stale data.
-READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
-
-# Values for the ``chunk_type`` column. Everything goes in as raw except wiki
-# pages written by the wiki producer; callers filter with ``Store.search(chunk_type=...)``.
-CHUNK_TYPE_RAW = "raw"
-CHUNK_TYPE_WIKI = "wiki"
-
-
-class SearchScope(StrEnum):
-    """What the user wants to search over.
-
-    Values are used as-is on CLI flags, MCP params, and HTTP query strings.
-    ``BOTH`` resolves to a ``None`` ``chunk_type`` (no filter); the two
-    others map 1:1 to the chunks-table values.
-    """
-
-    RAW = CHUNK_TYPE_RAW
-    WIKI = CHUNK_TYPE_WIKI
-    BOTH = "both"
-
-
-def scope_to_chunk_type(scope: SearchScope | str | None) -> str | None:
-    """Translate a user-facing scope into a ``Store.search`` ``chunk_type`` arg.
-
-    ``None``/``"both"`` → no filter. ``"raw"`` / ``"wiki"`` → the matching
-    chunks-table value. Raises ``ValueError`` on any other string.
-    """
-    if scope is None:
-        return None
-    normalized = SearchScope(scope)
-    if normalized is SearchScope.BOTH:
-        return None
-    return normalized.value
-
-
-class SearchChunk(BaseModel):
-    """A search result from LanceDB.
-    Hybrid results have ``relevance_score`` set (higher = better).
-    Vector-only results have ``distance`` set (lower = better).
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    source: str
-    content_type: str
-    chunk_type: str = CHUNK_TYPE_RAW
-
-    @field_validator("chunk_type", mode="before")
-    @classmethod
-    def _coerce_none_chunk_type(cls, v: str | None) -> str:
-        """LanceDB rows from before the chunk_type column was added return None."""
-        return v if v is not None else CHUNK_TYPE_RAW
-
-    page_start: int
-    page_end: int
-    line_start: int
-    line_end: int
-    chunk: str
-    chunk_index: int
-    vector: list[float] = Field(repr=False)
-    distance: float | None = Field(None, alias="_distance")
-    relevance_score: float | None = Field(None, alias="_relevance_score")
-
-
-def cosine_sim(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def mmr_rerank(
-    query_vector: list[float],
-    results: list[SearchChunk],
-    top_k: int,
-    mmr_lambda: float | None = None,
-) -> list[SearchChunk]:
-    """Maximal Marginal Relevance — select diverse results.
-    Algorithm: Carbonell & Goldstein 1998,
-    "The Use of MMR, Diversity-Based Reranking for Reordering Documents
-    and Producing Summaries."
-
-    ``mmr_lambda`` controls the relevance/diversity tradeoff:
-    0.0 = maximum diversity, 1.0 = pure relevance.
-    Defaults to ``cfg.mmr_lambda`` (0.5).
-
-    Complexity: O(top_k · N · D) time, O(N · D) space for N candidates
-    of dimension D. Each outer iteration updates a running max-redundancy
-    vector via one matmul rather than recomputing pairs pairwise.
-    Candidate vectors run through numpy in ``float32``, which can pick a
-    different candidate than the pure-Python ``float64`` loop on
-    ties within ~1e-7; distinct in principle, unobservable in practice
-    since sub-float32 differences are below retrieval signal.
-    """
-    if mmr_lambda is None:
-        mmr_lambda = cfg.mmr_lambda
-    if len(results) <= top_k:
-        return results
-
-    candidate_vecs = np.asarray([r.vector for r in results], dtype=np.float32)
-    query = np.asarray(query_vector, dtype=np.float32)
-    # L2-normalize once so cosine becomes a plain dot product.
-    cand_norms = np.linalg.norm(candidate_vecs, axis=1, keepdims=True)
-    cand_norms[cand_norms == 0] = 1.0
-    cand_unit = candidate_vecs / cand_norms
-    query_norm = float(np.linalg.norm(query)) or 1.0
-    query_unit = query / query_norm
-
-    relevance = cand_unit @ query_unit  # shape (N,)
-
-    n = len(results)
-    max_redundancy = np.zeros(n, dtype=np.float32)
-    available = np.ones(n, dtype=bool)
-    selected: list[SearchChunk] = []
-
-    for picks in range(top_k):
-        redundancy_term = max_redundancy if picks > 0 else np.zeros(n, dtype=np.float32)
-        score = mmr_lambda * relevance - (1.0 - mmr_lambda) * redundancy_term
-        # Mask already-picked candidates so argmax skips them.
-        score = np.where(available, score, -np.inf)
-        best = int(np.argmax(score))
-        selected.append(results[best])
-        available[best] = False
-        # Update running max redundancy against the newly-selected vector.
-        similarity = cand_unit @ cand_unit[best]
-        max_redundancy = np.maximum(max_redundancy, similarity)
-
-    return selected
-
-
-class SourceRecord(TypedDict):
-    """A tracked source document record."""
-
-    filename: str
-    file_hash: str
-    ingested_at: str
-    chunk_count: int
-    source_type: str
-
-
-class CitationRecord(TypedDict):
-    """A citation linking a wiki chunk to a specific source location."""
-
-    wiki_source: str
-    wiki_chunk_index: int
-    citation_key: str
-    claim_type: str
-    source_filename: str
-    source_hash: str
-    page_start: int
-    page_end: int
-    line_start: int
-    line_end: int
-    excerpt: str
-    created_at: str
-
-
-class StoreMeta(TypedDict):
-    """Single-row store metadata recording the embedding model used to build the store.
-
-    Compatibility is checked before every read and write. When ``cfg.embedding_model``
-    or ``cfg.embedding_dim`` drifts from the persisted row, the store refuses to serve
-    until ``lilbee rebuild`` (CLI) or ``POST /api/sync {"force_rebuild": true}`` (HTTP)
-    rewrites the chunks under the new model.
-
-    ``updated_at`` is an ISO 8601 UTC timestamp produced by ``datetime.isoformat()``;
-    kept as ``str`` to match the LanceDB ``utf8`` schema column.
-    """
-
-    embedding_model: str
-    embedding_dim: int
-    schema_version: int
-    updated_at: str
-
-
-# ``schema_version`` is an integer for forward-compat. Bump only if we ever need to
-# add or rename a meta column without forcing every store to drop_all.
-META_SCHEMA_VERSION = 1
-
-# Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
-# Lance's ``Table.delete`` requires a SQL where clause; this matches every row without
-# coupling the deletion to any specific column's value domain.
-_META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
-
-
-class EmbeddingModelMismatchError(RuntimeError):
-    """Raised when stored vectors were built with a different embedding model than ``cfg``.
-
-    Carries a user-facing message naming both the persisted and the configured model and
-    pointing at the two recovery paths (``lilbee rebuild`` and ``POST /api/sync`` with
-    ``force_rebuild=true``).
-    """
-
-
-def _embedding_mismatch_message(
-    persisted_model: str,
-    persisted_dim: int,
-    current_model: str,
-    current_dim: int,
-) -> str:
-    return (
-        f"The vector store was built with embedding model '{persisted_model}' "
-        f"(dim {persisted_dim}), but lilbee is now configured to use "
-        f"'{current_model}' (dim {current_dim}). Search and ingest are disabled "
-        "until the store is rebuilt under the new model. "
-        'Run `lilbee rebuild` or POST /api/sync with `{"force_rebuild": true}`.'
-    )
-
-
-def _meta_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("embedding_model", pa.utf8()),
-            pa.field("embedding_dim", pa.int32()),
-            pa.field("schema_version", pa.int32()),
-            pa.field("updated_at", pa.utf8()),
-        ]
-    )
-
-
-def _sources_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("filename", pa.utf8()),
-            pa.field("file_hash", pa.utf8()),
-            pa.field("ingested_at", pa.utf8()),
-            pa.field("chunk_count", pa.int32()),
-            pa.field("source_type", pa.utf8()),
-        ]
-    )
-
-
-def _citations_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("wiki_source", pa.utf8()),
-            pa.field("wiki_chunk_index", pa.int32()),
-            pa.field("citation_key", pa.utf8()),
-            pa.field("claim_type", pa.utf8()),
-            pa.field("source_filename", pa.utf8()),
-            pa.field("source_hash", pa.utf8()),
-            pa.field("page_start", pa.int32()),
-            pa.field("page_end", pa.int32()),
-            pa.field("line_start", pa.int32()),
-            pa.field("line_end", pa.int32()),
-            pa.field("excerpt", pa.utf8()),
-            pa.field("created_at", pa.utf8()),
-        ]
-    )
-
-
-def _table_names(db: lancedb.DBConnection) -> list[str]:
-    """Get list of table names, handling the ListTablesResponse object."""
-    result = db.list_tables()
-    try:
-        return result.tables  # type: ignore[no-any-return, union-attr]
-    except AttributeError:
-        return list(result)  # type: ignore[arg-type]
-
-
-def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
-    if name in _table_names(db):
-        return db.open_table(name)
-    try:
-        return db.create_table(name, schema=schema)
-    except ValueError:
-        return db.open_table(name)
-
-
-def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure. Caller must hold write lock."""
-    try:
-        table.delete(predicate)
-    except Exception:
-        log.warning("Failed to delete rows matching: %s", predicate, exc_info=True)
-
-
-def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure."""
-    with write_lock():
-        _safe_delete_unlocked(table, predicate)
-
-
-def escape_sql_string(value: str) -> str:
-    """Escape single quotes for SQL predicates."""
-    return value.replace("\\", "\\\\").replace("'", "''")
-
-
-def _chunk_type_predicate(chunk_type: str) -> str:
-    """SQL predicate that matches ``chunk_type`` while tolerating NULL rows.
-
-    Rows written before ``chunk_type`` was populated land as NULL. They
-    are semantically raw, so a ``'raw'`` filter still includes them; a
-    ``'wiki'`` filter excludes them.
-    """
-    escaped = escape_sql_string(chunk_type)
-    if chunk_type == CHUNK_TYPE_RAW:
-        return f"(chunk_type = '{escaped}' OR chunk_type IS NULL)"
-    return f"chunk_type = '{escaped}'"
 
 
 def _hybrid_search(
@@ -387,14 +79,6 @@ def _hybrid_search(
     return [SearchChunk(**r) for r in rows]
 
 
-@dataclass
-class RemoveResult:
-    """Result of a remove_documents operation."""
-
-    removed: list[str]
-    not_found: list[str]
-
-
 _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
@@ -410,25 +94,6 @@ def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float)
         if _get_distance(r) > threshold:
             return i
     return len(sorted_results)
-
-
-def _has_fts_index(table: lancedb.table.Table) -> bool:
-    """Return True when an FTS index on the chunk column already exists."""
-    try:
-        for idx in table.list_indices():
-            if idx.index_type == "FTS" and "chunk" in idx.columns:
-                return True
-    except Exception:
-        return False
-    return False
-
-
-def _sources_search_filter(search: str | None) -> str | None:
-    """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
-    if not search:
-        return None
-    escaped = escape_sql_string(search.lower())
-    return f"LOWER(filename) LIKE '%{escaped}%'"
 
 
 class Store:
