@@ -58,6 +58,16 @@ _GGML_TO_PY_LEVEL = {
     _GGML_LOG_LEVEL_DEBUG: logging.DEBUG,
 }
 
+# Substrings llama.cpp emits at GGML_LOG_LEVEL_ERROR but which are
+# advisory: the model still loads correctly. Demoted to WARNING so users
+# don't think their setup is broken.
+_GGML_ERROR_SOFT_DEMOTE = (
+    "special_eos_id is not in special_eog_ids",
+    "embeddings required but some input tokens were not marked as outputs",
+    "n_ctx_seq",  # 'n_ctx_seq (X) > n_ctx_train (Y)' -- our embed clamp prevents this
+    "tokenizer config may be incorrect",
+)
+
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
@@ -429,16 +439,22 @@ def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
         if 0 in _llama_log_pending:
             buffered = _llama_log_pending.pop(0).rstrip()
             if buffered:
-                _llama_log.log(
-                    _GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), buffered
-                )
+                _llama_log.log(_resolve_ggml_level(_llama_log_pending_level, buffered), buffered)
         _llama_log_pending_level = level
         _llama_log_pending[0] = text
 
     if "\n" in _llama_log_pending.get(0, ""):
         full = _llama_log_pending.pop(0).rstrip()
         if full:
-            _llama_log.log(_GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), full)
+            _llama_log.log(_resolve_ggml_level(_llama_log_pending_level, full), full)
+
+
+def _resolve_ggml_level(ggml_level: int, text: str) -> int:
+    """Translate ggml log level to Python, demoting known-advisory ERRORs to WARNING."""
+    py_level = _GGML_TO_PY_LEVEL.get(ggml_level, logging.DEBUG)
+    if py_level == logging.ERROR and any(s in text for s in _GGML_ERROR_SOFT_DEMOTE):
+        return logging.WARNING
+    return py_level
 
 
 def install_llama_log_handler() -> None:
@@ -578,11 +594,18 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
         "n_gpu_layers": _resolve_n_gpu_layers(embedding=embedding),
     }
 
-    if cfg.num_ctx is not None:
+    if embedding:
+        # Embedding/rerank: clamp n_ctx to the model's training context.
+        # Passing a chat-sized cfg.num_ctx through here triggers
+        # ``n_ctx_seq > n_ctx_train`` warnings and wastes KV memory.
+        embed_meta = _safe_read_gguf_metadata(model_path)
+        embed_train_ctx = int((embed_meta or {}).get("context_length", "2048"))
+        if cfg.num_ctx is not None:
+            kwargs["n_ctx"] = min(cfg.num_ctx, embed_train_ctx)
+        else:
+            kwargs["n_ctx"] = 0  # 0 -> llama.cpp uses the model's training context
+    elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
-    elif embedding:
-        # n_ctx=0 -> llama.cpp uses the model's training context (else 512).
-        kwargs["n_ctx"] = 0
     else:
         meta = _safe_read_gguf_metadata(model_path)
         kwargs["n_ctx"] = _resolve_chat_ctx(model_path, meta)
@@ -597,11 +620,7 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently
         # truncating embeddings to 512 tokens. Set n_batch = n_ctx so each
         # text can use the model's full context window.
-        if kwargs["n_ctx"] == 0:
-            meta = _safe_read_gguf_metadata(model_path)
-            ctx_len = int((meta or {}).get("context_length", "2048"))
-        else:
-            ctx_len = kwargs["n_ctx"]
+        ctx_len = embed_train_ctx if kwargs["n_ctx"] == 0 else kwargs["n_ctx"]
         kwargs["n_batch"] = ctx_len
         kwargs["n_ubatch"] = ctx_len
 
@@ -697,17 +716,10 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
     label = (cfg.kv_cache_type or "f16").lower()
     if label == "f16":
         return
-    try:
-        from llama_cpp import llama_cpp as _llc
-    except Exception:
+    type_map = _ggml_type_map()
+    if type_map is None:
         log.debug("llama_cpp internal types unavailable; skipping KV quant")
         return
-    type_map = {
-        "f32": getattr(_llc, "GGML_TYPE_F32", None),
-        "f16": getattr(_llc, "GGML_TYPE_F16", None),
-        "q8_0": getattr(_llc, "GGML_TYPE_Q8_0", None),
-        "q4_0": getattr(_llc, "GGML_TYPE_Q4_0", None),
-    }
     ggml_type = type_map.get(label)
     if ggml_type is None:
         log.warning("Unknown LILBEE_KV_CACHE_TYPE=%r, falling back to f16", label)
@@ -716,9 +728,27 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
     kwargs["type_v"] = ggml_type
 
 
+def _ggml_type_map() -> dict[str, Any] | None:
+    """Resolve llama-cpp-python's GGML_TYPE_* constants, or None on older builds."""
+    try:
+        from llama_cpp import llama_cpp as _llc
+    except Exception:  # pragma: no cover -- only fires on llama-cpp-python without _llc
+        return None
+    return {
+        "f32": getattr(_llc, "GGML_TYPE_F32", None),
+        "f16": getattr(_llc, "GGML_TYPE_F16", None),
+        "q8_0": getattr(_llc, "GGML_TYPE_Q8_0", None),
+        "q4_0": getattr(_llc, "GGML_TYPE_Q4_0", None),
+    }
+
+
 def _construct_llama(llama_cls: Any, model_path: Path, kwargs: dict[str, Any]) -> Any:
-    """Call ``llama_cls(**kwargs)`` with FA fallback and OOM-retry-with-halved-ctx."""
-    last_exc: BaseException | None = None
+    """Call ``llama_cls(**kwargs)`` with FA fallback and OOM-retry-with-halved-ctx.
+
+    Each loop iteration either returns the loaded model, raises (failure
+    or unrelated TypeError), or continues with halved n_ctx; the loop is
+    therefore structurally exhaustive and never falls through.
+    """
     fa_dropped = False
     for attempt in range(_MAX_OOM_RETRIES + 1):
         try:
@@ -729,13 +759,11 @@ def _construct_llama(llama_cls: Any, model_path: Path, kwargs: dict[str, Any]) -
             fa_dropped = True
             continue
         except ValueError as exc:
-            last_exc = exc
             if attempt == _MAX_OOM_RETRIES or not _is_load_oom(exc):
                 _raise_load_error(model_path, kwargs, exc)
             if not _halve_ctx_for_retry(kwargs, exc):
                 _raise_load_error(model_path, kwargs, exc)
-    assert last_exc is not None  # noqa: S101 -- loop exits via raise or return
-    raise last_exc
+    raise RuntimeError("unreachable: _construct_llama loop fell through")  # pragma: no cover
 
 
 def _drop_flash_attn_if_unsupported(

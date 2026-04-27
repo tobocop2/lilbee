@@ -7,9 +7,11 @@ classifies tokens as reasoning or response content.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
@@ -94,6 +96,10 @@ class _TagParser:
 
 _MAX_REASONING_CHARS = 16_000  # ~4K tokens — safety limit for runaway reasoning
 
+# Drain at most this many chars of post-truncation response content
+# before giving up; each token pull triggers another inference step.
+_DRAIN_CAP = 512
+
 
 def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
     """Filter ``<think>...</think>`` tags from a token stream.
@@ -102,10 +108,24 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
     Tokens outside thinking blocks are always yielded as ``is_reasoning=False``.
 
     Reasoning is capped at ``_MAX_REASONING_CHARS`` to prevent runaway
-    thinking loops (common with Qwen3 and similar models).
+    thinking loops (common with Qwen3 and similar models). On truncation
+    or normal completion we close the upstream generator so llama.cpp
+    doesn't sit suspended holding the chat lock.
     """
     parser = _TagParser(show=show)
-    truncated = False
+    try:
+        truncated = yield from _stream_until_cap(parser, tokens)
+        if truncated:
+            yield from _drain_after_truncation(parser, tokens)
+        final = parser.flush()
+        if final and final.content:
+            yield final
+    finally:
+        _close_iterator(tokens)
+
+
+def _stream_until_cap(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
+    """Yield from *tokens* until the reasoning cap fires. Returns True if truncated."""
     for token in tokens:
         for st in parser.feed(token):
             if st.content:
@@ -114,29 +134,28 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
             parser.in_thinking = False
             parser.buf = ""
             yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
-            truncated = True
-            break
-    if not truncated:
-        final = parser.flush()
-        if final and final.content:
-            yield final
-        return
-    # Drain a small number of tokens after truncation to capture any
-    # response content that follows a closed </think> tag. Keep the cap
-    # low: each token pull triggers a model inference step, so a large
-    # cap hangs on slow CI runners.
-    _DRAIN_CAP = 512
+            return True
+    return False
+
+
+def _drain_after_truncation(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
+    """After truncation, yield up to ``_DRAIN_CAP`` chars of response content."""
     drain_chars = 0
     for token in tokens:
         drain_chars += len(token)
         if drain_chars > _DRAIN_CAP:
-            break
+            return
         for st in parser.feed(token):
             if st.content and not st.is_reasoning:
                 yield st
-    final = parser.flush()
-    if final and final.content:
-        yield final
+
+
+def _close_iterator(tokens: Any) -> None:
+    """Close *tokens* if it exposes a close method (generator or stream wrapper)."""
+    close = getattr(tokens, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            close()
 
 
 def strip_reasoning(text: str) -> str:

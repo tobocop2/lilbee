@@ -533,14 +533,17 @@ class TestLoadLlamaNCtx:
         assert call_kwargs["n_batch"] == 2048
 
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """When num_ctx is set, load_llama uses it for n_ctx and n_batch."""
+        """When num_ctx is set, embedding load clamps to the model's training context."""
         from lilbee.providers.llama_cpp_provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = 8192
+        # Embedding model trains at 8192; cfg.num_ctx fits, no clamp.
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "8192",
+        }
         load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
-
-        # No metadata read needed when n_ctx is explicit
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 8192
         assert call_kwargs["n_batch"] == 8192

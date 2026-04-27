@@ -485,3 +485,15 @@ def test_compute_dynamic_ctx_honors_ceiling() -> None:
         ceiling=8192,
     )
     assert ctx == 8192
+
+
+def test_compute_dynamic_ctx_zero_kv_falls_back_to_training_or_ceiling() -> None:
+    """Zero/negative kv_bytes_per_tok (degenerate metadata) returns min(training, ceiling)."""
+    ctx = compute_dynamic_ctx(
+        model_bytes=1_000_000,
+        available_bytes=10**12,
+        training_ctx=4096,
+        kv_bytes_per_tok=0,
+        ceiling=8192,
+    )
+    assert ctx == 4096
