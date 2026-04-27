@@ -176,10 +176,8 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
-    # Cap each extra-backend build. Windows CUDA-from-source has hung
-    # indefinitely on MSBuild in past iterations; this kills clear
-    # hangs without consuming CI hours forever.
-    timeout-minutes: 90
+    # Use GitHub's max runner timeout; Windows CUDA-from-source needs >90m.
+    timeout-minutes: 360
 
     env:
       BACKEND: ${{ matrix.backend }}
