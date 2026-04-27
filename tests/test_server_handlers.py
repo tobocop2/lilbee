@@ -884,7 +884,7 @@ class TestModelsCatalog:
             downloaded_at="2026-01-01T00:00:00+00:00",
         )
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_returns_catalog_response(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogModel, CatalogResult
 
@@ -922,7 +922,7 @@ class TestModelsCatalog:
         assert m.installed is True
         assert m.source == "native"
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogResult
 
@@ -949,7 +949,7 @@ class TestModelsCatalog:
             offset=5,
         )
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_installed_flag(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogModel, CatalogResult
 
@@ -976,7 +976,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogResult
 
@@ -987,7 +987,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
         assert result.has_more is True
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_installed_reflects_registry_not_routing_provider(
         self, mock_get_catalog, mock_svc
     ):

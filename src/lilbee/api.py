@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.cli.helpers import copy_files
 from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.services import reset_services
@@ -143,6 +144,7 @@ class Lilbee:
 
     def sync(self, *, quiet: bool = True) -> SyncResult:
         """Sync documents to the vector store. Returns what changed."""
+        # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         with _swap_config(self._config):
@@ -157,7 +159,7 @@ class Lilbee:
         """Add files to the knowledge base and sync.
         Copies each path into the documents directory, then syncs.
         """
-        from lilbee.cli.helpers import copy_files
+        # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
@@ -192,6 +194,7 @@ class Lilbee:
 
     def rebuild(self) -> SyncResult:
         """Rebuild the entire index from scratch."""
+        # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         with _swap_config(self._config):

@@ -39,7 +39,11 @@ from lilbee.wiki.citations import (
     _render_provenance,
     _verify_citations,
 )
-from lilbee.wiki.persistence import _divert_to_drafts, _persist_and_finalize
+from lilbee.wiki.persistence import (
+    _divert_to_drafts,
+    _persist_and_finalize,
+    _subdir_from_wiki_source,
+)
 from lilbee.wiki.quality import _check_faithfulness, _content_change_ratio, _diff_summary
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
@@ -221,9 +225,6 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     ``ingest.py``: ``content_type="text"``, all four page/line
     positions ``0`` (wiki pages are not paginated).
     """
-    # circular: persistence -> page via _subdir_from_wiki_source
-    from lilbee.wiki.persistence import _subdir_from_wiki_source
-
     subdir = _subdir_from_wiki_source(wiki_source)
     if subdir is None:
         log.warning("index_wiki_page: malformed wiki_source %r (no subdir)", wiki_source)

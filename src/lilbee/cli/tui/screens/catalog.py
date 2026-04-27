@@ -22,9 +22,10 @@ from lilbee.catalog import (
     ModelVariant,
     get_catalog,
     get_families,
+    resolve_filename,
 )
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model
+from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
     TableRow,
@@ -33,14 +34,20 @@ from lilbee.cli.tui.screens.catalog_utils import (
     remote_to_row,
     variant_to_row,
 )
+from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
-from lilbee.modelhub.model_manager import RemoteModel, get_model_manager
+from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models, get_model_manager
 from lilbee.modelhub.models import ModelTask
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import OLLAMA_PREFIX
 from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
@@ -124,11 +131,6 @@ class CatalogScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
-        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-        from lilbee.cli.tui.widgets.status_bar import ViewTabs
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-        from lilbee.cli.tui.widgets.top_bars import TopBars
-
         with TopBars():
             yield ViewTabs()
             yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
@@ -161,8 +163,6 @@ class CatalogScreen(Screen[None]):
         that repo has a manifest.
         """
         with contextlib.suppress(Exception):
-            from lilbee.modelhub.registry import ModelRegistry
-
             registry = ModelRegistry(cfg.models_dir)
             self._installed_names = set()
             for m in registry.list_installed():
@@ -288,8 +288,6 @@ class CatalogScreen(Screen[None]):
 
     @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
-        from lilbee.modelhub.model_manager import classify_remote_models
-
         return classify_remote_models(cfg.remote_base_url)
 
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)
@@ -641,8 +639,6 @@ class CatalogScreen(Screen[None]):
         self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
-        from lilbee.catalog import resolve_filename
-
         try:
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename
@@ -661,8 +657,6 @@ class CatalogScreen(Screen[None]):
         request and returns. Progress is visible from every screen and
         survives navigation.
         """
-        from lilbee.cli.tui.app import LilbeeApp
-
         if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
@@ -676,8 +670,6 @@ class CatalogScreen(Screen[None]):
         if isinstance(self.focused, Input):
             self._focus_list_or_grid()
             return
-        from lilbee.cli.tui.app import LilbeeApp
-
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
@@ -726,8 +718,6 @@ class CatalogScreen(Screen[None]):
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:
         """Remove a model in a background thread."""
-        from lilbee.cli.tui.thread_safe import call_from_thread
-
         try:
             removed = get_model_manager().remove(model_name)
             if removed:

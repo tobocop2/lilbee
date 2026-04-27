@@ -14,8 +14,8 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from rich.table import Table
 
 from lilbee.core import settings
-
-# circular: config -> models via ModelTask. cfg is imported lazily.
+from lilbee.core.config.model import cfg
+from lilbee.modelhub.registry import ModelRegistry
 
 
 class ModelTask(StrEnum):
@@ -172,8 +172,6 @@ def display_model_picker(
 
 def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
-    from lilbee.core.config import cfg
-
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
     default_idx = list(_get_model_catalog()).index(recommended) + 1
@@ -203,8 +201,6 @@ def validate_disk_and_pull(
     model_info: ModelInfo, free_gb: float, *, console: Console | None = None
 ) -> None:
     """Check disk space, pull the model, and persist the choice."""
-    from lilbee.core.config import cfg
-
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
@@ -220,6 +216,7 @@ def validate_disk_and_pull(
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     """Pull a model via model_manager, showing a Rich progress bar."""
+    # circular: modelhub.model_manager.discovery imports modelhub.models at top
     from lilbee.modelhub.model_manager import ModelSource, get_model_manager
 
     if console is None:
@@ -251,7 +248,7 @@ def ensure_chat_model() -> None:
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
-    from lilbee.core.config import cfg
+    # circular: modelhub.model_manager.discovery imports modelhub.models at top
     from lilbee.modelhub.model_manager import get_model_manager
 
     manager = get_model_manager()
@@ -291,9 +288,8 @@ def list_installed_models() -> list[str]:
     (embedding, vision, rerank) are excluded so TUI pickers don't offer
     refs that fail pydantic task validation at assignment time.
     """
-    from lilbee.core.config import cfg
+    # circular: modelhub.model_manager.discovery imports modelhub.models at top
     from lilbee.modelhub.model_manager import classify_remote_models
-    from lilbee.modelhub.registry import ModelRegistry
 
     try:
         names: list[str] = []
