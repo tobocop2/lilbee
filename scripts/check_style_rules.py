@@ -38,16 +38,14 @@ EM_DASH_EXCLUDED_FILENAMES = {"featured_models.toml"}
 EM_DASH = "—"
 DIVIDER_RE = re.compile(r"^\s*#\s*[-=]{4,}\s*$")
 
-# Patterns that flag a comment or docstring as historical narrative (not a
-# description of current behaviour). Each is a regex matched case-insensitively
-# against the line. The patterns target sentence-shaped historical phrasings
-# rather than the bare word, so descriptive uses like "model used to embed
-# chunks" or "previously-written file" do not trip the check.
+# Patterns that flag back-compat scaffolding language (the AGENTS.md
+# "No Back-Compat Scaffolding" rule's surface symptoms). Each is matched
+# case-insensitively against a single line. The patterns are deliberately
+# narrow: they catch phrasings that almost only appear in scaffolding
+# docstrings and comments, not generic descriptions of current behaviour.
 HISTORICAL_PATTERNS = (
-    re.compile(r"\bused to\s+(be|live|return|raise|run|exist|wrap|hold)\b", re.IGNORECASE),
     re.compile(r"\bpreviously\s*[,;]", re.IGNORECASE),
     re.compile(r"\bpreviously\s+(this|the|we|it|they|all|each)\b", re.IGNORECASE),
-    re.compile(r"\bmigrated from\b", re.IGNORECASE),
     re.compile(r"\bpreserves the historical\b", re.IGNORECASE),
     re.compile(r"\bfor backward(s)?(\s+compat)\b", re.IGNORECASE),
     re.compile(r"\blegacy mock\b", re.IGNORECASE),
