@@ -69,6 +69,11 @@ _GGML_ERROR_SOFT_DEMOTE = (
 )
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+
+# Cap on tokens consumed during _LockedStreamIterator.close()'s drain.
+# A runaway model (e.g. Qwen3-0.6B in a never-closing <think> loop)
+# would otherwise block close() indefinitely.
+_LOCKED_STREAM_DRAIN_CAP = 1024
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
@@ -396,17 +401,20 @@ class _LockedStreamIterator:
             self._lock.release()
 
     def close(self) -> None:
-        """Exhaust the underlying C iterator, then release the lock.
+        """Drain (capped) the underlying C iterator, then release the lock.
 
         Simply releasing the lock without finishing inference leaves the
-        llama-cpp model in an inconsistent state. The next streaming call
-        would hang because the C runtime is still processing the previous
-        request. Draining the iterator ensures inference completes cleanly.
+        llama-cpp model in an inconsistent state. Draining lets inference
+        complete cleanly. The cap (``_LOCKED_STREAM_DRAIN_CAP``) keeps a
+        runaway think loop from blocking close() indefinitely; once the
+        cap fires we accept the inconsistent state in exchange for not
+        hanging the UI.
         """
         if not self._released:
             try:
-                for _ in self._response:
-                    pass
+                for i, _ in enumerate(self._response):
+                    if i >= _LOCKED_STREAM_DRAIN_CAP:
+                        break
             except Exception:  # noqa: S110 -- best-effort drain during release; ignore partial-read errors
                 pass
             self._release()

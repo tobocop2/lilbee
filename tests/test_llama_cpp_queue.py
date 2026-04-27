@@ -451,6 +451,30 @@ class TestLockedStreamIteratorClose:
         assert lock.acquire(blocking=False)
         lock.release()
 
+    def test_close_drain_cap_does_not_hang_on_runaway_model(self):
+        """A runaway model (never-closing <think>) must not block close() forever."""
+        from lilbee.providers.llama_cpp_provider import (
+            _LOCKED_STREAM_DRAIN_CAP,
+            _LockedStreamIterator,
+        )
+
+        consumed = [0]
+
+        def runaway() -> object:
+            while True:
+                consumed[0] += 1
+                yield {"choices": [{"delta": {"content": "x"}}]}
+
+        lock = threading.Lock()
+        lock.acquire()
+        stream = _LockedStreamIterator(runaway(), lock)
+        stream.close()
+        # Lock is released even though the iterator never naturally ends.
+        assert lock.acquire(blocking=False)
+        lock.release()
+        # Drain stopped near the configured cap; no infinite consumption.
+        assert consumed[0] <= _LOCKED_STREAM_DRAIN_CAP + 2
+
 
 class TestLockedStreamIteratorExceptionRelease:
     def test_non_stop_iteration_exception_releases_lock(self):

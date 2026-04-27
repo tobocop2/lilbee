@@ -46,7 +46,7 @@ _DYNAMIC_CTX_QUANTUM = 256
 _KV_ELEM_BYTES_F16 = 2
 
 # Map cache-type label -> bytes per KV element (rough; q* shapes are 1 byte
-# of data plus shared scales — close enough for budgeting).
+# of data plus shared scales, close enough for budgeting).
 KV_CACHE_TYPE_BYTES = {
     "f16": 2,
     "f32": 4,
