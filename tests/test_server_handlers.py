@@ -768,7 +768,7 @@ class TestListModels:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_installed_flag_in_catalog(self, mock_get_mm):
-        installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
         mock_get_mm.return_value.model_manager.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
@@ -1364,7 +1364,7 @@ class TestUpdateConfig:
 
 
 _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
 class TestSetEmbeddingModel:

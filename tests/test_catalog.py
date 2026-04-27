@@ -1313,7 +1313,7 @@ class TestGetFamilies:
         qwen3 = next(f for f in families if f.name.startswith("Qwen3") and "Coder" not in f.name)
         v = qwen3.variants[0]  # 0.6B
         assert v.param_count == "0.6B"
-        assert v.quant == "Q4_K_M"
+        assert v.quant == "Q8_0"
         assert v.size_mb > 0
         assert v.hf_repo == "Qwen/Qwen3-0.6B-GGUF"
 

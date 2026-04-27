@@ -32,7 +32,7 @@ def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     return env
 
 
-_DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+_DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _DEFAULT_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 

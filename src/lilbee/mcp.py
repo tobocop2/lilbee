@@ -499,7 +499,7 @@ async def model_pull(
 
     Args:
         model: Model ref to pull (e.g. "Qwen/Qwen3-0.6B-GGUF" or
-            "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf").
+            "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf").
         source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
     """
     from lilbee.app.models import pull_model_data

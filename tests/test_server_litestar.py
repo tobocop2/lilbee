@@ -505,7 +505,7 @@ class TestConfigDefaultsRoute:
         # Model role defaults surface so UI reset affordances can restore
         # them via PUT /api/models/<role>, even though the fields are
         # non-writable on PATCH /api/config.
-        assert data["chat_model"] == "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        assert data["chat_model"] == "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
         # Wiki cfg fields are writable and appear with their declared defaults.
         assert data["wiki_prune_raw"] is False
         assert data["wiki_embedding_faithfulness_threshold"] == 0.5

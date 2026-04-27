@@ -55,7 +55,7 @@ class Config(BaseSettings):
     # ``vault_path`` for native-UI deep-links.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
-    chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", min_length=1)
+    chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)
     embedding_model: str = Field(
         default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
         min_length=1,
