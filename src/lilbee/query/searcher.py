@@ -1,123 +1,48 @@
-"""RAG query pipeline -- embed question, search, generate answer with citations."""
+"""RAG search pipeline -- embed, search, expand, rerank, generate."""
 
 from __future__ import annotations
 
 import logging
-import math
-import re
 from collections.abc import Generator, Iterator
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+from pydantic import BaseModel
+from typing_extensions import TypedDict
+
+from lilbee.config import Config
+from lilbee.embedder import Embedder
+from lilbee.providers.base import LLMProvider
+from lilbee.query.dedup import (
+    _greedy_cover,
+    _relevance_weight,
+    deduplicate_sources,
+    filter_results,
+    prepare_results,
+)
+from lilbee.query.expansion import _EXPANSION_MAX_TOKENS, _EXPANSION_PROMPT
+from lilbee.query.formatting import (
+    CONTEXT_TEMPLATE,
+    _extract_cited_indices,
+    build_context,
+    strip_llm_citations,
+)
+from lilbee.query.tokenize import _idf_weights, _tokenize
+from lilbee.reasoning import strip_reasoning
+from lilbee.store import (
+    CHUNK_TYPE_RAW,
+    CHUNK_TYPE_WIKI,
+    SearchChunk,
+    Store,
+    cosine_sim,
+)
 
 if TYPE_CHECKING:
     from lilbee.concepts import ConceptGraph
     from lilbee.reasoning import StreamToken
     from lilbee.reranker import Reranker
 
-from pydantic import BaseModel
-from typing_extensions import TypedDict
-
-from lilbee.config import Config, cfg
-from lilbee.embedder import Embedder
-from lilbee.providers.base import LLMProvider
-from lilbee.reasoning import strip_reasoning
-from lilbee.store import (
-    CHUNK_TYPE_RAW,
-    CHUNK_TYPE_WIKI,
-    CitationRecord,
-    SearchChunk,
-    Store,
-    cosine_sim,
-)
-
 log = logging.getLogger(__name__)
-
-_MIN_TOKEN_LEN = 2
-_TOKEN_SPLIT_RE = re.compile(r"\W+")
-
-
-def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens, split on any non-alnum run."""
-    return [word for word in _TOKEN_SPLIT_RE.split(text.lower()) if len(word) >= _MIN_TOKEN_LEN]
-
-
-def _idf_weights(
-    question_terms: set[str],
-    chunk_tokens: list[set[str]],
-) -> dict[str, float]:
-    """Inverse Document Frequency weight per query term over the candidate chunks.
-
-    Classical IDF per Spärck Jones (1972), "A Statistical Interpretation
-    of Term Specificity and Its Application in Retrieval", Journal of
-    Documentation 28:11-21. Terms that appear in every chunk collapse to
-    zero weight, so corpus-specific stopwords are filtered automatically.
-    """
-    n = len(chunk_tokens)
-    df: dict[str, int] = {}
-    for tokens in chunk_tokens:
-        for term in tokens & question_terms:
-            df[term] = df.get(term, 0) + 1
-    return {t: max(0.0, math.log(n / (1 + df.get(t, 0)))) for t in question_terms}
-
-
-_DEFAULT_RELEVANCE_WEIGHT = 0.5
-
-
-def _relevance_weight(result: SearchChunk) -> float:
-    """Return a [0, 1] relevance weight for distance-aware selection.
-
-    Hybrid results (relevance_score set): use directly.
-    Vector results (distance set): invert cosine distance.
-    Neither: neutral default.
-    """
-    if result.relevance_score is not None:
-        return min(1.0, max(0.0, result.relevance_score))
-    if result.distance is not None:
-        return max(0.0, 1.0 - result.distance)
-    return _DEFAULT_RELEVANCE_WEIGHT
-
-
-def _greedy_cover(
-    chunk_tokens: list[set[str]],
-    question_terms: set[str],
-    term_weights: dict[str, float],
-    budget: int,
-    relevance_weights: list[float] | None = None,
-) -> list[int]:
-    """Greedy weighted set cover: pick chunks that add the most uncovered weight.
-
-    Standard (1 - 1/e) approximation for weighted set cover. Budget is
-    always filled, falling back to retrieval order once no chunk can
-    contribute any new weight. When *relevance_weights* is provided,
-    each chunk's IDF gain is scaled by its relevance so that far-away
-    chunks are penalised even when they share query terms.
-    """
-    selected: list[int] = []
-    covered: set[str] = set()
-    remaining = list(range(len(chunk_tokens)))
-    while remaining and len(selected) < budget:
-        best_pos = -1
-        best_gain = 0.0
-        for pos, idx in enumerate(remaining):
-            new_terms = (chunk_tokens[idx] & question_terms) - covered
-            gain = sum(term_weights[t] for t in new_terms)
-            if relevance_weights is not None:
-                gain *= relevance_weights[idx]
-            if gain > best_gain:
-                best_gain = gain
-                best_pos = pos
-        if best_pos < 0:
-            break
-        chosen = remaining.pop(best_pos)
-        selected.append(chosen)
-        covered |= chunk_tokens[chosen] & question_terms
-
-    for idx in remaining:
-        if len(selected) >= budget:
-            break
-        selected.append(idx)
-    return selected
 
 
 class ChatMessage(TypedDict):
@@ -125,192 +50,6 @@ class ChatMessage(TypedDict):
 
     role: str
     content: str
-
-
-_CITE_REF_RE = re.compile(r"\[(\d+)\]")
-
-# Matches trailing LLM-generated citation blocks like "Key sources:", "Sources:",
-# "References:", "Bibliography:", "Citations:" (with optional markdown heading).
-_LLM_CITATION_BLOCK_RE = re.compile(
-    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n.*",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _extract_cited_indices(text: str) -> set[int]:
-    """Extract [N] citation references from LLM answer text."""
-    return {int(m.group(1)) for m in _CITE_REF_RE.finditer(text)}
-
-
-def strip_llm_citations(text: str) -> str:
-    """Remove LLM-generated trailing citation blocks from answer text."""
-    return _LLM_CITATION_BLOCK_RE.sub("", text).rstrip()
-
-
-def filter_results(
-    results: list[SearchChunk],
-    max_distance: float,
-    min_relevance_score: float = 0.0,
-) -> list[SearchChunk]:
-    """Drop results above max_distance or below min_relevance_score.
-
-    Hybrid results (relevance_score set) are checked against min_relevance_score.
-    Vector results (distance set) are checked against max_distance.
-    Results with neither score pass through. When both scores are present,
-    relevance_score takes priority (hybrid results use RRF scoring, not
-    cosine distance). Pass max_distance=0 to disable distance filtering.
-    """
-    if max_distance <= 0 and min_relevance_score <= 0:
-        return results
-    filtered: list[SearchChunk] = []
-    for r in results:
-        # Hybrid results: check relevance_score (takes priority over distance)
-        if r.relevance_score is not None:
-            if min_relevance_score > 0 and r.relevance_score < min_relevance_score:
-                continue
-        elif r.distance is not None and max_distance > 0 and r.distance > max_distance:
-            continue
-        filtered.append(r)
-    return filtered
-
-
-CONTEXT_TEMPLATE = """Context:
-{context}
-
-Question: {question}"""
-
-
-def display_source_path(source: str) -> str:
-    """Render a chunk's source as an absolute path with ``~`` expansion.
-
-    Source values in the store are stored relative to ``documents_dir`` so the
-    database is portable across machines. For display we resolve back to the
-    user's filesystem and substitute ``~`` for the home directory so the path
-    is unambiguous without being noisy.
-
-    Falls back to the raw source string if the file no longer exists on disk
-    (e.g. the user moved the documents directory since ingestion).
-    """
-    candidate = cfg.documents_dir / source
-    try:
-        resolved = candidate.resolve(strict=False)
-    except OSError:
-        return source
-    home = Path.home()
-    try:
-        return f"~/{resolved.relative_to(home)}"
-    except ValueError:
-        return str(resolved)
-
-
-def _format_citation(citation: CitationRecord) -> str:
-    """Format a single citation record as an indented attribution line."""
-    source_display = display_source_path(citation["source_filename"])
-    if citation["page_start"] or citation["page_end"]:
-        ps, pe = citation["page_start"], citation["page_end"]
-        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"    → {source_display}, {pages}"
-    if citation["line_start"] or citation["line_end"]:
-        ls, le = citation["line_start"], citation["line_end"]
-        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"    → {source_display}, {lines}"
-    return f"    → {source_display}"
-
-
-def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
-    """Format a search result as a source citation line.
-    For wiki chunks, shows the wiki page path followed by indented transitive citations.
-    """
-    source_display = display_source_path(result.source)
-    if result.chunk_type == CHUNK_TYPE_WIKI and citations:
-        parts = [f"  → {source_display}"]
-        for cit in citations:
-            parts.append(_format_citation(cit))
-        return "\n".join(parts)
-
-    if result.content_type == "pdf":
-        ps, pe = result.page_start, result.page_end
-        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"  → {source_display}, {pages}"
-
-    if result.content_type == "code":
-        ls, le = result.line_start, result.line_end
-        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"  → {source_display}, {lines}"
-
-    return f"  → {source_display}"
-
-
-def deduplicate_sources(
-    results: list[SearchChunk],
-    max_citations: int = 5,
-    citations_map: dict[str, list[CitationRecord]] | None = None,
-) -> list[str]:
-    """Merge results from same source into deduplicated citation lines."""
-    seen: set[str] = set()
-    citation_lines: list[str] = []
-    for r in results:
-        cits = (citations_map or {}).get(r.source)
-        line = format_source(r, citations=cits)
-        if line not in seen:
-            seen.add(line)
-            citation_lines.append(line)
-            if len(citation_lines) >= max_citations:
-                break
-    return citation_lines
-
-
-def _sort_key(r: SearchChunk) -> float:
-    """Sort key: lower = more relevant."""
-    if r.relevance_score is not None:
-        return -r.relevance_score
-    if r.distance is not None:
-        return r.distance
-    return float("inf")
-
-
-def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
-    """Sort search results by relevance (works for both hybrid and vector results)."""
-    return sorted(results, key=_sort_key)
-
-
-def diversify_sources(
-    results: list[SearchChunk], max_per_source: int | None = None
-) -> list[SearchChunk]:
-    """Cap results per source document to ensure diversity.
-    Source diversity filtering: Zhai 2008, "Statistical Language Models for
-    Information Retrieval" -- caps per-source representation to prevent
-    any single document from dominating results.
-    """
-    if max_per_source is None:
-        max_per_source = cfg.diversity_max_per_source
-    counts: dict[str, int] = {}
-    diverse: list[SearchChunk] = []
-    for r in results:
-        count = counts.get(r.source, 0)
-        if count < max_per_source:
-            diverse.append(r)
-            counts[r.source] = count + 1
-    return diverse
-
-
-def prepare_results(results: list[SearchChunk]) -> list[SearchChunk]:
-    """Sort by relevance and apply source diversity cap."""
-    return diversify_sources(sort_by_relevance(results))
-
-
-def build_context(results: list[SearchChunk]) -> str:
-    """Build context block from search results."""
-    return "\n\n".join(f"[{i}] {r.chunk}" for i, r in enumerate(results, 1))
-
-
-_EXPANSION_PROMPT = (
-    "Generate {count} alternative search queries for the following question. "
-    "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
-    "Question: {question}"
-)
-
-_EXPANSION_MAX_TOKENS = 200
 
 
 class AskResult(BaseModel):
