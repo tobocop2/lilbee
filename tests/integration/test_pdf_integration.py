@@ -35,7 +35,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     Uses llama-cpp with real models so the full RAG pipeline works.
     """
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
-    from lilbee.modelhub.model_manager import reset_model_manager
+    from lilbee.core.services import reset_services
     from tests.integration.conftest import _resolve_installed_ref
 
     snapshot = cfg.model_copy()
@@ -60,7 +60,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     cfg.concept_graph = False
     cfg.hyde = False
     reset_provider()
-    reset_model_manager()
+    reset_services()
 
     # Download embedding model
     embed_entry = FEATURED_EMBEDDING[0]
@@ -78,7 +78,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     }
 
     reset_provider()
-    reset_model_manager()
+    reset_services()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 

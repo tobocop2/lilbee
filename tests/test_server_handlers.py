@@ -96,7 +96,7 @@ class TestHealth:
 
 class TestStatus:
     async def test_returns_config_and_sources(self):
-        from lilbee.cli.helpers import StatusConfig, StatusResult
+        from lilbee.app.status import StatusConfig, StatusResult
 
         mock_status = StatusResult(
             config=StatusConfig(
@@ -755,10 +755,10 @@ class TestDrainHeartbeat:
 
 
 class TestListModels:
-    @patch("lilbee.server.handlers.models.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_catalogs(self, mock_get_mm):
         installed = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
-        mock_get_mm.return_value.list_installed.return_value = [installed]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         assert result.chat.active == cfg.chat_model
@@ -766,10 +766,10 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert installed in result.chat.installed
 
-    @patch("lilbee.server.handlers.models.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_installed_flag_in_catalog(self, mock_get_mm):
         installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
-        mock_get_mm.return_value.list_installed.return_value = [installed]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
@@ -779,32 +779,32 @@ class TestListModels:
         mistral_entry = next(m for m in catalog if "Mistral" in m.name)
         assert mistral_entry.installed is False
 
-    @patch("lilbee.server.handlers.models.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_reranker_installed_detected_via_registry(self, mock_get_mm):
         """Rerankers install as GGUFs like chat/embedding; the ref match marks them installed."""
         from lilbee.catalog import FEATURED_RERANK
 
         bge = FEATURED_RERANK[0]
-        mock_get_mm.return_value.list_installed.return_value = [bge.ref]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [bge.ref]
         result = await handlers.list_models()
         bge_entry = next(m for m in result.reranker.catalog if bge.display_name in m.name)
         assert bge_entry.installed is True
 
-    @patch("lilbee.server.handlers.models.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_embedding_installed_detected_via_registry(self, mock_get_mm):
         """Embedding installs surface via the same registry path as chat/reranker."""
         from lilbee.catalog import FEATURED_EMBEDDING
 
         entry = FEATURED_EMBEDDING[0]
-        mock_get_mm.return_value.list_installed.return_value = [entry.ref]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [entry.ref]
         result = await handlers.list_models()
         embed_entry = next(m for m in result.embedding.catalog if entry.display_name in m.name)
         assert embed_entry.installed is True
 
-    @patch("lilbee.server.handlers.models.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_vision_and_reranker_sections(self, mock_get_mm):
         """list_models exposes chat, embedding, vision, and reranker catalogs."""
-        mock_get_mm.return_value.list_installed.return_value = []
+        mock_get_mm.return_value.model_manager.list_installed.return_value = []
         cfg.vision_model = ""
         cfg.reranker_model = ""
         result = await handlers.list_models()
@@ -1059,7 +1059,10 @@ class TestModelsInstalled:
         from lilbee.modelhub.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.REMOTE
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_installed()
         assert len(result.models) == 2
         assert result.models[0].source == "remote"
@@ -1068,7 +1071,10 @@ class TestModelsInstalled:
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["unknown"]
         mock_manager.get_source.return_value = None
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_installed()
         assert result.models[0].source == "remote"
 
@@ -1084,7 +1090,10 @@ class TestModelsPull:
             return
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             events = [e async for e in handlers.models_pull("test", source="native")]
         non_empty = [e for e in events if e]
         assert any('"current": 500' in e for e in non_empty)
@@ -1101,7 +1110,10 @@ class TestModelsPull:
             return
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             events = [e async for e in handlers.models_pull("test", source="remote")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
@@ -1110,7 +1122,10 @@ class TestModelsPull:
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
         mock_manager.pull.side_effect = RuntimeError("fail")
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             events = [e async for e in handlers.models_pull("bad", source="native")]
         non_empty = [e for e in events if e]
         assert any("error" in e and "fail" in e for e in non_empty)
@@ -1131,7 +1146,10 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = blocking_pull
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             gen = handlers.models_pull("test", source="native")
             async for event in gen:
                 if event and "current" in event:
@@ -1147,7 +1165,10 @@ class TestModelsDelete:
     async def test_returns_deleted_true(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_delete("test", source="remote")
         assert result.deleted is True
         assert result.model == "test"
@@ -1155,7 +1176,10 @@ class TestModelsDelete:
     async def test_returns_deleted_false(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = False
-        with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
         assert result.freed_gb == 0.0
@@ -2000,7 +2024,10 @@ class TestModelPullProgressCancel:
             self.cancel.set()  # Pre-set cancel before pull starts
 
         with (
-            patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager),
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
             patch.object(handlers.SseStream, "__init__", patched_init),
         ):
             gen = handlers.models_pull("test", source="native")
@@ -2034,7 +2061,10 @@ class TestModelPullProgressCancel:
             self.cancel.set()
 
         with (
-            patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager),
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
             patch.object(handlers.SseStream, "__init__", patched_init),
         ):
             gen = handlers.models_pull("test", source="remote")

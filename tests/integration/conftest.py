@@ -103,7 +103,6 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
     from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
-    from lilbee.modelhub.model_manager import reset_model_manager
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("rag_integration")
@@ -130,7 +129,6 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     cfg.max_tokens = 512  # keep inference fast on slow CI runners
 
     reset_provider()
-    reset_model_manager()
 
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
@@ -152,7 +150,6 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     }
 
     reset_provider()
-    reset_model_manager()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -166,7 +163,6 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
     from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
-    from lilbee.modelhub.model_manager import reset_model_manager
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("wiki_integration")
@@ -195,7 +191,6 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     (tmp / "wiki").mkdir(parents=True, exist_ok=True)
 
     reset_provider()
-    reset_model_manager()
 
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
@@ -217,6 +212,5 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     }
 
     reset_provider()
-    reset_model_manager()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

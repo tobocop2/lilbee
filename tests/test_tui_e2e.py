@@ -332,7 +332,7 @@ class TestDownloadProgressSlow:
             pytest.skip("HF_TOKEN environment variable not set")
 
         from lilbee.catalog import CatalogModel, download_model
-        from lilbee.modelhub.model_manager import reset_model_manager
+        from lilbee.core.services import reset_services
 
         snapshot = cfg.model_copy()
         try:
@@ -343,7 +343,7 @@ class TestDownloadProgressSlow:
             cfg.lancedb_dir = tmp_path / "data" / "lancedb"
             cfg.models_dir.mkdir(parents=True, exist_ok=True)
             cfg.documents_dir.mkdir(parents=True, exist_ok=True)
-            reset_model_manager()
+            reset_services()
 
             entry = CatalogModel(
                 hf_repo="MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",

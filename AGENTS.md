@@ -341,6 +341,7 @@ Every command returns a single JSON object on stdout. Errors return non-zero exi
 See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 
 ## Key Files
+- `app/` — Shared use-case orchestration (status, models, reset, ingest, version) consumed by cli/, server/, mcp.py and the TUI
 - `core/config/` — All settings (env-var configurable)
 - `data/ingest/` — Document sync engine (hash-based change detection)
 - `retrieval/query/` — RAG pipeline (embed → search → generate)

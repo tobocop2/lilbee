@@ -2216,11 +2216,11 @@ async def test_chat_slash_reset_pushes_confirm_dialog():
 
 async def test_chat_slash_reset_confirm_executes():
     """Confirming the reset dialog calls perform_reset."""
-    from lilbee.cli.helpers import ResetResult
+    from lilbee.app.reset import ResetResult
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.perform_reset") as mock_reset:
+        with patch("lilbee.app.reset.perform_reset") as mock_reset:
             mock_reset.return_value = ResetResult(
                 deleted_docs=0, deleted_data=0, documents_dir="d", data_dir="d"
             )
@@ -2235,7 +2235,7 @@ async def test_chat_slash_reset_cancel_does_nothing():
     """Cancelling the reset dialog does not call perform_reset."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.perform_reset") as mock_reset:
+        with patch("lilbee.app.reset.perform_reset") as mock_reset:
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("n")
@@ -2247,7 +2247,7 @@ async def test_chat_slash_reset_error_notifies():
     """Reset failure shows an error notification."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.perform_reset", side_effect=Exception("oops")):
+        with patch("lilbee.app.reset.perform_reset", side_effect=Exception("oops")):
             with patch.object(app.screen, "notify") as mock_notify:
                 app.screen._handle_slash("/reset")
                 await _pilot.pause()
@@ -2258,14 +2258,14 @@ async def test_chat_slash_reset_error_notifies():
 
 async def test_chat_slash_reset_partial_notifies_warning():
     """When some files can't be deleted, a warning notification is shown."""
-    from lilbee.cli.helpers import ResetResult
+    from lilbee.app.reset import ResetResult
 
     partial = ResetResult(
         deleted_docs=1, deleted_data=0, skipped=["/locked.exe"], documents_dir="d", data_dir="d"
     )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.perform_reset", return_value=partial):
+        with patch("lilbee.app.reset.perform_reset", return_value=partial):
             with patch.object(app.screen, "notify") as mock_notify:
                 app.screen._handle_slash("/reset")
                 await _pilot.pause()
@@ -2922,7 +2922,7 @@ async def test_command_provider_action_version():
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         with (
-            patch("lilbee.cli.helpers.get_version", return_value="1.0.0"),
+            patch("lilbee.app.version.get_version", return_value="1.0.0"),
             patch.object(app, "notify") as mock_notify,
         ):
             provider._action_version()
@@ -3038,10 +3038,12 @@ def _patch_catalog():
         patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
         patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
         patch(
-            "lilbee.cli.tui.screens.catalog.get_model_manager",
+            "lilbee.cli.tui.screens.catalog.get_services",
             return_value=MagicMock(
-                list_installed=MagicMock(return_value=[]),
-                is_installed=MagicMock(return_value=False),
+                model_manager=MagicMock(
+                    list_installed=MagicMock(return_value=[]),
+                    is_installed=MagicMock(return_value=False),
+                ),
             ),
         ),
     )
@@ -3225,7 +3227,10 @@ async def test_catalog_install_new_model():
             mock_mgr = MagicMock()
             mock_mgr.is_installed.return_value = False
             with (
-                patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr),
+                patch(
+                    "lilbee.core.services.get_services",
+                    return_value=MagicMock(model_manager=mock_mgr),
+                ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
                 screen._install_model(m)
@@ -3950,7 +3955,7 @@ async def test_chat_on_input_submitted_slash():
 
         inp = app.screen.query_one("#chat-input", Input)
         inp.value = "/version"
-        with patch("lilbee.cli.helpers.get_version", return_value="1.0.0"):
+        with patch("lilbee.app.version.get_version", return_value="1.0.0"):
             await _pilot.press("enter")
             # Value should be cleared
             assert inp.value == ""
@@ -4203,10 +4208,10 @@ def test_check_embedding_model_installed():
     """Cover _check_embedding_model_async lines 61-65 (model is installed)."""
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = True
-    with patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr):
-        from lilbee.modelhub.model_manager import get_model_manager
+    with patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)):
+        from lilbee.core.services import get_services
 
-        manager = get_model_manager()
+        manager = get_services().model_manager
         assert manager.is_installed(cfg.embedding_model) is True
 
 
@@ -4215,15 +4220,16 @@ def test_check_embedding_model_remote_available():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr),
+        patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
         patch(
             "lilbee.modelhub.model_manager.detect_remote_embedding_models",
             return_value=[cfg.embedding_model],
         ),
     ):
-        from lilbee.modelhub.model_manager import detect_remote_embedding_models, get_model_manager
+        from lilbee.core.services import get_services
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
-        manager = get_model_manager()
+        manager = get_services().model_manager
         assert not manager.is_installed(cfg.embedding_model)
 
         remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
@@ -4235,12 +4241,13 @@ def test_check_embedding_model_not_found():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr),
+        patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
         patch("lilbee.modelhub.model_manager.detect_remote_embedding_models", return_value=[]),
     ):
-        from lilbee.modelhub.model_manager import detect_remote_embedding_models, get_model_manager
+        from lilbee.core.services import get_services
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
-        manager = get_model_manager()
+        manager = get_services().model_manager
         assert not manager.is_installed(cfg.embedding_model)
 
         remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
@@ -4478,10 +4485,10 @@ async def test_catalog_delete_installed_model_confirmation():
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
-            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+            patch("lilbee.cli.tui.screens.catalog.get_services") as mock_mgr,
         ):
-            mock_mgr.return_value.is_installed.return_value = True
-            mock_mgr.return_value.list_installed.return_value = []
+            mock_mgr.return_value.model_manager.is_installed.return_value = True
+            mock_mgr.return_value.model_manager.list_installed.return_value = []
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -4511,11 +4518,11 @@ async def test_catalog_delete_second_press_confirms():
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
-            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+            patch("lilbee.cli.tui.screens.catalog.get_services") as mock_mgr,
         ):
-            mock_mgr.return_value.is_installed.return_value = True
-            mock_mgr.return_value.list_installed.return_value = []
-            mock_mgr.return_value.remove.return_value = True
+            mock_mgr.return_value.model_manager.is_installed.return_value = True
+            mock_mgr.return_value.model_manager.list_installed.return_value = []
+            mock_mgr.return_value.model_manager.remove.return_value = True
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -4548,10 +4555,10 @@ async def test_catalog_delete_not_installed():
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
-            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+            patch("lilbee.cli.tui.screens.catalog.get_services") as mock_mgr,
         ):
-            mock_mgr.return_value.is_installed.return_value = False
-            mock_mgr.return_value.list_installed.return_value = []
+            mock_mgr.return_value.model_manager.is_installed.return_value = False
+            mock_mgr.return_value.model_manager.list_installed.return_value = []
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -4622,39 +4629,41 @@ async def test_chat_slash_remove_no_args():
 async def test_chat_slash_remove_not_installed():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.modelhub.model_manager.get_model_manager") as mock_mgr:
-            mock_mgr.return_value.is_installed.return_value = False
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr:
+            mock_mgr.return_value.model_manager.is_installed.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
             while app.screen.workers:
                 await _pilot.pause()
             await _pilot.pause()
-            mock_mgr.return_value.is_installed.assert_called_once_with("some-model:latest")
+            mock_mgr.return_value.model_manager.is_installed.assert_called_once_with(
+                "some-model:latest"
+            )
 
 
 async def test_chat_slash_remove_success():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.modelhub.model_manager.get_model_manager") as mock_mgr:
-            mock_mgr.return_value.is_installed.return_value = True
-            mock_mgr.return_value.remove.return_value = True
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr:
+            mock_mgr.return_value.model_manager.is_installed.return_value = True
+            mock_mgr.return_value.model_manager.remove.return_value = True
             app.screen._handle_slash("/remove some-model:latest")
             while app.screen.workers:
                 await _pilot.pause()
             await _pilot.pause()
-            mock_mgr.return_value.remove.assert_called_once_with("some-model:latest")
+            mock_mgr.return_value.model_manager.remove.assert_called_once_with("some-model:latest")
 
 
 async def test_chat_slash_remove_failed():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.modelhub.model_manager.get_model_manager") as mock_mgr:
-            mock_mgr.return_value.is_installed.return_value = True
-            mock_mgr.return_value.remove.return_value = False
+        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr:
+            mock_mgr.return_value.model_manager.is_installed.return_value = True
+            mock_mgr.return_value.model_manager.remove.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
             while app.screen.workers:
                 await _pilot.pause()
             await _pilot.pause()
-            mock_mgr.return_value.remove.assert_called_once_with("some-model:latest")
+            mock_mgr.return_value.model_manager.remove.assert_called_once_with("some-model:latest")
 
 
 async def test_cmd_add_error_in_background(tmp_path):
@@ -4664,7 +4673,7 @@ async def test_cmd_add_error_in_background(tmp_path):
         test_file = tmp_path / "doc.txt"
         test_file.write_text("hello")
 
-        with patch("lilbee.cli.helpers.copy_files", side_effect=RuntimeError("copy failed")):
+        with patch("lilbee.app.ingest.copy_files", side_effect=RuntimeError("copy failed")):
             app.screen._handle_slash(f"/add {test_file}")
             await _pilot.pause()
             while app.screen.workers:
@@ -4706,7 +4715,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
                 captured["exc"] = exc
 
         with (
-            patch("lilbee.cli.helpers.copy_files") as mock_copy,
+            patch("lilbee.app.ingest.copy_files") as mock_copy,
             patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
             mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
@@ -7371,7 +7380,10 @@ async def test_catalog_run_delete_success():
             await _pilot.pause()
             mock_mgr = MagicMock()
             mock_mgr.remove.return_value = True
-            with patch("lilbee.cli.tui.screens.catalog.get_model_manager", return_value=mock_mgr):
+            with patch(
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=MagicMock(model_manager=mock_mgr),
+            ):
                 screen._run_delete("test:latest")
                 await _pilot.pause()
                 while screen.workers:
@@ -7391,7 +7403,10 @@ async def test_catalog_run_delete_failure():
             await _pilot.pause()
             mock_mgr = MagicMock()
             mock_mgr.remove.return_value = False
-            with patch("lilbee.cli.tui.screens.catalog.get_model_manager", return_value=mock_mgr):
+            with patch(
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=MagicMock(model_manager=mock_mgr),
+            ):
                 screen._run_delete("test:latest")
                 await _pilot.pause()
                 while screen.workers:
@@ -7411,7 +7426,10 @@ async def test_catalog_run_delete_exception():
             await _pilot.pause()
             mock_mgr = MagicMock()
             mock_mgr.remove.side_effect = OSError("disk full")
-            with patch("lilbee.cli.tui.screens.catalog.get_model_manager", return_value=mock_mgr):
+            with patch(
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=MagicMock(model_manager=mock_mgr),
+            ):
                 screen._run_delete("test:latest")
                 await _pilot.pause()
                 while screen.workers:
@@ -8193,7 +8211,10 @@ async def test_chat_remove_model_exception():
         mock_mgr = MagicMock()
         mock_mgr.is_installed.return_value = True
         mock_mgr.remove.side_effect = RuntimeError("disk error")
-        with patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr):
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_services",
+            return_value=MagicMock(model_manager=mock_mgr),
+        ):
             app.screen._run_remove_model("test-model")
             while app.screen.workers:
                 await _pilot.pause()

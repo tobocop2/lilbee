@@ -6,6 +6,9 @@ from pathlib import Path
 
 import typer
 
+from lilbee.app.reset import perform_reset
+from lilbee.app.status import gather_status
+from lilbee.app.version import get_version
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -13,13 +16,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import (
-    gather_status,
-    get_version,
-    json_output,
-    perform_reset,
-    render_status,
-)
+from lilbee.cli.helpers import json_output, render_status
 from lilbee.core.config import cfg
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")

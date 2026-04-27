@@ -1,0 +1,331 @@
+"""Surface-agnostic model lifecycle use-cases (list / show / pull / remove)."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, Field
+
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from lilbee.catalog import CatalogModel, DownloadProgress
+    from lilbee.modelhub.model_manager import ModelSource, RemoteModel
+    from lilbee.modelhub.registry import ModelManifest
+
+
+_BYTES_PER_GB = 1024**3  # Model sizes are reported to users in GiB.
+_BACKEND_LIST_TIMEOUT_S = 2.0  # Keep `model list` snappy when backend is down.
+
+
+def _bytes_to_gb(n: int) -> float:
+    """Convert bytes to GiB rounded to 2 decimals for user display."""
+    return round(n / _BYTES_PER_GB, 2)
+
+
+class ModelCommand(StrEnum):
+    """Command field values for model sub-app JSON output."""
+
+    LIST = "model list"
+    SHOW = "model show"
+    PULL = "model pull"
+    RM = "model rm"
+
+
+class PullStatus(StrEnum):
+    OK = "ok"
+    ALREADY_INSTALLED = "already_installed"
+
+
+class PullEvent(StrEnum):
+    PROGRESS = "progress"
+    DONE = "done"
+
+
+class ModelEntry(BaseModel):
+    """One row of `lilbee model list` output."""
+
+    name: str
+    source: str
+    task: str | None = None
+    size_gb: float | None = None
+    display_name: str = ""
+
+    @classmethod
+    def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
+        from lilbee.catalog import clean_display_name
+        from lilbee.modelhub.model_manager import ModelSource
+
+        return cls(
+            name=ref,
+            source=ModelSource.NATIVE.value,
+            task=manifest.task if manifest else None,
+            size_gb=_bytes_to_gb(manifest.size_bytes) if manifest else None,
+            display_name=clean_display_name(manifest.hf_repo) if manifest else "",
+        )
+
+    @classmethod
+    def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
+        from lilbee.modelhub.model_manager import ModelSource
+
+        return cls(
+            name=ref,
+            source=ModelSource.REMOTE.value,
+            task=remote.task if remote else None,
+            size_gb=None,
+            display_name=remote.parameter_size if remote else "",
+        )
+
+
+class ListModelsResult(BaseModel):
+    command: str = ModelCommand.LIST
+    models: list[ModelEntry]
+    total: int
+
+
+class CatalogEntryData(BaseModel):
+    ref: str
+    display_name: str
+    hf_repo: str
+    gguf_filename: str
+    size_gb: float
+    min_ram_gb: float
+    description: str
+    task: str
+    featured: bool
+    recommended: bool
+
+    @classmethod
+    def from_catalog_model(cls, entry: CatalogModel) -> CatalogEntryData:
+        return cls(
+            ref=entry.ref,
+            display_name=entry.display_name,
+            hf_repo=entry.hf_repo,
+            gguf_filename=entry.gguf_filename,
+            size_gb=entry.size_gb,
+            min_ram_gb=entry.min_ram_gb,
+            description=entry.description,
+            task=entry.task,
+            featured=entry.featured,
+            recommended=entry.recommended,
+        )
+
+
+class ManifestData(BaseModel):
+    ref: str
+    display_name: str
+    task: str
+    size_gb: float
+    size_bytes: int
+    hf_repo: str
+    gguf_filename: str
+    downloaded_at: str
+
+    @classmethod
+    def from_manifest(cls, manifest: ModelManifest) -> ManifestData:
+        from lilbee.catalog import clean_display_name
+
+        return cls(
+            ref=manifest.ref,
+            display_name=clean_display_name(manifest.hf_repo),
+            task=manifest.task,
+            size_gb=_bytes_to_gb(manifest.size_bytes),
+            size_bytes=manifest.size_bytes,
+            hf_repo=manifest.hf_repo,
+            gguf_filename=manifest.gguf_filename,
+            downloaded_at=manifest.downloaded_at,
+        )
+
+
+class ShowModelResult(BaseModel):
+    command: str = ModelCommand.SHOW
+    model: str
+    catalog: CatalogEntryData | None = None
+    installed: bool = False
+    source: str | None = None
+    path: str | None = None
+    manifest: ManifestData | None = None
+
+
+class PullResult(BaseModel):
+    command: str = ModelCommand.PULL
+    model: str
+    source: str
+    status: str
+    path: str | None = None
+
+
+class PullProgressEvent(BaseModel):
+    command: str = ModelCommand.PULL
+    event: str = PullEvent.PROGRESS
+    model: str
+    percent: float
+    detail: str
+    cache_hit: bool
+
+
+class RemoveResult(BaseModel):
+    command: str = ModelCommand.RM
+    model: str
+    deleted: bool
+    freed_gb: float = Field(default=0.0)
+
+
+def _native_manifest_index() -> dict[str, ModelManifest]:
+    """Map ref string ('hf_repo/filename') to manifest for every installed native model."""
+    from lilbee.modelhub.registry import ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    return {m.ref: m for m in registry.list_installed()}
+
+
+def _resolve_native_path(ref: str) -> str | None:
+    """Return the on-disk path of an installed native model, if resolvable.
+
+    Swallows ``KeyError`` (manifest present but blob missing) and
+    ``ValueError`` (malformed ref) so callers can treat the path as
+    optional metadata.
+    """
+    from lilbee.modelhub.registry import ModelRegistry
+
+    try:
+        return str(ModelRegistry(cfg.models_dir).resolve(ref))
+    except (KeyError, ValueError):
+        return None
+
+
+def _collect_native_entries() -> list[ModelEntry]:
+    from lilbee.modelhub.model_manager import ModelSource
+
+    manifests = _native_manifest_index()
+    refs = get_services().model_manager.list_installed(source=ModelSource.NATIVE)
+    return [ModelEntry.from_native(ref, manifests.get(ref)) for ref in refs]
+
+
+def _collect_backend_entries() -> list[ModelEntry]:
+    from lilbee.modelhub.model_manager import classify_remote_models
+
+    remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
+    remote_by_name = {rm.name: rm for rm in remote_list}
+    return [ModelEntry.from_backend(ref, remote_by_name[ref]) for ref in sorted(remote_by_name)]
+
+
+def list_models_data(
+    source: ModelSource | None = None,
+    task: str | None = None,
+) -> ListModelsResult:
+    """Build the list of installed models with source and task metadata.
+
+    Discovers remote models via a single HTTP call with a short timeout
+    so the command stays responsive when the backend is down.
+    """
+    from lilbee.modelhub.model_manager import ModelSource
+
+    entries: list[ModelEntry] = []
+    if source is None or source is ModelSource.NATIVE:
+        entries.extend(_collect_native_entries())
+    if source is None or source is ModelSource.REMOTE:
+        entries.extend(_collect_backend_entries())
+    if task:
+        entries = [e for e in entries if e.task == task]
+    return ListModelsResult(models=entries, total=len(entries))
+
+
+def show_model_data(ref: str) -> ShowModelResult:
+    """Return catalog and install metadata for *ref*.
+
+    Raises :class:`~lilbee.modelhub.model_manager.ModelNotFoundError` if the ref
+    is unknown to both the catalog and the installed set.
+    """
+    from lilbee.catalog import find_catalog_entry
+    from lilbee.modelhub.model_manager import ModelNotFoundError
+
+    entry = find_catalog_entry(ref)
+    source = get_services().model_manager.get_source(ref)
+    if entry is None and source is None:
+        raise ModelNotFoundError(f"model not found: {ref}")
+    manifest = _native_manifest_index().get(ref)
+    return ShowModelResult(
+        model=ref,
+        catalog=CatalogEntryData.from_catalog_model(entry) if entry else None,
+        installed=source is not None,
+        source=source.value if source else None,
+        manifest=ManifestData.from_manifest(manifest) if manifest else None,
+        path=_resolve_native_path(ref) if manifest is not None else None,
+    )
+
+
+def _backend_event_to_progress(
+    on_update: Callable[[DownloadProgress], None],
+    event: dict[str, Any],
+) -> None:
+    """Adapt an Ollama-style dict event into a DownloadProgress call."""
+    from lilbee.catalog import DownloadProgress
+
+    total = event.get("total", 0) or 0
+    completed = event.get("completed", 0) or 0
+    detail = event.get("status", "") or ""
+    pct = int(completed * 100 / total) if total > 0 else 0
+    on_update(DownloadProgress(percent=pct, detail=detail, is_cache_hit=False))
+
+
+def _build_pull_callbacks(
+    on_update: Callable[[DownloadProgress], None] | None,
+) -> tuple[Callable[[dict[str, Any]], None] | None, Callable[[int, int], None] | None]:
+    """Build the (dict_cb, bytes_cb) pair for ModelManager.pull from on_update."""
+    import functools
+
+    from lilbee.catalog import make_download_callback
+
+    if on_update is None:
+        return None, None
+    dict_cb = functools.partial(_backend_event_to_progress, on_update)
+    bytes_cb = make_download_callback(on_update)
+    return dict_cb, bytes_cb
+
+
+def pull_model_data(
+    ref: str,
+    source: ModelSource,
+    *,
+    on_update: Callable[[DownloadProgress], None] | None = None,
+) -> PullResult:
+    """Pull *ref* from *source* and return a typed result.
+
+    Progress updates are throttled by
+    :func:`~lilbee.catalog.make_download_callback`, so callers see at
+    most roughly 10 Hz of progress events.
+    """
+    manager = get_services().model_manager
+
+    if manager.is_installed(ref, source):
+        return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
+
+    dict_cb, bytes_cb = _build_pull_callbacks(on_update)
+    path = manager.pull(ref, source, on_progress=dict_cb, on_bytes=bytes_cb)
+    return PullResult(
+        model=ref,
+        source=source.value,
+        status=PullStatus.OK,
+        path=str(path) if path is not None else None,
+    )
+
+
+def remove_model_data(
+    ref: str,
+    source: ModelSource | None = None,
+) -> RemoveResult:
+    """Remove *ref* and return a typed result with freed size."""
+    manager = get_services().model_manager
+    manifests = _native_manifest_index()
+    size_bytes = manifests[ref].size_bytes if ref in manifests else 0
+    removed = manager.remove(ref, source=source)
+    return RemoveResult(
+        model=ref,
+        deleted=removed,
+        freed_gb=_bytes_to_gb(size_bytes),
+    )

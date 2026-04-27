@@ -25,8 +25,8 @@ from textual.widgets import Footer, Input, Label, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.version import get_version
 from lilbee.catalog import display_label_for_ref
-from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
@@ -377,7 +377,7 @@ class ChatScreen(Screen[None]):
 
     def _do_add(self, path: Path, reporter: ProgressReporter, *, force: bool = False) -> None:
         """Copy files and run sync. Called on worker thread with a reporter."""
-        from lilbee.cli.helpers import copy_files
+        from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
         from lilbee.runtime.progress import FileStartEvent
 
@@ -640,9 +640,7 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_remove_model(self, name: str) -> None:
-        from lilbee.modelhub.model_manager import get_model_manager
-
-        mgr = get_model_manager()
+        mgr = get_services().model_manager
         if not mgr.is_installed(name):
             call_from_thread(
                 self, self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
@@ -668,7 +666,7 @@ class ChatScreen(Screen[None]):
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
-            from lilbee.cli.helpers import perform_reset
+            from lilbee.app.reset import perform_reset
 
             try:
                 result = perform_reset()

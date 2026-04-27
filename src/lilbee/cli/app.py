@@ -9,11 +9,10 @@ from typing import Any
 import typer
 from rich.console import Console
 
-from lilbee.cli.helpers import get_version
+from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core import settings as _settings_module
 from lilbee.core.config import cfg, config_load_error
+from lilbee.core.settings import overlay_persisted_settings
 
 app = typer.Typer(help="lilbee: Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -67,31 +66,6 @@ def _apply_data_root(root: Path) -> None:
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
     overlay_persisted_settings(root)
-
-
-def overlay_persisted_settings(root: Path) -> None:
-    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values."""
-    log = logging.getLogger(__name__)
-    try:
-        persisted = _settings_module.load(root)
-    except (OSError, ValueError):
-        log.warning("Failed to read %s/config.toml; using in-memory defaults", root)
-        return
-    if not persisted:
-        return
-    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    for key, raw in persisted.items():
-        if key not in overlayable:
-            continue
-        try:
-            setattr(cfg, key, raw)
-        except (ValueError, TypeError) as exc:
-            log.warning(
-                "Ignoring invalid persisted value for %s in %s: %s",
-                key,
-                root,
-                exc,
-            )
 
 
 def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:

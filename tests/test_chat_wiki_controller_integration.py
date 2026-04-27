@@ -118,7 +118,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
 
         copy_result = CopyResult(copied=[str(src)], skipped=[])
 
@@ -131,7 +131,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
+                    patch("lilbee.app.ingest.copy_files", return_value=copy_result),
                     patch("lilbee.data.ingest.sync", new=MagicMock(return_value=None)),
                     patch(
                         "lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=SyncResult())
@@ -166,7 +166,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
 
         copy_result = CopyResult(copied=[str(src)], skipped=[])
 
@@ -178,7 +178,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", new=mock_copy),
+                    patch("lilbee.app.ingest.copy_files", new=mock_copy),
                     patch(
                         "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
@@ -219,7 +219,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
 
         copy_result = CopyResult(copied=[str(src)], skipped=["exists.pdf"])
 
@@ -231,7 +231,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", new=mock_copy),
+                    patch("lilbee.app.ingest.copy_files", new=mock_copy),
                     patch(
                         "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
@@ -706,7 +706,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.cli.helpers import CopyResult
+    from lilbee.app.ingest import CopyResult
 
     copy_result = CopyResult(copied=[str(src)], skipped=[])
 
@@ -722,7 +722,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
-                patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
+                patch("lilbee.app.ingest.copy_files", return_value=copy_result),
                 patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
                 screen._do_add(src, reporter)

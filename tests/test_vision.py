@@ -43,6 +43,7 @@ def mock_provider():
         registry=registry,
         hf_client=mock.MagicMock(),
         ingest_lock_registry=mock.MagicMock(),
+        model_manager=mock.MagicMock(),
     )
     set_services(services)
     yield provider
@@ -178,6 +179,7 @@ class TestExtractPageTextSubprocess:
             registry=mock.MagicMock(),
             hf_client=mock.MagicMock(),
             ingest_lock_registry=mock.MagicMock(),
+            model_manager=mock.MagicMock(),
         )
         set_services(services)
 
@@ -202,6 +204,7 @@ class TestExtractPageTextSubprocess:
             registry=mock.MagicMock(),
             hf_client=mock.MagicMock(),
             ingest_lock_registry=mock.MagicMock(),
+            model_manager=mock.MagicMock(),
         )
         set_services(services)
 

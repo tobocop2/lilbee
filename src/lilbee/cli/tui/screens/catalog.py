@@ -45,7 +45,8 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
-from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models, get_model_manager
+from lilbee.core.services import get_services
+from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import OLLAMA_PREFIX
@@ -691,7 +692,7 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_SELECT_TO_DELETE, severity="warning")
             return
 
-        mgr = get_model_manager()
+        mgr = get_services().model_manager
         if not mgr.is_installed(model_name):
             self.notify(msg.CATALOG_NOT_INSTALLED.format(name=model_name), severity="warning")
             return
@@ -719,7 +720,7 @@ class CatalogScreen(Screen[None]):
     def _run_delete(self, model_name: str) -> None:
         """Remove a model in a background thread."""
         try:
-            removed = get_model_manager().remove(model_name)
+            removed = get_services().model_manager.remove(model_name)
             if removed:
                 call_from_thread(self, self.notify, msg.CATALOG_DELETED.format(name=model_name))
                 call_from_thread(self, self._refresh_after_delete)

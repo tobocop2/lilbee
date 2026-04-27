@@ -119,7 +119,7 @@ class LilbeeCommandProvider(Provider):
         self.screen.app.notify("Use /add <path> or auto-sync on launch")
 
     def _action_version(self) -> None:
-        from lilbee.cli.helpers import get_version
+        from lilbee.app.version import get_version
 
         self.screen.app.notify(f"lilbee {get_version()}")
 

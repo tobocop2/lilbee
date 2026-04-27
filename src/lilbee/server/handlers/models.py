@@ -23,7 +23,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg, validate_model_task_assignment
 from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
 from lilbee.core.services import get_services
-from lilbee.modelhub.model_manager import ModelSource, get_model_manager
+from lilbee.modelhub.model_manager import ModelSource
 from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.progress import SseEvent
@@ -127,7 +127,7 @@ async def list_models() -> ModelsResponse:
     Uses the unfiltered installed set so a single ref lights up in every
     catalog section it legitimately matches.
     """
-    installed = set(get_model_manager().list_installed())
+    installed = set(get_services().model_manager.list_installed())
 
     return ModelsResponse(
         chat=_catalog_section(FEATURED_CHAT, cfg.chat_model, installed),
@@ -308,7 +308,7 @@ async def models_catalog(
 
 async def models_installed() -> ModelsInstalledResponse:
     """Return list of installed models with their source."""
-    manager = get_model_manager()
+    manager = get_services().model_manager
     names = manager.list_installed()
     models = []
     for name in names:
@@ -322,7 +322,7 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
     """Yield SSE progress events while pulling a model in real time.
     Sets a cancel event on client disconnect so the pull stops.
     """
-    manager = get_model_manager()
+    manager = get_services().model_manager
     src = _parse_source(source)
     sse = SseStream()
 
@@ -353,7 +353,7 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
 
 async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteResponse:
     """Delete a model. Returns deletion status, model name, and freed space."""
-    manager = get_model_manager()
+    manager = get_services().model_manager
     src = _parse_source(source)
     deleted = manager.remove(model, src)
     return ModelsDeleteResponse(deleted=deleted, model=model, freed_gb=0.0)

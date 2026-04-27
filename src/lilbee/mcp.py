@@ -10,10 +10,10 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from lilbee.cli.app import overlay_persisted_settings
-from lilbee.cli.helpers import clean_result
+from lilbee.app.search import clean_result
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
+from lilbee.core.settings import overlay_persisted_settings
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.runtime.crawl_task import get_task, start_crawl
@@ -102,7 +102,7 @@ async def add(
         ocr_timeout: Per-page timeout in seconds for vision OCR. Overrides
             the configured default for this invocation only.
     """
-    from lilbee.cli.helpers import copy_files
+    from lilbee.app.ingest import copy_files
     from lilbee.data.ingest import sync as run_sync
 
     errors: list[str] = []
@@ -138,7 +138,7 @@ async def add(
 
     copy_result = copy_files(valid, force=force)
 
-    from lilbee.cli.helpers import temporary_ocr_config
+    from lilbee.app.ingest import temporary_ocr_config
 
     with temporary_ocr_config(enable_ocr, ocr_timeout):
         sync_result = (await run_sync(quiet=True)).model_dump()
@@ -274,7 +274,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     """
     if not confirm:
         return {"error": "pass confirm=true to confirm deletion"}
-    from lilbee.cli import perform_reset
+    from lilbee.app.reset import perform_reset
 
     return perform_reset().model_dump()
 
@@ -445,7 +445,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
         source: Filter by source: "native", "remote", or "" for all.
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
-    from lilbee.cli.model import list_models_data
+    from lilbee.app.models import list_models_data
     from lilbee.modelhub.model_manager import ModelSource
 
     try:
@@ -458,7 +458,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
 @mcp.tool()
 def model_show(model: str) -> dict[str, Any]:
     """Show catalog and installed metadata for a model ref."""
-    from lilbee.cli.model import show_model_data
+    from lilbee.app.models import show_model_data
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
     try:
@@ -492,8 +492,8 @@ async def model_pull(
             "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf").
         source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
     """
+    from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
-    from lilbee.cli.model import pull_model_data
     from lilbee.modelhub.model_manager import ModelSource
 
     try:
@@ -527,7 +527,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         model: Model ref to remove.
         source: Restrict to "native" or "remote"; empty = both.
     """
-    from lilbee.cli.model import remove_model_data
+    from lilbee.app.models import remove_model_data
     from lilbee.modelhub.model_manager import ModelSource
 
     try:

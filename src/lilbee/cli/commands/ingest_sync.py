@@ -7,6 +7,8 @@ from pathlib import Path
 
 import typer
 
+from lilbee.app.ingest import CopyResult, copy_files
+from lilbee.app.search import clean_result
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -16,10 +18,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
-    CopyResult,
     add_paths,
-    clean_result,
-    copy_files,
     json_output,
     sync_result_to_json,
 )

@@ -5,7 +5,8 @@ from unittest import mock
 import pytest
 from rich.console import Console
 
-from lilbee.cli.helpers import copy_files, copy_paths
+from lilbee.app.ingest import copy_files
+from lilbee.cli.helpers import copy_paths
 from lilbee.core.config import cfg
 
 

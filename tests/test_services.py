@@ -32,6 +32,7 @@ class TestServicesDataclass:
             registry=MagicMock(),
             hf_client=MagicMock(),
             ingest_lock_registry=MagicMock(),
+            model_manager=MagicMock(),
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]

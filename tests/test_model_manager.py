@@ -12,8 +12,6 @@ from lilbee.modelhub.model_manager import (
     ModelSource,
     RemoteModel,
     discover_api_models,
-    get_model_manager,
-    reset_model_manager,
 )
 from lilbee.modelhub.model_manager.discovery import _has_provider_key
 from lilbee.modelhub.models import ModelTask
@@ -621,40 +619,49 @@ class TestModelManagerRemove:
         assert not model_file.exists()
 
 
-class TestSingleton:
+class TestServicesIntegration:
+    """``ModelManager`` lifecycle inside the ``Services`` container."""
+
     def setup_method(self) -> None:
-        reset_model_manager()
+        from lilbee.core.services import reset_services
+
+        reset_services()
 
     def teardown_method(self) -> None:
-        reset_model_manager()
+        from lilbee.core.services import reset_services
 
-    def test_creates_singleton(self, tmp_path: Path) -> None:
+        reset_services()
+
+    def test_services_holds_model_manager(self, tmp_path: Path) -> None:
         from lilbee.core.config import cfg
+        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
-        mgr = get_model_manager()
+        mgr = get_services().model_manager
         assert isinstance(mgr, ModelManager)
         assert mgr._models_dir == tmp_path / "models"
         assert mgr._remote_base_url == "http://localhost:11434"
 
-    def test_returns_same_instance(self, tmp_path: Path) -> None:
+    def test_services_returns_same_model_manager(self, tmp_path: Path) -> None:
         from lilbee.core.config import cfg
+        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
-        mgr1 = get_model_manager()
-        mgr2 = get_model_manager()
+        mgr1 = get_services().model_manager
+        mgr2 = get_services().model_manager
         assert mgr1 is mgr2
 
-    def test_reset_creates_new_instance(self, tmp_path: Path) -> None:
+    def test_reset_services_creates_new_model_manager(self, tmp_path: Path) -> None:
         from lilbee.core.config import cfg
+        from lilbee.core.services import get_services, reset_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
-        mgr1 = get_model_manager()
-        reset_model_manager()
-        mgr2 = get_model_manager()
+        mgr1 = get_services().model_manager
+        reset_services()
+        mgr2 = get_services().model_manager
         assert mgr1 is not mgr2
 
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
+    from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
     from lilbee.retrieval.clustering import Clusterer
@@ -39,6 +40,7 @@ class Services:
     registry: ModelRegistry
     hf_client: HfClient
     ingest_lock_registry: IngestLockRegistry
+    model_manager: ModelManager
 
 
 _svc: Services | None = None
@@ -61,6 +63,7 @@ def get_services() -> Services:
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
+    from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
     from lilbee.retrieval.clustering import Clusterer
@@ -80,6 +83,7 @@ def get_services() -> Services:
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     hf_client = HfClient()
     ingest_lock_registry = IngestLockRegistry()
+    model_manager = ModelManager(cfg.models_dir, cfg.remote_base_url)
     _svc = Services(
         provider=provider,
         store=store,
@@ -91,6 +95,7 @@ def get_services() -> Services:
         registry=registry,
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
+        model_manager=model_manager,
     )
     return _svc
 

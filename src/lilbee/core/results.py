@@ -45,7 +45,7 @@ def _to_excerpt(chunk: SearchChunk) -> Excerpt:
 
 def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
     """Group raw LanceDB chunks into document-centric results."""
-    from lilbee.cli.helpers import resolve_vault_path
+    from lilbee.app.search import resolve_vault_path
 
     by_source: dict[str, list[SearchChunk]] = {}
     for chunk in chunks:

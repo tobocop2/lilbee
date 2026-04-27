@@ -216,12 +216,12 @@ def validate_disk_and_pull(
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     """Pull a model via model_manager, showing a Rich progress bar."""
-    # circular: modelhub.model_manager.discovery imports modelhub.models at top
-    from lilbee.modelhub.model_manager import ModelSource, get_model_manager
+    from lilbee.core.services import get_services
+    from lilbee.modelhub.model_manager import ModelSource
 
     if console is None:
         console = Console(file=sys.__stderr__ or sys.stderr)
-    manager = get_model_manager()
+    manager = get_services().model_manager
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -248,10 +248,9 @@ def ensure_chat_model() -> None:
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
-    # circular: modelhub.model_manager.discovery imports modelhub.models at top
-    from lilbee.modelhub.model_manager import get_model_manager
+    from lilbee.core.services import get_services
 
-    manager = get_model_manager()
+    manager = get_services().model_manager
     try:
         installed = manager.list_installed()
     except RuntimeError as exc:

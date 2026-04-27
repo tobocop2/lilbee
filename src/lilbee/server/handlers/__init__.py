@@ -10,7 +10,8 @@ API consumed by ``server/routes/*.py``.
 
 from __future__ import annotations
 
-from lilbee.cli.helpers import gather_status, get_version
+from lilbee.app.status import gather_status
+from lilbee.app.version import get_version
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,

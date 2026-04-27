@@ -1,9 +1,13 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
+import logging
 import sys
 import threading
 import tomllib
 from pathlib import Path
+
+from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
+from lilbee.core.config import cfg
 
 _settings_lock = threading.Lock()
 
@@ -80,3 +84,28 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
         for key in keys:
             current.pop(key, None)
         save(data_root, current)
+
+
+def overlay_persisted_settings(root: Path) -> None:
+    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values."""
+    log = logging.getLogger(__name__)
+    try:
+        persisted = load(root)
+    except (OSError, ValueError):
+        log.warning("Failed to read %s/config.toml; using in-memory defaults", root)
+        return
+    if not persisted:
+        return
+    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
+    for key, raw in persisted.items():
+        if key not in overlayable:
+            continue
+        try:
+            setattr(cfg, key, raw)
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "Ignoring invalid persisted value for %s in %s: %s",
+                key,
+                root,
+                exc,
+            )

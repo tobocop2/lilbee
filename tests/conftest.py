@@ -187,65 +187,62 @@ def _isolate_cfg(tmp_path, request):
     cfg.clear_model_defaults()
 
 
+def _default_store_mock():
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.add_chunks.side_effect = lambda records: len(records)
+    return store
+
+
+def _default_embedder_mock():
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    return embedder
+
+
+def _default_reranker_mock():
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    return reranker
+
+
+def _default_concepts_mock():
+    concepts = MagicMock()
+    concepts.get_graph.return_value = False
+    return concepts
+
+
+def _default_clusterer_mock():
+    clusterer = MagicMock()
+    clusterer.available.return_value = False
+    clusterer.get_clusters.return_value = []
+    return clusterer
+
+
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs."""
+    from lilbee.catalog.hf_client import HfClient
     from lilbee.core.services import Services
     from lilbee.providers.base import LLMProvider
     from lilbee.retrieval.query import Searcher
+    from lilbee.server.handlers.ingest import IngestLockRegistry
 
-    provider = overrides.pop("provider", None)
-    if provider is None:
-        provider = MagicMock(spec=LLMProvider)
-
-    store = overrides.pop("store", None)
-    if store is None:
-        store = MagicMock()
-        store.search.return_value = []
-        store.bm25_probe.return_value = []
-        store.get_sources.return_value = []
-        store.add_chunks.side_effect = lambda records: len(records)
-
-    embedder = overrides.pop("embedder", None)
-    if embedder is None:
-        embedder = MagicMock()
-        embedder.embed.return_value = [0.1] * 768
-        embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-
-    reranker = overrides.pop("reranker", None)
-    if reranker is None:
-        reranker = MagicMock()
-        reranker.rerank.side_effect = lambda q, r, **kw: r
-
-    concepts = overrides.pop("concepts", None)
-    if concepts is None:
-        concepts = MagicMock()
-        concepts.get_graph.return_value = False
-
-    clusterer = overrides.pop("clusterer", None)
-    if clusterer is None:
-        clusterer = MagicMock()
-        clusterer.available.return_value = False
-        clusterer.get_clusters.return_value = []
-
-    searcher = overrides.pop("searcher", None)
-    if searcher is None:
-        searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
-
-    registry = overrides.pop("registry", None)
-    if registry is None:
-        registry = MagicMock()
-
-    hf_client = overrides.pop("hf_client", None)
-    if hf_client is None:
-        from lilbee.catalog.hf_client import HfClient
-
-        hf_client = HfClient()
-
-    ingest_lock_registry = overrides.pop("ingest_lock_registry", None)
-    if ingest_lock_registry is None:
-        from lilbee.server.handlers.ingest import IngestLockRegistry
-
-        ingest_lock_registry = IngestLockRegistry()
+    provider = overrides.pop("provider", None) or MagicMock(spec=LLMProvider)
+    store = overrides.pop("store", None) or _default_store_mock()
+    embedder = overrides.pop("embedder", None) or _default_embedder_mock()
+    reranker = overrides.pop("reranker", None) or _default_reranker_mock()
+    concepts = overrides.pop("concepts", None) or _default_concepts_mock()
+    clusterer = overrides.pop("clusterer", None) or _default_clusterer_mock()
+    searcher = overrides.pop("searcher", None) or Searcher(
+        cfg, provider, store, embedder, reranker, concepts
+    )
+    registry = overrides.pop("registry", None) or MagicMock()
+    hf_client = overrides.pop("hf_client", None) or HfClient()
+    ingest_lock_registry = overrides.pop("ingest_lock_registry", None) or IngestLockRegistry()
+    model_manager = overrides.pop("model_manager", None) or MagicMock()
 
     return Services(
         provider=provider,
@@ -258,6 +255,7 @@ def make_mock_services(**overrides):
         registry=registry,
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
+        model_manager=model_manager,
     )
 
 

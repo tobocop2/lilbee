@@ -11,11 +11,9 @@ import pytest
 from typer.testing import CliRunner
 
 import lilbee.core.services as svc_mod
-from lilbee.cli import (
-    app,
-    clean_result,
-    get_version,
-)
+from lilbee.app.search import clean_result
+from lilbee.app.version import get_version
+from lilbee.cli import app
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
@@ -887,7 +885,7 @@ class TestResolveVaultPath:
     """
 
     def test_returns_none_when_vault_base_unset(self, tmp_path, monkeypatch):
-        from lilbee.cli.helpers import resolve_vault_path
+        from lilbee.app.search import resolve_vault_path
 
         monkeypatch.setattr(cfg, "vault_base", None)
         monkeypatch.setattr(cfg, "documents_dir", tmp_path)
@@ -895,7 +893,7 @@ class TestResolveVaultPath:
 
     def test_returns_none_when_documents_dir_outside_vault(self, tmp_path, monkeypatch):
         """documents_dir not nested under vault_base → None, no stamping."""
-        from lilbee.cli.helpers import resolve_vault_path
+        from lilbee.app.search import resolve_vault_path
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -907,7 +905,7 @@ class TestResolveVaultPath:
 
     def test_returns_none_when_file_does_not_exist(self, tmp_path, monkeypatch):
         """Stale source name (file deleted after indexing) → None."""
-        from lilbee.cli.helpers import resolve_vault_path
+        from lilbee.app.search import resolve_vault_path
 
         vault = tmp_path / "vault"
         docs = vault / "lilbee" / "documents"
@@ -918,7 +916,7 @@ class TestResolveVaultPath:
 
     def test_returns_vault_relative_path_when_file_exists(self, tmp_path, monkeypatch):
         """documents_dir inside vault + file on disk → vault-relative posix path."""
-        from lilbee.cli.helpers import resolve_vault_path
+        from lilbee.app.search import resolve_vault_path
 
         vault = tmp_path / "vault"
         docs = vault / "lilbee" / "documents"
@@ -1481,7 +1479,7 @@ class TestReset:
                 raise OSError("[WinError 32] The process cannot access the file")
             return original_rmtree(path, *args, **kwargs)
 
-        with mock.patch("lilbee.cli.helpers.shutil.rmtree", side_effect=_rmtree_raises):
+        with mock.patch("lilbee.app.reset.shutil.rmtree", side_effect=_rmtree_raises):
             result = runner.invoke(app, ["reset", "--yes"])
 
         assert result.exit_code == 0
@@ -3175,7 +3173,7 @@ class TestChatSyncCallback:
 class TestTemporaryOcrConfig:
     def test_ocr_timeout_override(self):
         """temporary_ocr_config overrides ocr_timeout and restores it."""
-        from lilbee.cli.helpers import temporary_ocr_config
+        from lilbee.app.ingest import temporary_ocr_config
 
         original = cfg.ocr_timeout
         with temporary_ocr_config(ocr_timeout=99.0):

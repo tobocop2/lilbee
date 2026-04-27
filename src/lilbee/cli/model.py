@@ -1,27 +1,32 @@
 """`lilbee model` sub-app: list/show/pull/rm/browse for installed models.
 
-Thin CLI and shared data helpers over
-:class:`lilbee.modelhub.model_manager.ModelManager`. The ``*_data`` functions
-return Pydantic models so MCP tools and CLI commands share a single,
-typed implementation.
-
-Heavy imports (:mod:`lilbee.catalog`, :mod:`lilbee.modelhub.model_manager`,
-:mod:`lilbee.modelhub.registry`, :mod:`lilbee.cli.tui`) are deferred to function
-bodies so importing this module at CLI startup stays cheap.
+Thin Typer wrapper around the surface-agnostic use-cases in
+:mod:`lilbee.app.models`. Bare result models live in ``app.models``;
+the Rich renderers below adapt them for human-readable terminal output.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import typer
-from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
+from lilbee.app.models import (
+    ListModelsResult,
+    PullEvent,
+    PullProgressEvent,
+    PullResult,
+    PullStatus,
+    ShowModelResult,
+    list_models_data,
+    pull_model_data,
+    remove_model_data,
+    show_model_data,
+)
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -35,359 +40,43 @@ from lilbee.core.config import cfg
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource, RemoteModel
-    from lilbee.modelhub.registry import ModelManifest
-
-
-_BYTES_PER_GB = 1024**3  # Model sizes are reported to users in GiB.
-_BACKEND_LIST_TIMEOUT_S = 2.0  # Keep `model list` snappy when backend is down.
-
-
-def _bytes_to_gb(n: int) -> float:
-    """Convert bytes to GiB rounded to 2 decimals for user display."""
-    return round(n / _BYTES_PER_GB, 2)
-
-
-class ModelCommand(StrEnum):
-    """Command field values for model sub-app JSON output."""
-
-    LIST = "model list"
-    SHOW = "model show"
-    PULL = "model pull"
-    RM = "model rm"
-
-
-class PullStatus(StrEnum):
-    OK = "ok"
-    ALREADY_INSTALLED = "already_installed"
-
-
-class PullEvent(StrEnum):
-    PROGRESS = "progress"
-    DONE = "done"
-
-
-class ModelEntry(BaseModel):
-    """One row of `lilbee model list` output."""
-
-    name: str
-    source: str
-    task: str | None = None
-    size_gb: float | None = None
-    display_name: str = ""
-
-    @classmethod
-    def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
-        from lilbee.catalog import clean_display_name
-        from lilbee.modelhub.model_manager import ModelSource
-
-        return cls(
-            name=ref,
-            source=ModelSource.NATIVE.value,
-            task=manifest.task if manifest else None,
-            size_gb=_bytes_to_gb(manifest.size_bytes) if manifest else None,
-            display_name=clean_display_name(manifest.hf_repo) if manifest else "",
-        )
-
-    @classmethod
-    def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
-        from lilbee.modelhub.model_manager import ModelSource
-
-        return cls(
-            name=ref,
-            source=ModelSource.REMOTE.value,
-            task=remote.task if remote else None,
-            size_gb=None,
-            display_name=remote.parameter_size if remote else "",
-        )
-
-
-class ListModelsResult(BaseModel):
-    command: str = ModelCommand.LIST
-    models: list[ModelEntry]
-    total: int
-
-    def __rich__(self) -> Table:
-        table = Table(title="Installed models")
-        table.add_column("Name", style=theme.ACCENT)
-        table.add_column("Source", style=theme.MUTED)
-        table.add_column("Task")
-        table.add_column("Size", justify="right")
-        for entry in self.models:
-            size = f"{entry.size_gb:.2f} GB" if entry.size_gb is not None else ""
-            table.add_row(entry.name, entry.source, entry.task or "", size)
-        return table
-
-
-class CatalogEntryData(BaseModel):
-    ref: str
-    display_name: str
-    hf_repo: str
-    gguf_filename: str
-    size_gb: float
-    min_ram_gb: float
-    description: str
-    task: str
-    featured: bool
-    recommended: bool
-
-    @classmethod
-    def from_catalog_model(cls, entry: CatalogModel) -> CatalogEntryData:
-        return cls(
-            ref=entry.ref,
-            display_name=entry.display_name,
-            hf_repo=entry.hf_repo,
-            gguf_filename=entry.gguf_filename,
-            size_gb=entry.size_gb,
-            min_ram_gb=entry.min_ram_gb,
-            description=entry.description,
-            task=entry.task,
-            featured=entry.featured,
-            recommended=entry.recommended,
-        )
-
-
-class ManifestData(BaseModel):
-    ref: str
-    display_name: str
-    task: str
-    size_gb: float
-    size_bytes: int
-    hf_repo: str
-    gguf_filename: str
-    downloaded_at: str
-
-    @classmethod
-    def from_manifest(cls, manifest: ModelManifest) -> ManifestData:
-        from lilbee.catalog import clean_display_name
-
-        return cls(
-            ref=manifest.ref,
-            display_name=clean_display_name(manifest.hf_repo),
-            task=manifest.task,
-            size_gb=_bytes_to_gb(manifest.size_bytes),
-            size_bytes=manifest.size_bytes,
-            hf_repo=manifest.hf_repo,
-            gguf_filename=manifest.gguf_filename,
-            downloaded_at=manifest.downloaded_at,
-        )
-
-
-class ShowModelResult(BaseModel):
-    command: str = ModelCommand.SHOW
-    model: str
-    catalog: CatalogEntryData | None = None
-    installed: bool = False
-    source: str | None = None
-    path: str | None = None
-    manifest: ManifestData | None = None
-
-    def __rich__(self) -> str:
-        lines = [f"[{theme.ACCENT}]{self.model}[/{theme.ACCENT}]"]
-        if self.catalog is not None:
-            lines.extend(
-                [
-                    f"  display_name: {self.catalog.display_name}",
-                    f"  task:         {self.catalog.task}",
-                    f"  size_gb:      {self.catalog.size_gb}",
-                    f"  min_ram_gb:   {self.catalog.min_ram_gb}",
-                    f"  hf_repo:      {self.catalog.hf_repo}",
-                    f"  description:  {self.catalog.description}",
-                ]
-            )
-        lines.append(f"  installed:    {self.installed}")
-        if self.source:
-            lines.append(f"  source:       {self.source}")
-        if self.path:
-            lines.append(f"  path:         {self.path}")
-        if self.manifest is not None:
-            lines.append(f"  downloaded:   {self.manifest.downloaded_at}")
-        return "\n".join(lines)
-
-
-class PullResult(BaseModel):
-    command: str = ModelCommand.PULL
-    model: str
-    source: str
-    status: str
-    path: str | None = None
-
-
-class PullProgressEvent(BaseModel):
-    command: str = ModelCommand.PULL
-    event: str = PullEvent.PROGRESS
-    model: str
-    percent: float
-    detail: str
-    cache_hit: bool
-
-
-class RemoveResult(BaseModel):
-    command: str = ModelCommand.RM
-    model: str
-    deleted: bool
-    freed_gb: float = Field(default=0.0)
-
-
-def _native_manifest_index() -> dict[str, ModelManifest]:
-    """Map ref string ('hf_repo/filename') to manifest for every installed native model."""
-    from lilbee.modelhub.registry import ModelRegistry
-
-    registry = ModelRegistry(cfg.models_dir)
-    return {m.ref: m for m in registry.list_installed()}
-
-
-def _resolve_native_path(ref: str) -> str | None:
-    """Return the on-disk path of an installed native model, if resolvable.
-
-    Swallows ``KeyError`` (manifest present but blob missing) and
-    ``ValueError`` (malformed ref) so callers can treat the path as
-    optional metadata.
-    """
-    from lilbee.modelhub.registry import ModelRegistry
-
-    try:
-        return str(ModelRegistry(cfg.models_dir).resolve(ref))
-    except (KeyError, ValueError):
-        return None
-
-
-def _collect_native_entries() -> list[ModelEntry]:
-    from lilbee.modelhub.model_manager import ModelSource, get_model_manager
-
-    manifests = _native_manifest_index()
-    refs = get_model_manager().list_installed(source=ModelSource.NATIVE)
-    return [ModelEntry.from_native(ref, manifests.get(ref)) for ref in refs]
-
-
-def _collect_backend_entries() -> list[ModelEntry]:
-    from lilbee.modelhub.model_manager import classify_remote_models
-
-    remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
-    remote_by_name = {rm.name: rm for rm in remote_list}
-    return [ModelEntry.from_backend(ref, remote_by_name[ref]) for ref in sorted(remote_by_name)]
-
-
-def list_models_data(
-    source: ModelSource | None = None,
-    task: str | None = None,
-) -> ListModelsResult:
-    """Build the list of installed models with source and task metadata.
-
-    Discovers remote models via a single HTTP call with a short timeout
-    so the command stays responsive when the backend is down.
-    """
+    from lilbee.catalog import DownloadProgress
     from lilbee.modelhub.model_manager import ModelSource
 
-    entries: list[ModelEntry] = []
-    if source is None or source is ModelSource.NATIVE:
-        entries.extend(_collect_native_entries())
-    if source is None or source is ModelSource.REMOTE:
-        entries.extend(_collect_backend_entries())
-    if task:
-        entries = [e for e in entries if e.task == task]
-    return ListModelsResult(models=entries, total=len(entries))
+
+def _render_list(data: ListModelsResult) -> Table:
+    table = Table(title="Installed models")
+    table.add_column("Name", style=theme.ACCENT)
+    table.add_column("Source", style=theme.MUTED)
+    table.add_column("Task")
+    table.add_column("Size", justify="right")
+    for entry in data.models:
+        size = f"{entry.size_gb:.2f} GB" if entry.size_gb is not None else ""
+        table.add_row(entry.name, entry.source, entry.task or "", size)
+    return table
 
 
-def show_model_data(ref: str) -> ShowModelResult:
-    """Return catalog and install metadata for *ref*.
-
-    Raises :class:`~lilbee.modelhub.model_manager.ModelNotFoundError` if the ref
-    is unknown to both the catalog and the installed set.
-    """
-    from lilbee.catalog import find_catalog_entry
-    from lilbee.modelhub.model_manager import ModelNotFoundError, get_model_manager
-
-    entry = find_catalog_entry(ref)
-    source = get_model_manager().get_source(ref)
-    if entry is None and source is None:
-        raise ModelNotFoundError(f"model not found: {ref}")
-    manifest = _native_manifest_index().get(ref)
-    return ShowModelResult(
-        model=ref,
-        catalog=CatalogEntryData.from_catalog_model(entry) if entry else None,
-        installed=source is not None,
-        source=source.value if source else None,
-        manifest=ManifestData.from_manifest(manifest) if manifest else None,
-        path=_resolve_native_path(ref) if manifest is not None else None,
-    )
-
-
-def _backend_event_to_progress(
-    on_update: Callable[[DownloadProgress], None],
-    event: dict[str, Any],
-) -> None:
-    """Adapt an Ollama-style dict event into a DownloadProgress call."""
-    from lilbee.catalog import DownloadProgress
-
-    total = event.get("total", 0) or 0
-    completed = event.get("completed", 0) or 0
-    detail = event.get("status", "") or ""
-    pct = int(completed * 100 / total) if total > 0 else 0
-    on_update(DownloadProgress(percent=pct, detail=detail, is_cache_hit=False))
-
-
-def _build_pull_callbacks(
-    on_update: Callable[[DownloadProgress], None] | None,
-) -> tuple[Callable[[dict[str, Any]], None] | None, Callable[[int, int], None] | None]:
-    """Build the (dict_cb, bytes_cb) pair for ModelManager.pull from on_update."""
-    import functools
-
-    from lilbee.catalog import make_download_callback
-
-    if on_update is None:
-        return None, None
-    dict_cb = functools.partial(_backend_event_to_progress, on_update)
-    bytes_cb = make_download_callback(on_update)
-    return dict_cb, bytes_cb
-
-
-def pull_model_data(
-    ref: str,
-    source: ModelSource,
-    *,
-    on_update: Callable[[DownloadProgress], None] | None = None,
-) -> PullResult:
-    """Pull *ref* from *source* and return a typed result.
-
-    Progress updates are throttled by
-    :func:`~lilbee.catalog.make_download_callback`, so callers see at
-    most roughly 10 Hz of progress events.
-    """
-    from lilbee.modelhub.model_manager import get_model_manager
-
-    manager = get_model_manager()
-
-    if manager.is_installed(ref, source):
-        return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
-
-    dict_cb, bytes_cb = _build_pull_callbacks(on_update)
-    path = manager.pull(ref, source, on_progress=dict_cb, on_bytes=bytes_cb)
-    return PullResult(
-        model=ref,
-        source=source.value,
-        status=PullStatus.OK,
-        path=str(path) if path is not None else None,
-    )
-
-
-def remove_model_data(
-    ref: str,
-    source: ModelSource | None = None,
-) -> RemoveResult:
-    """Remove *ref* and return a typed result with freed size."""
-    from lilbee.modelhub.model_manager import get_model_manager
-
-    manager = get_model_manager()
-    manifests = _native_manifest_index()
-    size_bytes = manifests[ref].size_bytes if ref in manifests else 0
-    removed = manager.remove(ref, source=source)
-    return RemoveResult(
-        model=ref,
-        deleted=removed,
-        freed_gb=_bytes_to_gb(size_bytes),
-    )
+def _render_show(data: ShowModelResult) -> str:
+    lines = [f"[{theme.ACCENT}]{data.model}[/{theme.ACCENT}]"]
+    if data.catalog is not None:
+        lines.extend(
+            [
+                f"  display_name: {data.catalog.display_name}",
+                f"  task:         {data.catalog.task}",
+                f"  size_gb:      {data.catalog.size_gb}",
+                f"  min_ram_gb:   {data.catalog.min_ram_gb}",
+                f"  hf_repo:      {data.catalog.hf_repo}",
+                f"  description:  {data.catalog.description}",
+            ]
+        )
+    lines.append(f"  installed:    {data.installed}")
+    if data.source:
+        lines.append(f"  source:       {data.source}")
+    if data.path:
+        lines.append(f"  path:         {data.path}")
+    if data.manifest is not None:
+        lines.append(f"  downloaded:   {data.manifest.downloaded_at}")
+    return "\n".join(lines)
 
 
 model_app = typer.Typer(
@@ -445,7 +134,7 @@ def list_cmd(
     if not data.models:
         console.print("No models installed.")
         return
-    console.print(data)
+    console.print(_render_list(data))
 
 
 @model_app.command("show")
@@ -469,7 +158,7 @@ def show_cmd(
     if cfg.json_mode:
         json_output(data.model_dump())
         return
-    console.print(data)
+    console.print(_render_show(data))
 
 
 def _run_pull(

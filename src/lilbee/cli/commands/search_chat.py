@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
+from lilbee.app.search import clean_result
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -25,7 +26,6 @@ from lilbee.cli.app import (
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
     auto_sync,
-    clean_result,
     json_output,
 )
 from lilbee.core.config import cfg

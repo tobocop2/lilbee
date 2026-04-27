@@ -8,7 +8,7 @@ import threading
 from collections.abc import AsyncGenerator, Iterator
 from typing import TYPE_CHECKING, Any, cast
 
-from lilbee.cli.helpers import clean_result
+from lilbee.app.search import clean_result
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
 from lilbee.core.services import get_services

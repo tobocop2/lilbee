@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lilbee.cli.helpers import copy_files
+from lilbee.app.ingest import copy_files
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.services import get_services
@@ -29,7 +29,7 @@ async def _run_sync_with_sentinel(
     sse: SseStream, enable_ocr: bool | None, force_rebuild: bool = False
 ) -> SyncResult:
     """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
-    from lilbee.cli.helpers import temporary_ocr_config
+    from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync
 
     try:
@@ -84,9 +84,7 @@ class IngestLockRegistry:
         """Match the basename ``copy_files`` writes under ``cfg.documents_dir``."""
         return Path(p_str).name
 
-    async def acquire(
-        self, paths: list[str]
-    ) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
+    async def acquire(self, paths: list[str]) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
         """Return ``(acquired, busy)`` partitioning of ``paths`` by lock state."""
         acquired: list[tuple[str, asyncio.Lock]] = []
         busy: list[str] = []
@@ -140,7 +138,7 @@ async def _run_add(
     sse: SseStream,
 ) -> AddSummary:
     """Copy files and sync, returning the summary for the final done event."""
-    from lilbee.cli.helpers import temporary_ocr_config
+    from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync
 
     try:

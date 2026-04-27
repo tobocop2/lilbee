@@ -380,8 +380,8 @@ class TaskBarController:
     def start_download(self, model: CatalogModel) -> str:
         """Enqueue a model download and spawn a background worker.
 
-        Thin specialization of ``start_task`` that wires the HuggingFace
-        ``download_model`` API and translates ``PermissionError`` into a
+        Thin specialization of ``start_task`` that wires the shared
+        ``pull_model_data`` use-case and translates ``PermissionError`` into a
         friendly "repo requires login" message: gated repos are a common
         failure mode and the raw exception text is opaque.
         """
@@ -400,14 +400,15 @@ def _download_target(reporter: ProgressReporter, model: CatalogModel) -> None:
     ``PermissionError`` into the gated-repo friendly message so every call
     site (wizard, catalog, chat) gets consistent error UX.
     """
-    from lilbee.catalog import DownloadProgress, download_model, make_download_callback
+    from lilbee.app.models import pull_model_data
+    from lilbee.catalog import DownloadProgress
+    from lilbee.modelhub.model_manager import ModelSource
 
     def _on_progress(p: DownloadProgress) -> None:
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
 
-    callback = make_download_callback(_on_progress)
     try:
-        download_model(model, on_progress=callback)
+        pull_model_data(model.ref, ModelSource.NATIVE, on_update=_on_progress)
     except PermissionError as exc:
         raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
 

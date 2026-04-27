@@ -84,7 +84,7 @@ class TestDoAddCancelCleanup:
     def test_sync_exception_triggers_cleanup(self, isolated_documents, monkeypatch):
         from unittest.mock import MagicMock, patch
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = ChatScreen.__new__(ChatScreen)
@@ -109,7 +109,7 @@ class TestDoAddCancelCleanup:
             raise _Cancelled("cancelled by user")
 
         with (
-            patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
+            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
             patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
             pytest.raises(_Cancelled),
         ):
@@ -126,7 +126,7 @@ class TestDoAddCancelCleanup:
         """
         from unittest.mock import MagicMock, patch
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.data.ingest import SyncResult
 
@@ -148,7 +148,7 @@ class TestDoAddCancelCleanup:
             return failing_result
 
         with (
-            patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
+            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
             patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
             pytest.raises(RuntimeError, match="Sync failed"),
         ):

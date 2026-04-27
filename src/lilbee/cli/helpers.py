@@ -1,125 +1,23 @@
-"""Shared helper functions for CLI commands and slash commands."""
+"""CLI-specific helpers: JSON formatter, Rich rendering, and CLI workflows."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import shutil
 from collections.abc import Generator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
 from rich.console import Console, RenderableType
 from rich.table import Table
 
+from lilbee.app.ingest import copy_files
+from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
-from lilbee.core.platform import is_ignored_dir
-from lilbee.core.security import validate_path_within
-from lilbee.core.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
-    from lilbee.data.store import SearchChunk
-
-
-class ResetResult(BaseModel):
-    """Result of a full knowledge base reset."""
-
-    command: str = "reset"
-    deleted_docs: int
-    deleted_data: int
-    skipped: list[str] = []
-    documents_dir: str
-    data_dir: str
-
-
-class StatusConfig(BaseModel):
-    """Configuration section of a status response.
-
-    Exposes all four role-bound model fields (chat, embedding, vision,
-    reranker) so the TUI status screen and plugin callers can show
-    what's active per role.
-    """
-
-    documents_dir: str
-    data_dir: str
-    chat_model: str
-    embedding_model: str
-    vision_model: str = ""
-    reranker_model: str = ""
-    enable_ocr: bool | None = None
-
-
-class SourceInfo(BaseModel):
-    """A single indexed source in a status response."""
-
-    filename: str
-    file_hash: str
-    chunk_count: int
-    ingested_at: str
-
-
-class StatusResult(BaseModel):
-    """Full status response for the knowledge base."""
-
-    command: str = "status"
-    config: StatusConfig
-    sources: list[SourceInfo]
-    total_chunks: int
-
-    def __rich_console__(
-        self, console: Console, options: object
-    ) -> Generator[RenderableType, None, None]:
-        yield f"[{theme.LABEL}]Documents:[/{theme.LABEL}]  {self.config.documents_dir}"
-        yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {self.config.data_dir}"
-        yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {self.config.chat_model}"
-        yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {self.config.embedding_model}"
-        vision = self.config.vision_model or "(disabled)"
-        reranker = self.config.reranker_model or "(disabled)"
-        yield f"[{theme.LABEL}]Vision:[/{theme.LABEL}]     {vision}"
-        yield f"[{theme.LABEL}]Reranker:[/{theme.LABEL}]   {reranker}"
-        if self.config.enable_ocr is not None:
-            ocr_label = "enabled" if self.config.enable_ocr else "disabled"
-            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
-        yield ""
-
-        if not self.sources:
-            yield (
-                "No documents indexed. Drop files into the documents directory "
-                "and run 'lilbee sync'."
-            )
-            return
-
-        table = Table(title="Indexed Documents")
-        table.add_column("File", style=theme.ACCENT)
-        table.add_column("Hash", style=theme.MUTED, max_width=12)
-        table.add_column("Chunks", justify="right")
-        table.add_column("Ingested", style=theme.MUTED)
-        for s in self.sources:
-            table.add_row(s.filename, s.file_hash, str(s.chunk_count), s.ingested_at)
-        yield table
-        b = theme.LABEL
-        yield f"\n[{b}]{len(self.sources)}[/{b}] documents, [{b}]{self.total_chunks}[/{b}] chunks"
-
-
-def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
-    """Ignore callback for shutil.copytree that filters ignored directories."""
-    return {
-        name
-        for name in contents
-        if (Path(directory) / name).is_dir() and is_ignored_dir(name, cfg.ignore_dirs)
-    }
-
-
-def get_version() -> str:
-    """Return the installed lilbee version."""
-    return _pkg_version("lilbee")
 
 
 def json_output(data: dict) -> None:
@@ -127,93 +25,45 @@ def json_output(data: dict) -> None:
     print(json.dumps(data))
 
 
-def clean_result(result: SearchChunk) -> dict:
-    """Return SearchChunk as a JSON dict, stamping vault_path when resolvable."""
-    payload = result.model_dump(exclude={"vector"}, exclude_none=True)
-    vault_path = resolve_vault_path(result.source)
-    if vault_path is not None:
-        payload["vault_path"] = vault_path
-    return payload
+def render_status_result(status: StatusResult) -> Generator[RenderableType, None, None]:
+    """Yield Rich renderables for a :class:`StatusResult`."""
+    yield f"[{theme.LABEL}]Documents:[/{theme.LABEL}]  {status.config.documents_dir}"
+    yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {status.config.data_dir}"
+    yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {status.config.chat_model}"
+    yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {status.config.embedding_model}"
+    vision = status.config.vision_model or "(disabled)"
+    reranker = status.config.reranker_model or "(disabled)"
+    yield f"[{theme.LABEL}]Vision:[/{theme.LABEL}]     {vision}"
+    yield f"[{theme.LABEL}]Reranker:[/{theme.LABEL}]   {reranker}"
+    if status.config.enable_ocr is not None:
+        ocr_label = "enabled" if status.config.enable_ocr else "disabled"
+        yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
+    yield ""
 
+    if not status.sources:
+        yield (
+            "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
+        )
+        return
 
-def resolve_vault_path(source_filename: str) -> str | None:
-    """Return *source_filename* as a vault-relative path, or None if unresolvable.
-
-    Resolves symlinks on both sides and rejects ``..`` escapes from
-    ``documents_dir``.
-    """
-    if cfg.vault_base is None:
-        return None
-    try:
-        vault_base = cfg.vault_base.resolve()
-        documents_dir = cfg.documents_dir.resolve()
-        source_path = (cfg.documents_dir / source_filename).resolve()
-        source_path.relative_to(documents_dir)
-        relative_docs_dir = documents_dir.relative_to(vault_base)
-    except (OSError, ValueError):
-        return None
-    if not source_path.is_file():
-        return None
-    return (relative_docs_dir / source_path.relative_to(documents_dir)).as_posix()
-
-
-def gather_status() -> StatusResult:
-    """Collect status data as a typed model (shared by human + JSON output)."""
-    sources = get_services().store.get_sources()
-    sorted_sources = sorted(sources, key=lambda x: x["filename"])
-    total_chunks = sum(s["chunk_count"] for s in sources)
-    return StatusResult(
-        config=StatusConfig(
-            documents_dir=str(cfg.documents_dir),
-            data_dir=str(cfg.data_dir),
-            chat_model=cfg.chat_model,
-            embedding_model=cfg.embedding_model,
-            vision_model=cfg.vision_model,
-            reranker_model=cfg.reranker_model,
-            enable_ocr=cfg.enable_ocr,
-        ),
-        sources=[
-            SourceInfo(
-                filename=s["filename"],
-                file_hash=s["file_hash"][:12],
-                chunk_count=s["chunk_count"],
-                ingested_at=s["ingested_at"][:19],
-            )
-            for s in sorted_sources
-        ],
-        total_chunks=total_chunks,
-    )
+    table = Table(title="Indexed Documents")
+    table.add_column("File", style=theme.ACCENT)
+    table.add_column("Hash", style=theme.MUTED, max_width=12)
+    table.add_column("Chunks", justify="right")
+    table.add_column("Ingested", style=theme.MUTED)
+    for s in status.sources:
+        table.add_row(s.filename, s.file_hash, str(s.chunk_count), s.ingested_at)
+    yield table
+    b = theme.LABEL
+    yield f"\n[{b}]{len(status.sources)}[/{b}] documents, [{b}]{status.total_chunks}[/{b}] chunks"
 
 
 def render_status(con: Console) -> None:
     """Print status info (documents, paths, chunk counts)."""
-    con.print(gather_status())
+    from lilbee.app.status import gather_status
 
-
-@dataclass
-class CopyResult:
-    """Result of copying files into the documents directory."""
-
-    copied: list[str] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
-
-
-def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
-    """Copy paths into documents dir. Returns structured result (no console output)."""
-    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
-    result = CopyResult()
-    for p in paths:
-        dest = cfg.documents_dir / p.name
-        validate_path_within(dest, cfg.documents_dir)
-        if dest.exists() and not force:
-            result.skipped.append(p.name)
-            continue
-        if p.is_dir():
-            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore, symlinks=False)
-        else:
-            shutil.copy2(p, dest)
-        result.copied.append(p.name)
-    return result
+    for renderable in render_status_result(gather_status()):
+        con.print(renderable)
 
 
 def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
@@ -260,42 +110,6 @@ def add_paths(
     con.print(result)
 
 
-def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
-    """Delete all items in *base_dir*, appending undeletable paths to *skipped*."""
-    log = logging.getLogger(__name__)
-    deleted = 0
-    if not base_dir.exists():
-        return deleted
-    for item in list(base_dir.iterdir()):
-        validate_path_within(item, base_dir)
-        try:
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-        except OSError as exc:
-            log.warning("Could not delete %s: %s", item, exc)
-            skipped.append(str(item))
-            continue
-        deleted += 1
-    return deleted
-
-
-def perform_reset() -> ResetResult:
-    """Delete all documents and data. Returns summary of what was deleted."""
-    skipped: list[str] = []
-    deleted_docs = _clear_dir(cfg.documents_dir, skipped)
-    deleted_data = _clear_dir(cfg.data_dir, skipped)
-
-    return ResetResult(
-        deleted_docs=deleted_docs,
-        deleted_data=deleted_data,
-        skipped=skipped,
-        documents_dir=str(cfg.documents_dir),
-        data_dir=str(cfg.data_dir),
-    )
-
-
 def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
     from lilbee.data.ingest import SyncResult
@@ -332,21 +146,3 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
             f"{len(result.removed)} removed, "
             f"{len(result.failed)} failed[/{theme.MUTED}]"
         )
-
-
-@contextmanager
-def temporary_ocr_config(
-    enable_ocr: bool | None = None,
-    ocr_timeout: float | None = None,
-) -> Generator[None, None, None]:
-    """Temporarily override OCR config for the duration of the block."""
-    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
-    try:
-        if enable_ocr is not None:
-            cfg.enable_ocr = enable_ocr
-        if ocr_timeout is not None:
-            cfg.ocr_timeout = ocr_timeout
-        yield
-    finally:
-        cfg.enable_ocr = old_ocr
-        cfg.ocr_timeout = old_timeout
