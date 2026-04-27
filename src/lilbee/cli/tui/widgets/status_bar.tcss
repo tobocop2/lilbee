@@ -1,0 +1,9 @@
+ViewTabs {
+    height: 1;
+    width: 100%;
+    background: $surface;
+}
+
+ViewTabs > Static {
+    width: auto;
+}
