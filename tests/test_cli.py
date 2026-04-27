@@ -1963,7 +1963,7 @@ class TestIngestShutdownError:
             updated: list[str] = []
             failed: list[str] = []
             with (
-                mock.patch("lilbee.ingest._ingest_file", side_effect=shutdown_err),
+                mock.patch("lilbee.ingest.pipeline._ingest_file", side_effect=shutdown_err),
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(

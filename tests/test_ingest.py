@@ -287,7 +287,7 @@ class TestSync:
                 raise RuntimeError("simulated failure")
             return await orig_ingest(path, name, content_type, **kwargs)
 
-        with patch("lilbee.ingest._ingest_file", side_effect=_failing_ingest):
+        with patch("lilbee.ingest.pipeline._ingest_file", side_effect=_failing_ingest):
             result = await sync()
         # good.txt was added, bad.txt failed
         assert "good.txt" in result.added
@@ -314,7 +314,7 @@ class TestSync:
                 raise RuntimeError("simulated failure on update")
             return await orig_ingest(path, name, content_type, **kwargs)
 
-        with patch("lilbee.ingest._ingest_file", side_effect=_failing_ingest):
+        with patch("lilbee.ingest.pipeline._ingest_file", side_effect=_failing_ingest):
             result = await sync()
         assert "flaky.txt" not in result.updated
         assert "flaky.txt" in result.failed
@@ -329,7 +329,7 @@ class TestSync:
         async def _fail(*args):
             raise RuntimeError("boom")
 
-        with patch("lilbee.ingest._ingest_file", side_effect=_fail):
+        with patch("lilbee.ingest.pipeline._ingest_file", side_effect=_fail):
             result = await sync(quiet=True)
         assert "bad.txt" in result.failed
         assert "bad.txt" not in result.added
@@ -352,7 +352,7 @@ class TestSync:
                 raise RuntimeError("quiet fail")
             return await orig(path, name, ct, **kwargs)
 
-        with patch("lilbee.ingest._ingest_file", side_effect=_fail):
+        with patch("lilbee.ingest.pipeline._ingest_file", side_effect=_fail):
             result = await sync(quiet=True)
         assert "qflaky.txt" in result.failed
         assert "qflaky.txt" not in result.updated
@@ -492,7 +492,7 @@ class TestCancellation:
         async def _cancel(*args, **kwargs):
             raise asyncio.CancelledError()
 
-        with mock.patch("lilbee.ingest._ingest_file", side_effect=_cancel):
+        with mock.patch("lilbee.ingest.pipeline._ingest_file", side_effect=_cancel):
             from lilbee.ingest import ingest_batch
 
             added = ["cancel.txt"]
@@ -621,7 +621,7 @@ class TestApplyResultZeroChunks:
         updated: list[str] = []
         failed: list[str] = []
         result = _IngestResult("doc.pdf", Path("doc.pdf"), chunk_count=5, error=None)
-        with mock.patch("lilbee.ingest.file_hash", return_value="abc123"):
+        with mock.patch("lilbee.ingest.pipeline.file_hash", return_value="abc123"):
             _apply_result(result, added, updated, failed)
         mock_svc.store.upsert_source.assert_called_once()
         assert "doc.pdf" in added
@@ -644,13 +644,15 @@ class TestApplyResultZeroChunks:
         failed: list[str] = []
         err = RuntimeError("embedder bogus:bogus not installed")
         result = _IngestResult("qa-fail.md", Path("qa-fail.md"), chunk_count=0, error=err)
-        with caplog.at_level(logging.DEBUG, logger="lilbee.ingest"):
+        with caplog.at_level(logging.DEBUG, logger="lilbee.ingest.pipeline"):
             _apply_result(result, added, updated, failed)
-        levels = [r.levelno for r in caplog.records if r.name == "lilbee.ingest"]
+        levels = [r.levelno for r in caplog.records if r.name == "lilbee.ingest.pipeline"]
         assert logging.WARNING in levels
         # Exception-level records carry exc_info; warning call should not.
         warning_records = [
-            r for r in caplog.records if r.name == "lilbee.ingest" and r.levelno == logging.WARNING
+            r
+            for r in caplog.records
+            if r.name == "lilbee.ingest.pipeline" and r.levelno == logging.WARNING
         ]
         assert warning_records
         assert warning_records[0].exc_info is None
@@ -739,7 +741,7 @@ class TestDiscoverSymlinkEscape:
         (isolated_env / "normal.md").write_text("# Normal")
 
         original = __import__(
-            "lilbee.ingest", fromlist=["validate_path_within"]
+            "lilbee.ingest.discovery", fromlist=["validate_path_within"]
         ).validate_path_within
 
         def strict_validate(path, base):
@@ -747,7 +749,7 @@ class TestDiscoverSymlinkEscape:
                 raise ValueError("blocked")
             return original(path, base)
 
-        with patch("lilbee.ingest.validate_path_within", side_effect=strict_validate):
+        with patch("lilbee.ingest.discovery.validate_path_within", side_effect=strict_validate):
             found = discover_files()
         assert "normal.md" not in found
 
@@ -938,7 +940,7 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
+            "lilbee.ingest.extract.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
             from lilbee.ingest import ingest_document
 
@@ -968,7 +970,7 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
+            "lilbee.ingest.extract.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
             from lilbee.ingest import ingest_document
 
@@ -995,7 +997,7 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
+            "lilbee.ingest.extract.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
             from lilbee.ingest import _ingest_file
 
@@ -1016,7 +1018,7 @@ class TestVisionFallback:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1031,7 +1033,7 @@ class TestVisionFallback:
         f = isolated_env / "doc.txt"
         f.write_text("")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "doc.txt", "text")
@@ -1049,7 +1051,7 @@ class TestVisionFallback:
         f = isolated_env / "blank.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=[]):
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision", return_value=[]):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "blank.pdf", "pdf")
@@ -1065,7 +1067,7 @@ class TestVisionFallback:
         f = isolated_env / "good.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "good.pdf", "pdf")
@@ -1084,8 +1086,8 @@ class TestVisionFallback:
         f.write_bytes(b"fake pdf")
 
         with (
-            mock.patch("lilbee.ingest.extract_pdf_vision", return_value=[(1, "Some text")]),
-            mock.patch("lilbee.ingest.chunk_text", return_value=[]),
+            mock.patch("lilbee.ingest.extract.extract_pdf_vision", return_value=[(1, "Some text")]),
+            mock.patch("lilbee.ingest.extract.chunk_text", return_value=[]),
         ):
             from lilbee.ingest import ingest_document
 
@@ -1109,10 +1111,10 @@ class TestVisionFallback:
 
         with (
             mock.patch(
-                "lilbee.ingest.extract_pdf_vision",
+                "lilbee.ingest.extract.extract_pdf_vision",
                 return_value=[(1, "page one text"), (2, "page two text")],
             ),
-            mock.patch("lilbee.ingest.chunk_text", return_value=["chunk"]) as mock_chunk,
+            mock.patch("lilbee.ingest.extract.chunk_text", return_value=["chunk"]) as mock_chunk,
         ):
             from lilbee.ingest import ingest_document
 
@@ -1169,7 +1171,7 @@ class TestVisionFallbackEmptyVisionModel:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision") as mock_vision:
             result = await _vision_fallback(f, "scanned.pdf", "pdf")
         mock_vision.assert_not_called()
         assert result == []
@@ -1187,7 +1189,9 @@ class TestVisionFallbackException:
         f = isolated_env / "broken.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision", side_effect=RuntimeError("boom")):
+        with mock.patch(
+            "lilbee.ingest.extract.extract_pdf_vision", side_effect=RuntimeError("boom")
+        ):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "broken.pdf", "pdf", quiet=True)
@@ -1210,7 +1214,7 @@ class TestTesseractOcrMiddleTier:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1233,7 +1237,7 @@ class TestTesseractOcrMiddleTier:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
+            "lilbee.ingest.extract.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
             from lilbee.ingest import ingest_document
 
@@ -1284,7 +1288,7 @@ class TestTesseractOcrMiddleTier:
         f.write_bytes(b"fake pdf")
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
-        with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=vision_pages):
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision", return_value=vision_pages):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1375,7 +1379,7 @@ class TestTesseractOcrMiddleTier:
         f.write_bytes(b"fake pdf")
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
-        with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=vision_pages):
+        with mock.patch("lilbee.ingest.extract.extract_pdf_vision", return_value=vision_pages):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1459,7 +1463,7 @@ class TestIngestMarkdownEdgeCases:
 
         md = isolated_env / "blank.md"
         md.write_text("some text")
-        with mock.patch("lilbee.ingest.chunk_text", return_value=[]):
+        with mock.patch("lilbee.ingest.extract.chunk_text", return_value=[]):
             result = await ingest_markdown(md, "blank.md")
         assert result == []
 
@@ -1654,10 +1658,10 @@ class TestUnsupportedFileInSync:
         # discover_files includes the file, but classify_file returns None
         with (
             mock.patch(
-                "lilbee.ingest.discover_files",
+                "lilbee.ingest.pipeline.discover_files",
                 return_value={"mystery.bin": mystery},
             ),
-            mock.patch("lilbee.ingest.classify_file", return_value=None),
+            mock.patch("lilbee.ingest.pipeline.classify_file", return_value=None),
         ):
             from lilbee.ingest import sync
 

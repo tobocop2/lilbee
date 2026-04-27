@@ -185,7 +185,7 @@ def isolated_env(tmp_path, real_models):
     os.environ["LILBEE_DATA"] = str(tmp_path)
 
     # Serialize async ingestion to avoid concurrent llama.cpp calls (not thread-safe)
-    _max_concurrent_patch = mock.patch("lilbee.ingest._MAX_CONCURRENT", 1)
+    _max_concurrent_patch = mock.patch("lilbee.ingest.pipeline._MAX_CONCURRENT", 1)
     _max_concurrent_patch.start()
 
     yield tmp_path

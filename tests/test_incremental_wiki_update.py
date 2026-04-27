@@ -49,7 +49,7 @@ def _install_service_stubs(
     services = MagicMock()
     services.store.get_sources.return_value = []
     services.store.get_chunks_by_source.return_value = []
-    monkeypatch.setattr("lilbee.ingest.get_services", lambda: services)
+    monkeypatch.setattr("lilbee.ingest.pipeline.get_services", lambda: services)
     return extractor, services
 
 
