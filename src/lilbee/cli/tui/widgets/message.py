@@ -1,9 +1,10 @@
-"""Chat message widgets — user and assistant bubbles."""
+"""Chat message widgets: user and assistant bubbles."""
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -20,15 +21,14 @@ _MD_UPDATE_INTERVAL = 0.1
 _SPEAKER_YOU = "[bold $primary]you[/]"
 _SPEAKER_LILBEE = "[bold $success]lilbee[/]"
 
+_CSS_FILE = Path(__file__).parent / "message.tcss"
+_MESSAGE_CSS = _CSS_FILE.read_text(encoding="utf-8")
+
 
 class UserMessage(Vertical):
     """A user's question in the chat log."""
 
-    DEFAULT_CSS = """
-    UserMessage {
-        height: auto;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _MESSAGE_CSS
 
     def __init__(self, text: str) -> None:
         super().__init__(classes="user-message")
@@ -42,11 +42,7 @@ class UserMessage(Vertical):
 class AssistantMessage(Vertical):
     """An assistant's response with streaming markdown, reasoning, and citations."""
 
-    DEFAULT_CSS = """
-    AssistantMessage {
-        height: auto;
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _MESSAGE_CSS
 
     def __init__(self) -> None:
         super().__init__(classes="assistant-message")

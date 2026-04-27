@@ -43,16 +43,15 @@ def _mock_classify():
 
 
 def test_model_bar_caps_overlay_height_and_constrains_inside() -> None:
-    """CSS caps overlay height and constrains it inside the screen.
+    """CSS caps overlay height and inflects so it stays within the viewport.
 
-    Without the cap, Textual's default ``max-height: 12`` + ``constrain:
-    none inside`` let the overlay extend below the viewport, causing
-    border cells to get pushed into the terminal's scrollback buffer
-    when the overlay collapses.
+    Inflect lets the overlay flip above its trigger when there is no room
+    below, so it stays visible and its border cells do not get pushed into
+    the terminal's scrollback buffer when the overlay collapses.
     """
     css = ModelBar.DEFAULT_CSS
-    assert "max-height: 8" in css
-    assert "constrain: inside inside" in css
+    assert "max-height: 12" in css
+    assert "constrain: inflect inflect" in css
 
 
 async def test_collapsing_select_refreshes_screen() -> None:
