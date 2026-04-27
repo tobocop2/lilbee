@@ -1,10 +1,5 @@
 """Web crawling. Fetch pages as markdown and save to the documents directory.
 
-This package is the public face of lilbee's crawling subsystem. All
-callers (``cli/commands.py``, ``mcp.py``, ``server/handlers.py``,
-``cli/tui/screens/chat.py``, ``crawl_task.py``, ``server/routes/setup.py``)
-import symbols from here.
-
 Layout:
 
 - :mod:`lilbee.crawler.models`: value types (``CrawlResult``, ``FetchedPage``,

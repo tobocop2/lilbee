@@ -16,13 +16,13 @@ def create_provider(config: Config) -> LLMProvider:
     provider_name = config.llm_provider
 
     if provider_name == "auto":
-        # circular: providers/__init__ -> factory -> routing_provider -> config
+        # heavy: routing_provider eagerly imports litellm_sdk (>50ms; pulls litellm fanout)
         from lilbee.providers.routing_provider import RoutingProvider
 
         return RoutingProvider()
 
     if provider_name == "llama-cpp":
-        # circular: providers/__init__ -> factory -> llama_cpp -> config
+        # heavy: llama_cpp loads native Metal/CUDA dylibs at module top
         from lilbee.providers.llama_cpp import LlamaCppProvider
 
         return LlamaCppProvider()
@@ -31,7 +31,7 @@ def create_provider(config: Config) -> LLMProvider:
         # THIS is the swap line: the single import that changes when
         # migrating to a different SDK. Replace LitellmSdkBackend here
         # with the new adapter and the rest of lilbee is untouched.
-        # circular: providers/__init__ -> factory -> sdk_llm_provider -> config
+        # heavy: litellm_sdk loads litellm provider fanout (>50ms)
         from lilbee.providers.litellm_sdk import LitellmSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 

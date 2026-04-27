@@ -12,6 +12,7 @@ import httpx
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError, ModelSource
+from lilbee.modelhub.registry import ModelRegistry
 
 log = logging.getLogger(__name__)
 
@@ -24,9 +25,6 @@ class ModelManager:
     def __init__(self, models_dir: Path, remote_base_url: str = "http://localhost:11434") -> None:
         self._models_dir = models_dir
         self._remote_base_url = remote_base_url.rstrip("/")
-
-        from lilbee.modelhub.registry import ModelRegistry
-
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
@@ -142,6 +140,7 @@ class ModelManager:
         on_bytes: Callable[[int, int], None] | None = None,
     ) -> Path:
         """Download a featured or ad-hoc HuggingFace model to the native GGUF directory."""
+        # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
         from lilbee.catalog import download_model, resolve_pull_target
 
         entry = resolve_pull_target(model)

@@ -6,6 +6,7 @@ import os
 import httpx
 
 from lilbee.core.config.model import cfg
+from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import (
@@ -106,8 +107,6 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
     ]
     if not active:
         return {}
-
-    from lilbee.core.services import get_services
 
     provider = get_services().provider
 

@@ -131,6 +131,20 @@ def _assume_litellm_available(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_services_after_test():
+    """Drop any Services container ``set_services()`` left around.
+
+    Tests that inject a mock via ``set_services(make_mock_services(...))``
+    would otherwise leak into the next test's ``get_services()`` call,
+    producing confusing cross-test failures.
+    """
+    yield
+    from lilbee.core.services import set_services
+
+    set_services(None)
+
+
+@pytest.fixture(autouse=True)
 def _ignore_user_global_config(monkeypatch):
     """Skip the platform-default config.toml for unit tests.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
+from lilbee.modelhub.registry import ModelRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,6 +59,7 @@ class ModelEntry(BaseModel):
 
     @classmethod
     def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
+        # heavy: lilbee.catalog (>50ms; huggingface_hub) + lilbee.modelhub.model_manager (>50ms)
         from lilbee.catalog import clean_display_name
         from lilbee.modelhub.model_manager import ModelSource
 
@@ -70,6 +73,7 @@ class ModelEntry(BaseModel):
 
     @classmethod
     def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
+        # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
         from lilbee.modelhub.model_manager import ModelSource
 
         return cls(
@@ -177,8 +181,6 @@ class RemoveResult(BaseModel):
 
 def _native_manifest_index() -> dict[str, ModelManifest]:
     """Map ref string ('hf_repo/filename') to manifest for every installed native model."""
-    from lilbee.modelhub.registry import ModelRegistry
-
     registry = ModelRegistry(cfg.models_dir)
     return {m.ref: m for m in registry.list_installed()}
 
@@ -190,8 +192,6 @@ def _resolve_native_path(ref: str) -> str | None:
     ``ValueError`` (malformed ref) so callers can treat the path as
     optional metadata.
     """
-    from lilbee.modelhub.registry import ModelRegistry
-
     try:
         return str(ModelRegistry(cfg.models_dir).resolve(ref))
     except (KeyError, ValueError):
@@ -199,6 +199,7 @@ def _resolve_native_path(ref: str) -> str | None:
 
 
 def _collect_native_entries() -> list[ModelEntry]:
+    # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
     from lilbee.modelhub.model_manager import ModelSource
 
     manifests = _native_manifest_index()
@@ -207,6 +208,7 @@ def _collect_native_entries() -> list[ModelEntry]:
 
 
 def _collect_backend_entries() -> list[ModelEntry]:
+    # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
     from lilbee.modelhub.model_manager import classify_remote_models
 
     remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
@@ -223,6 +225,7 @@ def list_models_data(
     Discovers remote models via a single HTTP call with a short timeout
     so the command stays responsive when the backend is down.
     """
+    # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
     from lilbee.modelhub.model_manager import ModelSource
 
     entries: list[ModelEntry] = []
@@ -241,6 +244,7 @@ def show_model_data(ref: str) -> ShowModelResult:
     Raises :class:`~lilbee.modelhub.model_manager.ModelNotFoundError` if the ref
     is unknown to both the catalog and the installed set.
     """
+    # heavy: lilbee.catalog (>50ms; huggingface_hub) + lilbee.modelhub.model_manager (>50ms)
     from lilbee.catalog import find_catalog_entry
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
@@ -264,6 +268,7 @@ def _backend_event_to_progress(
     event: dict[str, Any],
 ) -> None:
     """Adapt an Ollama-style dict event into a DownloadProgress call."""
+    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
     from lilbee.catalog import DownloadProgress
 
     total = event.get("total", 0) or 0
@@ -277,8 +282,7 @@ def _build_pull_callbacks(
     on_update: Callable[[DownloadProgress], None] | None,
 ) -> tuple[Callable[[dict[str, Any]], None] | None, Callable[[int, int], None] | None]:
     """Build the (dict_cb, bytes_cb) pair for ModelManager.pull from on_update."""
-    import functools
-
+    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
     from lilbee.catalog import make_download_callback
 
     if on_update is None:

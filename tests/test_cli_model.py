@@ -296,21 +296,21 @@ class TestResolveNativePath:
     def test_returns_path_when_registry_resolves(self, tmp_path):
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = tmp_path / "blob.gguf"
-        with patch("lilbee.modelhub.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             path = model_mod._resolve_native_path(_CHAT_REF)
         assert path == str(tmp_path / "blob.gguf")
 
     def test_suppresses_key_error_from_missing_blob(self):
         fake_registry = MagicMock()
         fake_registry.resolve.side_effect = KeyError("no blob")
-        with patch("lilbee.modelhub.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             path = model_mod._resolve_native_path(_CHAT_REF)
         assert path is None
 
     def test_suppresses_value_error_from_invalid_ref(self):
         fake_registry = MagicMock()
         fake_registry.resolve.side_effect = ValueError("bad ref")
-        with patch("lilbee.modelhub.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             path = model_mod._resolve_native_path(_CHAT_REF)
         assert path is None
 
@@ -564,7 +564,7 @@ class TestNativeManifestIndex:
         fake_registry.list_installed.return_value = [
             _manifest(_CHAT_REPO, _CHAT_FILE, size=1024, task="chat"),
         ]
-        with patch("lilbee.modelhub.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             index = model_mod._native_manifest_index()
         assert _CHAT_REF in index
         assert index[_CHAT_REF].task == "chat"

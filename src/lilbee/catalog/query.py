@@ -7,6 +7,7 @@ from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
+from lilbee.core.services import get_services
 from lilbee.modelhub.models import ModelTask
 
 
@@ -42,8 +43,6 @@ def get_catalog(
     model_manager: Any = None,
 ) -> CatalogResult:
     """Get paginated, filtered catalog of models."""
-    from lilbee.core.services import get_services
-
     # Featured models only on the first page
     all_models = list(FEATURED_ALL) if offset == 0 else []
     hf_has_more = False
