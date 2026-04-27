@@ -141,7 +141,7 @@ def _pipe_closed_win32(pipe_fd: int) -> bool:  # pragma: no cover  Windows-only
     return _read_eof(pipe_fd)
 
 
-def _pipe_closed_posix(pipe_fd: int) -> bool:
+def _pipe_closed_posix(pipe_fd: int) -> bool:  # pragma: no cover  POSIX-only
     """POSIX pipe-EOF check using select."""
     try:
         readable, _, _ = select.select([pipe_fd], [], [], 0)
@@ -156,7 +156,7 @@ def pipe_closed(pipe_fd: int) -> bool:
     """Check if the pipe has been closed (EOF) without blocking."""
     if sys.platform == "win32":
         return _pipe_closed_win32(pipe_fd)
-    return _pipe_closed_posix(pipe_fd)
+    return _pipe_closed_posix(pipe_fd)  # pragma: no cover  POSIX-only
 
 
 def animation_loop(pipe_fd: int) -> None:
