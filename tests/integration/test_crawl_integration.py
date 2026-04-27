@@ -16,7 +16,7 @@ import pytest
 crawl4ai = pytest.importorskip("crawl4ai")
 
 from lilbee.core.config import cfg  # noqa: E402
-from lilbee.crawler import api as crawler_api  # noqa: E402
+from lilbee.crawler import runner as crawler_runner  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
     crawl_and_save,
     load_crawl_metadata,
@@ -71,11 +71,11 @@ def isolated_env(tmp_path):
     cfg.crawl_timeout = 15
     # Fully reset crawler state (semaphore, sync timer, background tasks)
     # so no integration test leaks mutable state into a neighbour.
-    crawler_api._state.reset()
+    crawler_runner._state.reset()
     yield tmp_path
     for name, val in snapshot.items():
         setattr(cfg, name, val)
-    crawler_api._state.reset()
+    crawler_runner._state.reset()
 
 
 @pytest.fixture()
@@ -304,7 +304,7 @@ class TestCrawlConcurrency:
             httpserver.expect_request(f"/conc{i}").respond_with_handler(slow_handler)
 
         cfg.crawl_max_concurrent = 2
-        crawler_api._state.semaphore = None
+        crawler_runner._state.semaphore = None
 
         urls = [str(httpserver.url_for(f"/conc{i}")) for i in range(3)]
         tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]
@@ -328,7 +328,7 @@ class TestCrawlConcurrency:
             )
 
         cfg.crawl_max_concurrent = 0
-        crawler_api._state.semaphore = None
+        crawler_runner._state.semaphore = None
 
         urls = [str(httpserver.url_for(f"/par{i}")) for i in range(3)]
         tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]
