@@ -136,7 +136,18 @@ select = [
     "SIM",   # flake8-simplify
     "RUF",   # ruff-specific
     "S",     # flake8-bandit: security antipatterns (eval, exec, pickle, unsafe subprocess, etc.)
+    "C90",   # mccabe complexity
+    "N",     # pep8-naming
+    "RET",   # flake8-return: consistent return semantics
+    "TID",   # flake8-tidy-imports: forbid relative imports
+    "PLR0911", # too many returns
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "PLR2004", # magic value used in comparison
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 # Test-context S-rule noise. Each of these is either a test fixture
@@ -147,8 +158,45 @@ select = [
 # - S105/S106 hardcoded password string/arg (test fixtures)
 # - S108 /tmp paths (mocked, not actual temp-file usage)
 # - S603/S607 subprocess (e2e tests spawning sys.executable)
-"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S108", "S603", "S607"]
+# Test files also ignore PLR2004 (test fixtures use literal expected
+# values inline; extracting them to constants hurts readability) and
+# the pep8-naming rules (test helpers frequently shadow PascalCase
+# class names from the system under test).
+"tests/**/*.py" = [
+    "S101", "S104", "S105", "S106", "S108", "S603", "S607",
+    "PLR2004",
+    "N802", "N806", "N818", "N817",
+]
 "conftest.py" = ["S101"]
+# Pre-existing complexity / magic-value / naming hits that predate the
+# tightened rule set. Each entry is grandfathered for cleanup later (the
+# tidy-module-organization branch refactors these); rules still apply to
+# new files.
+"src/lilbee/_splash_runner.py" = ["PLR0911", "PLR2004"]
+"src/lilbee/cancellation.py" = ["N818"]
+"src/lilbee/catalog.py" = ["C901", "PLR2004"]
+"src/lilbee/cli/app.py" = ["C901"]
+"src/lilbee/cli/commands.py" = ["C901", "PLR2004"]
+"src/lilbee/cli/tui/app.py" = ["PLR2004"]
+"src/lilbee/cli/tui/screens/catalog_utils.py" = ["PLR2004"]
+"src/lilbee/cli/tui/screens/chat.py" = ["PLR2004"]
+"src/lilbee/cli/tui/screens/wiki.py" = ["PLR2004"]
+"src/lilbee/cli/tui/widgets/autocomplete.py" = ["PLR2004"]
+"src/lilbee/config.py" = ["N802", "N806", "PLR2004"]
+"src/lilbee/crawler/api.py" = ["C901", "PLR0912"]
+"src/lilbee/crawler/bootstrap.py" = ["N818"]
+"src/lilbee/crawler/sitemap.py" = ["PLR2004"]
+"src/lilbee/ingest.py" = ["C901"]
+"src/lilbee/model_defaults.py" = ["PLR2004"]
+"src/lilbee/model_manager.py" = ["PLR2004"]
+"src/lilbee/providers/worker_process.py" = ["C901", "PLR0915"]
+"src/lilbee/query.py" = ["C901", "PLR2004"]
+"src/lilbee/reasoning.py" = ["C901", "N806"]
+"src/lilbee/store.py" = ["C901"]
+"src/lilbee/vision.py" = ["C901"]
+"src/lilbee/wiki/browse.py" = ["PLR2004"]
+"src/lilbee/wiki/entity_extractor/ner_concepts.py" = ["C901"]
+"src/lilbee/wiki/gen.py" = ["PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -2157,7 +2157,7 @@ class TestStreamingFlush:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise OSError("disk full")
-            return None  # second page falls through unchanged
+            return  # second page falls through unchanged
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),

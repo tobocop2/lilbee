@@ -1468,8 +1468,7 @@ class TestRunFullSynthesize:
         captured: dict[str, object] = {}
 
         def fake_get_services():
-            svc = MagicMock()
-            return svc
+            return MagicMock()
 
         def fake_generate(provider, store, clusterer, config):
             captured["config"] = config
