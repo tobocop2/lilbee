@@ -73,7 +73,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │ ┌───────────────────────────────────────────────────────────┐ │
  │ │ Ask anything...                                           │ │
  │ │                                                           │ │
- │ │ ▌Chat▐ Qwen3 0.6B  ▼   ▌Embed▐ Nomic v1.5  ▼  ▌Scope▐ Both│ │
+ │ │ ▌Chat▐ Qwen3 0.6B  ▼   ▌Embed▐ Nomic v1.5  ▼              │ │
  │ └───────────────────────────────────────────────────────────┘ │
  │ SYNC vault   ████████░░░░░░  42%                              │
  └───────────────────────────────────────────────────────────────┘
@@ -108,7 +108,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │   Henry Ford                    3 src         │
  │ Drafts (2)                                    │
  │   Tire Pressure                 1 src         │
- │───────────────────────────────────────────────│
+ ├───────────────────────────────────────────────┤
  │ ┌─ Braking Systems ────────────────────────┐  │
  │ │ 5 sources · faithfulness 0.92            │  │
  │ │                                          │  │
@@ -124,28 +124,28 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 **Model catalog.** Browse, install, and switch roles without leaving the terminal. `★` indicates the developer's recommendation for each role.
 
 ```
- ┌─ Model Catalog ───────────────────────────────┐
- │ [All tasks ▾] [All sizes ▾] [Featured ▾]      │
- │ 🔍 search...                  [Grid | List]   │
- │                                               │
- │ Our picks                                     │
- │ ┌────────────┐ ┌────────────┐ ┌────────────┐  │
- │ │ Qwen3 0.6B★│ │ Nomic      │ │ BGE Rerank │  │
- │ │ ▌chat ▐    │ │ ▌embed▐    │ │ ▌rerank▐   │  │
- │ │ [GGUF]     │ │ [GGUF]     │ │ [GGUF]     │  │
- │ │ 450 MB ✓   │ │ 274 MB ✓   │ │ 1.2 GB     │  │
- │ │ [Use]      │ │ [Use]      │ │ [Pull]     │  │
- │ └────────────┘ └────────────┘ └────────────┘  │
- │                                               │
- │ Chat                                          │
- │ ┌────────────┐ ┌────────────┐                 │
- │ │ Qwen3 8B   │ │ Phi-4 14B  │                 │
- │ │ [GGUF]     │ │ [GGUF]     │                 │
- │ │ 4.9 GB     │ │ 9.1 GB     │                 │
- │ │ [Pull]     │ │ [Pull]     │                 │
- │ └────────────┘ └────────────┘                 │
- │               [Load more]                     │
- └───────────────────────────────────────────────┘
+ ┌─ Model Catalog ───────────────────────────────────┐
+ │ [All tasks ▾] [All sizes ▾] [Featured ▾]          │
+ │ 🔍 search...                    [Grid · List]     │
+ │                                                   │
+ │ Our picks                                         │
+ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
+ │ │ Qwen3 0.6B ★│ │ Nomic v1.5  │ │ BGE Rerank  │   │
+ │ │ ▌ chat   ▐  │ │ ▌ embed  ▐  │ │ ▌ rerank ▐  │   │
+ │ │ [GGUF]      │ │ [GGUF]      │ │ [GGUF]      │   │
+ │ │ 450 MB ✓    │ │ 274 MB ✓    │ │ 1.2 GB      │   │
+ │ │ [Use]       │ │ [Use]       │ │ [Pull]      │   │
+ │ └─────────────┘ └─────────────┘ └─────────────┘   │
+ │                                                   │
+ │ Chat                                              │
+ │ ┌─────────────┐ ┌─────────────┐                   │
+ │ │ Qwen3 8B    │ │ Phi-4 14B   │                   │
+ │ │ [GGUF]      │ │ [GGUF]      │                   │
+ │ │ 4.9 GB      │ │ 9.1 GB      │                   │
+ │ │ [Pull]      │ │ [Pull]      │                   │
+ │ └─────────────┘ └─────────────┘                   │
+ │                  [Load more]                      │
+ └───────────────────────────────────────────────────┘
 ```
 
 ## What you can do with it
