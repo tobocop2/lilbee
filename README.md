@@ -1,6 +1,8 @@
-# [lilbee](https://tobocop2.github.io/lilbee/)
+# lilbee — terminal-first local RAG for files, code, and the web
 
-A terminal-first local search engine for your own files, websites, and scanned documents. One install, no sidecar services, fully offline by default.
+[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)
+
+A terminal-first local RAG and search engine for your own files, code, websites, and scanned documents. One install, no sidecar services, fully offline by default.
 
 <p align="center">
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
@@ -350,7 +352,7 @@ See [docs/agent-integration.md](docs/agent-integration.md) for MCP client config
 
 See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema and the [usage guide](docs/usage.md) for `serve` options.
 
-An Obsidian plugin that pairs with lilbee is coming soon. It has full feature parity with the TUI but is aimed at GUI users, especially for workflows where seeing the source matters: index a stack of PDFs, ask a question, and preview the exact page the citation points to without leaving the editor. The plugin runs `lilbee serve` as a managed sidecar (starting it, stopping it, and talking to it over the REST API), so there's no separate service for you to babysit. Track progress in [this PR](https://github.com/tobocop2/obsidian-lilbee/pull/7).
+An [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document — useful when seeing the source matters more than just being told where it is. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for the four-step setup.
 
 ## Interactive chat
 
