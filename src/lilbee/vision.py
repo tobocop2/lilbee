@@ -119,7 +119,7 @@ def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = N
     try:
         provider = get_services().provider
 
-        # vision_ocr is optional — only llama-cpp provider implements it
+        # vision_ocr is optional; only the llama-cpp provider implements it.
         if hasattr(provider, "vision_ocr"):
             result: str = provider.vision_ocr(png_bytes, model, OCR_PROMPT)  # type: ignore[attr-defined]
             return result
