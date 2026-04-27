@@ -561,11 +561,11 @@ class TestLoadLlamaNCtx:
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
 
-    def test_chat_default_caps_at_safe_value_when_num_ctx_unset(
+    def test_chat_default_stays_below_safe_ceiling_when_num_ctx_unset(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """num_ctx=None on chat mode caps at 8192 even when the model trains at 128K."""
-        from lilbee.providers.llama_cpp_provider import DEFAULT_NUM_CTX, load_llama
+        """num_ctx=None on chat mode never lets a 128K training window dictate KV size."""
+        from lilbee.providers.llama_cpp_provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = None
@@ -578,7 +578,10 @@ class TestLoadLlamaNCtx:
         load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == DEFAULT_NUM_CTX  # 8192
+        # Dynamic picker stays at or below the configured ceiling.
+        assert call_kwargs["n_ctx"] <= (cfg.num_ctx_max or 16384)
+        assert call_kwargs["n_ctx"] < 131072
+        assert call_kwargs["n_ctx"] % 256 == 0
 
     def test_chat_default_uses_training_ctx_when_smaller(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock

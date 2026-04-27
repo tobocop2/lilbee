@@ -24,7 +24,16 @@ from gguf import GGUFReader, GGUFValueType
 from lilbee.catalog import is_rerank_ref
 from lilbee.config import DEFAULT_NUM_CTX, cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
-from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
+from lilbee.providers.model_cache import (
+    KV_CACHE_TYPE_BYTES,
+    MODE_CHAT,
+    MODE_EMBED,
+    MODE_RERANK,
+    LoaderMode,
+    compute_dynamic_ctx,
+    get_available_memory,
+    kv_bytes_per_token,
+)
 from lilbee.services import get_services
 
 if TYPE_CHECKING:
@@ -213,7 +222,7 @@ class LlamaCppProvider(LLMProvider):
     def _get_subprocess_worker(self) -> WorkerProcess:
         """Lazy-create and return the subprocess worker."""
         if self._subprocess_worker is None:
-            from lilbee.providers.worker_process import WorkerProcess as WP
+            from lilbee.providers.worker_process import WorkerProcess as WP  # noqa: N817
 
             self._subprocess_worker = WP()
         return self._subprocess_worker
@@ -473,7 +482,9 @@ def embed_one(llm: Any, text: str) -> list[float]:
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
     Returns a dict with keys like 'architecture', 'context_length',
-    'embedding_length', 'chat_template', 'file_type'.
+    'embedding_length', 'chat_template', 'file_type', plus the
+    KV-cache-shape fields ('block_count', 'head_count_kv', 'key_length',
+    'value_length') used to size n_ctx against host memory.
     """
     from llama_cpp import Llama
 
@@ -493,6 +504,15 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
         emb_key = f"{arch}.embedding_length"
         if emb_key in raw:
             result["embedding_length"] = str(raw[emb_key])
+        for arch_key, out_key in (
+            (f"{arch}.block_count", "block_count"),
+            (f"{arch}.attention.head_count_kv", "head_count_kv"),
+            (f"{arch}.attention.head_count", "head_count"),
+            (f"{arch}.attention.key_length", "key_length"),
+            (f"{arch}.attention.value_length", "value_length"),
+        ):
+            if arch_key in raw:
+                result[out_key] = str(raw[arch_key])
         if "tokenizer.chat_template" in raw:
             result["chat_template"] = str(raw["tokenizer.chat_template"])
         if "general.file_type" in raw:
@@ -542,8 +562,10 @@ def _llama_cpp_has_rank_pooling() -> bool:
 def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """Load a llama_cpp.Llama instance in chat, embed, or rerank mode.
 
-    Rerank mode sets ``embedding=True`` and ``pooling_type=LLAMA_POOLING_TYPE_RANK``
-    so llama.cpp emits cross-encoder scores instead of token embeddings.
+    Chat picks ``n_ctx`` dynamically against host memory (unless
+    ``cfg.num_ctx`` is set) and enables flash attention with a fallback for
+    older llama-cpp-python builds. Rerank uses ``pooling_type=RANK`` so
+    llama.cpp emits cross-encoder scores instead of token embeddings.
     """
     from llama_cpp import Llama
 
@@ -553,32 +575,31 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
         "model_path": str(model_path),
         "embedding": embedding,
         "verbose": False,
-        "n_gpu_layers": -1,  # Offload all layers to GPU (Metal/CUDA)
+        "n_gpu_layers": _resolve_n_gpu_layers(embedding=embedding),
     }
+
     if cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
     elif embedding:
         # n_ctx=0 -> llama.cpp uses the model's training context (else 512).
         kwargs["n_ctx"] = 0
     else:
-        # Cap chat at DEFAULT_NUM_CTX so 128K+ training contexts don't OOM.
-        training_ctx = DEFAULT_NUM_CTX
-        try:
-            meta = read_gguf_metadata(model_path)
-        except Exception:
-            log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
-            meta = None
-        if meta:
-            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
-        kwargs["n_ctx"] = min(training_ctx, DEFAULT_NUM_CTX)
+        meta = _safe_read_gguf_metadata(model_path)
+        kwargs["n_ctx"] = _resolve_chat_ctx(model_path, meta)
+        log.info(
+            "Chat n_ctx=%d for %s (dynamic, training_ctx=%s)",
+            kwargs["n_ctx"],
+            model_path.name,
+            (meta or {}).get("context_length", "unknown"),
+        )
 
     if embedding:
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently
         # truncating embeddings to 512 tokens. Set n_batch = n_ctx so each
         # text can use the model's full context window.
         if kwargs["n_ctx"] == 0:
-            meta = read_gguf_metadata(model_path)
-            ctx_len = int(meta.get("context_length", 2048)) if meta else 2048
+            meta = _safe_read_gguf_metadata(model_path)
+            ctx_len = int((meta or {}).get("context_length", "2048"))
         else:
             ctx_len = kwargs["n_ctx"]
         kwargs["n_batch"] = ctx_len
@@ -589,13 +610,178 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
 
+    if not embedding:
+        _apply_flash_attention(kwargs)
+        _apply_kv_cache_type(kwargs)
+
+    return _construct_llama(Llama, model_path, kwargs)
+
+
+_MAX_OOM_RETRIES = 2
+_CTX_QUANTUM = 256
+_CTX_FLOOR = 512
+
+
+def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
+    """Best-effort GGUF metadata read, returning None on any failure."""
     try:
-        return suppress_native_stderr(Llama, **kwargs)
-    except ValueError as exc:
-        wrapped = _wrap_llama_load_error(model_path, kwargs, exc)
-        if wrapped is None:
-            raise
-        raise wrapped from exc
+        return read_gguf_metadata(model_path)
+    except Exception:
+        log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
+        return None
+
+
+def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """Pick a chat n_ctx that fits available memory.
+
+    Honors ``LILBEE_NUM_CTX_MAX`` as the upper bound. Falls back to the
+    static ``min(training_ctx, DEFAULT_NUM_CTX)`` cap if memory accounting
+    goes wrong (e.g., psutil missing).
+    """
+    training_ctx = DEFAULT_NUM_CTX
+    if meta:
+        try:
+            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
+        except (TypeError, ValueError):
+            training_ctx = DEFAULT_NUM_CTX
+    ceiling = cfg.num_ctx_max or 16384
+
+    try:
+        model_bytes = model_path.stat().st_size
+        available = get_available_memory(cfg.gpu_memory_fraction)
+        kv_per_tok = kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg())
+        return compute_dynamic_ctx(
+            model_bytes=model_bytes,
+            available_bytes=available,
+            training_ctx=training_ctx,
+            kv_bytes_per_tok=kv_per_tok,
+            ceiling=ceiling,
+        )
+    except (OSError, ValueError):
+        log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
+        return min(training_ctx, DEFAULT_NUM_CTX)
+
+
+def _kv_elem_bytes_for_cfg() -> int:
+    """Bytes per KV element implied by the configured cache type."""
+    return KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type, 2)
+
+
+def _resolve_n_gpu_layers(*, embedding: bool) -> int:
+    """Pick n_gpu_layers from cfg, honoring 'auto' / 'cpu' / explicit int."""
+    if embedding:
+        return -1
+    raw = cfg.n_gpu_layers or "auto"
+    if raw == "cpu":
+        return 0
+    if raw == "auto":
+        return -1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, falling back to auto", raw)
+        return -1
+
+
+def _apply_flash_attention(kwargs: dict[str, Any]) -> None:
+    """Set ``flash_attn`` kwarg per ``cfg.flash_attention`` (auto/1/0)."""
+    setting = (cfg.flash_attention or "auto").lower()
+    if setting in ("0", "false", "off", "no"):
+        return
+    if setting in ("1", "true", "on", "yes", "auto"):
+        kwargs["flash_attn"] = True
+
+
+def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
+    """Map ``cfg.kv_cache_type`` to llama-cpp-python ``type_k`` / ``type_v``."""
+    label = (cfg.kv_cache_type or "f16").lower()
+    if label == "f16":
+        return
+    try:
+        from llama_cpp import llama_cpp as _llc
+    except Exception:
+        log.debug("llama_cpp internal types unavailable; skipping KV quant")
+        return
+    type_map = {
+        "f32": getattr(_llc, "GGML_TYPE_F32", None),
+        "f16": getattr(_llc, "GGML_TYPE_F16", None),
+        "q8_0": getattr(_llc, "GGML_TYPE_Q8_0", None),
+        "q4_0": getattr(_llc, "GGML_TYPE_Q4_0", None),
+    }
+    ggml_type = type_map.get(label)
+    if ggml_type is None:
+        log.warning("Unknown LILBEE_KV_CACHE_TYPE=%r, falling back to f16", label)
+        return
+    kwargs["type_k"] = ggml_type
+    kwargs["type_v"] = ggml_type
+
+
+def _construct_llama(llama_cls: Any, model_path: Path, kwargs: dict[str, Any]) -> Any:
+    """Call ``llama_cls(**kwargs)`` with FA fallback and OOM-retry-with-halved-ctx."""
+    last_exc: BaseException | None = None
+    fa_dropped = False
+    for attempt in range(_MAX_OOM_RETRIES + 1):
+        try:
+            return suppress_native_stderr(llama_cls, **kwargs)
+        except TypeError as exc:
+            if not _drop_flash_attn_if_unsupported(exc, kwargs, fa_dropped):
+                raise
+            fa_dropped = True
+            continue
+        except ValueError as exc:
+            last_exc = exc
+            if attempt == _MAX_OOM_RETRIES or not _is_load_oom(exc):
+                _raise_load_error(model_path, kwargs, exc)
+            if not _halve_ctx_for_retry(kwargs, exc):
+                _raise_load_error(model_path, kwargs, exc)
+    assert last_exc is not None  # noqa: S101 -- loop exits via raise or return
+    raise last_exc
+
+
+def _drop_flash_attn_if_unsupported(
+    exc: TypeError, kwargs: dict[str, Any], already_dropped: bool
+) -> bool:
+    """If the TypeError is about an unsupported ``flash_attn`` kwarg, drop it."""
+    if already_dropped or "flash_attn" not in kwargs or "flash_attn" not in str(exc):
+        return False
+    log.info("llama-cpp-python rejected flash_attn=True; retrying without it")
+    kwargs.pop("flash_attn", None)
+    return True
+
+
+def _halve_ctx_for_retry(kwargs: dict[str, Any], exc: ValueError) -> bool:
+    """Halve n_ctx (and matching batch sizes) for an OOM retry. Returns False if no progress."""
+    current_ctx = int(kwargs.get("n_ctx", 0) or 0)
+    if current_ctx <= 0:
+        return False
+    new_ctx = max(_CTX_FLOOR, (current_ctx // 2 // _CTX_QUANTUM) * _CTX_QUANTUM)
+    if new_ctx >= current_ctx:
+        return False
+    log.warning(
+        "llama.cpp load failed at n_ctx=%d (%s); retrying at n_ctx=%d",
+        current_ctx,
+        str(exc).splitlines()[0],
+        new_ctx,
+    )
+    kwargs["n_ctx"] = new_ctx
+    for key in ("n_batch", "n_ubatch"):
+        if key in kwargs:
+            kwargs[key] = new_ctx
+    return True
+
+
+def _raise_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueError) -> None:
+    """Raise the wrapped diagnostic for a llama.cpp load failure, or re-raise as-is."""
+    wrapped = _wrap_llama_load_error(model_path, kwargs, exc)
+    if wrapped is None:
+        raise exc
+    raise wrapped from exc
+
+
+def _is_load_oom(exc: ValueError) -> bool:
+    """Does this ValueError look like a llama.cpp memory failure?"""
+    err = str(exc)
+    return "llama_context" in err or "load model from file" in err
 
 
 def _wrap_llama_load_error(
@@ -622,7 +808,8 @@ def _wrap_llama_load_error(
     except Exception as psu_exc:  # pragma: no cover
         log.debug("psutil unavailable: %s", psu_exc)
     parts.append(
-        "Try a smaller model, lower LILBEE_NUM_CTX, or close other processes to free RAM. "
+        "Try a smaller model, lower LILBEE_NUM_CTX, set LILBEE_KV_CACHE_TYPE=q8_0, "
+        "or close other processes to free RAM. "
         f"(llama.cpp: {err})"
     )
     return ValueError(" ".join(parts))

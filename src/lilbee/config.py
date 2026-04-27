@@ -549,6 +549,25 @@ class Config(BaseSettings):
     # Run embedding and vision inference in a subprocess (llama-cpp only).
     subprocess_embed: bool = ConfigField(default=False, writable=True)
 
+    # Upper bound for the dynamic n_ctx picker. The picker chooses the
+    # largest power-of-256 ctx that fits in available memory and the
+    # model's training window; this caps that at a sane ceiling.
+    num_ctx_max: int | None = ConfigField(default=16384, ge=512, writable=True)
+
+    # Flash attention: 'auto' (default, on with fallback), '1' (force on),
+    # '0' (off). Resolves the 'padding V cache to 1024' warning on models
+    # with uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
+    flash_attention: str = ConfigField(default="auto", writable=True)
+
+    # KV cache element type: 'f16' (default), 'q8_0', 'q4_0', 'f32'. Quantized
+    # KV halves or quarters cache memory; needs flash attention to be on.
+    kv_cache_type: str = ConfigField(default="f16", writable=True)
+
+    # Number of model layers to offload to GPU: 'auto' (-1, all), 'cpu'
+    # (0, none), or an explicit integer. Useful when a discrete GPU has
+    # less VRAM than the model needs.
+    n_gpu_layers: str = ConfigField(default="auto", writable=True)
+
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
 
