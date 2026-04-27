@@ -988,6 +988,18 @@ class ChatScreen(Screen[None]):
             else:
                 self.query_one("#chat-model-select", Select).focus()
             return
+        if not self._cycle_completion_forward(inp):
+            self.screen.focus_next()
+
+    def action_complete_next(self) -> None:
+        """Ctrl+N: show completions or cycle forward."""
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus:
+            return
+        self._cycle_completion_forward(inp)
+
+    def _cycle_completion_forward(self, inp: Input) -> bool:
+        """Show or cycle forward through autocomplete; returns True if it acted."""
         overlay = self.query_one("#completion-overlay", CompletionOverlay)
 
         if overlay.is_visible:
@@ -998,7 +1010,7 @@ class ChatScreen(Screen[None]):
                 inp.value = cmd_prefix + selection
                 self._completing = False
                 inp.action_end()
-            return
+            return True
 
         options = get_completions(inp.value)
         if options:
@@ -1013,13 +1025,9 @@ class ChatScreen(Screen[None]):
                 inp.value = first
                 inp.action_end()
             self._completing = False
-            return
+            return True
 
-        self.screen.focus_next()
-
-    def action_complete_next(self) -> None:
-        """Ctrl+N: show completions or cycle forward."""
-        self.action_complete()
+        return False
 
     def action_complete_prev(self) -> None:
         """Ctrl+P: cycle backward through completions."""

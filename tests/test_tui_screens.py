@@ -5074,6 +5074,24 @@ async def test_chat_action_complete_next():
             assert inp.value == "/help"
 
 
+async def test_chat_action_complete_next_noop_when_input_unfocused():
+    """Ctrl+N must not move focus when the input is not focused."""
+    from textual.widgets import Select
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        chat_sel = screen.query_one("#chat-model-select", Select)
+        chat_sel.focus()
+        await pilot.pause()
+        screen.action_complete_next()
+        await pilot.pause()
+        assert chat_sel.has_focus
+
+
 async def test_chat_action_complete_prev_opens_overlay():
     """Ctrl+P (action_complete_prev) opens overlay when not visible."""
     app = ChatTestApp()
@@ -5295,7 +5313,9 @@ async def test_chat_send_message_tolerates_missing_welcome():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        from lilbee.cli.tui.screens.chat import ChatScreen
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.screens.chat import ChatScreen, ChatWelcome
 
         screen = app.screen
         assert isinstance(screen, ChatScreen)
@@ -5304,6 +5324,8 @@ async def test_chat_send_message_tolerates_missing_welcome():
             await pilot.pause()
             screen._send_message("again")
             await pilot.pause()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#chat-welcome", ChatWelcome)
 
 
 async def test_chat_tab_from_input_jumps_to_model_select():
