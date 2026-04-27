@@ -58,24 +58,24 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 
 ```
  ┌─ lilbee ──────────────────────────────────────────────────────┐
- │ ▌ Chat ▐ · Catalog · Status · Settings · Tasks      ▌INSERT▐  │
+ │ [Chat]  Catalog  Status  Settings  Tasks         [INSERT]     │
  │                                                               │
  │ You:    what does the oil pressure warning mean?              │
  │                                                               │
  │ lilbee: The oil pressure warning indicates low oil            │
- │         pressure.[¹] When the light stays on, stop the        │
- │         engine immediately.[²]                                │
+ │         pressure.[1] When the light stays on, stop the        │
+ │         engine immediately.[2]                                │
  │         ─────────────────────                                 │
  │         Sources                                               │
- │         [¹ owners-manual.pdf:42]   ← click to open            │
- │         [² owners-manual.pdf:43]                              │
+ │         [1 owners-manual.pdf:42]   <- click to open           │
+ │         [2 owners-manual.pdf:43]                              │
  │                                                               │
  │ ┌───────────────────────────────────────────────────────────┐ │
  │ │ Ask anything...                                           │ │
  │ │                                                           │ │
- │ │ ▌Chat▐ Qwen3 0.6B  ▼   ▌Embed▐ Nomic v1.5  ▼              │ │
+ │ │ Chat: [Qwen3 0.6B v]    Embed: [Nomic v1.5 v]             │ │
  │ └───────────────────────────────────────────────────────────┘ │
- │ SYNC vault   ████████░░░░░░  42%                              │
+ │ SYNC vault   [============------------]  42%                  │
  └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,14 +84,14 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 ```
  ┌─ Task Center ─────────────── [cap 3/3] [Clear]┐
  │ ACTIVE (2)                                    │
- │   ████████████░░░░░░░░░  42%  PULL  Qwen3 8B  │
- │   ██████░░░░░░░░░░░░░░░  18%  SYNC  vault     │
+ │   [============-----]  42%  PULL  Qwen3 8B    │
+ │   [======-----------]  18%  SYNC  vault       │
  │ QUEUED (1)                                    │
  │   CRAWL  https://docs.example.com             │
  │ COMPLETED                                     │
- │   ✓ SYNC  vault                      2 min ago│
- │   ✗ PULL  mistral                    5 min ago│
- │   ✓ ADD   cv-manual.pdf             12 min ago│
+ │   [v] SYNC  vault                  2 min ago  │
+ │   [x] PULL  mistral                5 min ago  │
+ │   [v] ADD   cv-manual.pdf         12 min ago  │
  └───────────────────────────────────────────────┘
 ```
 
@@ -99,7 +99,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 
 ```
  ┌─ Wiki ────────────────────────────────────────┐
- │ 🔍 Filter pages...                            │
+ │ Filter pages...                               │
  │                                               │
  │ Concepts (8)                                  │
  │   Braking Systems               5 src         │
@@ -110,30 +110,30 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │   Tire Pressure                 1 src         │
  ├───────────────────────────────────────────────┤
  │ ┌─ Braking Systems ────────────────────────┐  │
- │ │ 5 sources · faithfulness 0.92            │  │
+ │ │ 5 sources | faithfulness 0.92            │  │
  │ │                                          │  │
  │ │ Modern braking systems combine hydraulic │  │
  │ │ actuation with ABS to prevent wheel      │  │
- │ │ lockup under heavy deceleration.[¹]      │  │
+ │ │ lockup under heavy deceleration.[1]      │  │
  │ │                                          │  │
- │ │ [¹ brake-primer.pdf:8]  ← click          │  │
+ │ │ [1 brake-primer.pdf:8]  <- click         │  │
  │ └──────────────────────────────────────────┘  │
  └───────────────────────────────────────────────┘
 ```
 
-**Model catalog.** Browse, install, and switch roles without leaving the terminal. `★` indicates the developer's recommendation for each role.
+**Model catalog.** Browse, install, and switch roles without leaving the terminal. `*` indicates the developer's recommendation for each role.
 
 ```
  ┌─ Model Catalog ───────────────────────────────────┐
- │ [All tasks ▾] [All sizes ▾] [Featured ▾]          │
- │ 🔍 search...                    [Grid · List]     │
+ │ [All tasks v] [All sizes v] [Featured v]          │
+ │ search...                       [Grid | List]     │
  │                                                   │
  │ Our picks                                         │
  │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
- │ │ Qwen3 0.6B ★│ │ Nomic v1.5  │ │ BGE Rerank  │   │
- │ │ ▌ chat   ▐  │ │ ▌ embed  ▐  │ │ ▌ rerank ▐  │   │
+ │ │ Qwen3 0.6B *│ │ Nomic v1.5  │ │ BGE Rerank  │   │
+ │ │ [chat]      │ │ [embed]     │ │ [rerank]    │   │
  │ │ [GGUF]      │ │ [GGUF]      │ │ [GGUF]      │   │
- │ │ 450 MB ✓    │ │ 274 MB ✓    │ │ 1.2 GB      │   │
+ │ │ 450 MB  ok  │ │ 274 MB  ok  │ │ 1.2 GB      │   │
  │ │ [Use]       │ │ [Use]       │ │ [Pull]      │   │
  │ └─────────────┘ └─────────────┘ └─────────────┘   │
  │                                                   │
