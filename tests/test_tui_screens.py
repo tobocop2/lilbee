@@ -2036,7 +2036,7 @@ async def test_chat_slash_unknown_command():
 async def test_chat_current_chunk_type_reflects_model_bar():
     """The helper reads the scope Select via query_one; test the happy path."""
     from lilbee.cli.tui.widgets.model_bar import ModelBar
-    from lilbee.store import SearchScope
+    from lilbee.data.store import SearchScope
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3768,7 +3768,7 @@ async def test_chat_run_sync_worker():
                 )
             return {"added": 3}
 
-        with patch("lilbee.ingest.sync", new=fake_sync):
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3787,7 +3787,7 @@ async def test_chat_sync_file_done_bad_type():
                 on_progress(EventType.FILE_DONE, {"file": "x.md", "status": "ok", "chunks": 1})
             return {"added": 0}
 
-        with patch("lilbee.ingest.sync", new=fake_sync):
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3814,7 +3814,7 @@ async def test_chat_sync_file_start_bad_type():
                 )
             return {"added": 0}
 
-        with patch("lilbee.ingest.sync", new=fake_sync):
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3838,7 +3838,7 @@ async def test_chat_sync_embed_bad_type():
                 on_progress(EventType.EMBED, {"file": "x.md", "chunk": 1, "total_chunks": 5})
             return {"added": 0}
 
-        with patch("lilbee.ingest.sync", new=fake_sync):
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3854,7 +3854,7 @@ async def test_chat_run_sync_error_worker():
         async def failing_sync(quiet=False, on_progress=None):
             raise Exception("sync failed")
 
-        with patch("lilbee.ingest.sync", new=failing_sync):
+        with patch("lilbee.data.ingest.sync", new=failing_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -4682,7 +4682,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
     import threading
 
     from lilbee.cli.tui.widgets.task_bar import ProgressReporter
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -4705,7 +4705,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
 
         with (
             patch("lilbee.cli.helpers.copy_files") as mock_copy,
-            patch("lilbee.ingest.sync", new=fake_sync),
+            patch("lilbee.data.ingest.sync", new=fake_sync),
         ):
             mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
             thread = threading.Thread(target=_run_worker)
@@ -4727,7 +4727,7 @@ async def test_sync_called_with_quiet_true():
             sync_kwargs.append(kwargs)
             return {"added": 0}
 
-        with patch("lilbee.ingest.sync", new=capturing_sync):
+        with patch("lilbee.data.ingest.sync", new=capturing_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:

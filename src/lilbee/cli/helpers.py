@@ -25,7 +25,7 @@ from lilbee.core.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
-    from lilbee.store import SearchChunk
+    from lilbee.data.store import SearchChunk
 
 
 class ResetResult(BaseModel):
@@ -240,7 +240,7 @@ def add_paths(
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after copying files.
     """
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     copied = copy_paths(paths, con, force=force)
     if chat_mode:
@@ -298,7 +298,7 @@ def perform_reset() -> ResetResult:
 
 def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
     if not isinstance(result, SyncResult):
         raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
@@ -317,7 +317,7 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
         run_sync_background(con)
         return
 
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     try:
         result = asyncio.run(sync())

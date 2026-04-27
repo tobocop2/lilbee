@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from lilbee.ingest.code import ingest_code_sync
-from lilbee.ingest.discovery import classify_file, discover_files, file_hash
-from lilbee.ingest.extract import (
+from lilbee.data.ingest.code import ingest_code_sync
+from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
+from lilbee.data.ingest.extract import (
     _has_meaningful_text,
     _should_run_ocr,
     _vision_fallback,
@@ -13,14 +13,14 @@ from lilbee.ingest.extract import (
     ingest_document,
     ingest_markdown,
 )
-from lilbee.ingest.pipeline import (
+from lilbee.data.ingest.pipeline import (
     _apply_result,
     _incremental_wiki_update,
     _ingest_file,
     ingest_batch,
     sync,
 )
-from lilbee.ingest.types import ExtractMode, SyncResult, _IngestResult
+from lilbee.data.ingest.types import ExtractMode, SyncResult, _IngestResult
 
 __all__ = [
     "ExtractMode",

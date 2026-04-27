@@ -6,7 +6,7 @@ from lilbee.clustering import SourceCluster
 from lilbee.concepts.graph import ConceptGraph
 from lilbee.concepts.nlp import concepts_available
 from lilbee.core.config import Config
-from lilbee.store import Store
+from lilbee.data.store import Store
 
 
 class ConceptGraphClusterer:

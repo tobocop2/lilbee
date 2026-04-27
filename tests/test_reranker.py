@@ -5,8 +5,8 @@ from unittest import mock
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.data.store import SearchChunk
 from lilbee.reranker import _BLEND_SCHEDULE, Reranker
-from lilbee.store import SearchChunk
 
 
 @pytest.fixture(autouse=True)

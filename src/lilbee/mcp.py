@@ -16,7 +16,7 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
-from lilbee.store import SearchScope, scope_to_chunk_type
+from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,
@@ -77,7 +77,7 @@ def status() -> dict[str, Any]:
 @mcp.tool()
 async def sync() -> dict[str, Any]:
     """Sync documents directory with the vector store."""
-    from lilbee.ingest import sync as run_sync
+    from lilbee.data.ingest import sync as run_sync
 
     return (await run_sync(quiet=True)).model_dump()
 
@@ -103,7 +103,7 @@ async def add(
             the configured default for this invocation only.
     """
     from lilbee.cli.helpers import copy_files
-    from lilbee.ingest import sync as run_sync
+    from lilbee.data.ingest import sync as run_sync
 
     errors: list[str] = []
     valid: list[Path] = []

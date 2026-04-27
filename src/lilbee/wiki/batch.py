@@ -18,8 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lilbee.core.config import Config
-from lilbee.ingest import file_hash
-from lilbee.store import CitationRecord, SearchChunk, Store
+from lilbee.data.ingest import file_hash
+from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import (
     ParsedCitation,
     parse_wiki_citations,

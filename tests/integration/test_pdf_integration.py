@@ -20,7 +20,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.core.services import reset_services as reset_provider
-from lilbee.ingest import sync
+from lilbee.data.ingest import sync
 
 pytestmark = pytest.mark.slow
 

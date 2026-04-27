@@ -18,9 +18,9 @@ from lilbee.cli import (
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
-from lilbee.ingest import SyncResult
+from lilbee.data.ingest import SyncResult
+from lilbee.data.store import SearchChunk
 from lilbee.models import list_installed_models
-from lilbee.store import SearchChunk
 
 runner = CliRunner()
 
@@ -130,14 +130,14 @@ class TestStatus:
 
 
 class TestSync:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_empty(self, mock_sync):
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0
         assert "Added: 0" in result.output
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.data.ingest.sync",
         new_callable=AsyncMock,
         return_value=SyncResult(added=["test.txt"]),
     )
@@ -148,7 +148,7 @@ class TestSync:
         assert "Added: 1" in result.output
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.data.ingest.sync",
         new_callable=AsyncMock,
         return_value=SyncResult(failed=["bad.txt"]),
     )
@@ -259,46 +259,46 @@ class TestAddIgnoresDirs:
 
 
 class TestAsk:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_prints_response(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("Hello", " world")
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
         result = runner.invoke(app, ["ask", "question", "--model", "ollama/llama3:8b"])
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_scope_wiki_reaches_ask_stream(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
         result = runner.invoke(app, ["ask", "--scope", "wiki", "q"])
         assert result.exit_code == 0
         assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") == "wiki"
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_scope_raw_reaches_ask_stream(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
         result = runner.invoke(app, ["ask", "--scope", "raw", "q"])
         assert result.exit_code == 0
         assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") == "raw"
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_default_scope_is_mixed_pool(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
         result = runner.invoke(app, ["ask", "q"])
         assert result.exit_code == 0
         assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") is None
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_invalid_scope_exits_nonzero(self, mock_sync, mock_svc):
         result = runner.invoke(app, ["ask", "--scope", "bogus", "q"])
         assert result.exit_code != 0
         mock_svc.searcher.ask_stream.assert_not_called()
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_scope_reaches_ask_raw(self, mock_sync, mock_svc):
         from lilbee.query import AskResult
 
@@ -326,7 +326,7 @@ class TestDataDirFlag:
 
 class TestAutoSync:
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.data.ingest.sync",
         new_callable=AsyncMock,
         return_value=SyncResult(added=["new.pdf"]),
     )
@@ -374,7 +374,7 @@ class TestAddPathsBackground:
         src.write_text("content")
         con = Console()
         with (
-            mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
             mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
         ):
             add_paths([src], con, chat_mode=True)
@@ -1158,7 +1158,7 @@ class TestRemove:
     """Test remove command."""
 
     def test_remove_existing_source(self, isolated_env, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["test.pdf"], not_found=[]
@@ -1169,7 +1169,7 @@ class TestRemove:
         assert "test.pdf" in result.output
 
     def test_remove_nonexistent_source(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["nope.pdf"]
@@ -1179,7 +1179,7 @@ class TestRemove:
         assert "Not found" in result.output
 
     def test_remove_multiple_sources(self, isolated_env, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["a.pdf", "b.pdf"], not_found=[]
@@ -1190,7 +1190,7 @@ class TestRemove:
         assert "b.pdf" in result.output
 
     def test_remove_mixed_existing_and_not(self, isolated_env, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["a.pdf"], not_found=["nope.pdf"]
@@ -1201,7 +1201,7 @@ class TestRemove:
         assert "Not found" in result.output
 
     def test_remove_with_delete_flag(self, isolated_env, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
@@ -1218,7 +1218,7 @@ class TestRemove:
         assert not doc.exists()
 
     def test_remove_json(self, isolated_env, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=["test.pdf"], not_found=[]
@@ -1230,7 +1230,7 @@ class TestRemove:
         assert "test.pdf" in data["removed"]
 
     def test_remove_json_not_found_exits_1(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["nope.pdf"]
@@ -1243,7 +1243,7 @@ class TestRemove:
 
     def test_remove_delete_path_traversal_skips(self, isolated_env, mock_svc):
         """Path traversal in name with --delete is caught and skipped."""
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         traversal_name = "../../etc/passwd"
         mock_svc.store.remove_documents.return_value = RemoveResult(
@@ -1633,7 +1633,7 @@ class TestStatusJson:
 
 
 class TestSyncJson:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_json_empty(self, mock_sync):
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 0
@@ -1643,7 +1643,7 @@ class TestSyncJson:
         assert data["unchanged"] == 0
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.data.ingest.sync",
         new_callable=AsyncMock,
         return_value=SyncResult(added=["new.txt"], removed=["old.txt"], unchanged=2),
     )
@@ -1657,7 +1657,7 @@ class TestSyncJson:
 
 
 class TestRebuildJson:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_rebuild_json(self, mock_sync, isolated_env):
         result = runner.invoke(app, ["--json", "rebuild"])
         assert result.exit_code == 0
@@ -1667,7 +1667,7 @@ class TestRebuildJson:
 
 
 class TestAddJson:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "manual.txt"
         src.parent.mkdir()
@@ -1679,7 +1679,7 @@ class TestAddJson:
         assert "manual.txt" in data["copied"]
         assert "sync" in data
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json_skipped_no_stdout_pollution(self, mock_sync, isolated_env, tmp_path):
         """JSON add with existing file returns skipped list, no console warnings."""
         src = tmp_path / "source" / "notes.txt"
@@ -1702,7 +1702,7 @@ class TestAddJson:
 
 
 class TestAskJson:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json(self, mock_sync, mock_svc):
         from lilbee.query import AskResult
 
@@ -1733,7 +1733,7 @@ class TestAskJson:
         assert "vector" not in data["sources"][0]
         assert "distance" in data["sources"][0]
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
         from lilbee.query import AskResult
 
@@ -1750,14 +1750,14 @@ class TestAskJson:
 class TestAskModelNotFound:
     """CLI should show a friendly error when the model doesn't exist."""
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_model_not_found_human(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.side_effect = RuntimeError("Model 'bad' not found")
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_model_not_found_json(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_raw.side_effect = RuntimeError("Model 'bad' not found")
         result = runner.invoke(app, ["--json", "ask", "hello"])
@@ -1769,7 +1769,7 @@ class TestAskModelNotFound:
 class TestAskProviderError:
     """ProviderError from the LLM backend must be caught, not dumped as a traceback."""
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_provider_error_human(self, mock_sync, mock_svc):
         from lilbee.providers.base import ProviderError
 
@@ -1778,7 +1778,7 @@ class TestAskProviderError:
         assert result.exit_code == 1
         assert "ghost" in result.output
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_provider_error_json(self, mock_sync, mock_svc):
         from lilbee.providers.base import ProviderError
 
@@ -1794,33 +1794,33 @@ class TestBackendUnavailable:
 
     _ERR = RuntimeError("Connection refused")
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_sync_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 1
         assert "Connection refused" in result.output
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_sync_backend_unavailable_json(self, mock_sync):
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "Connection refused" in data["error"]
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_rebuild_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 1
         assert "Connection refused" in result.output
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_rebuild_backend_unavailable_json(self, mock_sync):
         result = runner.invoke(app, ["--json", "rebuild"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "Connection refused" in data["error"]
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_add_backend_unavailable(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
@@ -1829,7 +1829,7 @@ class TestBackendUnavailable:
         assert result.exit_code == 1
         assert "Connection refused" in result.output
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_add_backend_unavailable_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
@@ -1839,7 +1839,7 @@ class TestBackendUnavailable:
         data = json.loads(result.output.strip())
         assert "Connection refused" in data["error"]
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
     def test_auto_sync_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
@@ -1849,14 +1849,14 @@ class TestBackendUnavailable:
 class TestEnsureChatModelWiring:
     """Verify that ask and chat call ensure_chat_model before running."""
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_ensure_chat_model(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
         with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
             runner.invoke(app, ["ask", "test"])
             mock_ensure.assert_called_once()
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_validate_model(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
         runner.invoke(app, ["ask", "test"])
@@ -1871,7 +1871,7 @@ class TestEnsureChatModelWiring:
 class TestOcrFlags:
     """Tests for --ocr/--no-ocr and --ocr-timeout flags on sync, add, rebuild."""
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ocr_timeout_on_sync(self, mock_sync):
         """--ocr-timeout sets cfg.ocr_timeout for sync."""
         result = runner.invoke(app, ["sync", "--ocr", "--ocr-timeout=60"])
@@ -1896,7 +1896,7 @@ class TestOcrFlags:
         assert cfg.enable_ocr is True
         assert cfg.ocr_timeout == 120.0
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_no_ocr_timeout_leaves_default(self, mock_sync):
         """Without --ocr-timeout, cfg.ocr_timeout stays at default."""
         cfg.ocr_timeout = 120.0
@@ -1904,7 +1904,7 @@ class TestOcrFlags:
         assert result.exit_code == 0
         assert cfg.ocr_timeout == 120.0
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_no_ocr_flag_disables(self, mock_sync):
         """--no-ocr sets cfg.enable_ocr to False."""
         result = runner.invoke(app, ["sync", "--no-ocr"])
@@ -1954,7 +1954,7 @@ class TestIngestShutdownError:
         """RuntimeError from executor shutdown is converted to CancelledError."""
         import asyncio
 
-        from lilbee.ingest import ingest_batch
+        from lilbee.data.ingest import ingest_batch
 
         shutdown_err = RuntimeError("cannot schedule new futures after shutdown")
 
@@ -1963,7 +1963,7 @@ class TestIngestShutdownError:
             updated: list[str] = []
             failed: list[str] = []
             with (
-                mock.patch("lilbee.ingest.pipeline._ingest_file", side_effect=shutdown_err),
+                mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=shutdown_err),
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(
@@ -1982,7 +1982,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_triggers_crawl(self, mock_sync, mock_crawl, mock_avail):
         """Adding a URL calls the crawler instead of copying files."""
         result = runner.invoke(app, ["add", "https://example.com"])
@@ -1993,7 +1993,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl, mock_avail):
         """--crawl flag is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
@@ -2002,7 +2002,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_depth(self, mock_sync, mock_crawl, mock_avail):
         """--depth is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "--depth", "3", "https://example.com"])
@@ -2011,7 +2011,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_max_pages(self, mock_sync, mock_crawl, mock_avail):
         """--max-pages is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "--max-pages", "10", "https://example.com"])
@@ -2020,7 +2020,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_defaults_include_subdomains_false(self, mock_sync, mock_crawl, mock_avail):
         """default scope is the starting host only, no subdomains."""
         result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
@@ -2029,7 +2029,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_opt_in_include_subdomains(self, mock_sync, mock_crawl, mock_avail):
         """--include-subdomains broadens scope to sibling subdomains."""
         result = runner.invoke(
@@ -2040,7 +2040,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """URL add in JSON mode returns structured output."""
         from pathlib import Path
@@ -2054,7 +2054,7 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_output_is_clean(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """--json add with a URL produces clean JSON with no crawl4ai prefix text."""
         from pathlib import Path

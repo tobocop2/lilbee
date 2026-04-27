@@ -30,8 +30,8 @@ from lilbee.cli.helpers import (
 )
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
+from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
-from lilbee.store import SearchScope, scope_to_chunk_type
 
 _scope_option = typer.Option(
     SearchScope.BOTH,

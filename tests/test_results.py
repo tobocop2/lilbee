@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from lilbee.core.results import group, to_dicts
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 
 
 def _chunk(

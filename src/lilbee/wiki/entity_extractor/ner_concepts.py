@@ -20,8 +20,8 @@ from lilbee.wiki.shared import is_valid_label, make_slug
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
+    from lilbee.data.store import SearchChunk
     from lilbee.providers.base import LLMProvider
-    from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
 

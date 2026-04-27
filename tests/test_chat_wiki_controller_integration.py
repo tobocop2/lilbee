@@ -126,13 +126,13 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         exc: list[BaseException] = []
 
-        from lilbee.ingest import SyncResult
+        from lilbee.data.ingest import SyncResult
 
         def _worker() -> None:
             try:
                 with (
                     patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-                    patch("lilbee.ingest.sync", new=MagicMock(return_value=None)),
+                    patch("lilbee.data.ingest.sync", new=MagicMock(return_value=None)),
                     patch("lilbee.asyncio_loop.run", new=MagicMock(return_value=SyncResult())),
                 ):
                     screen._do_add(src, reporter)
@@ -181,7 +181,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                         "lilbee.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
-                                "lilbee.ingest", fromlist=["SyncResult"]
+                                "lilbee.data.ingest", fromlist=["SyncResult"]
                             ).SyncResult()
                         ),
                     ),
@@ -234,7 +234,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                         "lilbee.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
-                                "lilbee.ingest", fromlist=["SyncResult"]
+                                "lilbee.data.ingest", fromlist=["SyncResult"]
                             ).SyncResult()
                         ),
                     ),
@@ -344,7 +344,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
     async def fake_sync(*, quiet, on_progress):
         on_progress(
@@ -359,7 +359,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:  # pragma: no cover - re-raised
             exc.append(e)
@@ -377,7 +377,7 @@ def test_do_sync_done_event_reports_completion() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
     from lilbee.progress import EventType, SyncDoneEvent
 
     screen = ChatScreen.__new__(ChatScreen)
@@ -394,7 +394,7 @@ def test_do_sync_done_event_reports_completion() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:  # pragma: no cover - re-raised
             exc.append(e)
@@ -421,7 +421,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
     screen = ChatScreen.__new__(ChatScreen)
     screen._auto_sync = True  # type: ignore[attr-defined]
@@ -434,7 +434,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:
             captured.append(e)
@@ -465,7 +465,7 @@ def test_do_sync_translates_cancellation() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:
             captured.append(e)
@@ -721,7 +721,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
                 patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-                patch("lilbee.ingest.sync", side_effect=fake_sync),
+                patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
                 screen._do_add(src, reporter)
         except BaseException as e:  # pragma: no cover
@@ -770,7 +770,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:  # pragma: no cover
             exc.append(e)

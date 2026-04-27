@@ -21,8 +21,8 @@ os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 
 from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
-from lilbee.ingest import file_hash
-from lilbee.store import CitationRecord
+from lilbee.data.ingest import file_hash
+from lilbee.data.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -62,7 +62,7 @@ _patch_executor_daemon_threads()
 # Silence stray lancedb thread shutdown errors globally so they can't wedge
 # the test runner via threading.excepthook propagation on ubuntu 3.11.
 if sys.version_info < (3, 12):
-    from lilbee.store import install_lancedb_thread_error_suppressor
+    from lilbee.data.store import install_lancedb_thread_error_suppressor
 
     install_lancedb_thread_error_suppressor()
 

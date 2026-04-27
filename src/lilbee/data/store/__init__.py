@@ -1,6 +1,6 @@
 """LanceDB vector store package.
 
-Public re-exports preserve the historical ``from lilbee.store import X`` API
+Public re-exports preserve the historical ``from lilbee.data.store import X`` API
 after the module was decomposed into ``types``, ``schema``, ``ranking``,
 ``lance_helpers``, and ``core`` submodules. Private helpers live on their
 submodules; tests and patches address them at the submodule path.

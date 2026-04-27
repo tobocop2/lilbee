@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 from lilbee.cli import theme
-from lilbee.ingest import sync
+from lilbee.data.ingest import sync
 from lilbee.progress import EventType, ExtractEvent, FileStartEvent, ProgressEvent, SyncDoneEvent
 
 if TYPE_CHECKING:

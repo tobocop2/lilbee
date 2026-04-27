@@ -25,16 +25,16 @@ from lilbee.concepts import ConceptGraph
 from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.services import reset_services
+from lilbee.data.store import Store
 from lilbee.embedder import Embedder
 from lilbee.providers.factory import create_provider
 from lilbee.query import Searcher
 from lilbee.reranker import Reranker
-from lilbee.store import Store
 
 if TYPE_CHECKING:
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
+    from lilbee.data.store import SearchChunk
     from lilbee.providers.base import LLMProvider
-    from lilbee.store import SearchChunk
 
 
 @contextmanager
@@ -143,7 +143,7 @@ class Lilbee:
 
     def sync(self, *, quiet: bool = True) -> SyncResult:
         """Sync documents to the vector store. Returns what changed."""
-        from lilbee.ingest import sync as _sync
+        from lilbee.data.ingest import sync as _sync
 
         with _swap_config(self._config):
             return asyncio.run(_sync(quiet=quiet))
@@ -158,7 +158,7 @@ class Lilbee:
         Copies each path into the documents directory, then syncs.
         """
         from lilbee.cli.helpers import copy_files
-        from lilbee.ingest import sync as _sync
+        from lilbee.data.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
         with _swap_config(self._config):
@@ -192,7 +192,7 @@ class Lilbee:
 
     def rebuild(self) -> SyncResult:
         """Rebuild the entire index from scratch."""
-        from lilbee.ingest import sync as _sync
+        from lilbee.data.ingest import sync as _sync
 
         with _swap_config(self._config):
             return asyncio.run(_sync(force_rebuild=True, quiet=True))

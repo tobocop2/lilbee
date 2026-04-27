@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import yaml
 
 from lilbee.core.config import Config
-from lilbee.store import CitationRecord, SearchChunk
+from lilbee.data.store import CitationRecord, SearchChunk
 from lilbee.wiki.cache import _normalize_whitespace
 from lilbee.wiki.citation import ParsedCitation
 

@@ -6,7 +6,7 @@ Pure functions — no LLM dependency. Operates on markdown text and citation rec
 from dataclasses import dataclass
 from enum import Enum
 
-from lilbee.store import CitationRecord
+from lilbee.data.store import CitationRecord
 from lilbee.wiki.grammar import (
     CITATION_BLOCK_COMMENT,
     CITATION_BLOCK_SEP,

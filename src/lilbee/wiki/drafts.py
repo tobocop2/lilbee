@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lilbee.store import Store
+from lilbee.data.store import Store
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,

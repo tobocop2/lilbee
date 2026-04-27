@@ -23,7 +23,7 @@ def install_lancedb_thread_error_suppressor() -> None:
     lancedb has no ``close()`` API and its internal event loop thread crashes
     during Python interpreter teardown. The exception is harmless (the process
     is exiting anyway) but pollutes CLI/TUI output. This is opt-in so importing
-    ``lilbee.store`` has no hidden side effects; call it once from the CLI/TUI
+    ``lilbee.data.store`` has no hidden side effects; call it once from the CLI/TUI
     bootstrap.
     """
     original = threading.excepthook

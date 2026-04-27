@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
-from lilbee.chunk import build_chunking_config, chunk_text
+from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
-from lilbee.ingest.types import (
+from lilbee.data.ingest.types import (
     _MARKDOWN_OUTPUT,
     _MIN_MEANINGFUL_CHARS,
     _PDF_CONTENT_TYPE,
@@ -25,7 +25,7 @@ from lilbee.ingest.types import (
     ExtractMode,
 )
 from lilbee.progress import DetailedProgressCallback, noop_callback
-from lilbee.store import CHUNK_TYPE_RAW
+from lilbee.data.store import CHUNK_TYPE_RAW
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)

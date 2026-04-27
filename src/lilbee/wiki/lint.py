@@ -14,8 +14,8 @@ from pathlib import Path
 
 from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
-from lilbee.ingest import file_hash
-from lilbee.store import CitationRecord, Store
+from lilbee.data.ingest import file_hash
+from lilbee.data.store import CitationRecord, Store
 from lilbee.wiki.citation import (
     CitationStatus,
     find_unmarked_claims,

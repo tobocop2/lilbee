@@ -102,7 +102,7 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
     from lilbee.core.services import reset_services as reset_provider
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
     from lilbee.model_manager import reset_model_manager
 
     snapshot = cfg.model_copy()
@@ -165,7 +165,7 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
     from lilbee.core.services import reset_services as reset_provider
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
     from lilbee.model_manager import reset_model_manager
 
     snapshot = cfg.model_copy()

@@ -15,7 +15,7 @@ import numpy as np
 
 from lilbee.core.config import Config
 from lilbee.core.services import get_services
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 from lilbee.wiki.citation import strip_citation_block
 from lilbee.wiki.shared import clean_label_for_display, is_valid_label
 
@@ -129,7 +129,7 @@ def _embedding_faithfulness_score(
     stub-driven test may hand in off-shape vectors and crashing the
     whole pipeline on the shape-check hides the real assertion.
     """
-    from lilbee.store import cosine_sim
+    from lilbee.data.store import cosine_sim
 
     mean_vec = _mean_vector(source_vectors)
     if not mean_vec or not body_vec:

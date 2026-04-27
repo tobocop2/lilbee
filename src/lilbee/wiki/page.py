@@ -16,18 +16,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from lilbee.chunk import chunk_text
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
 from lilbee.core.services import get_services
-from lilbee.providers.base import LLMProvider
-from lilbee.reasoning import strip_reasoning
-from lilbee.store import (
+from lilbee.data.chunk import chunk_text
+from lilbee.data.store import (
     CHUNK_TYPE_WIKI,
     CitationRecord,
     SearchChunk,
     Store,
     escape_sql_string,
 )
+from lilbee.providers.base import LLMProvider
+from lilbee.reasoning import strip_reasoning
 from lilbee.wiki.citation import (
     ParsedCitation,
     extract_body,

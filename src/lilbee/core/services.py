@@ -15,12 +15,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lilbee.clustering import Clusterer
     from lilbee.concepts import ConceptGraph
+    from lilbee.data.store import Store
     from lilbee.embedder import Embedder
     from lilbee.providers.base import LLMProvider
     from lilbee.query import Searcher
     from lilbee.registry import ModelRegistry
     from lilbee.reranker import Reranker
-    from lilbee.store import Store
 
 
 @dataclass(frozen=True)
@@ -57,12 +57,12 @@ def get_services() -> Services:
     from lilbee.clustering import Clusterer
     from lilbee.concepts import ConceptGraph
     from lilbee.core.config import cfg
+    from lilbee.data.store import Store
     from lilbee.embedder import Embedder
     from lilbee.providers.factory import create_provider
     from lilbee.query import Searcher
     from lilbee.registry import ModelRegistry
     from lilbee.reranker import Reranker
-    from lilbee.store import Store
 
     provider = create_provider(cfg)
     store = Store(cfg)

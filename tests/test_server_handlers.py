@@ -9,9 +9,9 @@ import pytest
 
 import lilbee.core.services as svc_mod
 from lilbee.core.config import cfg
-from lilbee.ingest import SyncResult
+from lilbee.data.ingest import SyncResult
+from lilbee.data.store import SearchChunk
 from lilbee.server import handlers
-from lilbee.store import SearchChunk
 
 _SAMPLE_CHUNK = SearchChunk(
     source="a.pdf",
@@ -434,7 +434,7 @@ class TestSyncStream:
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
         non_empty = [e for e in events if e]
@@ -460,7 +460,7 @@ class TestSyncStream:
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
         non_empty = [e for e in events if e]
@@ -479,7 +479,7 @@ class TestSyncStream:
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=slow_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=slow_sync):
             events = [e async for e in handlers.sync_stream()]
 
         done_events = [e for e in events if e.startswith("event: done")]
@@ -504,7 +504,7 @@ class TestSyncStream:
             return SyncResult()
 
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        with patch("lilbee.ingest.sync", side_effect=blocking_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=blocking_sync):
             gen = handlers.sync_stream()
             async for event in gen:
                 if event and "file_start" in event:
@@ -526,7 +526,7 @@ class TestAddFiles:
         async def fake_sync(**kwargs):
             return SyncResult()
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = []
             async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
                 events.append(event)
@@ -540,7 +540,7 @@ class TestAddFiles:
         async def failing_sync(**kwargs):
             raise RuntimeError("sync blew up")
 
-        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
             events = []
             async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
                 events.append(event)
@@ -567,7 +567,7 @@ class TestSyncStreamDoneDelivery:
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=instant_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=instant_sync):
             events = [e async for e in handlers.sync_stream()]
 
         # The sync-emitted done (SyncDoneEvent counts) must be delivered, and
@@ -591,7 +591,7 @@ class TestSyncStreamDoneDelivery:
                 on_progress("done", SyncDoneEvent(added=0, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=noop_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=noop_sync):
             events = [e async for e in handlers.sync_stream()]
 
         done_events = [e for e in events if e.startswith("event: done")]
@@ -623,7 +623,7 @@ class TestSyncStreamDoneDelivery:
         async def failing_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             raise RuntimeError("boom")
 
-        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
             events = [e async for e in handlers.sync_stream()]
 
         error_events = [e for e in events if e.startswith("event: error")]
@@ -642,7 +642,7 @@ class TestSyncStreamDoneDelivery:
             observed["force_rebuild"] = force_rebuild
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             _ = [e async for e in handlers.sync_stream(force_rebuild=True)]
 
         assert observed["force_rebuild"] is True
@@ -656,7 +656,7 @@ class TestSyncStreamDoneDelivery:
             observed["force_rebuild"] = force_rebuild
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             _ = [e async for e in handlers.sync_stream()]
 
         assert observed["force_rebuild"] is False
@@ -1166,7 +1166,7 @@ class TestModelsShow:
 
 class TestDeleteDocuments:
     async def test_removes_known_documents(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = await handlers.delete_documents(["a.md"])
@@ -1174,7 +1174,7 @@ class TestDeleteDocuments:
         assert result.not_found == []
 
     async def test_not_found(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["missing.md"]
@@ -1184,7 +1184,7 @@ class TestDeleteDocuments:
         assert result.not_found == ["missing.md"]
 
     async def test_delete_files_removes_from_disk(self, mock_svc, tmp_path):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         cfg.documents_dir = tmp_path
         f = tmp_path / "a.md"

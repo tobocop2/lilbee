@@ -185,7 +185,7 @@ def _default(
 
     # Swallow lancedb's shutdown-time thread noise — opt-in side effect, not
     # imposed on library consumers of lilbee.
-    from lilbee.store import install_lancedb_thread_error_suppressor
+    from lilbee.data.store import install_lancedb_thread_error_suppressor
 
     install_lancedb_thread_error_suppressor()
 

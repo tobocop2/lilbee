@@ -7,11 +7,11 @@ import logging
 import os
 from pathlib import Path
 
-from lilbee.code_chunker import is_code_file
+from lilbee.data.code_chunker import is_code_file
 from lilbee.core.config import cfg
 from lilbee.core.platform import is_ignored_dir
 from lilbee.core.security import validate_path_within
-from lilbee.ingest.types import _DOCUMENT_EXTENSION_MAP
+from lilbee.data.ingest.types import _DOCUMENT_EXTENSION_MAP
 
 log = logging.getLogger(__name__)
 

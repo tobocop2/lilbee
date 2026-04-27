@@ -21,10 +21,10 @@ from rich.progress import (
 
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
-from lilbee.ingest.code import ingest_code_sync
-from lilbee.ingest.discovery import classify_file, discover_files, file_hash
-from lilbee.ingest.extract import ingest_document, ingest_markdown
-from lilbee.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
+from lilbee.data.ingest.code import ingest_code_sync
+from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
+from lilbee.data.ingest.extract import ingest_document, ingest_markdown
+from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
 from lilbee.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
@@ -82,9 +82,9 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
     """
     if not cfg.wiki or not changed_sources:
         return
-    # circular: the wiki layer imports lilbee.ingest.file_hash, so these
+    # circular: the wiki layer imports lilbee.data.ingest.file_hash, so these
     # stay function-local to break the cycle at the hook-entry boundary.
-    from lilbee.store import SearchChunk
+    from lilbee.data.store import SearchChunk
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
     from lilbee.wiki.entity_extractor import EntityKind, get_entity_extractor
     from lilbee.wiki.shared import (

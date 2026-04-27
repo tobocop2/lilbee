@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.entity_extractor.ner_concepts import (
     NerConceptsExtractor,

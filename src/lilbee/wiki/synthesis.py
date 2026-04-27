@@ -24,9 +24,9 @@ from typing import cast
 import yaml
 
 from lilbee.core.config import Config
+from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
-from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.batch import (
     _finalize_section,
     _hash_existing_sources,
@@ -78,7 +78,7 @@ def _generate_synthesis_page(
     Returns the path to the generated page, or None on failure.
     """
     # circular: ingest tooling for source hashing lives outside this module.
-    from lilbee.ingest import file_hash
+    from lilbee.data.ingest import file_hash
 
     all_chunks = [c for cs in chunks_by_source.values() for c in cs]
     if not all_chunks:

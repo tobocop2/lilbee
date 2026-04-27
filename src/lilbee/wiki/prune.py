@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 
 from lilbee.core.config import Config, cfg
-from lilbee.store import Store
+from lilbee.data.store import Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.shared import (

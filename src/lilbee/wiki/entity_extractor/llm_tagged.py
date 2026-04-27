@@ -12,8 +12,8 @@ from lilbee.wiki.entity_extractor.base import ExtractedEntity
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
+    from lilbee.data.store import SearchChunk
     from lilbee.providers.base import LLMProvider
-    from lilbee.store import SearchChunk
 
 
 class LlmTaggedExtractor:

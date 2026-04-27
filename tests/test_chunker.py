@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.chunk import chunk_text
+from lilbee.data.chunk import chunk_text
 
 
 class TestChunkText:
@@ -65,8 +65,8 @@ class TestChunkText:
 
     def test_use_semantic_false_bypasses_semantic(self, monkeypatch):
         """Caller can opt out of semantic chunking even when cfg has it enabled."""
-        from lilbee.chunk import build_chunking_config
         from lilbee.core.config import cfg
+        from lilbee.data.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         bypassed = build_chunking_config(use_semantic=False)
@@ -78,8 +78,8 @@ class TestChunkText:
 class TestBuildChunkingConfig:
     def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
         """Semantic path requires an EmbeddingConfig or kreuzberg silently falls back."""
-        from lilbee.chunk import build_chunking_config
         from lilbee.core.config import cfg
+        from lilbee.data.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "topic_threshold", 0.6)
@@ -90,8 +90,8 @@ class TestBuildChunkingConfig:
 
     def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
         """With an embedding attached kreuzberg honors max_chars on the semantic path."""
-        from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
         from lilbee.core.config import cfg
+        from lilbee.data.chunk import CHARS_PER_TOKEN, build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
@@ -99,8 +99,8 @@ class TestBuildChunkingConfig:
         assert result.max_chars == 512 * CHARS_PER_TOKEN
 
     def test_char_budget_when_disabled(self, monkeypatch):
-        from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
         from lilbee.core.config import cfg
+        from lilbee.data.chunk import CHARS_PER_TOKEN, build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
@@ -113,8 +113,8 @@ class TestBuildChunkingConfig:
 
     def test_disabled_does_not_attach_embedding(self, monkeypatch):
         """When semantic is off, no EmbeddingConfig is built; avoids the ONNX download."""
-        from lilbee.chunk import build_chunking_config
         from lilbee.core.config import cfg
+        from lilbee.data.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         result = build_chunking_config()
@@ -165,7 +165,7 @@ class TestCodeChunker:
     """Tree-sitter code chunker tests — grouped to avoid fork-unsafe C parser collisions."""
 
     def test_python_function_extraction(self):
-        from lilbee.code_chunker import chunk_code
+        from lilbee.data.code_chunker import chunk_code
 
         code = '''
 def hello():
@@ -194,7 +194,7 @@ class Greeter:
             path.unlink()
 
     def test_unsupported_extension_returns_fallback(self):
-        from lilbee.code_chunker import chunk_code
+        from lilbee.data.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".xyz_unsupported", mode="w", delete=False) as f:
             f.write("some content here")
@@ -208,7 +208,7 @@ class Greeter:
             path.unlink()
 
     def test_is_code_file_common_extensions(self):
-        from lilbee.code_chunker import is_code_file
+        from lilbee.data.code_chunker import is_code_file
 
         assert is_code_file(Path("main.py"))
         assert is_code_file(Path("app.js"))
@@ -216,13 +216,13 @@ class Greeter:
         assert is_code_file(Path("server.go"))
 
     def test_is_code_file_non_code(self):
-        from lilbee.code_chunker import is_code_file
+        from lilbee.data.code_chunker import is_code_file
 
         assert not is_code_file(Path("photo.png"))
         assert not is_code_file(Path("document.pdf"))
 
     def test_detect_language_python(self):
-        from lilbee.code_chunker import _detect_language
+        from lilbee.data.code_chunker import _detect_language
 
         result = _detect_language(Path("main.py"))
         assert result is not None
@@ -231,24 +231,24 @@ class Greeter:
     def test_ensure_language_exception_returns_false(self):
         from unittest.mock import patch
 
-        from lilbee.code_chunker import _ensure_language
+        from lilbee.data.code_chunker import _ensure_language
 
-        with patch("lilbee.code_chunker.has_language", side_effect=RuntimeError("boom")):
+        with patch("lilbee.data.code_chunker.has_language", side_effect=RuntimeError("boom")):
             assert _ensure_language("python") is False
 
     def test_find_line_no_match_returns_start(self):
-        from lilbee.code_chunker import find_line
+        from lilbee.data.code_chunker import find_line
 
         lines = ["aaa", "bbb", "ccc"]
         assert find_line("zzz", lines, 0) == 1
 
     def test_extract_symbols_non_list_structure(self):
-        from lilbee.code_chunker import _extract_symbols
+        from lilbee.data.code_chunker import _extract_symbols
 
         assert _extract_symbols({"structure": "not a list"}, "code") == []
 
     def test_extract_symbols_non_dict_entry(self):
-        from lilbee.code_chunker import _extract_symbols
+        from lilbee.data.code_chunker import _extract_symbols
 
         result = {"structure": ["not a dict", {"name": "fn", "kind": "function", "span": {}}]}
         symbols = _extract_symbols(result, "code")
@@ -258,7 +258,7 @@ class Greeter:
     def test_ensure_language_false_triggers_fallback(self):
         from unittest.mock import patch
 
-        from lilbee.code_chunker import chunk_code
+        from lilbee.data.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n" * 20)
@@ -266,7 +266,7 @@ class Greeter:
             path = Path(f.name)
 
         try:
-            with patch("lilbee.code_chunker._ensure_language", return_value=False):
+            with patch("lilbee.data.code_chunker._ensure_language", return_value=False):
                 chunks = chunk_code(path)
                 assert isinstance(chunks, list)
         finally:
@@ -275,7 +275,7 @@ class Greeter:
     def test_process_exception_triggers_fallback(self):
         from unittest.mock import patch
 
-        from lilbee.code_chunker import chunk_code
+        from lilbee.data.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n" * 20)
@@ -287,8 +287,8 @@ class Greeter:
         # preloaded short-circuit to the no-language fallback first.
         try:
             with (
-                patch("lilbee.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.code_chunker.process", side_effect=RuntimeError("parse fail")),
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", side_effect=RuntimeError("parse fail")),
             ):
                 chunks = chunk_code(path)
                 assert isinstance(chunks, list)
@@ -298,7 +298,7 @@ class Greeter:
     def test_empty_symbols_triggers_fallback(self):
         from unittest.mock import patch
 
-        from lilbee.code_chunker import chunk_code
+        from lilbee.data.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n" * 20)
@@ -310,9 +310,9 @@ class Greeter:
             # no-symbols branch deterministically, regardless of whether
             # tree-sitter Python is installed on the host.
             with (
-                patch("lilbee.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.code_chunker.process", return_value={}),
-                patch("lilbee.code_chunker._extract_symbols", return_value=[]),
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value={}),
+                patch("lilbee.data.code_chunker._extract_symbols", return_value=[]),
             ):
                 chunks = chunk_code(path)
                 assert isinstance(chunks, list)
@@ -323,9 +323,9 @@ class Greeter:
         """The early-return branch fires when has_language already says yes."""
         from unittest.mock import patch
 
-        from lilbee.code_chunker import _ensure_language
+        from lilbee.data.code_chunker import _ensure_language
 
-        with patch("lilbee.code_chunker.has_language", return_value=True) as has:
+        with patch("lilbee.data.code_chunker.has_language", return_value=True) as has:
             assert _ensure_language("python") is True
             has.assert_called_once_with("python")
 
@@ -346,7 +346,7 @@ class TestChunkTextEmptyResult:
     def test_returns_empty_when_no_chunks(self):
         from unittest.mock import MagicMock, patch
 
-        from lilbee.chunk import chunk_text
+        from lilbee.data.chunk import chunk_text
 
         mock_result = MagicMock()
         mock_result.chunks = []

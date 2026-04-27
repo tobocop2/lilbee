@@ -229,7 +229,7 @@ def sync_cmd(
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     try:
         result = asyncio.run(sync(quiet=cfg.json_mode))
@@ -254,7 +254,7 @@ def rebuild(
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     try:
         result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode))
@@ -322,7 +322,7 @@ def add(
                 )
 
         if cfg.json_mode:
-            from lilbee.ingest import sync
+            from lilbee.data.ingest import sync
 
             copy_result = CopyResult()
             if file_paths:
@@ -343,7 +343,7 @@ def add(
             add_paths(file_paths, console, force=force)
         elif urls:
             # URLs already saved; just trigger sync
-            from lilbee.ingest import sync
+            from lilbee.data.ingest import sync
 
             result = asyncio.run(sync())
             console.print(result)

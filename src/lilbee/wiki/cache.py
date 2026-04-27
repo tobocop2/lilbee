@@ -12,7 +12,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, parse_frontmatter
 
 _WHITESPACE_RE = re.compile(r"\s+")

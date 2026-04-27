@@ -8,7 +8,8 @@ import pytest
 import lilbee.core.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.crawl_task import clear_tasks
-from lilbee.ingest import SyncResult
+from lilbee.data.ingest import SyncResult
+from lilbee.data.store import SearchChunk
 from lilbee.mcp import (
     add,
     crawl,
@@ -33,7 +34,6 @@ from lilbee.mcp import (
     wiki_synthesize,
     wiki_update,
 )
-from lilbee.store import SearchChunk
 
 
 @pytest.fixture(autouse=True)
@@ -235,14 +235,14 @@ class TestStatus:
 
 
 class TestSync:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_sync_empty(self, mock_sync):
         result = await sync()
         assert result["added"] == []
         assert result["unchanged"] == 0
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.data.ingest.sync",
         new_callable=AsyncMock,
         return_value=SyncResult(added=["test.txt"]),
     )
@@ -254,7 +254,7 @@ class TestSync:
 
 class TestRemove:
     def test_removes_known_file(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = remove(["a.md"])
@@ -262,7 +262,7 @@ class TestRemove:
         assert result["not_found"] == []
 
     def test_not_found(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["missing.md"]
@@ -271,7 +271,7 @@ class TestRemove:
         assert result["not_found"] == ["missing.md"]
 
     def test_delete_files_removes_from_disk(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = remove(["a.md"], delete_files=True)
@@ -279,7 +279,7 @@ class TestRemove:
 
     def test_delete_files_path_traversal_skipped(self, mock_svc):
         """Path traversal names are caught and skipped during delete_files."""
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         traversal_name = "../../etc/passwd"
         mock_svc.store.remove_documents.return_value = RemoveResult(
@@ -409,7 +409,7 @@ class TestInit:
 
 
 class TestAdd:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, mock_sync, tmp_path):
         src = tmp_path / "test.txt"
         src.write_text("hello world")
@@ -423,20 +423,20 @@ class TestAdd:
         assert (cfg.documents_dir / "test.txt").read_text() == "hello world"
         mock_sync.assert_awaited_once()
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_nonexistent_path(self, mock_sync, tmp_path):
         result = await add(["/no/such/path.txt"])
 
         assert "/no/such/path.txt" in result["errors"]
         assert result["copied"] == []
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_nonexistent_has_warning(self, mock_sync):
         """Nonexistent paths produce a warning field (BEE-dlj)."""
         result = await add(["/no/such/path.txt"])
         assert "warning" in result
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
         (cfg.documents_dir / "exist.txt").write_text("old")
         src = tmp_path / "exist.txt"
@@ -448,7 +448,7 @@ class TestAdd:
         assert result["copied"] == []
         assert (cfg.documents_dir / "exist.txt").read_text() == "old"
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_with_force(self, mock_sync, tmp_path):
         (cfg.documents_dir / "exist.txt").write_text("old")
         src = tmp_path / "exist.txt"
@@ -460,7 +460,7 @@ class TestAdd:
         assert result["skipped"] == []
         assert (cfg.documents_dir / "exist.txt").read_text() == "new"
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_directory(self, mock_sync, tmp_path):
         src_dir = tmp_path / "mydir"
         src_dir.mkdir()
@@ -471,7 +471,7 @@ class TestAdd:
         assert "mydir" in result["copied"]
         assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_with_enable_ocr(self, mock_sync, tmp_path):
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-fake")
@@ -482,7 +482,7 @@ class TestAdd:
         # enable_ocr should be restored after the call
         assert cfg.enable_ocr == original_ocr
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
     async def test_add_enable_ocr_restored_on_error(self, mock_sync, tmp_path):
         src = tmp_path / "file.txt"
         src.write_text("content")
@@ -493,7 +493,7 @@ class TestAdd:
 
         assert cfg.enable_ocr == original_ocr
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, mock_sync):
         result = await add([])
 
@@ -502,7 +502,7 @@ class TestAdd:
         assert result["errors"] == []
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.data.ingest.sync",
         new_callable=AsyncMock,
         return_value=SyncResult(failed=["bad.md"]),
     )
@@ -537,7 +537,7 @@ class TestAddWithUrls:
             assert "pip install" in result["error"].lower()
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """URLs in paths list are routed to the crawler."""
@@ -549,7 +549,7 @@ class TestAddWithUrls:
         mock_crawl.assert_awaited_once()
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
@@ -558,7 +558,7 @@ class TestAddWithUrls:
         assert result["crawled"] == 0
         assert "/nonexistent" in result["errors"]
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url_with_enable_ocr(self, mock_crawl, mock_sync, isolated_env):
         """enable_ocr is temporarily applied during sync."""
@@ -569,7 +569,7 @@ class TestAddWithUrls:
         assert cfg.enable_ocr == old_ocr
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_url_ssrf_rejected(self, mock_sync, _mock_avail, isolated_env):
         """Private IP URLs are rejected with an error, not crawled."""
         with mock.patch(

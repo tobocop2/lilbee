@@ -41,7 +41,7 @@ import numpy as np
 
 from lilbee.clustering import SourceCluster
 from lilbee.core.config import CHUNKS_TABLE, Config
-from lilbee.store import Store
+from lilbee.data.store import Store
 
 log = logging.getLogger(__name__)
 

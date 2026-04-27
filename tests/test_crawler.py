@@ -1289,7 +1289,7 @@ class TestPeriodicSync:
         crawler_mod._state.last_sync_time = 0.0
         crawler_mod._state.sync_running = threading.Lock()
 
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
             mock_sync.assert_not_awaited()
 
@@ -1305,7 +1305,7 @@ class TestPeriodicSync:
         lock.acquire()  # simulate already-running
         crawler_mod._state.sync_running = lock
 
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
             mock_sync.assert_not_awaited()
 
@@ -1322,7 +1322,7 @@ class TestPeriodicSync:
         crawler_mod._state.last_sync_time = time.monotonic()
         crawler_mod._state.sync_running = threading.Lock()
 
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
             mock_sync.assert_not_awaited()
 
@@ -1338,7 +1338,7 @@ class TestPeriodicSync:
         crawler_mod._state.sync_running = threading.Lock()
 
         mock_sync = AsyncMock()
-        with patch("lilbee.ingest.sync", mock_sync):
+        with patch("lilbee.data.ingest.sync", mock_sync):
             await _maybe_periodic_sync()
             # Let the background task run
             await asyncio.sleep(0)
@@ -1357,7 +1357,7 @@ class TestPeriodicSync:
         crawler_mod._state.sync_running = lock
 
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
-        with patch("lilbee.ingest.sync", mock_sync):
+        with patch("lilbee.data.ingest.sync", mock_sync):
             await _maybe_periodic_sync()
             await asyncio.sleep(0)
 

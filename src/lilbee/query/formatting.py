@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from lilbee.core.config import cfg
-from lilbee.store import CHUNK_TYPE_WIKI, CitationRecord, SearchChunk
+from lilbee.data.store import CHUNK_TYPE_WIKI, CitationRecord, SearchChunk
 
 CONTEXT_TEMPLATE = """Context:
 {context}

@@ -11,6 +11,13 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
+from lilbee.data.store import (
+    CHUNK_TYPE_RAW,
+    CHUNK_TYPE_WIKI,
+    SearchChunk,
+    Store,
+    cosine_sim,
+)
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
 from lilbee.query.dedup import (
@@ -29,13 +36,6 @@ from lilbee.query.formatting import (
 )
 from lilbee.query.tokenize import _idf_weights, _tokenize
 from lilbee.reasoning import strip_reasoning
-from lilbee.store import (
-    CHUNK_TYPE_RAW,
-    CHUNK_TYPE_WIKI,
-    SearchChunk,
-    Store,
-    cosine_sim,
-)
 
 if TYPE_CHECKING:
     from lilbee.concepts import ConceptGraph

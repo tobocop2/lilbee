@@ -351,7 +351,7 @@ async def _maybe_periodic_sync() -> None:
 
     async def _run_sync() -> None:
         try:
-            from lilbee.ingest import sync
+            from lilbee.data.ingest import sync
 
             await sync(quiet=True)
         except Exception as exc:

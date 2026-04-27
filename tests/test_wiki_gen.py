@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, cfg
-from lilbee.store import CHUNK_TYPE_WIKI, SearchChunk, Store
+from lilbee.data.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.batch import (
     _group_chunks_by_page,
     _maybe_run_phase_d_migration,
@@ -250,7 +250,7 @@ class TestResolveCitations:
 
 class TestVerifyCitations:
     def test_keeps_matching_excerpts(self):
-        from lilbee.store import CitationRecord
+        from lilbee.data.store import CitationRecord
 
         chunks = [_make_chunk("Python supports typing.")]
         recs: list[CitationRecord] = [
@@ -274,7 +274,7 @@ class TestVerifyCitations:
 
     def test_keeps_excerpts_that_differ_only_in_whitespace(self):
         """Source with a mid-sentence newline still matches an LLM quote that collapsed it."""
-        from lilbee.store import CitationRecord
+        from lilbee.data.store import CitationRecord
 
         chunks = [
             _make_chunk(
@@ -305,7 +305,7 @@ class TestVerifyCitations:
         assert len(verified) == 1
 
     def test_drops_unmatched_excerpts(self):
-        from lilbee.store import CitationRecord
+        from lilbee.data.store import CitationRecord
 
         chunks = [_make_chunk("Different text")]
         recs: list[CitationRecord] = [
@@ -328,7 +328,7 @@ class TestVerifyCitations:
         assert len(verified) == 0
 
     def test_keeps_inference_citations(self):
-        from lilbee.store import CitationRecord
+        from lilbee.data.store import CitationRecord
 
         chunks = [_make_chunk("text")]
         recs: list[CitationRecord] = [
@@ -351,7 +351,7 @@ class TestVerifyCitations:
         assert len(verified) == 1
 
     def test_skips_wiki_sourced_citations(self):
-        from lilbee.store import CitationRecord
+        from lilbee.data.store import CitationRecord
 
         chunks = [_make_chunk("text")]
         recs: list[CitationRecord] = [

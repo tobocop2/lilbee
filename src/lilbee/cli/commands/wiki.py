@@ -267,7 +267,7 @@ def wiki_build(
         return
 
     if dry_run:
-        from lilbee.store import SearchChunk
+        from lilbee.data.store import SearchChunk
         from lilbee.wiki.entity_extractor import get_entity_extractor
 
         svc = get_services()

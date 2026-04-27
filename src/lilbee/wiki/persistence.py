@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 
 from lilbee.core.config import Config
-from lilbee.store import CitationRecord, Store
+from lilbee.data.store import CitationRecord, Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,

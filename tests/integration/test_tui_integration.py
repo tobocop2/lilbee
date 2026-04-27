@@ -158,7 +158,7 @@ class TestDelete:
         sources_after = [r.source for r in results_after]
         assert "specs.md" not in sources_after, "specs.md should be gone after delete"
 
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         await sync(quiet=True)
         get_services().store.ensure_fts_index()

@@ -209,12 +209,12 @@ class TestAddEndpoint:
         cfg.sse_heartbeat_interval = 0.2
 
         async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
-            from lilbee.ingest import SyncResult
+            from lilbee.data.ingest import SyncResult
 
             await asyncio.sleep(0.6)
             return SyncResult(added=["slow.txt"])
 
-        with mock.patch("lilbee.ingest.sync", side_effect=slow_sync):
+        with mock.patch("lilbee.data.ingest.sync", side_effect=slow_sync):
             async with AsyncTestClient(create_app()) as client:
                 resp = await client.post(
                     "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
@@ -495,7 +495,7 @@ class TestAddIngestMutex:
         async def _boom(*_args, **_kwargs):
             raise RuntimeError("ingest exploded")
 
-        with mock.patch("lilbee.ingest.sync", new=_boom):
+        with mock.patch("lilbee.data.ingest.sync", new=_boom):
             events = await self._collect(add_files_stream({"paths": [str(src)]}))
 
         assert any(t == "error" for t, _ in events)
@@ -515,7 +515,7 @@ class TestAddIngestMutex:
             await asyncio.sleep(30)
 
         gen = add_files_stream({"paths": [str(src)]})
-        with mock.patch("lilbee.ingest.sync", new=_hang):
+        with mock.patch("lilbee.data.ingest.sync", new=_hang):
             outer = asyncio.create_task(gen.__anext__())
             await asyncio.sleep(0.05)
             outer.cancel()
@@ -534,7 +534,7 @@ class TestAddIngestHardening:
     async def test_new_file_triggers_cleanup(self, isolated_env, tmp_path, mock_svc):
         """New files still call delete_by_source before adding — closes the
         orphaned-chunks race when a prior ingest died before upsert_source."""
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         src = isolated_env / "fresh.txt"
         src.write_text("Fresh content.")
@@ -557,7 +557,7 @@ class TestAddIngestHardening:
         """If a prior run left chunks without an ``upsert_source`` record,
         the retry path removes them before re-adding.
         """
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         src = isolated_env / "orphan.txt"
         src.write_text("Recovered content.")

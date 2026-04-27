@@ -21,8 +21,8 @@ from typing import TypedDict
 from lilbee.clustering import SourceClusterer
 from lilbee.core.config import Config, cfg
 from lilbee.core.services import get_services
+from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
-from lilbee.store import SearchChunk, Store
 from lilbee.wiki.batch import _maybe_run_phase_d_migration
 from lilbee.wiki.entity_extractor import ExtractedEntity, get_entity_extractor
 from lilbee.wiki.index import append_wiki_log, update_wiki_index

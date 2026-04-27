@@ -99,7 +99,7 @@ async def run_crawl(task: CrawlTask) -> None:
         task.finished_at = now_iso()
         log.info("Crawl complete: %s → %d files", task.url, len(paths))
         try:
-            from lilbee.ingest import sync
+            from lilbee.data.ingest import sync
 
             await sync(quiet=True)
         except Exception:

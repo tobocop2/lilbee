@@ -83,7 +83,7 @@ def _make_kreuzberg_result(text="Extracted content. " * 10, num_chunks=1):
 class TestSyncDocx:
     async def test_docx_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "sample.docx").write_bytes(b"fake docx content")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "sample.docx" in result.added
@@ -97,7 +97,7 @@ class TestSyncDocx:
 class TestSyncXlsx:
     async def test_xlsx_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "data.xlsx").write_bytes(b"fake xlsx content")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "data.xlsx" in result.added
@@ -111,7 +111,7 @@ class TestSyncXlsx:
 class TestSyncPptx:
     async def test_pptx_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "slides.pptx").write_bytes(b"fake pptx content")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "slides.pptx" in result.added
@@ -130,7 +130,7 @@ class TestSyncPptx:
 class TestSyncEpub:
     async def test_epub_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "book.epub").write_bytes(b"fake epub content")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "book.epub" in result.added
@@ -149,7 +149,7 @@ class TestSyncEpub:
 class TestSyncImage:
     async def test_image_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "scan.png").write_bytes(b"fake png content")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "scan.png" in result.added
@@ -209,7 +209,7 @@ class TestSyncCode:
         _ext, content = fixture
         (isolated_env / filename).write_text(content)
 
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert filename in result.added
@@ -228,14 +228,14 @@ class TestSyncCode:
 class TestSyncCsvTsv:
     async def test_csv_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "people.csv").write_text("name,city\nAlice,Montreal\n")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "people.csv" in result.added
 
     async def test_tsv_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "products.tsv").write_text("id\tproduct\n1\tWidget\n")
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         result = await sync()
         assert "products.tsv" in result.added

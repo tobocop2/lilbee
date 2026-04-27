@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 
 
 class Excerpt(BaseModel):

@@ -20,6 +20,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
+from lilbee.data.store import SearchScope
 from lilbee.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
 from lilbee.providers.sdk_backend import (
@@ -27,7 +28,6 @@ from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
 )
-from lilbee.store import SearchScope
 
 log = logging.getLogger(__name__)
 

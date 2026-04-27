@@ -12,7 +12,7 @@ import pytest
 import lilbee.core.services as svc_mod
 from lilbee.concepts import ConceptGraph
 from lilbee.core.config import cfg
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 
 
 @pytest.fixture(autouse=True)
@@ -576,7 +576,7 @@ class TestRebuildClusters:
         cg.rebuild_clusters()
 
     @patch("lilbee.lock.write_lock")
-    @patch("lilbee.store.ensure_table")
+    @patch("lilbee.data.store.ensure_table")
     @patch("lilbee.concepts.graph._leiden_partition")
     def test_rebuild_with_edges(self, mock_leiden, mock_ensure, mock_lock, cg, mock_svc):
         mock_lock.return_value.__enter__ = MagicMock()

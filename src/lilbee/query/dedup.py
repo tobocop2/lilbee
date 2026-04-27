@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from lilbee.core.config import cfg
+from lilbee.data.store import CitationRecord, SearchChunk
 from lilbee.query.formatting import format_source
-from lilbee.store import CitationRecord, SearchChunk
 
 _DEFAULT_RELEVANCE_WEIGHT = 0.5
 

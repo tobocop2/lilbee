@@ -17,7 +17,7 @@ from lilbee.core.config import ClustererBackend
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
-    from lilbee.store import Store
+    from lilbee.data.store import Store
 
 log = logging.getLogger(__name__)
 

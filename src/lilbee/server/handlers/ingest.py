@@ -17,7 +17,7 @@ from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
 if TYPE_CHECKING:
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ async def _run_sync_with_sentinel(
 ) -> SyncResult:
     """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.cli.helpers import temporary_ocr_config
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     try:
         with temporary_ocr_config(enable_ocr):
@@ -111,7 +111,7 @@ async def _run_add(
 ) -> AddSummary:
     """Copy files and sync, returning the summary for the final done event."""
     from lilbee.cli.helpers import temporary_ocr_config
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     try:
         errors: list[str] = []

@@ -9,7 +9,7 @@ import pytest
 
 from conftest import make_citation, source_hash, write_source, write_wiki_page
 from lilbee.core.config import cfg
-from lilbee.store import Store
+from lilbee.data.store import Store
 from lilbee.wiki.lint import (
     IssueSeverity,
     LintIssue,

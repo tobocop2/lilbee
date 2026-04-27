@@ -417,7 +417,7 @@ class TestModelBar:
 
     async def test_scope_defaults_to_both(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
-        from lilbee.store import SearchScope
+        from lilbee.data.store import SearchScope
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -431,7 +431,7 @@ class TestModelBar:
         from textual.widgets import Select
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
-        from lilbee.store import SearchScope
+        from lilbee.data.store import SearchScope
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF

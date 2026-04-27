@@ -128,7 +128,7 @@ class TestDoAddCancelCleanup:
 
         from lilbee.cli.helpers import CopyResult
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.ingest import SyncResult
+        from lilbee.data.ingest import SyncResult
 
         screen = ChatScreen.__new__(ChatScreen)
         reporter = MagicMock()

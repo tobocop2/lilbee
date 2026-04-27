@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.ingest import _incremental_wiki_update
+from lilbee.data.ingest import _incremental_wiki_update
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
@@ -49,7 +49,7 @@ def _install_service_stubs(
     services = MagicMock()
     services.store.get_sources.return_value = []
     services.store.get_chunks_by_source.return_value = []
-    monkeypatch.setattr("lilbee.ingest.pipeline.get_services", lambda: services)
+    monkeypatch.setattr("lilbee.data.ingest.pipeline.get_services", lambda: services)
     return extractor, services
 
 

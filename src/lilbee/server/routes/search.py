@@ -8,6 +8,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
+from lilbee.data.store import scope_to_chunk_type
 from lilbee.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
@@ -16,7 +17,6 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
 )
-from lilbee.store import scope_to_chunk_type
 
 
 @get("/api/search")

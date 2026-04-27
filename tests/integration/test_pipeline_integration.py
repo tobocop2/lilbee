@@ -10,7 +10,7 @@ Run with:
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.store import Store
+from lilbee.data.store import Store
 
 pytestmark = pytest.mark.slow
 

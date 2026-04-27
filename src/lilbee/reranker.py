@@ -18,7 +18,7 @@ import logging
 from typing import NamedTuple
 
 from lilbee.core.config import Config
-from lilbee.store import SearchChunk
+from lilbee.data.store import SearchChunk
 
 log = logging.getLogger(__name__)
 
