@@ -205,7 +205,7 @@ def topics(
     """Show top concept communities or concepts related to a query."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee.concepts import concepts_available
+    from lilbee.retrieval.concepts import concepts_available
 
     if not concepts_available():
         msg = "Concept graph requires: pip install 'lilbee[graph]'"

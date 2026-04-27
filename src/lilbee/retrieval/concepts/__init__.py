@@ -11,10 +11,15 @@ When dependencies are missing, all public functions degrade gracefully.
 
 from __future__ import annotations
 
-from lilbee.concepts.clusterer import ConceptGraphClusterer
-from lilbee.concepts.community import _MIN_LEIDEN_WEIGHT, Community, _compute_pmi, _leiden_partition
-from lilbee.concepts.graph import ConceptGraph
-from lilbee.concepts.nlp import (
+from lilbee.retrieval.concepts.clusterer import ConceptGraphClusterer
+from lilbee.retrieval.concepts.community import (
+    _MIN_LEIDEN_WEIGHT,
+    Community,
+    _compute_pmi,
+    _leiden_partition,
+)
+from lilbee.retrieval.concepts.graph import ConceptGraph
+from lilbee.retrieval.concepts.nlp import (
     _ensure_spacy_model,
     _filter_noun_chunks,
     concepts_available,

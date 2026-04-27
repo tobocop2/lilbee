@@ -161,7 +161,7 @@ class TestSearch:
 
 class TestAsk:
     async def test_returns_answer_and_sources(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(
             answer="42",
@@ -186,7 +186,7 @@ class TestAsk:
         assert result.sources[0].distance == 0.1
 
     async def test_no_sources(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="No docs found.", sources=[])
         result = await handlers.ask("what?")
@@ -202,7 +202,7 @@ class TestAsk:
             await handlers.ask("   ")
 
     async def test_forwards_chunk_type_to_searcher(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
         await handlers.ask("q", chunk_type="wiki")
@@ -309,7 +309,7 @@ class TestAskStream:
 
 class TestChat:
     async def test_passes_history(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
@@ -320,7 +320,7 @@ class TestChat:
         )
 
     async def test_forwards_chunk_type(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
         await handlers.chat("q", [], chunk_type="raw")

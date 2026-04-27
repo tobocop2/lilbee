@@ -6,7 +6,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
-from lilbee.reranker import _BLEND_SCHEDULE, Reranker
+from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
 
 
 @pytest.fixture(autouse=True)

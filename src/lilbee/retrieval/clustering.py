@@ -57,8 +57,8 @@ def _select_backend(config: Config, store: Store) -> SourceClusterer:
     :class:`SourceCluster` from this module, so importing it at module
     level here would fail during package initialization.
     """
-    from lilbee.clustering_embedding import EmbeddingClusterer
-    from lilbee.concepts import ConceptGraphClusterer
+    from lilbee.retrieval.clustering_embedding import EmbeddingClusterer
+    from lilbee.retrieval.concepts import ConceptGraphClusterer
 
     if config.wiki_clusterer == ClustererBackend.CONCEPTS:
         graph_clusterer = ConceptGraphClusterer(config, store)

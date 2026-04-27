@@ -1,6 +1,6 @@
 """Tests for reasoning token filter — <think>...</think> tag detection."""
 
-from lilbee.reasoning import StreamToken, filter_reasoning, strip_reasoning
+from lilbee.retrieval.reasoning import StreamToken, filter_reasoning, strip_reasoning
 
 
 def _collect(tokens: list[str], *, show: bool) -> list[StreamToken]:
@@ -142,7 +142,7 @@ class TestCouldBePartial:
 class TestReasoningTruncation:
     def test_runaway_reasoning_truncated(self):
         """Reasoning exceeding _MAX_REASONING_CHARS is cut off."""
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 1000)
         # Simulate realistic streaming: one char per token so the cap
@@ -155,7 +155,7 @@ class TestReasoningTruncation:
 
     def test_content_after_truncated_reasoning(self):
         """Content tokens after truncated reasoning are still yielded."""
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 500)
         tokens = [f"<think>{long_think}</think>", "the answer"]
@@ -166,7 +166,7 @@ class TestReasoningTruncation:
     def test_re_entered_thinking_is_not_yielded_as_response(self):
         """After truncation, content the model emits inside a fresh <think>
         tag is tagged as reasoning and excluded from the response stream."""
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 500)
         tokens = [f"<think>{long_think}", "</think>", "<think>", "more thinking"]
@@ -181,7 +181,7 @@ class TestReasoningTruncation:
         With show=False, reasoning tokens have empty content, so the
         cap never triggered and the stream could loop forever.
         """
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 1000)
         tokens = list(f"<think>{long_think}")  # no closing tag — infinite reasoning
@@ -192,7 +192,7 @@ class TestReasoningTruncation:
 
     def test_unclosed_think_terminates_show_false(self):
         """An unclosed <think> block with show=False terminates at the cap."""
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         # Simulate streaming: chars come one at a time, never closing the tag
         tokens = ["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100)
@@ -202,7 +202,7 @@ class TestReasoningTruncation:
 
     def test_drain_flushes_trailing_content(self):
         """After truncation, trailing non-reasoning content in buffer is flushed."""
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 100)
         # Reasoning truncated, then more tokens arrive with trailing content.
@@ -215,7 +215,7 @@ class TestReasoningTruncation:
 
     def test_drain_cap_prevents_infinite_post_truncation(self):
         """Drain loop stops after _MAX_REASONING_CHARS even if model keeps generating."""
-        from lilbee.reasoning import _MAX_REASONING_CHARS
+        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 100)
         # After truncation, model keeps generating reasoning (no closing tag)

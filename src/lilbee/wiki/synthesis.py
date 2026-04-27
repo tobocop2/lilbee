@@ -26,7 +26,7 @@ import yaml
 from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.providers.base import LLMProvider
-from lilbee.reasoning import strip_reasoning
+from lilbee.retrieval.reasoning import strip_reasoning
 from lilbee.wiki.batch import (
     _finalize_section,
     _hash_existing_sources,

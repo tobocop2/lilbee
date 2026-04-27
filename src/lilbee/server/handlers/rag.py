@@ -23,7 +23,7 @@ from lilbee.server.handlers.sse import (
 from lilbee.server.models import AskResponse, CleanedChunk
 
 if TYPE_CHECKING:
-    from lilbee.query import ChatMessage
+    from lilbee.retrieval.query import ChatMessage
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def _run_llm_stream(
     error_holder: list[str],
 ) -> None:
     """Stream LLM tokens into a queue from a worker thread."""
-    from lilbee.reasoning import filter_reasoning
+    from lilbee.retrieval.reasoning import filter_reasoning
 
     try:
         provider = get_services().provider

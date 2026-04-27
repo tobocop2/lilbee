@@ -28,7 +28,7 @@ _SYNC_NOOP = SyncResult()
 
 
 def _mock_stream(*texts: str):
-    from lilbee.reasoning import StreamToken
+    from lilbee.retrieval.reasoning import StreamToken
 
     return iter([StreamToken(content=t, is_reasoning=False) for t in texts])
 
@@ -300,7 +300,7 @@ class TestAsk:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_scope_reaches_ask_raw(self, mock_sync, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
         result = runner.invoke(app, ["--json", "ask", "--scope", "wiki", "q"])
@@ -1704,7 +1704,7 @@ class TestAddJson:
 class TestAskJson:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json(self, mock_sync, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(
             answer="5 quarts",
@@ -1735,7 +1735,7 @@ class TestAskJson:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(
             answer="No relevant documents found.", sources=[]
@@ -2260,26 +2260,26 @@ class TestCrawlUrlsBlocking:
 
 class TestTopicsCommand:
     def test_not_installed_shows_error(self):
-        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False):
             result = runner.invoke(app, ["topics"])
             assert result.exit_code == 1
             assert "pip install" in result.output.lower()
 
     def test_not_installed_json_mode(self):
-        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False):
             result = runner.invoke(app, ["--json", "topics"])
             assert result.exit_code == 1
             output = json.loads(result.output)
             assert "error" in output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_disabled_shows_error(self, _mock_avail):
         cfg.concept_graph = False
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 1
         assert "disabled" in result.output.lower()
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_disabled_json_mode(self, _mock_avail):
         cfg.concept_graph = False
         result = runner.invoke(app, ["--json", "topics"])
@@ -2287,9 +2287,9 @@ class TestTopicsCommand:
         output = json.loads(result.output)
         assert "error" in output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_overview_shows_communities(self, _mock_avail, mock_svc):
-        from lilbee.concepts import Community
+        from lilbee.retrieval.concepts import Community
 
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2300,9 +2300,9 @@ class TestTopicsCommand:
         assert result.exit_code == 0
         assert "python" in result.output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_overview_json_mode(self, _mock_avail, mock_svc):
-        from lilbee.concepts import Community
+        from lilbee.retrieval.concepts import Community
 
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2315,7 +2315,7 @@ class TestTopicsCommand:
         assert output["command"] == "topics"
         assert len(output["communities"]) == 1
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_query_shows_related_concepts(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2325,7 +2325,7 @@ class TestTopicsCommand:
         assert result.exit_code == 0
         assert "django" in result.output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_query_json_mode(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2337,7 +2337,7 @@ class TestTopicsCommand:
         assert "python" in output["concepts"]
         assert "django" in output["concepts"]
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_no_communities(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2346,7 +2346,7 @@ class TestTopicsCommand:
         assert result.exit_code == 0
         assert "No concept communities" in result.output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_query_no_concepts(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2356,7 +2356,7 @@ class TestTopicsCommand:
         assert result.exit_code == 0
         assert "No concepts found" in result.output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_graph_none_shows_error(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = False
@@ -2364,7 +2364,7 @@ class TestTopicsCommand:
         assert result.exit_code == 1
         assert "not available" in result.output.lower()
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_graph_none_json_mode(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = False
@@ -2373,7 +2373,7 @@ class TestTopicsCommand:
         output = json.loads(result.output)
         assert "error" in output
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_top_k_option(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
@@ -2381,9 +2381,9 @@ class TestTopicsCommand:
         runner.invoke(app, ["topics", "--top-k", "5"])
         mock_svc.concepts.top_communities.assert_called_once_with(k=5)
 
-    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_large_community_shows_more_count(self, _mock_avail, mock_svc):
-        from lilbee.concepts import Community
+        from lilbee.retrieval.concepts import Community
 
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True

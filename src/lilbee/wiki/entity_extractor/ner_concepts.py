@@ -177,7 +177,7 @@ def _make_record(agg: _Aggregate, kind: EntityKind, min_mentions: int) -> Extrac
 def _load_spacy() -> Any | None:
     """Load the shared spaCy pipeline, or return None if unavailable."""
     try:
-        from lilbee.concepts import load_spacy_pipeline
+        from lilbee.retrieval.concepts import load_spacy_pipeline
     except ImportError:
         log.warning("Entity extraction disabled: lilbee.concepts unavailable")
         return None

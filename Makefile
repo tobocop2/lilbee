@@ -25,7 +25,7 @@ test-ci-forked:
 	uv run pytest --forked -v -n auto
 
 imports-check:
-	uv run python -c "import lilbee; from lilbee import cli, embedder, query; from lilbee.core import config; from lilbee.data import chunk, code_chunker, store, ingest"
+	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data import chunk, code_chunker, store, ingest; from lilbee.retrieval import embedder, query"
 
 test-integration:
 	uv run pytest tests/integration/ -v

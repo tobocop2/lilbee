@@ -1519,7 +1519,7 @@ class TestChunkViaKreuzberg:
 class TestConceptIndexing:
     @pytest.fixture(autouse=True)
     def _mock_concepts_available(self):
-        with mock.patch("lilbee.concepts.concepts_available", return_value=True):
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True):
             yield
 
     @mock.patch(
@@ -1630,7 +1630,7 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "unavail_rebuild.txt").write_text("Content for unavailable test.")
 
-        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False):
             from lilbee.data.ingest import sync
 
             result = await sync(quiet=True)
@@ -1647,7 +1647,7 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "unavail_index.txt").write_text("Content for unavailable index test.")
 
-        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False):
             from lilbee.data.ingest import sync
 
             result = await sync(quiet=True)

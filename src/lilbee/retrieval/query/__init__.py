@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.query.dedup import (
+from lilbee.retrieval.query.dedup import (
     _relevance_weight,
     deduplicate_sources,
     diversify_sources,
@@ -10,7 +10,7 @@ from lilbee.query.dedup import (
     prepare_results,
     sort_by_relevance,
 )
-from lilbee.query.formatting import (
+from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
     _extract_cited_indices,
     _format_citation,
@@ -19,7 +19,7 @@ from lilbee.query.formatting import (
     format_source,
     strip_llm_citations,
 )
-from lilbee.query.searcher import AskResult, ChatMessage, Searcher
+from lilbee.retrieval.query.searcher import AskResult, ChatMessage, Searcher
 
 __all__ = [
     "CONTEXT_TEMPLATE",

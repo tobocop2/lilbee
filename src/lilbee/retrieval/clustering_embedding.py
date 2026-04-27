@@ -39,9 +39,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from lilbee.clustering import SourceCluster
 from lilbee.core.config import CHUNKS_TABLE, Config
 from lilbee.data.store import Store
+from lilbee.retrieval.clustering import SourceCluster
 
 log = logging.getLogger(__name__)
 

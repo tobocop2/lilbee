@@ -6,7 +6,7 @@ import lilbee.core.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.data.store import SearchChunk
-from lilbee.query import (
+from lilbee.retrieval.query import (
     Searcher,
     _extract_cited_indices,
     _format_citation,
@@ -75,7 +75,7 @@ class TestDisplaySourcePath:
     """source citations render absolute paths with ~ expansion."""
 
     def test_expands_under_documents_dir(self, tmp_path):
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
         result = display_source_path("_web/example.com/index.md")
@@ -86,7 +86,7 @@ class TestDisplaySourcePath:
     def test_substitutes_home_with_tilde(self, tmp_path, monkeypatch):
         from pathlib import Path as _Path
 
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         # Force documents_dir under the home directory so ~ substitution fires.
         cfg.documents_dir = _Path.home() / ".lilbee-fixes-content-test" / "docs"
@@ -97,7 +97,7 @@ class TestDisplaySourcePath:
     def test_falls_back_to_raw_on_resolve_failure(self, tmp_path, monkeypatch):
         from pathlib import Path as _Path
 
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
 
@@ -112,7 +112,7 @@ class TestDisplaySourcePath:
         """When the resolved path is not under ``Path.home()``, fall through to str(resolved)."""
         from pathlib import Path as _Path
 
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
         (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
@@ -209,7 +209,7 @@ class TestSortByRelevance:
 
 class TestDiversifySources:
     def test_caps_per_source(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [
             _make_result(source="a.md", distance=0.1),
@@ -224,7 +224,7 @@ class TestDiversifySources:
         assert any(r.source == "b.md" for r in diverse)
 
     def test_preserves_order(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [
             _make_result(source="a.md", distance=0.1),
@@ -237,12 +237,12 @@ class TestDiversifySources:
         assert len(diverse) == 2
 
     def test_empty_input(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         assert diversify_sources([]) == []
 
     def test_default_cap_is_three(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [_make_result(source="a.md", distance=float(i) / 10) for i in range(5)]
         diverse = diversify_sources(results)
@@ -257,7 +257,7 @@ class TestDiversifySources:
         side independently. With ``max_per_source=1`` both sides still
         surface together.
         """
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [
             _make_result(source="wiki/summaries/doc.md", chunk_type="wiki", distance=0.1),

@@ -191,7 +191,7 @@ def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs."""
     from lilbee.core.services import Services
     from lilbee.providers.base import LLMProvider
-    from lilbee.query import Searcher
+    from lilbee.retrieval.query import Searcher
 
     provider = overrides.pop("provider", None)
     if provider is None:

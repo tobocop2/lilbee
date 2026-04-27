@@ -18,29 +18,29 @@ from lilbee.data.store import (
     Store,
     cosine_sim,
 )
-from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
-from lilbee.query.dedup import (
+from lilbee.retrieval.embedder import Embedder
+from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
     deduplicate_sources,
     filter_results,
     prepare_results,
 )
-from lilbee.query.expansion import _EXPANSION_MAX_TOKENS, _EXPANSION_PROMPT
-from lilbee.query.formatting import (
+from lilbee.retrieval.query.expansion import _EXPANSION_MAX_TOKENS, _EXPANSION_PROMPT
+from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
     _extract_cited_indices,
     build_context,
     strip_llm_citations,
 )
-from lilbee.query.tokenize import _idf_weights, _tokenize
-from lilbee.reasoning import strip_reasoning
+from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
+from lilbee.retrieval.reasoning import strip_reasoning
 
 if TYPE_CHECKING:
-    from lilbee.concepts import ConceptGraph
-    from lilbee.reasoning import StreamToken
-    from lilbee.reranker import Reranker
+    from lilbee.retrieval.concepts import ConceptGraph
+    from lilbee.retrieval.reasoning import StreamToken
+    from lilbee.retrieval.reranker import Reranker
 
 log = logging.getLogger(__name__)
 
@@ -466,7 +466,7 @@ class Searcher:
         chunk_type: str | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
-        from lilbee.reasoning import StreamToken, filter_reasoning
+        from lilbee.retrieval.reasoning import StreamToken, filter_reasoning
 
         if not self._embedder.embedding_available():
             yield StreamToken(content=self._NO_EMBED_WARNING, is_reasoning=False)

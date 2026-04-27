@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.embedder import MAX_BATCH_CHARS, Embedder
+from lilbee.retrieval.embedder import MAX_BATCH_CHARS, Embedder
 
 
 @pytest.fixture()

@@ -27,7 +27,7 @@ from lilbee.data.store import (
     escape_sql_string,
 )
 from lilbee.providers.base import LLMProvider
-from lilbee.reasoning import strip_reasoning
+from lilbee.retrieval.reasoning import strip_reasoning
 from lilbee.wiki.citation import (
     ParsedCitation,
     extract_body,

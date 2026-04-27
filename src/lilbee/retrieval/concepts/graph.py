@@ -9,13 +9,6 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from lilbee.concepts.community import Community, _compute_pmi, _leiden_partition
-from lilbee.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
-from lilbee.concepts.schema import (
-    _chunk_concepts_schema,
-    _concept_edges_schema,
-    _concept_nodes_schema,
-)
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
     CONCEPT_EDGES_TABLE,
@@ -23,6 +16,13 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.data.store import Store, escape_sql_string
+from lilbee.retrieval.concepts.community import Community, _compute_pmi, _leiden_partition
+from lilbee.retrieval.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
+from lilbee.retrieval.concepts.schema import (
+    _chunk_concepts_schema,
+    _concept_edges_schema,
+    _concept_nodes_schema,
+)
 
 log = logging.getLogger(__name__)
 

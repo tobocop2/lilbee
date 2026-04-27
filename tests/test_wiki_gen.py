@@ -974,7 +974,7 @@ class TestGenerateSynthesisPages:
         assert result == []
 
     def test_skips_clusters_with_insufficient_chunks(self, tmp_path: Path):
-        from lilbee.clustering import SourceCluster
+        from lilbee.retrieval.clustering import SourceCluster
 
         store = _mock_store()
         # Only 2 sources have chunks (need 3)
@@ -995,7 +995,7 @@ class TestGenerateSynthesisPages:
         provider.chat.assert_not_called()
 
     def test_generates_page_for_qualifying_cluster(self, tmp_path: Path):
-        from lilbee.clustering import SourceCluster
+        from lilbee.retrieval.clustering import SourceCluster
 
         sources = ["a.md", "b.md", "c.md"]
         for name in sources:
@@ -1024,7 +1024,7 @@ class TestGenerateSynthesisPages:
         assert "synthesis" in str(result[0]) or "drafts" in str(result[0])
 
     def test_failed_page_generation_omitted(self, tmp_path: Path):
-        from lilbee.clustering import SourceCluster
+        from lilbee.retrieval.clustering import SourceCluster
 
         store = _mock_store()
         # Returning empty chunks for every source means no cluster qualifies.

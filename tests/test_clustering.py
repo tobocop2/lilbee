@@ -8,12 +8,13 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from lilbee.clustering import (
+from lilbee.core.config import ClustererBackend, cfg
+from lilbee.retrieval.clustering import (
     Clusterer,
     SourceCluster,
     SourceClusterer,
 )
-from lilbee.clustering_embedding import (
+from lilbee.retrieval.clustering_embedding import (
     ChunkRecord,
     EmbeddingClusterer,
     _tokenize_for_tf,
@@ -23,7 +24,6 @@ from lilbee.clustering_embedding import (
     mutual_knn,
     normalize_rows,
 )
-from lilbee.core.config import ClustererBackend, cfg
 
 
 @pytest.fixture(autouse=True)
@@ -255,7 +255,7 @@ class TestEmbeddingClustererAvailable:
         table = MagicMock()
         table.count_rows.side_effect = RuntimeError("no can do")
         store.open_table.return_value = table
-        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering_embedding"):
             assert EmbeddingClusterer(cfg, store).available() is True
         assert any("count_rows()" in rec.message for rec in caplog.records)
 
@@ -284,7 +284,7 @@ class TestEmbeddingClustererLoad:
             _row("ok.md", [1.0, 0.0], chunk="alpha beta gamma"),
         ]
         store = _store_with_rows(rows)
-        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering_embedding"):
             result = EmbeddingClusterer(cfg, store).get_clusters(min_sources=3)
         assert result == []
         assert any("no mutual edges" in rec.message for rec in caplog.records)
@@ -421,7 +421,7 @@ class TestEmbeddingClustererGetClusters:
     def test_empty_adjacency_bails_out_before_labeling(self, caplog: pytest.LogCaptureFixture):
         rows = [_row("only.md", [1.0, 0.0], chunk="alpha beta gamma delta")]
         store = _store_with_rows(rows)
-        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering_embedding"):
             result = EmbeddingClusterer(cfg, store).get_clusters(min_sources=3)
         assert result == []
         assert any("no mutual edges" in rec.message for rec in caplog.records)
@@ -465,7 +465,7 @@ class TestEmbeddingClustererGetClusters:
                 )
         cfg.wiki_clusterer_k = 3
         store = _store_with_rows(rows)
-        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering_embedding"):
             result = EmbeddingClusterer(cfg, store).get_clusters(min_sources=10)
         assert result == []
         # Warning is emitted only when an actual cluster dominates;
@@ -486,7 +486,7 @@ class TestEmbeddingClustererGetClusters:
         ]
         cfg.wiki_clusterer_k = 3
         store = _store_with_rows(rows)
-        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering_embedding"):
             EmbeddingClusterer(cfg, store).get_clusters(min_sources=3)
         assert any("covers" in rec.message for rec in caplog.records)
 
@@ -500,7 +500,7 @@ class TestClustererFacade:
     def test_concepts_choice_returns_graph_backend_when_available(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        from lilbee.concepts import ConceptGraphClusterer
+        from lilbee.retrieval.concepts import ConceptGraphClusterer
 
         cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: True)
@@ -512,11 +512,11 @@ class TestClustererFacade:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ):
-        from lilbee.concepts import ConceptGraphClusterer
+        from lilbee.retrieval.concepts import ConceptGraphClusterer
 
         cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: False)
-        with caplog.at_level(logging.WARNING, logger="lilbee.clustering"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering"):
             clusterer = Clusterer(cfg, MagicMock())
         assert isinstance(clusterer.backend, EmbeddingClusterer)
         assert any("falling back" in rec.message.lower() for rec in caplog.records)
@@ -529,7 +529,9 @@ class TestClustererFacade:
         fake_backend.get_clusters.return_value = [
             SourceCluster(cluster_id="x", label="t", sources=frozenset({"a.md"}))
         ]
-        monkeypatch.setattr("lilbee.clustering._select_backend", lambda config, store: fake_backend)
+        monkeypatch.setattr(
+            "lilbee.retrieval.clustering._select_backend", lambda config, store: fake_backend
+        )
         clusterer = Clusterer(cfg, MagicMock())
         assert clusterer.available() is True
         assert clusterer.get_clusters(min_sources=3)[0].cluster_id == "x"
@@ -539,16 +541,16 @@ class TestClustererFacade:
 
 class TestConceptGraphClusterer:
     def test_unavailable_without_graph(self, monkeypatch: pytest.MonkeyPatch):
-        from lilbee.concepts import ConceptGraphClusterer
+        from lilbee.retrieval.concepts import ConceptGraphClusterer
 
-        monkeypatch.setattr("lilbee.concepts.clusterer.concepts_available", lambda: False)
+        monkeypatch.setattr("lilbee.retrieval.concepts.clusterer.concepts_available", lambda: False)
         store = MagicMock()
         store.open_table.return_value = None
         clusterer = ConceptGraphClusterer(cfg, store)
         assert clusterer.available() is False
 
     def test_get_clusters_maps_concept_graph_output(self, monkeypatch: pytest.MonkeyPatch):
-        from lilbee.concepts import ConceptGraph, ConceptGraphClusterer
+        from lilbee.retrieval.concepts import ConceptGraph, ConceptGraphClusterer
 
         monkeypatch.setattr(
             ConceptGraph, "get_cluster_sources", lambda self, **kw: {7: {"a.md", "b.md"}}

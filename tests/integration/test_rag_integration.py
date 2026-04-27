@@ -115,7 +115,7 @@ class TestSearchQuality:
 
     def test_per_source_cap(self, rag_pipeline):
         """No more than diversity_max_per_source chunks from any single file."""
-        from lilbee.query import prepare_results
+        from lilbee.retrieval.query import prepare_results
 
         results = search_context("authentication setup tokens sessions", top_k=20)
         prepared = prepare_results(results)
@@ -420,7 +420,7 @@ class TestAskStream:
 
     def test_stream_yields_tokens(self, rag_pipeline):
         """ask_stream() yields StreamToken objects with content."""
-        from lilbee.reasoning import StreamToken
+        from lilbee.retrieval.reasoning import StreamToken
 
         svc = get_services()
         tokens = list(svc.searcher.ask_stream("What is the oil capacity?", top_k=5))
@@ -429,7 +429,7 @@ class TestAskStream:
 
     def test_stream_ends_with_citations(self, rag_pipeline):
         """The last token from ask_stream() contains source citations."""
-        from lilbee.reasoning import StreamToken
+        from lilbee.retrieval.reasoning import StreamToken
 
         svc = get_services()
         tokens = list(svc.searcher.ask_stream("What engine does the Thunderbolt have?", top_k=5))
@@ -440,7 +440,7 @@ class TestAskStream:
 
     def test_stream_is_reasoning_flag(self, rag_pipeline):
         """ask_stream() yields StreamTokens with correct is_reasoning flags."""
-        from lilbee.reasoning import StreamToken
+        from lilbee.retrieval.reasoning import StreamToken
 
         svc = get_services()
         tokens = list(svc.searcher.ask_stream("Tell me about the Thunderbolt", top_k=5))

@@ -13,14 +13,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lilbee.clustering import Clusterer
-    from lilbee.concepts import ConceptGraph
     from lilbee.data.store import Store
-    from lilbee.embedder import Embedder
     from lilbee.providers.base import LLMProvider
-    from lilbee.query import Searcher
     from lilbee.registry import ModelRegistry
-    from lilbee.reranker import Reranker
+    from lilbee.retrieval.clustering import Clusterer
+    from lilbee.retrieval.concepts import ConceptGraph
+    from lilbee.retrieval.embedder import Embedder
+    from lilbee.retrieval.query import Searcher
+    from lilbee.retrieval.reranker import Reranker
 
 
 @dataclass(frozen=True)
@@ -54,15 +54,15 @@ def get_services() -> Services:
     if _svc is not None:
         return _svc
 
-    from lilbee.clustering import Clusterer
-    from lilbee.concepts import ConceptGraph
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
-    from lilbee.embedder import Embedder
     from lilbee.providers.factory import create_provider
-    from lilbee.query import Searcher
     from lilbee.registry import ModelRegistry
-    from lilbee.reranker import Reranker
+    from lilbee.retrieval.clustering import Clusterer
+    from lilbee.retrieval.concepts import ConceptGraph
+    from lilbee.retrieval.embedder import Embedder
+    from lilbee.retrieval.query import Searcher
+    from lilbee.retrieval.reranker import Reranker
 
     provider = create_provider(cfg)
     store = Store(cfg)

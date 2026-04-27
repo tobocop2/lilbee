@@ -81,7 +81,7 @@ class TestEmbeddingAvailable:
     def test_registry_name_with_spaces_resolves_via_fallback(self):
         """Embedding model 'Nomic Embed Text v1.5:latest' must match
         files with hyphens when registry resolution fails."""
-        from lilbee.embedder import Embedder
+        from lilbee.retrieval.embedder import Embedder
 
         ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
         mock_provider = mock.MagicMock()
@@ -95,7 +95,7 @@ class TestEmbeddingAvailable:
 
     def test_resolves_via_registry(self):
         """When resolve_model_path succeeds, embedding is available."""
-        from lilbee.embedder import Embedder
+        from lilbee.retrieval.embedder import Embedder
 
         mock_provider = mock.MagicMock()
         cfg.embedding_model = TEST_EMBED_REF
@@ -109,7 +109,7 @@ class TestEmbeddingAvailable:
 
     def test_unresolvable_model_returns_false(self):
         """When model name doesn't match any installed model, returns False."""
-        from lilbee.embedder import Embedder
+        from lilbee.retrieval.embedder import Embedder
 
         mock_provider = mock.MagicMock()
         mock_provider.list_models.return_value = ["org/Other-GGUF/other.gguf"]

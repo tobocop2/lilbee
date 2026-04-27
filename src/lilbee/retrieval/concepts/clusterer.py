@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from lilbee.clustering import SourceCluster
-from lilbee.concepts.graph import ConceptGraph
-from lilbee.concepts.nlp import concepts_available
 from lilbee.core.config import Config
 from lilbee.data.store import Store
+from lilbee.retrieval.clustering import SourceCluster
+from lilbee.retrieval.concepts.graph import ConceptGraph
+from lilbee.retrieval.concepts.nlp import concepts_available
 
 
 class ConceptGraphClusterer:

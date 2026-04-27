@@ -45,10 +45,10 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
-from lilbee.embedder import is_model_available
 from lilbee.progress import EventType, ProgressEvent
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.query import ChatMessage
+from lilbee.retrieval.embedder import is_model_available
+from lilbee.retrieval.query import ChatMessage
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController

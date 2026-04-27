@@ -104,7 +104,7 @@ class TestLoadSpacyFallbacks:
         real_import = builtins.__import__
 
         def boom(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name == "lilbee.concepts":
+            if name == "lilbee.retrieval.concepts":
                 raise ImportError("concepts module missing")
             return real_import(name, *args, **kwargs)
 
@@ -115,7 +115,7 @@ class TestLoadSpacyFallbacks:
         from lilbee.wiki.entity_extractor import ner_concepts
 
         with patch(
-            "lilbee.concepts.load_spacy_pipeline",
+            "lilbee.retrieval.concepts.load_spacy_pipeline",
             side_effect=ImportError("model missing"),
         ):
             assert ner_concepts._load_spacy() is None
