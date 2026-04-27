@@ -71,8 +71,8 @@ _CHARS_PER_TOKEN = 4
 _NO_THINK_DIRECTIVE = "/no_think"
 
 # Capability string returned by llama-cpp providers for reasoning models
-# (Qwen3, DeepSeek-R1). Defined locally so gen.py doesn't depend on a
-# specific provider-layer constant name.
+# (Qwen3, DeepSeek-R1). Defined locally so wiki.generation doesn't
+# depend on a specific provider-layer constant name.
 _CAPABILITY_THINKING = "thinking"
 
 
@@ -222,7 +222,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
       the log is sufficient triage.
 
     Record shape matches the markdown-ingest convention in
-    ``ingest.py``: ``content_type="text"``, all four page/line
+    ``lilbee.data.ingest``: ``content_type="text"``, all four page/line
     positions ``0`` (wiki pages are not paginated).
     """
     subdir = _subdir_from_wiki_source(wiki_source)

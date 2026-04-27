@@ -1,6 +1,6 @@
 """Project style-rule checker invoked by ``make lint``.
 
-Catches three classes of drift that ruff cannot express:
+Catches four classes of drift that ruff cannot express:
 
 1. Em dashes (``—``) in ``src/`` or ``tests/``. Project rule from AGENTS.md.
 2. Divider comments (``# ----`` / ``# ====``) used to group code in ``src/``.
@@ -8,6 +8,11 @@ Catches three classes of drift that ruff cannot express:
 3. Historical-narrative docstrings in ``src/`` (``previously``, ``used to``,
    ``migrated from``, ``preserves the historical``, ``for backward``). Project
    rule: docstrings describe what the code IS, not what it was.
+4. Stale single-file path references in ``src/`` for modules that have since
+   become packages (``catalog.py``, ``store.py``, ``gen.py``, ``ingest.py``,
+   ``commands.py``, ``handlers.py``, ``api.py``, ``clustering_embedding.py``,
+   ``worker_process.py``, ``llama_cpp_provider.py``), and the phrase
+   ``original X.py``. Project rule: docstrings name the current path.
 
 Lines tagged with the inline opt-out comment ``# style-check: allow-history``
 are skipped for the historical-narrative check (only).
@@ -49,6 +54,19 @@ HISTORICAL_PATTERNS = (
     re.compile(r"\bso existing imports keep working\b", re.IGNORECASE),
 )
 ALLOW_HISTORY_TAG = "# style-check: allow-history"
+
+# Module names that became packages after the tidy-module-organization
+# restructure. Any reference to ``<name>.py`` in ``src/`` is a stale
+# single-file path: docstrings and comments should name the package
+# (``lilbee.catalog``, ``catalog/download.py``, etc.) instead.
+STALE_SINGLE_FILE_RE = re.compile(
+    r"\b(catalog|store|gen|ingest|commands|handlers|api|clustering_embedding"
+    r"|worker_process|llama_cpp_provider)\.py\b"
+)
+
+# "the original X.py" / "original foo.py" phrasing is historical narrative
+# pointing at a file that no longer exists in its single-file form.
+ORIGINAL_FILE_RE = re.compile(r"\boriginal\s+[a-z_][a-z0-9_]*\.py\b", re.IGNORECASE)
 
 
 def _iter_python_files(*roots: Path) -> Iterator[Path]:
@@ -102,6 +120,29 @@ def _check_historical_narrative(paths: Iterable[Path]) -> Iterator[str]:
                     break
 
 
+def _check_stale_single_file_paths(paths: Iterable[Path]) -> Iterator[str]:
+    """Yield findings for ``catalog.py`` / ``store.py`` / etc. references in src/.
+
+    These names are now packages; docstrings and comments must name the
+    current path (``lilbee.catalog``, ``catalog/download.py``).
+    """
+    for path in paths:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stale = STALE_SINGLE_FILE_RE.search(line)
+            if stale is not None:
+                yield (
+                    f"{path}:{lineno}: stale single-file path {stale.group(0)!r} "
+                    f"(name the current package or sub-module instead)"
+                )
+                continue
+            original = ORIGINAL_FILE_RE.search(line)
+            if original is not None:
+                yield (
+                    f"{path}:{lineno}: historical-file phrase {original.group(0)!r} "
+                    f"(name the current module without the 'original' qualifier)"
+                )
+
+
 def main() -> int:
     src_files = list(_iter_python_files(SRC_DIR))
     test_files = list(_iter_python_files(TESTS_DIR))
@@ -110,6 +151,7 @@ def main() -> int:
     findings.extend(_check_em_dashes(src_files + test_files))
     findings.extend(_check_divider_comments(src_files))
     findings.extend(_check_historical_narrative(src_files))
+    findings.extend(_check_stale_single_file_paths(src_files))
 
     for finding in findings:
         print(finding)

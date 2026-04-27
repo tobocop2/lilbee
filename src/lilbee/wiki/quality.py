@@ -160,7 +160,7 @@ def _check_faithfulness(
     pages route to drafts even when the prose happens to be coherent.
 
     ``chunks`` carries ``.vector`` populated by LanceDB (see
-    ``SearchChunk`` in ``store.py``), so no extra embedder call is
+    ``SearchChunk`` in ``lilbee.data.store``), so no extra embedder call is
     needed for the source side. The body is embedded once via the
     shared services embedder. Any exception in the embedder (model
     missing, network issue, invalid config) is caught and reported as

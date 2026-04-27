@@ -2,7 +2,8 @@
 
 Combines an in-process mutex with a cross-process file lock (filelock)
 so separate processes also coordinate writes. Read consistency is handled
-by LanceDB's built-in MVCC via read_consistency_interval in store.py.
+by LanceDB's built-in MVCC via ``read_consistency_interval`` in
+``lilbee.data.store``.
 """
 
 import logging

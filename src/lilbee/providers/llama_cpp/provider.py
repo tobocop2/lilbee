@@ -255,7 +255,7 @@ class LlamaCppProvider(LLMProvider):
         return []
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
-        """Not supported directly: catalog.py handles downloads."""
+        """Not supported directly: ``lilbee.catalog`` handles downloads."""
         raise NotImplementedError(
             f"llama-cpp provider cannot pull model {model!r}. "
             "Download GGUF files manually or use the catalog."

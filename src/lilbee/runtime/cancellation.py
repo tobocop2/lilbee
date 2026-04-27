@@ -2,7 +2,7 @@
 
 Raised by progress callbacks when the UI signals a long-running
 background task should abort. Lives in a neutral module so that
-``catalog.py`` (core) can let it propagate without importing TUI code.
+``lilbee.catalog`` (core) can let it propagate without importing TUI code.
 """
 
 from __future__ import annotations

@@ -49,14 +49,15 @@ class ModelInfo:
 
 
 def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
-    """Build a ModelInfo tuple from catalog.py's CatalogModel entries."""
+    """Build a ModelInfo tuple from ``lilbee.catalog``'s CatalogModel entries."""
     return tuple(
         ModelInfo(m.ref, m.display_name, m.size_gb, m.min_ram_gb, m.description) for m in featured
     )
 
 
 # Lazy singletons: resolved on first access to break the circular import
-# between models.py (imports ModelTask) and catalog.py (imports from models).
+# between this module (imports ModelTask) and ``lilbee.catalog`` (imports
+# from this module).
 
 
 @functools.cache
