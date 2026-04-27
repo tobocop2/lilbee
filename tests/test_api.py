@@ -94,6 +94,33 @@ class TestCreate:
         bee = Lilbee()
         assert "envroot" in str(bee.config.data_root)
 
+    def test_user_supplied_provider_is_wired_through(self, tmp_path):
+        """An explicit ``provider=`` argument replaces the auto-created provider.
+
+        Constructing the embedder with the supplied mock and triggering an
+        embed-bearing path (``search`` → ``Searcher`` → ``Embedder``) must call
+        the mock's ``embed``, not the factory-built provider's.
+        """
+        from lilbee import Lilbee
+
+        custom_provider = mock.MagicMock(
+            embed=mock.MagicMock(side_effect=lambda texts: [[0.5] * 768 for _ in texts]),
+            pull_model=mock.MagicMock(),
+            shutdown=mock.MagicMock(),
+        )
+        with mock.patch("lilbee.providers.factory.create_provider") as factory:
+            bee = Lilbee(tmp_path / "userprov", provider=custom_provider)
+            # The factory must NOT have been called: the user's provider wins.
+            factory.assert_not_called()
+
+        # The composed Embedder must hold the user's provider.
+        assert bee.embedder._provider is custom_provider
+
+        # Triggering a search (empty index is fine) must route the embed call
+        # through the user's provider, not via the factory-built one.
+        bee.search("anything")
+        assert custom_provider.embed.called
+
 
 class TestSync:
     def test_sync_indexes_documents(self, tmp_path):

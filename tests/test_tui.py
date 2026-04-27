@@ -243,7 +243,11 @@ class TestChatScreenAsync:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.action_push_help()
+            # Escape out of the chat Input so ? routes to the binding instead
+            # of being typed as a character.
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("question_mark")
             await pilot.pause()
             assert app.screen.query("HelpPanel")
 
@@ -376,7 +380,7 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
-            catalog.action_go_back()
+            await pilot.press("escape")
             await pilot.pause()
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
