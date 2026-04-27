@@ -122,7 +122,7 @@ def _read_eof(pipe_fd: int) -> bool:
         return True
 
 
-def _pipe_closed_win32(pipe_fd: int) -> bool:
+def _pipe_closed_win32(pipe_fd: int) -> bool:  # pragma: no cover  Windows-only
     """Win32 pipe-EOF check using PeekNamedPipe."""
     import ctypes
     import msvcrt
