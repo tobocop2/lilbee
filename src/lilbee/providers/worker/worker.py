@@ -212,7 +212,7 @@ def _apply_config_snapshot(config: ConfigSnapshot) -> None:
 
 def _load_embed_model(model_name: str) -> Any:
     """Load an embedding model in the child process."""
-    from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
+    from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path
     from lilbee.providers.model_cache import MODE_EMBED
 
     return load_llama(resolve_model_path(model_name), mode=MODE_EMBED)
@@ -220,7 +220,7 @@ def _load_embed_model(model_name: str) -> Any:
 
 def _load_vision_model(model_name: str) -> Any:
     """Load a vision model in the child process via the mtmd backend."""
-    from lilbee.providers.llama_cpp_provider import resolve_model_path
+    from lilbee.providers.llama_cpp.provider import resolve_model_path
     from lilbee.providers.mtmd_backend import load_vision_llama
 
     return load_vision_llama(resolve_model_path(model_name))
@@ -229,7 +229,7 @@ def _load_vision_model(model_name: str) -> Any:
 def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
     """Process a single embed request, returning response with vectors or error."""
     try:
-        from lilbee.providers.llama_cpp_provider import embed_one
+        from lilbee.providers.llama_cpp.batching import embed_one
 
         vectors = [embed_one(llm, text) for text in request.texts]
         return EmbedResponse(vectors=vectors, request_id=request.request_id)

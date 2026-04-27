@@ -122,7 +122,7 @@ class TestHandleEmbed:
     def test_success(self) -> None:
         llm = mock.MagicMock()
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.embed_one",
+            "lilbee.providers.llama_cpp.batching.embed_one",
             side_effect=[[0.1, 0.2], [0.3, 0.4]],
         ):
             req = EmbedRequest(texts=["a", "b"], model="m", request_id=5)
@@ -134,7 +134,7 @@ class TestHandleEmbed:
     def test_error_returns_error_response(self) -> None:
         llm = mock.MagicMock()
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.embed_one",
+            "lilbee.providers.llama_cpp.batching.embed_one",
             side_effect=RuntimeError("GPU OOM"),
         ):
             req = EmbedRequest(texts=["a"], model="m", request_id=3)
@@ -927,11 +927,11 @@ class TestLoadEmbedModel:
         model_path = str(tmp_path / "model.gguf")
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 return_value=model_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.load_llama",
+                "lilbee.providers.llama_cpp.provider.load_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):
@@ -994,7 +994,7 @@ class TestLoadVisionModel:
         vision_path = str(tmp_path / "vision.gguf")
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 return_value=vision_path,
             ),
             mock.patch(

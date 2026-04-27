@@ -36,7 +36,7 @@ def models_dir(tmp_path: Path) -> Path:
     cfg.chat_model = TEST_LOCAL_REF
     cfg.subprocess_embed = False
     patcher = mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=lambda m: models / f"{m.rsplit('/', 1)[-1]}",
     )
     patcher.start()
@@ -61,7 +61,7 @@ def _make_embed_response(vectors: list[list[float]]) -> dict[str, Any]:
 class TestEmbedQueue:
     def test_single_embed_request(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """One embed call returns the correct vectors."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.side_effect = [
@@ -81,7 +81,7 @@ class TestEmbedQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Multiple concurrent embed calls are collected into fewer dispatch rounds."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         batch_sizes: list[int] = []
         batch_lock = threading.Lock()
@@ -125,7 +125,7 @@ class TestEmbedQueue:
 
     def test_embed_error_propagates(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """If create_embedding raises, all futures in the batch get the exception."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.side_effect = RuntimeError("GPU out of memory")
@@ -157,7 +157,7 @@ class TestEmbedQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """All concurrent embed requests are dispatched and return results."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         texts_received: list[list[str]] = []
 
@@ -191,7 +191,7 @@ class TestEmbedQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Single-threaded sequential usage works fine."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.return_value = _make_embed_response([[1.0, 2.0]])
@@ -210,7 +210,7 @@ class TestEmbedQueue:
 class TestChatLock:
     def test_chat_returns_string(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Basic chat returns a string through the lock."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_chat_completion.return_value = {
@@ -226,7 +226,7 @@ class TestChatLock:
 
     def test_chat_serialized(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Concurrent chat calls are serialized (no overlapping execution)."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         active = threading.Event()
         overlap_detected = threading.Event()
@@ -266,7 +266,7 @@ class TestChatLock:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Streaming chat works and holds the lock until iteration completes."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         stream_chunks = [
             {"choices": [{"delta": {"content": "Hello"}}]},
@@ -297,7 +297,7 @@ class TestRerankQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """rerank() returns one float per candidate in input order."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
@@ -321,7 +321,7 @@ class TestRerankQueue:
         ``pooling_type=LLAMA_POOLING_TYPE_RANK`` fail with ``llama_decode
         returned -1``.
         """
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
@@ -346,7 +346,7 @@ class TestRerankQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Empty candidate list short-circuits without touching the model."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_EMBED_REF
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
@@ -360,7 +360,7 @@ class TestRerankQueue:
     ) -> None:
         """Calling rerank() with no reranker_model surfaces a ProviderError."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = ""
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
@@ -374,7 +374,7 @@ class TestRerankQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """rerank and embed on the same model produce separate Llama loads."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.embedding_model = TEST_EMBED_REF
         cfg.reranker_model = TEST_EMBED_REF
@@ -395,7 +395,7 @@ class TestRerankQueue:
 class TestShutdown:
     def test_shutdown_stops_worker(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Shutdown sentinel stops the background worker thread."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
 
@@ -409,7 +409,7 @@ class TestShutdown:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Sentinel arriving while collecting a batch stops the worker cleanly."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.return_value = _make_embed_response([[1.0]])
@@ -427,7 +427,7 @@ class TestShutdown:
         # during the batch window of the second request.
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         fut: Future[list[list[float]]] = Future()
         provider._embed_queue.put(_EmbedRequest(texts=["world"], future=fut))
@@ -442,7 +442,7 @@ class TestShutdown:
 
 class TestLockedStreamIteratorClose:
     def test_close_releases_lock(self):
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         lock = threading.Lock()
         lock.acquire()
@@ -456,7 +456,7 @@ class TestLockedStreamIteratorExceptionRelease:
     def test_non_stop_iteration_exception_releases_lock(self):
         """When the underlying response raises a non-StopIteration exception,
         the lock is released and the exception propagates."""
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         def exploding_iter():
             yield {"choices": [{"delta": {"content": "ok"}}]}
@@ -498,14 +498,14 @@ class TestVisionModel:
     def test_find_mmproj_raises_when_missing(self, models_dir: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         with pytest.raises(ProviderError, match="mmproj"):
             find_mmproj_for_model(models_dir / "test-model.gguf")
 
     def test_find_mmproj_finds_by_name(self, models_dir: Path) -> None:
         """find_mmproj_for_model finds mmproj files in the models directory."""
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         mmproj = models_dir / "model-mmproj-f16.gguf"
         mmproj.write_bytes(b"fake")
@@ -516,7 +516,7 @@ class TestVisionModel:
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is None, load_llama passes n_ctx=0 and n_batch from metadata."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = None
@@ -534,7 +534,7 @@ class TestLoadLlamaNCtx:
 
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is set, load_llama uses it for n_ctx and n_batch."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = 8192
@@ -547,7 +547,7 @@ class TestLoadLlamaNCtx:
 
     def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama passes embedding flag correctly."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
 
         mock_llama_cpp.Llama.return_value.metadata = {}
@@ -565,7 +565,8 @@ class TestLoadLlamaNCtx:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """num_ctx=None on chat mode caps at 8192 even when the model trains at 128K."""
-        from lilbee.providers.llama_cpp_provider import DEFAULT_NUM_CTX, load_llama
+        from lilbee.core.config import DEFAULT_NUM_CTX
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = None
@@ -584,7 +585,7 @@ class TestLoadLlamaNCtx:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """num_ctx=None on chat mode uses the training context when smaller than the cap."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = None
@@ -602,7 +603,7 @@ class TestLoadLlamaNCtx:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Embedding models still get n_ctx=0 (full training context); regression guard."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = None
@@ -622,7 +623,7 @@ class TestProviderInvalidateLoadCache:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """invalidate_load_cache() with no path drops every cached model."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
         from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
 
         cfg.num_ctx = 8192
@@ -643,7 +644,7 @@ class TestProviderInvalidateLoadCache:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """invalidate_load_cache(path) leaves entries for other paths intact."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = 8192
@@ -710,7 +711,7 @@ class TestProviderInvalidateLoadCache:
 class TestSuppressStderrThreadSafety:
     def test_concurrent_suppress_native_stderr_no_corruption(self) -> None:
         """B3: suppress_native_stderr serializes fd 2 manipulation via _STDERR_LOCK."""
-        from lilbee.providers.llama_cpp_provider import suppress_native_stderr
+        from lilbee.providers.llama_cpp.log_dispatch import suppress_native_stderr
 
         results: list[int] = []
         errors: list[Exception] = []
@@ -735,7 +736,7 @@ class TestSuppressStderrThreadSafety:
 
     def test_suppress_native_stderr_uses_lock(self) -> None:
         """B3: Verify suppress_native_stderr acquires _STDERR_LOCK."""
-        from lilbee.providers.llama_cpp_provider import _STDERR_LOCK, suppress_native_stderr
+        from lilbee.providers.llama_cpp.log_dispatch import _STDERR_LOCK, suppress_native_stderr
 
         lock_was_held = []
 

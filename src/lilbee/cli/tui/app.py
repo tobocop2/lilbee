@@ -90,8 +90,8 @@ def get_views() -> dict[str, Callable[[], Screen]]:
 
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
-    # Lazy: llama_cpp_provider's transitive imports cost ~500ms.
-    from lilbee.providers.llama_cpp_provider import LOAD_AFFECTING_KEYS
+    # Lazy: llama_cpp provider's transitive imports cost ~500ms.
+    from lilbee.providers.llama_cpp.provider import LOAD_AFFECTING_KEYS
 
     key, _value = payload
     if key in LOAD_AFFECTING_KEYS:

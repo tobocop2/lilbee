@@ -1803,11 +1803,11 @@ def test_status_read_chat_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "llama"},
         ),
     ):
@@ -1822,11 +1822,11 @@ def test_status_read_embed_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
         ),
     ):
@@ -1841,15 +1841,15 @@ def test_status_read_vision_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+            "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
             return_value="/fake/mmproj",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
+            "lilbee.providers.llama_cpp.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
         ),
     ):
@@ -1873,7 +1873,7 @@ def test_status_read_vision_arch_swallows_errors():
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
     with patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=RuntimeError("boom"),
     ):
         result = _read_vision_arch(info)
@@ -8095,7 +8095,7 @@ async def test_chat_embedding_ready_false_on_exception():
         screen = app.screen
         assert isinstance(screen, ChatScreen)
         with patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             side_effect=FileNotFoundError("not found"),
         ):
             assert screen._embedding_ready() is False
@@ -8280,7 +8280,7 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=FileNotFoundError("not found"),
     ):
         assert _real_embedding_ready(sentinel) is True
@@ -8296,7 +8296,7 @@ def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         return_value="/fake/path/to/model.gguf",
     ):
         assert _real_embedding_ready(sentinel) is True

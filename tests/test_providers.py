@@ -25,14 +25,11 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    import lilbee.providers.llama_cpp_provider as lcp
     from lilbee.core.services import reset_services
 
     reset_services()
-    lcp._registry = None
     yield
     reset_services()
-    lcp._registry = None
 
 
 TEST_MODEL_REPO = "org/test-model-GGUF"
@@ -109,7 +106,7 @@ class TestLlamaCppProvider:
         cfg.subprocess_embed = False
         self._providers: list = []
         self._resolve_patcher = mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             side_effect=lambda m: models_dir / f"{m.rsplit('/', 1)[-1]}",
         )
         self._resolve_patcher.start()
@@ -119,7 +116,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
 
     def _make_provider(self) -> object:
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         p = LlamaCppProvider()
         self._providers.append(p)
@@ -249,7 +246,7 @@ class TestLlamaCppProvider:
         provider = self._make_provider()
         # Override the class-level resolve mock to raise for this test
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             side_effect=ProviderError("not found"),
         ):
             assert provider.show_model("some-model") is None
@@ -257,7 +254,7 @@ class TestLlamaCppProvider:
     def testread_gguf_metadata(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         mock_llm = MagicMock()
         mock_llm.metadata = {
@@ -280,7 +277,7 @@ class TestLlamaCppProvider:
     def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         mock_llm = MagicMock()
         mock_llm.metadata = {}
@@ -291,13 +288,13 @@ class TestLlamaCppProvider:
     def testload_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
         from unittest.mock import patch
 
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = None
         with (
             patch("llama_cpp.Llama") as mock_llama_cls,
             patch(
-                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
                 return_value={"context_length": "2048"},
             ),
         ):
@@ -310,7 +307,7 @@ class TestLlamaCppProvider:
     def testload_llama_no_n_batch_for_chat(self, models_dir: Path) -> None:
         from unittest.mock import patch
 
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         with patch("llama_cpp.Llama"):
             load_llama(models_dir / "test-model.gguf", mode="chat")
@@ -325,7 +322,7 @@ class TestLlamaCppProvider:
         """Opaque ``Failed to create llama_context`` is rewrapped with diagnostic context."""
         from unittest.mock import patch
 
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         model = models_dir / "tiny.gguf"
         model.write_bytes(b"x" * 1024)
@@ -345,7 +342,7 @@ class TestLlamaCppProvider:
         """ValueErrors that aren't the two known load-failure messages pass through unchanged."""
         from unittest.mock import patch
 
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         with (
             patch("llama_cpp.Llama", side_effect=ValueError("totally unrelated")),
@@ -362,67 +359,66 @@ class TestLlamaCppProvider:
         import logging
         from unittest.mock import patch
 
-        from lilbee.providers import llama_cpp_provider as prov
+        from lilbee.providers.llama_cpp import log_dispatch, provider
 
-        prior_installed = prov._llama_log_installed
-        prior_callback = prov._llama_log_callback
-        prior_pending = dict(prov._llama_log_pending)
-        prior_pending_level = prov._llama_log_pending_level
-        prov._llama_log_installed = False
-        prov._llama_log_callback = None
-        prov._llama_log_pending.clear()
+        prior_installed = log_dispatch._llama_log_installed
+        prior_callback = log_dispatch._llama_log_callback
+        prior_pending = dict(log_dispatch._llama_log_pending)
+        prior_pending_level = log_dispatch._llama_log_pending_level
+        log_dispatch._llama_log_installed = False
+        log_dispatch._llama_log_callback = None
+        log_dispatch._llama_log_pending.clear()
         try:
             with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
-                load_llama_fn = prov.load_llama
-                load_llama_fn(models_dir / "test-model.gguf", mode="chat")
-                assert prov._llama_log_installed is True
+                provider.load_llama(models_dir / "test-model.gguf", mode="chat")
+                assert log_dispatch._llama_log_installed is True
                 mock_set.assert_called_once()
 
             with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
-                prov._llama_log_dispatch(2, b"init: embeddings required\n", None)
+                log_dispatch._llama_log_dispatch(2, b"init: embeddings required\n", None)
             records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
             assert records, "no lilbee.llama_cpp records captured"
             assert records[-1].levelno == logging.INFO
             assert "embeddings required" in records[-1].message
         finally:
-            prov._llama_log_installed = prior_installed
-            prov._llama_log_callback = prior_callback
-            prov._llama_log_pending.clear()
-            prov._llama_log_pending.update(prior_pending)
-            prov._llama_log_pending_level = prior_pending_level
+            log_dispatch._llama_log_installed = prior_installed
+            log_dispatch._llama_log_callback = prior_callback
+            log_dispatch._llama_log_pending.clear()
+            log_dispatch._llama_log_pending.update(prior_pending)
+            log_dispatch._llama_log_pending_level = prior_pending_level
 
     def testllama_log_dispatch_promotes_errors(self) -> None:
         """ggml ERROR maps to Python ERROR so real failures surface at the default level."""
         import logging
 
-        from lilbee.providers import llama_cpp_provider as prov
+        from lilbee.providers.llama_cpp import log_dispatch
 
-        prior_pending = dict(prov._llama_log_pending)
-        prior_pending_level = prov._llama_log_pending_level
-        prov._llama_log_pending.clear()
+        prior_pending = dict(log_dispatch._llama_log_pending)
+        prior_pending_level = log_dispatch._llama_log_pending_level
+        log_dispatch._llama_log_pending.clear()
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
         handler.emit = records.append  # type: ignore[method-assign]
         logger.addHandler(handler)
         try:
-            prov._llama_log_dispatch(3, b"fatal: out of memory\n", None)
+            log_dispatch._llama_log_dispatch(3, b"fatal: out of memory\n", None)
         finally:
             logger.removeHandler(handler)
-            prov._llama_log_pending.clear()
-            prov._llama_log_pending.update(prior_pending)
-            prov._llama_log_pending_level = prior_pending_level
+            log_dispatch._llama_log_pending.clear()
+            log_dispatch._llama_log_pending.update(prior_pending)
+            log_dispatch._llama_log_pending_level = prior_pending_level
         assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
 
     def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
         """CONT chunks buffer until a newline; a new non-CONT line also flushes the buffer."""
         import logging
 
-        from lilbee.providers import llama_cpp_provider as prov
+        from lilbee.providers.llama_cpp import log_dispatch
 
-        prior_pending = dict(prov._llama_log_pending)
-        prior_pending_level = prov._llama_log_pending_level
-        prov._llama_log_pending.clear()
+        prior_pending = dict(log_dispatch._llama_log_pending)
+        prior_pending_level = log_dispatch._llama_log_pending_level
+        log_dispatch._llama_log_pending.clear()
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
@@ -432,34 +428,34 @@ class TestLlamaCppProvider:
         logger.setLevel(logging.DEBUG)
         try:
             # WARN starts a record
-            prov._llama_log_dispatch(2, b"loading model:", None)
+            log_dispatch._llama_log_dispatch(2, b"loading model:", None)
             # CONT extends it (no newline yet -> still buffered)
-            prov._llama_log_dispatch(5, b" qwen3-0.6b", None)
+            log_dispatch._llama_log_dispatch(5, b" qwen3-0.6b", None)
             assert records == []
             # CONT with newline -> flush
-            prov._llama_log_dispatch(5, b" Q4_K_M\n", None)
+            log_dispatch._llama_log_dispatch(5, b" Q4_K_M\n", None)
             assert records, "newline should have flushed buffer"
             assert "loading model: qwen3-0.6b Q4_K_M" in records[-1].message
             records.clear()
 
             # Buffered chunk without newline; a new non-CONT message must
             # flush the prior buffer before starting fresh.
-            prov._llama_log_dispatch(2, b"first line", None)
-            prov._llama_log_dispatch(2, b"second line\n", None)
+            log_dispatch._llama_log_dispatch(2, b"first line", None)
+            log_dispatch._llama_log_dispatch(2, b"second line\n", None)
             messages = [r.message for r in records]
             assert "first line" in messages
             assert "second line" in messages
         finally:
             logger.removeHandler(handler)
             logger.setLevel(prior_level)
-            prov._llama_log_pending.clear()
-            prov._llama_log_pending.update(prior_pending)
-            prov._llama_log_pending_level = prior_pending_level
+            log_dispatch._llama_log_pending.clear()
+            log_dispatch._llama_log_pending.update(prior_pending)
+            log_dispatch._llama_log_pending_level = prior_pending_level
 
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+            from lilbee.providers.llama_cpp.provider import resolve_model_path
 
             cfg.models_dir = models_dir
             abs_model = tmp_path / "standalone.gguf"
@@ -472,7 +468,7 @@ class TestLlamaCppProvider:
     def testresolve_model_path_via_registry(self, models_dir: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+            from lilbee.providers.llama_cpp.provider import resolve_model_path
 
             cfg.models_dir = models_dir
             path = resolve_model_path(TEST_MODEL_REF)
@@ -485,7 +481,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+            from lilbee.providers.llama_cpp.provider import resolve_model_path
 
             cfg.models_dir = models_dir
             with pytest.raises(ProviderError, match="not found"):
@@ -497,7 +493,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+            from lilbee.providers.llama_cpp.provider import resolve_model_path
 
             cfg.models_dir = models_dir
             with pytest.raises(ProviderError, match="not found"):
@@ -509,7 +505,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+            from lilbee.providers.llama_cpp.provider import resolve_model_path
 
             cfg.models_dir = models_dir
             # Use a real absolute path that doesn't exist (works on all platforms)
@@ -550,7 +546,7 @@ class TestFactory:
 
     def test_explicit_llama_cpp(self) -> None:
         from lilbee.providers.factory import create_provider
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.llm_provider = "llama-cpp"
         provider = create_provider(cfg)
@@ -1069,7 +1065,8 @@ class TestDispatchBatch:
         """_dispatch_batch embeds one text at a time and resolves the future."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         mock_llm = mock.MagicMock()
         mock_llm.create_embedding.side_effect = [
@@ -1087,7 +1084,8 @@ class TestDispatchBatch:
         """When embedding fails, the future receives the exception."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         mock_llm = mock.MagicMock()
         mock_llm.create_embedding.side_effect = RuntimeError("GPU OOM")
@@ -1103,7 +1101,8 @@ class TestDispatchBatch:
 class TestEmbedSubprocessFallback:
     def test_oserror_disables_subprocess(self, mock_llama_cpp: mock.MagicMock) -> None:
         """OSError from subprocess worker falls back to in-process embedding."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         provider = LlamaCppProvider()
         provider._subprocess_enabled = True
@@ -1131,7 +1130,7 @@ class TestVisionOcr:
     def test_delegates_to_subprocess(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         provider = LlamaCppProvider()
         mock_worker = mock.MagicMock()
@@ -1145,7 +1144,8 @@ class TestVisionOcr:
 
 class TestChatStreamReturnsLockedIterator:
     def test_stream_returns_locked_iterator(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _LockedStreamIterator
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         mock_llm = mock.MagicMock()
         mock_llm.create_chat_completion.return_value = iter([])
@@ -1160,7 +1160,7 @@ class TestChatStreamReturnsLockedIterator:
 
 class TestShowModelNotFound:
     def test_returns_none_for_missing_model(self) -> None:
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         provider = LlamaCppProvider()
         assert provider.show_model("nonexistent-model-xyz") is None
@@ -1168,7 +1168,7 @@ class TestShowModelNotFound:
 
 class TestShutdown:
     def test_stops_subprocess_worker(self) -> None:
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         provider = LlamaCppProvider()
         mock_worker = mock.MagicMock()
@@ -1184,7 +1184,7 @@ class TestLockedStreamIterator:
         """__next__ yields content, close() releases the lock."""
         import threading
 
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         lock = threading.Lock()
         lock.acquire()
@@ -1202,7 +1202,7 @@ class TestLockedStreamIterator:
     def test_close_releases_lock_early(self) -> None:
         import threading
 
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         lock = threading.Lock()
         lock.acquire()
@@ -1216,7 +1216,7 @@ class TestLockedStreamIterator:
         """close() exhausts the underlying iterator before releasing the lock."""
         import threading
 
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         lock = threading.Lock()
         lock.acquire()
@@ -1234,7 +1234,7 @@ class TestLockedStreamIterator:
         """close() releases lock even if draining the iterator raises."""
         import threading
 
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         def _exploding():
             yield {"choices": [{"delta": {"content": "a"}}]}
@@ -1252,7 +1252,7 @@ class TestReadMmprojProjectorType:
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
 
-        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
 
         # Build a minimal GGUF file with clip.projector_type = "ldp"
         buf = bytearray()
@@ -1273,7 +1273,7 @@ class TestReadMmprojProjectorType:
         assert read_mmproj_projector_type(gguf_file) == "ldp"
 
     def test_exception_returns_none(self) -> None:
-        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
 
@@ -1282,7 +1282,7 @@ class TestReadMmprojProjectorType:
         as an int or bool), the reader returns None instead of decoding bytes."""
         import struct
 
-        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
 
         # Build a GGUF where clip.projector_type is value_type=4 (uint32), not string.
         buf = bytearray()
@@ -1307,7 +1307,7 @@ class TestReadMmprojProjectorType:
         """
         import struct
 
-        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
 
         buf = bytearray()
         buf += b"GGUF"
@@ -1368,7 +1368,7 @@ class TestMtmdLoadVisionLlama:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
                 return_value=Path("found_mmproj.gguf"),
             ),
             mock.patch(
@@ -1647,7 +1647,7 @@ class TestFilterOptions:
 
 def _make_provider_no_thread() -> object:
     """Create a LlamaCppProvider without starting the embed/rerank thread."""
-    from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+    from lilbee.providers.llama_cpp import LlamaCppProvider
 
     with mock.patch("threading.Thread.start"):
         provider = LlamaCppProvider()
@@ -1667,7 +1667,7 @@ class TestLlamaCppProviderMethods:
         provider._cache.load_model.return_value = mock_cache_model
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value=Path("/models/test.gguf"),
         ):
             result = provider._get_chat_llm()
@@ -1686,7 +1686,7 @@ class TestLlamaCppProviderMethods:
         provider._cache.load_model.return_value = mock_cache_model
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value=Path("/models/vision.gguf"),
         ):
             result = provider._get_chat_llm()
@@ -1700,7 +1700,7 @@ class TestLlamaCppProviderMethods:
         cfg.chat_model = "org/Default-GGUF/default.gguf"
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value=Path("/models/override.gguf"),
         ):
             provider._get_chat_llm(model="org/Override-GGUF/override.gguf")
@@ -1715,7 +1715,7 @@ class TestLlamaCppProviderMethods:
         cfg.embedding_model = "org/Embed-GGUF/embed.gguf"
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value=Path("/models/embed.gguf"),
         ):
             provider._get_embed_llm()
@@ -1790,7 +1790,7 @@ class TestLlamaCppProviderMethods:
 
     def test_chat_stream(self, mock_llama_cpp: mock.MagicMock) -> None:
         """chat() with stream=True returns a _LockedStreamIterator."""
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         provider = _make_provider_no_thread()
 
@@ -1820,11 +1820,11 @@ class TestLlamaCppProviderMethods:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 return_value=Path("/models/test.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
                 return_value={"architecture": "llama"},
             ),
         ):
@@ -1839,7 +1839,7 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             side_effect=ProviderError("not found"),
         ):
             result = provider.show_model("missing-model")
@@ -1852,11 +1852,11 @@ class TestLlamaCppProviderMethods:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 return_value=Path("/models/llava.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
                 return_value=Path("/models/llava-mmproj.gguf"),
             ),
         ):
@@ -1874,7 +1874,7 @@ class TestLlamaCppProviderMethods:
         ref = FEATURED_RERANK[0].hf_repo
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             side_effect=AssertionError("resolve_model_path must not be called for a rerank ref"),
         ):
             caps = provider.get_capabilities(ref)
@@ -1889,11 +1889,11 @@ class TestLlamaCppProviderMethods:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 return_value=Path("/models/qwen.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
                 side_effect=ProviderError("no mmproj"),
             ),
         ):
@@ -1908,7 +1908,7 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             side_effect=ProviderError("not found"),
         ):
             caps = provider.get_capabilities("missing-model")
@@ -1930,7 +1930,7 @@ class TestLlamaCppProviderMethods:
         mock_services.registry = mock_registry
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.get_services", return_value=mock_services
+            "lilbee.providers.llama_cpp.provider.get_services", return_value=mock_services
         ):
             result = provider.list_models()
 
@@ -2007,7 +2007,8 @@ class TestEmbedWorker:
         """_embed_worker processes items and dispatches them."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         with mock.patch("threading.Thread.start"):
             provider = LlamaCppProvider()
@@ -2033,7 +2034,8 @@ class TestEmbedWorker:
         """_embed_worker exits when None received during batching."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         with mock.patch("threading.Thread.start"):
             provider = LlamaCppProvider()
@@ -2056,7 +2058,7 @@ class TestEmbedWorker:
         """_dispatch_batch resolves futures with embedding vectors."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         provider = _make_provider_no_thread()
         mock_llm = mock.MagicMock()
@@ -2064,7 +2066,7 @@ class TestEmbedWorker:
         provider._cache.load_model.return_value = mock_llm
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value=Path("/test.gguf"),
         ):
             cfg.embedding_model = "org/Test-GGUF/test.gguf"
@@ -2078,7 +2080,7 @@ class TestEmbedWorker:
         """_dispatch_batch sets exception on future when embed fails."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         provider = _make_provider_no_thread()
         mock_llm = mock.MagicMock()
@@ -2086,11 +2088,11 @@ class TestEmbedWorker:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 return_value=Path("/test.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.embed_one",
+                "lilbee.providers.llama_cpp.provider.embed_one",
                 side_effect=RuntimeError("embed broken"),
             ),
         ):
@@ -2110,7 +2112,7 @@ class TestDispatchBatchGetEmbedLlmError:
         """When _get_embed_llm raises, all futures in the batch get the exception."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import _EmbedRequest
 
         provider = _make_provider_no_thread()
 
@@ -2136,7 +2138,7 @@ class TestLockedStreamIteratorException:
         """_LockedStreamIterator releases lock when inner stream raises."""
         import threading
 
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         lock = threading.Lock()
         lock.acquire()
@@ -2160,7 +2162,7 @@ class TestLockedStreamIteratorException:
 class TestReadGgufMetadata:
     def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata returns parsed fields."""
-        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = {
@@ -2187,7 +2189,7 @@ class TestReadGgufMetadata:
 
     def test_returns_none_for_empty_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata returns None when no fields found."""
-        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = {}
@@ -2198,7 +2200,7 @@ class TestReadGgufMetadata:
 
     def test_handles_none_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata handles None metadata."""
-        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = None
@@ -2211,12 +2213,12 @@ class TestReadGgufMetadata:
 class TestLoadLlama:
     def test_embedding_with_ctx0_reads_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama for embeddings reads context_length from GGUF metadata."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = None
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
             return_value={"context_length": "2048"},
         ):
             load_llama(Path("/test.gguf"), mode="embed")
@@ -2229,12 +2231,12 @@ class TestLoadLlama:
 
     def test_embedding_no_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama defaults to 2048 when no metadata."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = None
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
             return_value=None,
         ):
             load_llama(Path("/test.gguf"), mode="embed")
@@ -2244,7 +2246,7 @@ class TestLoadLlama:
 
     def test_embedding_with_explicit_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama with explicit num_ctx uses it for n_batch."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = 4096
 
@@ -2256,7 +2258,7 @@ class TestLoadLlama:
 
     def test_chat_mode(self, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama for chat does not set n_batch."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = None
 
@@ -2270,7 +2272,7 @@ class TestLoadLlama:
 class TestFindMmprojForModel:
     def test_catalog_lookup(self) -> None:
         """find_mmproj_for_model uses catalog lookup first."""
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         with mock.patch(
             "lilbee.catalog.find_mmproj_file",
@@ -2282,7 +2284,7 @@ class TestFindMmprojForModel:
 
     def test_directory_fallback(self, tmp_path: Path) -> None:
         """find_mmproj_for_model falls back to directory scan."""
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -2300,7 +2302,7 @@ class TestFindMmprojForModel:
     def test_raises_when_not_found(self, tmp_path: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -2319,7 +2321,7 @@ class TestFindMmprojForModel:
         snapshot symlink, not in blobs/. find_mmproj_for_model must walk up to the
         sibling snapshots/ tree when the model path lives under blobs/.
         """
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -2337,7 +2339,7 @@ class TestFindMmprojForModel:
     def test_hf_cache_blob_without_snapshots_falls_through(self, tmp_path: Path) -> None:
         """blobs/ dir with no sibling snapshots/ tree returns None from the HF
         helper, allowing the flat-dir fallback to take over."""
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -2357,7 +2359,7 @@ class TestFindMmprojForModel:
     def test_hf_cache_snapshots_without_mmproj_falls_through(self, tmp_path: Path) -> None:
         """snapshots/ tree exists but no mmproj GGUF lives in any snapshot --
         the HF helper returns None and the flat-dir fallback takes over."""
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -2382,7 +2384,7 @@ class TestReadMmprojProjectorTypePartial:
         """read_mmproj_projector_type reads clip.projector_type from GGUF."""
         import struct
 
-        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
 
         # Build a minimal GGUF with one KV pair: clip.projector_type = "ldp"
         f = tmp_path / "test.gguf"
@@ -2406,7 +2408,7 @@ class TestReadMmprojProjectorTypePartial:
         """read_mmproj_projector_type skips unrelated keys."""
         import struct
 
-        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
+        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
 
         f = tmp_path / "test.gguf"
         with open(f, "wb") as fp:
@@ -2859,24 +2861,24 @@ class TestSdkRerank:
 
 class TestIsRerankModel:
     def test_empty_model_returns_false(self) -> None:
-        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+        from lilbee.providers.llama_cpp.provider import _is_rerank_model
 
         assert _is_rerank_model("") is False
 
     def test_matches_featured_rerank_entry(self) -> None:
         from lilbee.catalog import FEATURED_RERANK
-        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+        from lilbee.providers.llama_cpp.provider import _is_rerank_model
 
         assert FEATURED_RERANK, "catalog must have at least one rerank entry"
         assert _is_rerank_model(FEATURED_RERANK[0].hf_repo) is True
 
     def test_non_rerank_model_returns_false(self) -> None:
-        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+        from lilbee.providers.llama_cpp.provider import _is_rerank_model
 
         assert _is_rerank_model("org/Definitely-Not-Rerank-GGUF") is False
 
     def test_substring_of_catalog_name_does_not_match(self) -> None:
-        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+        from lilbee.providers.llama_cpp.provider import _is_rerank_model
 
         assert _is_rerank_model("base") is False
         assert _is_rerank_model("reranker") is False
@@ -2884,7 +2886,7 @@ class TestIsRerankModel:
     def test_full_hf_ref_matches(self) -> None:
         """A full ``hf_repo/filename`` rerank ref also resolves."""
         from lilbee.catalog import FEATURED_RERANK
-        from lilbee.providers.llama_cpp_provider import _is_rerank_model
+        from lilbee.providers.llama_cpp.provider import _is_rerank_model
 
         assert FEATURED_RERANK, "catalog must have at least one rerank entry"
         entry = FEATURED_RERANK[0]
@@ -2894,41 +2896,41 @@ class TestIsRerankModel:
 class TestExtractRerankScore:
     def test_raises_when_data_empty(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match="no data"):
             _extract_rerank_score({"data": []})
 
     def test_flat_list_embedding_returns_first_element(self) -> None:
         """llama-cpp-python 0.3.x returns ``list[float]`` with length n_embd=1."""
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         assert _extract_rerank_score({"data": [{"embedding": [0.73]}]}) == 0.73
 
     def test_scalar_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match=r"unexpected score shape.*float"):
             _extract_rerank_score({"data": [{"embedding": 0.73}]})
 
     def test_nested_list_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match=r"unexpected score shape.*list"):
             _extract_rerank_score({"data": [{"embedding": [[0.42]]}]})
 
     def test_empty_embedding_list_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match=r"unexpected score shape.*list: \[\]"):
             _extract_rerank_score({"data": [{"embedding": []}]})
 
     def test_non_numeric_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _extract_rerank_score
+        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match="unexpected score shape"):
             _extract_rerank_score({"data": [{"embedding": "not-a-number"}]})
@@ -3033,7 +3035,7 @@ class TestLlamaCppRerankDispatchError:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """A failure inside ``compute_rerank_scores`` resolves the future with the error."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_MODEL_REF
         instance = mock.MagicMock()
@@ -3050,7 +3052,7 @@ class TestLlamaCppRerankDispatchError:
 
 class TestLlamaCppHasRankPooling:
     def test_has_rank_pooling_reports_import_status(self) -> None:
-        from lilbee.providers.llama_cpp_provider import _llama_cpp_has_rank_pooling
+        from lilbee.providers.llama_cpp.provider import _llama_cpp_has_rank_pooling
 
         fake_mod = mock.MagicMock()
         fake_mod.LLAMA_POOLING_TYPE_RANK = 4
@@ -3060,18 +3062,18 @@ class TestLlamaCppHasRankPooling:
             assert _llama_cpp_has_rank_pooling() is False
 
     def test_supports_rerank_requires_rank_pooling(self) -> None:
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         with mock.patch("threading.Thread.start"):
             provider = LlamaCppProvider()
         try:
             with mock.patch(
-                "lilbee.providers.llama_cpp_provider._llama_cpp_has_rank_pooling",
+                "lilbee.providers.llama_cpp.provider._llama_cpp_has_rank_pooling",
                 return_value=True,
             ):
                 assert provider.supports_rerank() is True
             with mock.patch(
-                "lilbee.providers.llama_cpp_provider._llama_cpp_has_rank_pooling",
+                "lilbee.providers.llama_cpp.provider._llama_cpp_has_rank_pooling",
                 return_value=False,
             ):
                 assert provider.supports_rerank() is False

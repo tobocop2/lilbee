@@ -1,4 +1,4 @@
-"""Llama.cpp provider for local GGUF inference.
+"""Llama.cpp provider: class, model loader, and path resolution.
 
 Includes a thread-safe batching queue for embeddings so that concurrent
 ingest threads don't hit the non-thread-safe Llama object simultaneously.
@@ -9,47 +9,39 @@ to a persistent child process to avoid GIL contention.
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.services import get_services
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.llama_cpp.batching import (
+    _BATCH_WINDOW_S,
+    _EMBED_FUTURE_TIMEOUT_S,
+    _RERANK_FUTURE_TIMEOUT_S,
+    _EmbedRequest,
+    _RerankRequest,
+    compute_rerank_scores,
+    embed_one,
+)
+from lilbee.providers.llama_cpp.gguf_meta import (
+    find_mmproj_for_model,
+    read_gguf_metadata,
+)
+from lilbee.providers.llama_cpp.log_dispatch import (
+    install_llama_log_handler,
+    suppress_native_stderr,
+)
 from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
 from lilbee.providers.worker import WorkerManager
 
 log = logging.getLogger(__name__)
-
-_llama_log = logging.getLogger("lilbee.llama_cpp")
-
-# ggml.h log levels (not exposed by llama-cpp-python).
-_GGML_LOG_LEVEL_INFO = 1
-_GGML_LOG_LEVEL_WARN = 2
-_GGML_LOG_LEVEL_ERROR = 3
-_GGML_LOG_LEVEL_DEBUG = 4
-_GGML_LOG_LEVEL_CONT = 5
-
-# WARN demotes to INFO so noisy auto-corrections stay silent at the default WARNING level.
-_GGML_TO_PY_LEVEL = {
-    _GGML_LOG_LEVEL_INFO: logging.DEBUG,
-    _GGML_LOG_LEVEL_WARN: logging.INFO,
-    _GGML_LOG_LEVEL_ERROR: logging.ERROR,
-    _GGML_LOG_LEVEL_DEBUG: logging.DEBUG,
-}
-
-_BATCH_WINDOW_S = 0.01  # 10ms: collect concurrent requests before dispatching
-_EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
-_RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
 # Settings baked into Llama() at load time, or whose change picks a
 # different model file. Sampling params are read per-call and excluded.
@@ -62,23 +54,6 @@ LOAD_AFFECTING_KEYS = frozenset(
         "reranker_model",
     }
 )
-
-
-@dataclass
-class _EmbedRequest:
-    """A single embedding request submitted to the batch queue."""
-
-    texts: list[str]
-    future: Future[list[list[float]]]
-
-
-@dataclass
-class _RerankRequest:
-    """A single rerank request submitted to the batch queue."""
-
-    query: str
-    candidates: list[str]
-    future: Future[list[float]]
 
 
 class LlamaCppProvider(LLMProvider):
@@ -392,115 +367,6 @@ class _LockedStreamIterator:
         self._release()
 
 
-_STDERR_LOCK = threading.Lock()
-
-# ctypes does not retain a Python reference to the wrapped callback;
-# this module-level handle keeps it alive for the process lifetime.
-_llama_log_callback: Any = None
-_llama_log_installed = False
-# Module-private buffer; not in Services because it's request-scoped state for a ctypes callback.
-_llama_log_pending: dict[int, str] = {}
-_llama_log_pending_level: int = _GGML_LOG_LEVEL_INFO
-
-
-def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
-    """Dispatch one llama.cpp log message; CONT chunks are coalesced on newline."""
-    global _llama_log_pending_level
-    try:
-        text = text_bytes.decode("utf-8", errors="replace") if text_bytes else ""
-    except Exception:  # pragma: no cover
-        return
-
-    if level == _GGML_LOG_LEVEL_CONT:
-        _llama_log_pending[0] = _llama_log_pending.get(0, "") + text
-    else:
-        if 0 in _llama_log_pending:
-            buffered = _llama_log_pending.pop(0).rstrip()
-            if buffered:
-                _llama_log.log(
-                    _GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), buffered
-                )
-        _llama_log_pending_level = level
-        _llama_log_pending[0] = text
-
-    if "\n" in _llama_log_pending.get(0, ""):
-        full = _llama_log_pending.pop(0).rstrip()
-        if full:
-            _llama_log.log(_GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), full)
-
-
-def install_llama_log_handler() -> None:
-    """Route llama.cpp logs through Python logging. Idempotent."""
-    global _llama_log_callback, _llama_log_installed
-    if _llama_log_installed:
-        return
-    import llama_cpp
-
-    _llama_log_callback = llama_cpp.llama_log_callback(_llama_log_dispatch)
-    llama_cpp.llama_log_set(_llama_log_callback, None)
-    _llama_log_installed = True
-
-
-def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    """Call *fn* with C-level stderr suppressed.
-    llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
-    that bypass Python logging. This redirects fd 2 to /dev/null for the
-    duration of the call. A lock serializes access to fd 2 so concurrent
-    threads don't corrupt each other's file descriptors.
-    """
-    with _STDERR_LOCK:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        old_stderr = os.dup(2)
-        os.dup2(devnull, 2)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            os.dup2(old_stderr, 2)
-            os.close(devnull)
-            os.close(old_stderr)
-
-
-def embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text with llama.cpp stderr noise suppressed."""
-    response = suppress_native_stderr(llm.create_embedding, input=[text])
-    result: list[float] = response["data"][0]["embedding"]
-    return result
-
-
-def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Read metadata from a GGUF file's headers via llama-cpp-python.
-    Returns a dict with keys like 'architecture', 'context_length',
-    'embedding_length', 'chat_template', 'file_type'.
-    """
-    from llama_cpp import Llama
-
-    install_llama_log_handler()
-    llm = suppress_native_stderr(
-        Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
-    )
-    try:
-        raw = llm.metadata or {}
-        result: dict[str, str] = {}
-        if "general.architecture" in raw:
-            result["architecture"] = str(raw["general.architecture"])
-        arch = raw.get("general.architecture", "llama")
-        ctx_key = f"{arch}.context_length"
-        if ctx_key in raw:
-            result["context_length"] = str(raw[ctx_key])
-        emb_key = f"{arch}.embedding_length"
-        if emb_key in raw:
-            result["embedding_length"] = str(raw[emb_key])
-        if "tokenizer.chat_template" in raw:
-            result["chat_template"] = str(raw["tokenizer.chat_template"])
-        if "general.file_type" in raw:
-            result["file_type"] = str(raw["general.file_type"])
-        if "general.name" in raw:
-            result["name"] = str(raw["general.name"])
-        return result or None
-    finally:
-        llm.close()
-
-
 def resolve_model_path(model: str) -> Path:
     """Resolve a model name to a .gguf file path.
     Resolution order:
@@ -630,108 +496,3 @@ def _is_rerank_model(model: str) -> bool:
     if not model:
         return False
     return is_rerank_ref(model)
-
-
-_RERANK_PAIR_SEPARATOR = "</s></s>"
-
-
-def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[float]:
-    """Score *candidates* against *query* via llama.cpp reranker embeddings.
-
-    ``pooling_type=LLAMA_POOLING_TYPE_RANK`` requires the pair pre-joined
-    as ``query</s></s>candidate``; passing them as two inputs makes
-    ``llama_decode`` fail with ``-1``.
-    """
-    scores: list[float] = []
-    for candidate in candidates:
-        pair = f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}"
-        response = suppress_native_stderr(llm.create_embedding, input=pair)
-        score = _extract_rerank_score(response)
-        scores.append(score)
-    return scores
-
-
-def _extract_rerank_score(response: dict[str, Any]) -> float:
-    """Extract a single relevance score from a pooling_type=RANK response.
-
-    Raises ``ProviderError`` with the observed shape for anything other
-    than a non-empty ``list[float]`` so upstream format changes surface.
-    """
-    data = response.get("data") or []
-    if not data:
-        raise ProviderError("Reranker returned no data", provider="llama-cpp")
-    embedding = data[-1].get("embedding")
-    if isinstance(embedding, list) and embedding and isinstance(embedding[0], (int, float)):
-        return float(embedding[0])
-    raise ProviderError(
-        "Reranker returned unexpected score shape "
-        f"(got {type(embedding).__name__}: {embedding!r}); "
-        "llama-cpp-python may have changed its response format",
-        provider="llama-cpp",
-    )
-
-
-_HF_BLOBS_DIR_NAME = "blobs"
-_HF_SNAPSHOTS_DIR_NAME = "snapshots"
-
-
-def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
-    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree."""
-    if model_dir.name != _HF_BLOBS_DIR_NAME:
-        return None
-    snapshots_dir = model_dir.parent / _HF_SNAPSHOTS_DIR_NAME
-    if not snapshots_dir.is_dir():
-        return None
-    for snapshot in snapshots_dir.iterdir():
-        candidates = sorted(snapshot.glob("*mmproj*.gguf"))
-        if candidates:
-            return candidates[0]
-    return None
-
-
-def _find_mmproj_in_flat_dir(model_dir: Path) -> Path | None:
-    """Glob ``*mmproj*.gguf`` siblings of a model GGUF (sideloaded layout)."""
-    candidates = sorted(model_dir.glob("*mmproj*.gguf"))
-    return candidates[0] if candidates else None
-
-
-def find_mmproj_for_model(model_path: Path) -> Path:
-    """Find the mmproj (CLIP projection) file for a vision model.
-
-    Resolution order: (1) catalog lookup scoped to ``FEATURED_VISION``,
-    (2) HuggingFace-cache ``snapshots/`` sibling of ``blobs/``,
-    (3) same-directory glob for flat sideloaded layouts.
-    Raises ``ProviderError`` if none find a file.
-    """
-    from lilbee.catalog import find_mmproj_file
-
-    found = (
-        find_mmproj_file(model_path.stem)
-        or _find_mmproj_in_hf_snapshots(model_path.parent)
-        or _find_mmproj_in_flat_dir(model_path.parent)
-    )
-    if found is not None:
-        return found
-
-    raise ProviderError(
-        f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
-        f"Download the mmproj file to {model_path.parent} or re-download the vision "
-        "model through the catalog to get both files.",
-        provider="llama-cpp",
-    )
-
-
-_CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
-
-
-def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
-    """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
-    try:
-        reader = GGUFReader(str(mmproj_path))
-        field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
-    except Exception:
-        log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
-        return None
-    if field is None or field.types[-1] != GGUFValueType.STRING:
-        return None
-    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")

@@ -44,7 +44,7 @@ def _isolated_cfg(tmp_path):
 def _mock_resolve():
     """Mock model resolution to succeed without real files."""
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         return_value=cfg.models_dir / "fake.gguf",
     ):
         yield
@@ -102,7 +102,7 @@ class TestEmbeddingAvailable:
 
         embedder = Embedder(cfg, mock_provider)
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
             return_value=cfg.models_dir / "test.gguf",
         ):
             assert embedder.embedding_available() is True
@@ -2746,7 +2746,7 @@ class TestChatEmbeddingReadyCoverage:
             screen = app.screen
             assert isinstance(screen, ChatScreen)
             with mock.patch(
-                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
                 side_effect=FileNotFoundError("not found"),
             ):
                 assert screen._embedding_ready() is False
@@ -2796,7 +2796,7 @@ class TestChatEmbeddingReadyCoverage:
                 screen = app.screen
                 assert isinstance(screen, ChatScreen)
                 with mock.patch(
-                    "lilbee.providers.llama_cpp_provider.resolve_model_path"
+                    "lilbee.providers.llama_cpp.provider.resolve_model_path"
                 ) as resolve:
                     assert screen._embedding_ready() is False
                     resolve.assert_not_called()

@@ -112,7 +112,7 @@ def self_check_cmd(
 
         import llama_cpp
 
-        from lilbee.providers.llama_cpp_provider import install_llama_log_handler
+        from lilbee.providers.llama_cpp.log_dispatch import install_llama_log_handler
 
         install_llama_log_handler()
         llm = llama_cpp.Llama(model_path=str(chat_path), n_ctx=256, verbose=False)

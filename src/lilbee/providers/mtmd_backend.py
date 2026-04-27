@@ -93,8 +93,8 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
     from llama_cpp import Llama
 
-    from lilbee.providers.llama_cpp_provider import (
-        find_mmproj_for_model,
+    from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+    from lilbee.providers.llama_cpp.log_dispatch import (
         install_llama_log_handler,
         suppress_native_stderr,
     )

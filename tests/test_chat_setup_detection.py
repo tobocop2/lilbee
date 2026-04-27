@@ -33,7 +33,7 @@ def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
     """Fresh data dir must trigger the wizard even when models resolve globally."""
     assert not cfg.lancedb_dir.exists()
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         return_value="/some/resolved/path",
     ) as resolve:
         assert _make_screen()._needs_setup() is True
@@ -44,7 +44,7 @@ def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir
     """Initialized data dir plus resolvable models skips the wizard."""
     cfg.lancedb_dir.mkdir(parents=True)
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         return_value="/some/resolved/path",
     ):
         assert _make_screen()._needs_setup() is False
@@ -56,7 +56,7 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
 
     cfg.lancedb_dir.mkdir(parents=True)
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=ProviderError("no such model", provider="llama-cpp"),
     ):
         assert _make_screen()._needs_setup() is True
@@ -73,7 +73,7 @@ def test_needs_setup_skips_native_probe_for_remote_prefixed_models(isolated_data
     cfg.chat_model = "ollama/qwen3:0.6b"
     cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
     ) as resolve:
         assert _make_screen()._needs_setup() is False
         resolve.assert_not_called()
@@ -86,7 +86,7 @@ def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
     assert cfg.lancedb_dir.exists()
     assert not cfg.lancedb_dir.is_dir()
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         return_value="/some/resolved/path",
     ):
         assert _make_screen()._needs_setup() is True

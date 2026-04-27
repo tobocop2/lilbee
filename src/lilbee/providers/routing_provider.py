@@ -34,7 +34,7 @@ class RoutingProvider(LLMProvider):
 
     def _get_llama_cpp(self) -> LLMProvider:
         if self._llama_cpp is None:
-            from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+            from lilbee.providers.llama_cpp import LlamaCppProvider
 
             self._llama_cpp = LlamaCppProvider()
         return self._llama_cpp

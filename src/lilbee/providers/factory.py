@@ -22,8 +22,8 @@ def create_provider(config: Config) -> LLMProvider:
         return RoutingProvider()
 
     if provider_name == "llama-cpp":
-        # circular: providers/__init__ -> factory -> llama_cpp_provider -> config
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        # circular: providers/__init__ -> factory -> llama_cpp -> config
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         return LlamaCppProvider()
 
