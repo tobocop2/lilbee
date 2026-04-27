@@ -8,8 +8,8 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.core.config import cfg
+from lilbee.core.config.validators import TaskMismatchError
 from lilbee.modelhub.models import ModelTask
-from lilbee.server.handlers import format_task_mismatch
 
 
 @pytest.fixture(autouse=True)
@@ -356,9 +356,7 @@ class TestSetVisionModelRoute:
     @mock.patch(
         "lilbee.server.handlers.set_vision_model",
         new_callable=AsyncMock,
-        side_effect=ValueError(
-            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.VISION)
-        ),
+        side_effect=TaskMismatchError("qwen3:0.6b", ModelTask.CHAT, ModelTask.VISION),
     )
     def test_returns_422_for_task_mismatch(self, mock_set, client):
         resp = client.put("/api/models/vision", json={"model": "qwen3:0.6b"})
@@ -391,9 +389,7 @@ class TestSetRerankerModelRoute:
     @mock.patch(
         "lilbee.server.handlers.set_reranker_model",
         new_callable=AsyncMock,
-        side_effect=ValueError(
-            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.RERANK)
-        ),
+        side_effect=TaskMismatchError("qwen3:0.6b", ModelTask.CHAT, ModelTask.RERANK),
     )
     def test_returns_422_for_task_mismatch(self, mock_set, client):
         resp = client.put("/api/models/reranker", json={"model": "qwen3:0.6b"})

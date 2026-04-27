@@ -399,7 +399,7 @@ class TestAddIngestMutex:
 
     async def test_canonical_name_matches_basename(self, isolated_env):
         """Canonical source names match what ``copy_files`` writes on disk."""
-        from lilbee.server.handlers.ingest import IngestLockRegistry
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
 
         assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
         assert IngestLockRegistry.canonical_source_name("doc.txt") == "doc.txt"

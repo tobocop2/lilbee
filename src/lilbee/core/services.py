@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
-    from lilbee.server.handlers.ingest import IngestLockRegistry
+    from lilbee.runtime.ingest_lock import IngestLockRegistry
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,7 @@ def get_services() -> Services:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
-    from lilbee.server.handlers.ingest import IngestLockRegistry
+    from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     provider = create_provider(cfg)
     store = Store(cfg)

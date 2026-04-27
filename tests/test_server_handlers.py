@@ -1663,10 +1663,14 @@ class TestSetVisionModel:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
-        with pytest.raises(ValueError, match="not vision") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_vision_model(_CHAT_REF)
-        assert "PUT /api/models/chat" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.CHAT
+        assert exc.value.expected_task == ModelTask.VISION
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_out_of_catalog(self, mock_svc):
@@ -1718,33 +1722,49 @@ class TestSetRerankerModel:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
-        with pytest.raises(ValueError, match="not rerank") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_reranker_model(_CHAT_REF)
-        assert "PUT /api/models/chat" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.CHAT
+        assert exc.value.expected_task == ModelTask.RERANK
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_vision_model(self, mock_svc):
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
-        with pytest.raises(ValueError, match="not rerank") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_reranker_model(_VISION_REF)
-        assert "PUT /api/models/vision" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.VISION
+        assert exc.value.expected_task == ModelTask.RERANK
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_embedding_model_in_vision_slot(self, mock_svc):
-        """Embedding model in the reranker slot redirects to the embedding endpoint."""
+        """Embedding model in the reranker slot carries the structured task pair."""
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
-        with pytest.raises(ValueError, match="not rerank") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_reranker_model(_EMBED_REF)
-        assert "PUT /api/models/embedding" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.EMBEDDING
+        assert exc.value.expected_task == ModelTask.RERANK
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_reranker_in_vision_slot(self, mock_svc):
-        """Reranker in the vision slot: redirect must use /reranker (not /rerank)."""
+        """Reranker in the vision slot reports the rerank/vision task pair."""
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
-        with pytest.raises(ValueError, match="not vision") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_vision_model(_RERANK_REF)
-        assert "PUT /api/models/reranker" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.RERANK
+        assert exc.value.expected_task == ModelTask.VISION
 
 
 class TestTaskEndpointPath:

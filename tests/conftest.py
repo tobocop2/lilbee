@@ -228,7 +228,7 @@ def make_mock_services(**overrides):
     from lilbee.core.services import Services
     from lilbee.providers.base import LLMProvider
     from lilbee.retrieval.query import Searcher
-    from lilbee.server.handlers.ingest import IngestLockRegistry
+    from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     provider = overrides.pop("provider", None) or MagicMock(spec=LLMProvider)
     store = overrides.pop("store", None) or _default_store_mock()

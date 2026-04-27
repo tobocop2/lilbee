@@ -2,11 +2,14 @@
 
 import os
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
 from lilbee.providers.model_ref import PROVIDER_PREFIXES
+
+if TYPE_CHECKING:
+    from lilbee.modelhub.models import ModelTask
 
 
 def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCase
@@ -50,6 +53,22 @@ _MODEL_FIELD_TO_TASK: dict[str, str] = {
     "reranker_model": "rerank",
 }
 
+
+class TaskMismatchError(ValueError):
+    """A role slot was assigned a model whose catalog task does not match.
+
+    Carries the structured fields so each surface (HTTP, CLI, TUI, MCP)
+    can format its own user-facing message. The default ``str()`` form is
+    surface-neutral so it is safe to surface unmodified.
+    """
+
+    def __init__(self, ref: str, entry_task: "ModelTask", expected_task: "ModelTask") -> None:
+        self.ref = ref
+        self.entry_task = entry_task
+        self.expected_task = expected_task
+        super().__init__(f"Model '{ref}' is a {entry_task} model, not {expected_task}.")
+
+
 # A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
 # two ``/`` separators; one-slash refs are bare repo IDs.
 _NATIVE_GGUF_REF_MIN_SLASHES = 2
@@ -68,9 +87,7 @@ def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
     want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
     if entry.task == want:
         return
-    from lilbee.server.handlers import format_task_mismatch
-
-    raise ValueError(format_task_mismatch(ref, ModelTask(entry.task), want))
+    raise TaskMismatchError(ref, ModelTask(entry.task), want)
 
 
 def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
