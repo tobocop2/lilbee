@@ -16,12 +16,12 @@ import pytest
 crawl4ai = pytest.importorskip("crawl4ai")
 
 from lilbee.core.config import cfg  # noqa: E402
-from lilbee.crawler import runner as crawler_runner  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
     crawl_and_save,
     load_crawl_metadata,
     validate_crawl_url,
 )
+from lilbee.crawler import runner as crawler_runner  # noqa: E402
 from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
 from lilbee.crawler.save import _save_single_result  # noqa: E402
 from lilbee.runtime.progress import EventType  # noqa: E402
