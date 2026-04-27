@@ -125,7 +125,7 @@ def ask(
     )
 
     try:
-        from lilbee.models import ensure_chat_model
+        from lilbee.modelhub.models import ensure_chat_model
 
         ensure_chat_model()
         get_services().embedder.validate_model()

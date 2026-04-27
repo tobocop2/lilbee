@@ -10,7 +10,7 @@ import httpx
 
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
-from lilbee.model_manager.types import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager.types import ModelNotFoundError, ModelSource
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class ModelManager:
         self._models_dir = models_dir
         self._remote_base_url = remote_base_url.rstrip("/")
 
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry

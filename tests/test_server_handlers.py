@@ -865,7 +865,7 @@ class TestSetChatModel:
 class TestModelsCatalog:
     @staticmethod
     def _manifest(hf_repo: str, gguf_filename: str, task: str = "chat"):
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         return ModelManifest(
             hf_repo=hf_repo,
@@ -990,7 +990,7 @@ class TestModelsCatalog:
         in the registry for that ref.
         """
         from lilbee.catalog import CatalogModel, CatalogResult
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         mock_get_catalog.return_value = CatalogResult(
             total=2,
@@ -1047,7 +1047,7 @@ class TestModelsInstalled:
     async def test_returns_installed_models(self):
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["ollama/qwen3:8b", "ollama/mistral:7b"]
-        from lilbee.model_manager import ModelSource
+        from lilbee.modelhub.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.REMOTE
         with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
@@ -1722,7 +1722,7 @@ class TestTaskEndpointPath:
     """
 
     def test_index_with_enum(self) -> None:
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
         from lilbee.server.handlers import TASK_ENDPOINT_PATH
 
         assert TASK_ENDPOINT_PATH[ModelTask.CHAT] == "chat"
@@ -1732,7 +1732,7 @@ class TestTaskEndpointPath:
 
     def test_coerces_catalog_task_string(self) -> None:
         """Coercion via ``ModelTask(entry.task)`` resolves to the enum key."""
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
         from lilbee.server.handlers import TASK_ENDPOINT_PATH
 
         assert TASK_ENDPOINT_PATH[ModelTask("chat")] == "chat"

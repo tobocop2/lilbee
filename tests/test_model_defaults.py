@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.model_defaults import (
+from lilbee.modelhub.model_defaults import (
     ModelDefaults,
     clear_cache,
     get_defaults,

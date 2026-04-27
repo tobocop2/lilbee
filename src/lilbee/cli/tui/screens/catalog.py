@@ -39,8 +39,8 @@ from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.core.config import cfg
-from lilbee.model_manager import RemoteModel, get_model_manager
-from lilbee.models import ModelTask
+from lilbee.modelhub.model_manager import RemoteModel, get_model_manager
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX
 from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
@@ -161,7 +161,7 @@ class CatalogScreen(Screen[None]):
         that repo has a manifest.
         """
         with contextlib.suppress(Exception):
-            from lilbee.registry import ModelRegistry
+            from lilbee.modelhub.registry import ModelRegistry
 
             registry = ModelRegistry(cfg.models_dir)
             self._installed_names = set()
@@ -288,7 +288,7 @@ class CatalogScreen(Screen[None]):
 
     @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         return classify_remote_models(cfg.remote_base_url)
 

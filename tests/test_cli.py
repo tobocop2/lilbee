@@ -20,7 +20,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
-from lilbee.models import list_installed_models
+from lilbee.modelhub.models import list_installed_models
 
 runner = CliRunner()
 
@@ -36,7 +36,7 @@ def _mock_stream(*texts: str):
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
     """CLI tests never need real model validation or chat model checks."""
-    with mock.patch("lilbee.models.ensure_chat_model"):
+    with mock.patch("lilbee.modelhub.models.ensure_chat_model"):
         yield
 
 
@@ -767,7 +767,7 @@ class TestListInstalledModels:
     _CHAT_REF = f"{_CHAT_REPO}/{_CHAT_FILE}"
 
     def _manifest(self, hf_repo: str, gguf_filename: str, task: str):
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         return ModelManifest(
             hf_repo=hf_repo,
@@ -778,14 +778,14 @@ class TestListInstalledModels:
         )
 
     def _remote(self, name: str, task: str):
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         return RemoteModel(name=name, task=task, family="", parameter_size="")
 
     def test_returns_only_chat_task_models(self):
         with (
-            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat")]
             mock_remote.return_value = []
@@ -793,15 +793,15 @@ class TestListInstalledModels:
 
     def test_returns_empty_on_error(self):
         with mock.patch(
-            "lilbee.registry.ModelRegistry.list_installed",
+            "lilbee.modelhub.registry.ModelRegistry.list_installed",
             side_effect=ConnectionError("not running"),
         ):
             assert list_installed_models() == []
 
     def test_excludes_non_chat_registry_tasks(self):
         with (
-            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [
                 self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat"),
@@ -816,11 +816,11 @@ class TestListInstalledModels:
             assert result == [self._CHAT_REF]
 
     def test_excludes_non_chat_remote_tasks(self):
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
         ):
             mock_reg.return_value = []
             mock_remote.return_value = [
@@ -834,8 +834,8 @@ class TestListInstalledModels:
 
     def test_dedupes_native_and_remote_overlap(self):
         with (
-            mock.patch("lilbee.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
+            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat")]
             # Remote backend reports the same canonical ref string.
@@ -1852,7 +1852,7 @@ class TestEnsureChatModelWiring:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_ensure_chat_model(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
-        with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
+        with mock.patch("lilbee.modelhub.models.ensure_chat_model") as mock_ensure:
             runner.invoke(app, ["ask", "test"])
             mock_ensure.assert_called_once()
 

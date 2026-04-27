@@ -19,8 +19,8 @@ from lilbee.catalog.hf_client import (
     _ProgressTracker,
 )
 from lilbee.catalog.models import CatalogModel
-from lilbee.models import ModelTask
-from lilbee.registry import ModelManifest, ModelRegistry
+from lilbee.modelhub.models import ModelTask
+from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
 log = logging.getLogger(__name__)
 

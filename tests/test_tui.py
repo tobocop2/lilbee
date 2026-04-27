@@ -157,7 +157,7 @@ class TestTaskBarUnit:
 class TestRemoteClassification:
     @mock.patch("httpx.get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         mock_get.return_value = mock.MagicMock(
             status_code=200,
@@ -587,7 +587,7 @@ class TestThemes:
 class TestDetectRemoteEmbeddings:
     @mock.patch("httpx.get")
     def test_detects_bert_family(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import detect_remote_embedding_models
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         mock_get.return_value = mock.MagicMock(
             status_code=200,
@@ -604,7 +604,7 @@ class TestDetectRemoteEmbeddings:
 
     @mock.patch("httpx.get", side_effect=Exception("connection refused"))
     def test_returns_empty_on_error(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import detect_remote_embedding_models
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         assert detect_remote_embedding_models() == []
 
@@ -678,7 +678,7 @@ class TestCanonicalModelsDir:
 
 class TestRemoteToRow:
     def test_creates(self) -> None:
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         rm = RemoteModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
         row = remote_to_row(rm)

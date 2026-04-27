@@ -548,7 +548,7 @@ class TestIsMmproj:
 class TestClassifyInstalledModels:
     def test_native_models_classified_by_task(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         chat_manifest = ModelManifest(
             hf_repo="Qwen/Qwen3-8B-GGUF",
@@ -575,9 +575,9 @@ class TestClassifyInstalledModels:
         cfg.models_dir.mkdir()
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
             ),
         ):
@@ -595,8 +595,8 @@ class TestClassifyInstalledModels:
 
     def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.model_manager import RemoteModel
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.model_manager import RemoteModel
+        from lilbee.modelhub.registry import ModelManifest
 
         # Manifest whose filename contains "mmproj" must be filtered out;
         # the picker only surfaces the main model files.
@@ -617,9 +617,9 @@ class TestClassifyInstalledModels:
             parameter_size="",
         )
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[remote_mmproj],
             ),
         ):
@@ -637,7 +637,7 @@ class TestClassifyInstalledModels:
         tag without the prefix so the dropdown stays readable.
         """
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         remote_chat = RemoteModel(
             name="llama3:8b",
@@ -658,9 +658,9 @@ class TestClassifyInstalledModels:
         cfg.remote_base_url = "http://localhost:11434"
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[remote_chat, remote_embed],
             ),
         ):
@@ -681,8 +681,8 @@ class TestClassifyInstalledModels:
         so both rows survive the dedup pass and appear in the picker.
         """
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.model_manager import RemoteModel
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.model_manager import RemoteModel
+        from lilbee.modelhub.registry import ModelManifest
 
         native = ModelManifest(
             hf_repo="bartowski/Mistral-7B-Instruct-v0.3-GGUF",
@@ -703,9 +703,9 @@ class TestClassifyInstalledModels:
         cfg.remote_base_url = "http://localhost:11434"
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[remote],
             ),
         ):
@@ -719,7 +719,7 @@ class TestClassifyInstalledModels:
     def test_remote_blank_name_dropped(self, tmp_path) -> None:
         """Remote entries with an empty name are skipped before reaching the picker."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
@@ -740,9 +740,9 @@ class TestClassifyInstalledModels:
             provider="Ollama",
         )
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[blank, good],
             ),
         ):
@@ -757,7 +757,7 @@ class TestClassifyInstalledModels:
     def test_multi_quant_same_repo_disambiguates_label(self, tmp_path) -> None:
         """Two quants from the same repo render with quant suffixes."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         repo = "Qwen/Qwen3-0.6B-GGUF"
         m_q4 = ModelManifest(
@@ -778,9 +778,9 @@ class TestClassifyInstalledModels:
         cfg.models_dir.mkdir()
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
             ),
         ):
@@ -799,13 +799,13 @@ class TestClassifyInstalledModels:
         cfg.models_dir.mkdir()
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
             ),
             mock.patch(
-                "lilbee.model_manager.discover_api_models",
+                "lilbee.modelhub.model_manager.discover_api_models",
                 return_value={},
             ),
         ):
@@ -824,7 +824,7 @@ class TestClassifyInstalledModels:
         chat model via the TUI).
         """
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         bogus = ModelManifest(
             hf_repo="org/Mystery-GGUF",
@@ -837,13 +837,13 @@ class TestClassifyInstalledModels:
         cfg.models_dir.mkdir()
 
         with (
-            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
             ),
             mock.patch(
-                "lilbee.model_manager.discover_api_models",
+                "lilbee.modelhub.model_manager.discover_api_models",
                 return_value={},
             ),
         ):
@@ -963,7 +963,9 @@ class TestSlashSuggester:
             # Calling through suggest_argument won't crash
             pass
         # Direct call with mock
-        with mock.patch("lilbee.models.list_installed_models", side_effect=Exception("err")):
+        with mock.patch(
+            "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
+        ):
             assert s._get_model_names() == []
 
     def test_get_document_names_error(self) -> None:
@@ -994,14 +996,16 @@ class TestGetCompletions:
         r = get_completions("/help")
         assert r == []
 
-    @mock.patch("lilbee.models.list_installed_models", return_value=["qwen3:8b", "mistral:7b"])
+    @mock.patch(
+        "lilbee.modelhub.models.list_installed_models", return_value=["qwen3:8b", "mistral:7b"]
+    )
     def test_model_arg_completions(self, _mock: mock.MagicMock) -> None:
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
         r = get_completions("/model qw")
         assert "qwen3:8b" in r
 
-    @mock.patch("lilbee.models.list_installed_models", return_value=["qwen3:8b"])
+    @mock.patch("lilbee.modelhub.models.list_installed_models", return_value=["qwen3:8b"])
     def test_model_arg_no_partial(self, _mock: mock.MagicMock) -> None:
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
@@ -1036,13 +1040,15 @@ class TestModelOptions:
     def test_returns_models(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _model_options
 
-        with mock.patch("lilbee.models.list_installed_models", return_value=["a", "b"]):
+        with mock.patch("lilbee.modelhub.models.list_installed_models", return_value=["a", "b"]):
             assert _model_options() == ["a", "b"]
 
     def test_returns_empty_on_error(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _model_options
 
-        with mock.patch("lilbee.models.list_installed_models", side_effect=Exception("err")):
+        with mock.patch(
+            "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
+        ):
             assert _model_options() == []
 
 
@@ -1654,7 +1660,7 @@ class TestSetupWizard:
     async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
         """action_cancel returns 'skipped' only when the user picked nothing."""
         from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         app = _SetupApp()
         results: list[object] = []
@@ -1696,7 +1702,7 @@ class TestSetupWizard:
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        with mock.patch("lilbee.registry.ModelRegistry") as MockRegistry:
+        with mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry:
             MockRegistry.return_value.list_installed.return_value = []
             chat, embed = _scan_installed_models()
         assert chat == []
@@ -1791,7 +1797,7 @@ class TestSetupWizard:
         """_scan_installed_models output must be usable as installed refs for the
         catalog grid so the same model never appears with a phantom download."""
         from lilbee.cli.tui.screens.setup import _scan_installed_models
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
@@ -1799,7 +1805,7 @@ class TestSetupWizard:
         embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
         fake_chat = mock.Mock(ref=chat_ref, task=ModelTask.CHAT)
         fake_embed = mock.Mock(ref=embed_ref, task=ModelTask.EMBEDDING)
-        with mock.patch("lilbee.registry.ModelRegistry") as MockRegistry:
+        with mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry:
             MockRegistry.return_value.list_installed.return_value = [fake_chat, fake_embed]
             chat, embed = _scan_installed_models()
         assert chat_ref in chat
@@ -2788,7 +2794,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.registry.ModelRegistry",
+            "lilbee.modelhub.registry.ModelRegistry",
             side_effect=RuntimeError("boom"),
         ):
             _collect_native_models(buckets, seen)
@@ -2804,7 +2810,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.model_manager.classify_remote_models",
+            "lilbee.modelhub.model_manager.classify_remote_models",
             side_effect=RuntimeError("boom"),
         ):
             _collect_remote_models(buckets, seen)
@@ -2812,7 +2818,7 @@ class TestCollectNativeModelsError:
 
     def test_collect_remote_models_adds_provider_label(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         buckets: dict[str, list[ModelOption]] = {
             "chat": [],
@@ -2821,7 +2827,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.model_manager.classify_remote_models",
+            "lilbee.modelhub.model_manager.classify_remote_models",
             return_value=[
                 RemoteModel(
                     name="llama3:8b",
@@ -2840,7 +2846,7 @@ class TestCollectNativeModelsError:
     def test_collect_remote_models_unknown_task_dropped(self) -> None:
         """Remote models with an unknown task are dropped, not misclassified into chat."""
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         buckets: dict[str, list[ModelOption]] = {
             "chat": [],
@@ -2850,7 +2856,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.model_manager.classify_remote_models",
+            "lilbee.modelhub.model_manager.classify_remote_models",
             return_value=[
                 RemoteModel(
                     name="mystery:latest",
@@ -2867,7 +2873,7 @@ class TestCollectNativeModelsError:
 
     def test_collect_api_models_adds_frontier_models(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         buckets: dict[str, list[ModelOption]] = {
             "chat": [],
@@ -2876,7 +2882,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.model_manager.discover_api_models",
+            "lilbee.modelhub.model_manager.discover_api_models",
             return_value={
                 "OpenAI": [
                     RemoteModel(
@@ -2903,7 +2909,7 @@ class TestCollectNativeModelsError:
         monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
-        with mock.patch("lilbee.model_manager.classify_remote_models") as classify:
+        with mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as classify:
             _collect_remote_models(buckets, seen)
         classify.assert_not_called()
         assert buckets["chat"] == []
@@ -2917,13 +2923,13 @@ class TestCollectNativeModelsError:
         monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
-        with mock.patch("lilbee.model_manager.discover_api_models") as discover:
+        with mock.patch("lilbee.modelhub.model_manager.discover_api_models") as discover:
             _collect_api_models(buckets, seen)
         discover.assert_not_called()
         assert buckets["chat"] == []
 
     def test_collect_api_models_exception_suppressed(self) -> None:
-        import lilbee.model_manager as mm
+        import lilbee.modelhub.model_manager as mm
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
 
         buckets: dict[str, list[ModelOption]] = {
@@ -2942,7 +2948,7 @@ class TestCollectNativeModelsError:
 
     def test_collect_api_models_skips_duplicates(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         buckets: dict[str, list[ModelOption]] = {
             "chat": [],
@@ -2951,7 +2957,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = {"openai/gpt-4o"}
         with mock.patch(
-            "lilbee.model_manager.discover_api_models",
+            "lilbee.modelhub.model_manager.discover_api_models",
             return_value={
                 "OpenAI": [
                     RemoteModel(

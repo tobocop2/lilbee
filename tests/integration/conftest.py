@@ -36,7 +36,7 @@ TEST_DOCS = {f.name: f.read_text() for f in sorted(DOCS_DIR.iterdir()) if f.is_f
 def _resolve_installed_ref(hf_repo: str) -> str:
     """Return the canonical ``hf_repo/filename`` ref for whichever quant of
     *hf_repo* is currently installed in the registry."""
-    from lilbee.registry import ModelRegistry
+    from lilbee.modelhub.registry import ModelRegistry
 
     for manifest in ModelRegistry(cfg.models_dir).list_installed():
         if manifest.hf_repo == hf_repo:
@@ -103,7 +103,7 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
     from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
-    from lilbee.model_manager import reset_model_manager
+    from lilbee.modelhub.model_manager import reset_model_manager
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("rag_integration")
@@ -166,7 +166,7 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
     from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
-    from lilbee.model_manager import reset_model_manager
+    from lilbee.modelhub.model_manager import reset_model_manager
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("wiki_integration")

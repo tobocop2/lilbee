@@ -7,7 +7,7 @@ from unittest import mock
 import httpx
 import pytest
 
-from lilbee.model_manager import (
+from lilbee.modelhub.model_manager import (
     ModelManager,
     ModelSource,
     RemoteModel,
@@ -16,7 +16,7 @@ from lilbee.model_manager import (
     get_model_manager,
     reset_model_manager,
 )
-from lilbee.models import ModelTask
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import detect_backend_name
 
 
@@ -53,7 +53,7 @@ def _install_registry_model(
     repo: str = "org/repo-GGUF",
 ) -> str:
     """Install a model into the registry; return the canonical ref string."""
-    from lilbee.registry import ModelManifest, ModelRegistry
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
     source = tmp_path / filename
     source.write_bytes(data)
@@ -189,7 +189,7 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        from lilbee.model_manager import core as mm_core
+        from lilbee.modelhub.model_manager import core as mm_core
 
         with (
             mock.patch("httpx.get", return_value=mock_response) as mock_get,
@@ -704,7 +704,7 @@ class TestIsNativeRegistry:
 class TestRemoveNativeRegistry:
     def test_remove_native_from_registry(self, tmp_path: Path) -> None:
         """_remove_native removes the manifest from the registry."""
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -748,42 +748,42 @@ class TestDetectProvider:
 class TestClassifyRemoteTask:
     def test_bge_reranker_classified_as_rerank(self) -> None:
         """bge-reranker-* classifies as rerank despite bge being in _EMBEDDING_FAMILIES."""
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-reranker-base", "bge") == ModelTask.RERANK
         assert _classify_remote_task("bge-reranker-large:latest", "bge") == ModelTask.RERANK
 
     def test_bge_m3_classified_as_embedding(self) -> None:
         """Regular bge embedding models still classify as EMBEDDING."""
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-m3:latest", "bge") == ModelTask.EMBEDDING
 
     def test_cross_encoder_classified_as_rerank(self) -> None:
         """cross-encoder/* sentence-transformers rerankers hit the reranker path."""
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("cross-encoder/ms-marco-MiniLM-L-6-v2", "") == ModelTask.RERANK
 
     def test_chat_model_classified_as_chat(self) -> None:
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("qwen3:8b", "qwen") == ModelTask.CHAT
 
     def test_vision_model_classified_as_vision(self) -> None:
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("llava:13b", "llama") == ModelTask.VISION
 
 
 class TestRemoteModelProvider:
     def test_classify_remote_models_sets_provider(self) -> None:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {
@@ -800,7 +800,7 @@ class TestRemoteModelProvider:
         assert result[0].provider == "Ollama"
 
     def test_classify_remote_models_openai_provider(self) -> None:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {

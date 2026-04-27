@@ -704,7 +704,7 @@ class TestFindCatalogEntry:
 
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_defaults(self) -> None:
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
@@ -714,14 +714,14 @@ class TestBuildAdhocEntry:
         assert entry.task == ModelTask.CHAT
 
     def test_respects_task_override(self) -> None:
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         entry = build_adhoc_entry("foo/bar-GGUF", task=ModelTask.EMBEDDING)
         assert entry.task == ModelTask.EMBEDDING
 
     def test_rerank_task_accepted(self) -> None:
         """Ad-hoc reranker entries preserve the RERANK task tag."""
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         entry = build_adhoc_entry("foo/bar-reranker", task=ModelTask.RERANK)
         assert entry.task == ModelTask.RERANK
@@ -2005,7 +2005,7 @@ class TestRegisterModelFailure:
         cfg.models_dir = tmp_path
         try:
             with patch(
-                "lilbee.registry.ModelRegistry.install",
+                "lilbee.modelhub.registry.ModelRegistry.install",
                 side_effect=RuntimeError("disk full"),
             ):
                 # Should not raise

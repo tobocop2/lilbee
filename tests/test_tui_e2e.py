@@ -332,7 +332,7 @@ class TestDownloadProgressSlow:
             pytest.skip("HF_TOKEN environment variable not set")
 
         from lilbee.catalog import CatalogModel, download_model
-        from lilbee.model_manager import reset_model_manager
+        from lilbee.modelhub.model_manager import reset_model_manager
 
         snapshot = cfg.model_copy()
         try:
@@ -443,14 +443,14 @@ def _mock_catalog_deps():
 def _mock_remote_models():
     """Mock classify_remote_models to return empty list."""
     return mock.patch(
-        "lilbee.model_manager.classify_remote_models",
+        "lilbee.modelhub.model_manager.classify_remote_models",
         return_value=[],
     )
 
 
 def _mock_status_deps():
     """Mock status screen dependencies to avoid real store/model access."""
-    from lilbee.model_info import ModelArchInfo
+    from lilbee.modelhub.model_info import ModelArchInfo
 
     return mock.patch.multiple(
         "lilbee.cli.tui.screens.status",

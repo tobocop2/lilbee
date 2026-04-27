@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
-from lilbee.model_manager import RemoteModel
+from lilbee.modelhub.model_manager import RemoteModel
 
 
 @dataclass

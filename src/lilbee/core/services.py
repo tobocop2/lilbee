@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lilbee.data.store import Store
+    from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
-    from lilbee.registry import ModelRegistry
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -56,8 +56,8 @@ def get_services() -> Services:
 
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
+    from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
-    from lilbee.registry import ModelRegistry
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder

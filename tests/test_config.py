@@ -1276,7 +1276,7 @@ class TestValidateModelTaskAssignment:
     def test_task_mismatch_message_parity_with_handler(self, _task_validation_enabled):
         """Validator helper and handler produce identical 422 messages."""
         from lilbee.core.config import validate_model_task_assignment
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
         from lilbee.server.handlers import format_task_mismatch
 
         vision = "noctrex/LightOnOCR-2-1B-GGUF"

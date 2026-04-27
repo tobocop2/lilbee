@@ -7,7 +7,7 @@ from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.models import ModelTask
+from lilbee.modelhub.models import ModelTask
 
 
 def _search_blob(m: CatalogModel) -> str:

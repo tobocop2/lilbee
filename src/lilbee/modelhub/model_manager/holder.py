@@ -1,6 +1,6 @@
 """Singleton holder for the ModelManager instance."""
 
-from lilbee.model_manager.core import ModelManager
+from lilbee.modelhub.model_manager.core import ModelManager
 
 
 class _ManagerHolder:

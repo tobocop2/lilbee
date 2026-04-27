@@ -59,7 +59,7 @@ def _find_model_catalog_entry(ref: str) -> Any:
 
 
 def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
-    from lilbee.models import ModelTask
+    from lilbee.modelhub.models import ModelTask
 
     want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
     if entry.task == want:

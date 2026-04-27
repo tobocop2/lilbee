@@ -23,7 +23,7 @@ from textual.message import Message
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
-from lilbee.models import FEATURED_STAR
+from lilbee.modelhub.models import FEATURED_STAR
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow

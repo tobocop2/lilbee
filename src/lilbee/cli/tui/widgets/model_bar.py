@@ -21,7 +21,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
 from lilbee.data.store import SearchScope
-from lilbee.models import ModelTask
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
 from lilbee.providers.sdk_backend import (
     OLLAMA_BACKEND_NAME,
@@ -120,7 +120,7 @@ def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         manifests = registry.list_installed()
@@ -156,7 +156,7 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
     if not litellm_available():
         return
     try:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
@@ -190,7 +190,7 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
     if not litellm_available():
         return
     try:
-        from lilbee.model_manager import discover_api_models
+        from lilbee.modelhub.model_manager import discover_api_models
 
         # API discovery returns only chat-capable refs; revisit if providers
         # expose embedding/vision/rerank.

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from lilbee.catalog.models import CatalogModel
-from lilbee.models import ModelTask
+from lilbee.modelhub.models import ModelTask
 
 
 def _load_featured() -> tuple[

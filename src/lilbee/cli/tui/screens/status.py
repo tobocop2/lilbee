@@ -17,7 +17,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.data.store import SourceRecord
-from lilbee.model_info import ModelArchInfo, get_model_architecture
+from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
 

@@ -446,7 +446,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.cli.model import list_models_data
-    from lilbee.model_manager import ModelSource
+    from lilbee.modelhub.model_manager import ModelSource
 
     try:
         src = ModelSource.parse(source)
@@ -459,7 +459,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
 def model_show(model: str) -> dict[str, Any]:
     """Show catalog and installed metadata for a model ref."""
     from lilbee.cli.model import show_model_data
-    from lilbee.model_manager import ModelNotFoundError
+    from lilbee.modelhub.model_manager import ModelNotFoundError
 
     try:
         return show_model_data(model).model_dump()
@@ -494,7 +494,7 @@ async def model_pull(
     """
     from lilbee.catalog import DownloadProgress
     from lilbee.cli.model import pull_model_data
-    from lilbee.model_manager import ModelSource
+    from lilbee.modelhub.model_manager import ModelSource
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
@@ -528,7 +528,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.cli.model import remove_model_data
-    from lilbee.model_manager import ModelSource
+    from lilbee.modelhub.model_manager import ModelSource
 
     try:
         src = ModelSource.parse(source)

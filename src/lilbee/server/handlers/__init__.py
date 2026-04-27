@@ -27,7 +27,7 @@ from lilbee.core import settings
 # ``lilbee.server.handlers.get_services`` path for the few tests that target
 # the package-level binding instead of a submodule.
 from lilbee.core.services import get_services
-from lilbee.model_manager import get_model_manager
+from lilbee.modelhub.model_manager import get_model_manager
 from lilbee.server.handlers import models as _models_module
 from lilbee.server.handlers.config import (
     _apply_config_updates,

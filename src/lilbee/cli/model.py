@@ -1,12 +1,12 @@
 """`lilbee model` sub-app: list/show/pull/rm/browse for installed models.
 
 Thin CLI and shared data helpers over
-:class:`lilbee.model_manager.ModelManager`. The ``*_data`` functions
+:class:`lilbee.modelhub.model_manager.ModelManager`. The ``*_data`` functions
 return Pydantic models so MCP tools and CLI commands share a single,
 typed implementation.
 
-Heavy imports (:mod:`lilbee.catalog`, :mod:`lilbee.model_manager`,
-:mod:`lilbee.registry`, :mod:`lilbee.cli.tui`) are deferred to function
+Heavy imports (:mod:`lilbee.catalog`, :mod:`lilbee.modelhub.model_manager`,
+:mod:`lilbee.modelhub.registry`, :mod:`lilbee.cli.tui`) are deferred to function
 bodies so importing this module at CLI startup stays cheap.
 """
 
@@ -36,8 +36,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.model_manager import ModelSource, RemoteModel
-    from lilbee.registry import ModelManifest
+    from lilbee.modelhub.model_manager import ModelSource, RemoteModel
+    from lilbee.modelhub.registry import ModelManifest
 
 
 _BYTES_PER_GB = 1024**3  # Model sizes are reported to users in GiB.
@@ -80,7 +80,7 @@ class ModelEntry(BaseModel):
     @classmethod
     def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
         from lilbee.catalog import clean_display_name
-        from lilbee.model_manager import ModelSource
+        from lilbee.modelhub.model_manager import ModelSource
 
         return cls(
             name=ref,
@@ -92,7 +92,7 @@ class ModelEntry(BaseModel):
 
     @classmethod
     def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
-        from lilbee.model_manager import ModelSource
+        from lilbee.modelhub.model_manager import ModelSource
 
         return cls(
             name=ref,
@@ -232,7 +232,7 @@ class RemoveResult(BaseModel):
 
 def _native_manifest_index() -> dict[str, ModelManifest]:
     """Map ref string ('hf_repo/filename') to manifest for every installed native model."""
-    from lilbee.registry import ModelRegistry
+    from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
     return {m.ref: m for m in registry.list_installed()}
@@ -245,7 +245,7 @@ def _resolve_native_path(ref: str) -> str | None:
     ``ValueError`` (malformed ref) so callers can treat the path as
     optional metadata.
     """
-    from lilbee.registry import ModelRegistry
+    from lilbee.modelhub.registry import ModelRegistry
 
     try:
         return str(ModelRegistry(cfg.models_dir).resolve(ref))
@@ -254,7 +254,7 @@ def _resolve_native_path(ref: str) -> str | None:
 
 
 def _collect_native_entries() -> list[ModelEntry]:
-    from lilbee.model_manager import ModelSource, get_model_manager
+    from lilbee.modelhub.model_manager import ModelSource, get_model_manager
 
     manifests = _native_manifest_index()
     refs = get_model_manager().list_installed(source=ModelSource.NATIVE)
@@ -262,7 +262,7 @@ def _collect_native_entries() -> list[ModelEntry]:
 
 
 def _collect_backend_entries() -> list[ModelEntry]:
-    from lilbee.model_manager import classify_remote_models
+    from lilbee.modelhub.model_manager import classify_remote_models
 
     remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
     remote_by_name = {rm.name: rm for rm in remote_list}
@@ -278,7 +278,7 @@ def list_models_data(
     Discovers remote models via a single HTTP call with a short timeout
     so the command stays responsive when the backend is down.
     """
-    from lilbee.model_manager import ModelSource
+    from lilbee.modelhub.model_manager import ModelSource
 
     entries: list[ModelEntry] = []
     if source is None or source is ModelSource.NATIVE:
@@ -293,11 +293,11 @@ def list_models_data(
 def show_model_data(ref: str) -> ShowModelResult:
     """Return catalog and install metadata for *ref*.
 
-    Raises :class:`~lilbee.model_manager.ModelNotFoundError` if the ref
+    Raises :class:`~lilbee.modelhub.model_manager.ModelNotFoundError` if the ref
     is unknown to both the catalog and the installed set.
     """
     from lilbee.catalog import find_catalog_entry
-    from lilbee.model_manager import ModelNotFoundError, get_model_manager
+    from lilbee.modelhub.model_manager import ModelNotFoundError, get_model_manager
 
     entry = find_catalog_entry(ref)
     source = get_model_manager().get_source(ref)
@@ -355,7 +355,7 @@ def pull_model_data(
     :func:`~lilbee.catalog.make_download_callback`, so callers see at
     most roughly 10 Hz of progress events.
     """
-    from lilbee.model_manager import get_model_manager
+    from lilbee.modelhub.model_manager import get_model_manager
 
     manager = get_model_manager()
 
@@ -377,7 +377,7 @@ def remove_model_data(
     source: ModelSource | None = None,
 ) -> RemoveResult:
     """Remove *ref* and return a typed result with freed size."""
-    from lilbee.model_manager import get_model_manager
+    from lilbee.modelhub.model_manager import get_model_manager
 
     manager = get_model_manager()
     manifests = _native_manifest_index()
@@ -418,7 +418,7 @@ _yes_option = typer.Option(
 
 def _parse_source_or_bad_param(value: str | None) -> ModelSource | None:
     """Parse a CLI --source value, raising typer.BadParameter on bad input."""
-    from lilbee.model_manager import ModelSource
+    from lilbee.modelhub.model_manager import ModelSource
 
     try:
         return ModelSource.parse(value)
@@ -455,7 +455,7 @@ def show_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Show catalog and installed metadata for a model."""
-    from lilbee.model_manager import ModelNotFoundError
+    from lilbee.modelhub.model_manager import ModelNotFoundError
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
     try:
@@ -539,7 +539,7 @@ def pull_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Download a model."""
-    from lilbee.model_manager import ModelSource
+    from lilbee.modelhub.model_manager import ModelSource
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
     src = _parse_source_or_bad_param(source) or ModelSource.NATIVE

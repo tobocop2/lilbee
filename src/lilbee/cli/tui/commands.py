@@ -68,7 +68,7 @@ class LilbeeCommandProvider(Provider):
         """Generate commands for installed models."""
         commands: list[tuple[str, str, Any]] = []
         try:
-            from lilbee.models import list_installed_models
+            from lilbee.modelhub.models import list_installed_models
 
             for name in list_installed_models():
                 commands.append(

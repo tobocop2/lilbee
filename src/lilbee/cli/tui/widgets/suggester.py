@@ -58,7 +58,7 @@ class SlashSuggester(Suggester):
 
     def _get_model_names(self) -> list[str]:
         try:
-            from lilbee.models import list_installed_models
+            from lilbee.modelhub.models import list_installed_models
 
             return list_installed_models()
         except Exception:

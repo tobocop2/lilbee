@@ -635,7 +635,7 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_remove_model(self, name: str) -> None:
-        from lilbee.model_manager import get_model_manager
+        from lilbee.modelhub.model_manager import get_model_manager
 
         mgr = get_model_manager()
         if not mgr.is_installed(name):

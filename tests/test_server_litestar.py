@@ -8,7 +8,7 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.core.config import cfg
-from lilbee.models import ModelTask
+from lilbee.modelhub.models import ModelTask
 from lilbee.server.handlers import format_task_mismatch
 
 

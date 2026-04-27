@@ -221,7 +221,7 @@ def validate_disk_and_pull(
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     """Pull a model via model_manager, showing a Rich progress bar."""
-    from lilbee.model_manager import ModelSource, get_model_manager
+    from lilbee.modelhub.model_manager import ModelSource, get_model_manager
 
     if console is None:
         console = Console(file=sys.__stderr__ or sys.stderr)
@@ -253,7 +253,7 @@ def ensure_chat_model() -> None:
     Persists the chosen model in config.toml so it becomes the default.
     """
     from lilbee.core.config import cfg
-    from lilbee.model_manager import get_model_manager
+    from lilbee.modelhub.model_manager import get_model_manager
 
     manager = get_model_manager()
     try:
@@ -293,8 +293,8 @@ def list_installed_models() -> list[str]:
     refs that fail pydantic task validation at assignment time.
     """
     from lilbee.core.config import cfg
-    from lilbee.model_manager import classify_remote_models
-    from lilbee.registry import ModelRegistry
+    from lilbee.modelhub.model_manager import classify_remote_models
+    from lilbee.modelhub.registry import ModelRegistry
 
     try:
         names: list[str] = []

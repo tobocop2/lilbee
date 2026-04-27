@@ -35,7 +35,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     Uses llama-cpp with real models so the full RAG pipeline works.
     """
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
-    from lilbee.model_manager import reset_model_manager
+    from lilbee.modelhub.model_manager import reset_model_manager
     from tests.integration.conftest import _resolve_installed_ref
 
     snapshot = cfg.model_copy()

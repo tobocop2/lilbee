@@ -36,7 +36,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.core.config import cfg
 from lilbee.core.services import set_services
-from lilbee.model_manager import RemoteModel
+from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
@@ -435,7 +435,7 @@ class TestGroupRowsForGrid:
 
     def test_grid_contains_rerank_bucket(self) -> None:
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         rows = [
             self._row(ModelTask.CHAT),
@@ -455,7 +455,7 @@ class TestGroupRowsForGrid:
         """A featured rerank row appears only in Our Picks, not the RERANK bucket."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
 
         rows = [
             self._row(ModelTask.RERANK, featured=True),
@@ -1798,7 +1798,7 @@ def test_status_model_pill_empty():
 
 
 def test_status_read_chat_arch_success():
-    from lilbee.model_info import ModelArchInfo, _read_chat_arch
+    from lilbee.modelhub.model_info import ModelArchInfo, _read_chat_arch
 
     info = ModelArchInfo()
     with (
@@ -1817,7 +1817,7 @@ def test_status_read_chat_arch_success():
 
 
 def test_status_read_embed_arch_success():
-    from lilbee.model_info import ModelArchInfo, _read_embed_arch
+    from lilbee.modelhub.model_info import ModelArchInfo, _read_embed_arch
 
     info = ModelArchInfo()
     with (
@@ -1835,7 +1835,7 @@ def test_status_read_embed_arch_success():
 
 
 def test_status_read_vision_arch_success():
-    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+    from lilbee.modelhub.model_info import ModelArchInfo, _read_vision_arch
 
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
@@ -1858,7 +1858,7 @@ def test_status_read_vision_arch_success():
 
 
 def test_status_read_vision_arch_skips_when_no_model():
-    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+    from lilbee.modelhub.model_info import ModelArchInfo, _read_vision_arch
 
     cfg.vision_model = ""
     info = ModelArchInfo()
@@ -1868,7 +1868,7 @@ def test_status_read_vision_arch_skips_when_no_model():
 
 def test_status_read_vision_arch_swallows_errors():
     """When GGUF probing fails, _read_vision_arch logs and leaves info unchanged."""
-    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+    from lilbee.modelhub.model_info import ModelArchInfo, _read_vision_arch
 
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
@@ -1881,7 +1881,7 @@ def test_status_read_vision_arch_swallows_errors():
 
 
 def test_status_read_model_arch_import_error():
-    from lilbee.model_info import get_model_architecture
+    from lilbee.modelhub.model_info import get_model_architecture
 
     with patch(
         "builtins.__import__",
@@ -1949,7 +1949,7 @@ async def test_app_switch_to_catalog():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
         ):
             app.switch_view("Catalog")
             await _pilot.pause()
@@ -2101,7 +2101,7 @@ async def test_chat_slash_model_no_arg():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/model")
             await _pilot.pause()
@@ -2397,7 +2397,7 @@ async def test_chat_slash_models():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/models")
             await _pilot.pause()
@@ -2643,7 +2643,7 @@ async def test_chat_slash_m():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/m")
             await _pilot.pause()
@@ -2953,7 +2953,7 @@ async def test_command_provider_model_commands():
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         with patch(
-            "lilbee.models.list_installed_models",
+            "lilbee.modelhub.models.list_installed_models",
             return_value=["qwen:latest", "llama:latest"],
         ):
             cmds = provider._model_commands()
@@ -2970,7 +2970,7 @@ async def test_command_provider_model_commands_error():
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         with patch(
-            "lilbee.models.list_installed_models",
+            "lilbee.modelhub.models.list_installed_models",
             side_effect=Exception("no provider"),
         ):
             cmds = provider._model_commands()
@@ -3036,7 +3036,7 @@ def _patch_catalog():
     """Context manager to patch catalog screen's network calls."""
     return (
         patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-        patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+        patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
         patch(
             "lilbee.cli.tui.screens.catalog.get_model_manager",
             return_value=MagicMock(
@@ -3223,7 +3223,7 @@ async def test_catalog_install_new_model():
             mock_mgr = MagicMock()
             mock_mgr.is_installed.return_value = False
             with (
-                patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
+                patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
                 screen._install_model(m)
@@ -4201,8 +4201,8 @@ def test_check_embedding_model_installed():
     """Cover _check_embedding_model_async lines 61-65 (model is installed)."""
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = True
-    with patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr):
-        from lilbee.model_manager import get_model_manager
+    with patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr):
+        from lilbee.modelhub.model_manager import get_model_manager
 
         manager = get_model_manager()
         assert manager.is_installed(cfg.embedding_model) is True
@@ -4213,13 +4213,13 @@ def test_check_embedding_model_remote_available():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
+        patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr),
         patch(
-            "lilbee.model_manager.detect_remote_embedding_models",
+            "lilbee.modelhub.model_manager.detect_remote_embedding_models",
             return_value=[cfg.embedding_model],
         ),
     ):
-        from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models, get_model_manager
 
         manager = get_model_manager()
         assert not manager.is_installed(cfg.embedding_model)
@@ -4233,10 +4233,10 @@ def test_check_embedding_model_not_found():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
-        patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[]),
+        patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr),
+        patch("lilbee.modelhub.model_manager.detect_remote_embedding_models", return_value=[]),
     ):
-        from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models, get_model_manager
 
         manager = get_model_manager()
         assert not manager.is_installed(cfg.embedding_model)
@@ -4475,7 +4475,7 @@ async def test_catalog_delete_installed_model_confirmation():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
         ):
             mock_mgr.return_value.is_installed.return_value = True
@@ -4508,7 +4508,7 @@ async def test_catalog_delete_second_press_confirms():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
         ):
             mock_mgr.return_value.is_installed.return_value = True
@@ -4545,7 +4545,7 @@ async def test_catalog_delete_not_installed():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
         ):
             mock_mgr.return_value.is_installed.return_value = False
@@ -4620,7 +4620,7 @@ async def test_chat_slash_remove_no_args():
 async def test_chat_slash_remove_not_installed():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+        with patch("lilbee.modelhub.model_manager.get_model_manager") as mock_mgr:
             mock_mgr.return_value.is_installed.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
             while app.screen.workers:
@@ -4632,7 +4632,7 @@ async def test_chat_slash_remove_not_installed():
 async def test_chat_slash_remove_success():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+        with patch("lilbee.modelhub.model_manager.get_model_manager") as mock_mgr:
             mock_mgr.return_value.is_installed.return_value = True
             mock_mgr.return_value.remove.return_value = True
             app.screen._handle_slash("/remove some-model:latest")
@@ -4645,7 +4645,7 @@ async def test_chat_slash_remove_success():
 async def test_chat_slash_remove_failed():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+        with patch("lilbee.modelhub.model_manager.get_model_manager") as mock_mgr:
             mock_mgr.return_value.is_installed.return_value = True
             mock_mgr.return_value.remove.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
@@ -6643,7 +6643,7 @@ def test_scan_installed_models_returns_sorted_lists():
     mock_model_embed = MagicMock(ref=embed_ref, task="embedding")
     mock_registry = MagicMock()
     mock_registry.list_installed.return_value = [mock_model_chat, mock_model_embed]
-    with patch("lilbee.registry.ModelRegistry", return_value=mock_registry):
+    with patch("lilbee.modelhub.registry.ModelRegistry", return_value=mock_registry):
         chat, embed = _scan_installed_models()
     assert chat_ref in chat
     assert embed_ref in embed
@@ -6653,7 +6653,7 @@ def test_scan_installed_models_exception_returns_empty():
     """_scan_installed_models returns ([], []) on exception."""
     from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-    with patch("lilbee.registry.ModelRegistry", side_effect=Exception("fail")):
+    with patch("lilbee.modelhub.registry.ModelRegistry", side_effect=Exception("fail")):
         chat, embed = _scan_installed_models()
     assert chat == []
     assert embed == []
@@ -6690,7 +6690,7 @@ def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = N
 
 
 def _patch_setup_ram(ram_gb: float = 16.0):
-    return patch("lilbee.models.get_system_ram_gb", return_value=ram_gb)
+    return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
 
 
 def test_pick_recommended_small_ram():
@@ -6725,7 +6725,7 @@ def test_pick_recommended_always_nomic_embed():
 def test_scan_installed_models_empty():
     from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-    with patch("lilbee.registry.ModelRegistry", side_effect=Exception("no")):
+    with patch("lilbee.modelhub.registry.ModelRegistry", side_effect=Exception("no")):
         chat, embed = _scan_installed_models()
         assert chat == []
         assert embed == []
@@ -7083,7 +7083,7 @@ async def test_fetch_installed_names_exception():
             app.push_screen(screen)
             await _pilot.pause()
             screen._installed_names = set()
-            with patch("lilbee.registry.ModelRegistry", side_effect=Exception("fail")):
+            with patch("lilbee.modelhub.registry.ModelRegistry", side_effect=Exception("fail")):
                 screen._fetch_installed_names()
             assert screen._installed_names == set()
 
@@ -8189,7 +8189,7 @@ async def test_chat_remove_model_exception():
         mock_mgr = MagicMock()
         mock_mgr.is_installed.return_value = True
         mock_mgr.remove.side_effect = RuntimeError("disk error")
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr):
+        with patch("lilbee.modelhub.model_manager.get_model_manager", return_value=mock_mgr):
             app.screen._run_remove_model("test-model")
             while app.screen.workers:
                 await _pilot.pause()
@@ -8465,7 +8465,7 @@ async def test_catalog_fetch_installed_names():
             mock_registry = MagicMock()
             mock_registry.list_installed.return_value = [mock_manifest]
 
-            with patch("lilbee.registry.ModelRegistry", return_value=mock_registry):
+            with patch("lilbee.modelhub.registry.ModelRegistry", return_value=mock_registry):
                 screen._fetch_installed_names()
             assert "org/test-model-GGUF/test.gguf" in screen._installed_names
             assert "org/test-model-GGUF" in screen._installed_names

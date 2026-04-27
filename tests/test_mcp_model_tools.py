@@ -24,7 +24,7 @@ from lilbee.mcp import (
     model_rm,
     model_show,
 )
-from lilbee.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
 
 
 class TestMcpList:

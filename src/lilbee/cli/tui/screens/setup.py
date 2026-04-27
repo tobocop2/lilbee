@@ -37,7 +37,7 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
-from lilbee.models import ModelTask, get_system_ram_gb
+from lilbee.modelhub.models import ModelTask, get_system_ram_gb
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ SETUP_CHAT_GRID_ID = "setup-chat-grid"
 def _scan_installed_models() -> tuple[list[str], list[str]]:
     """List installed models from the registry, split into chat vs embedding."""
     try:
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         chat: list[str] = []

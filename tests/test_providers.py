@@ -43,7 +43,7 @@ TEST_MODEL_REF = f"{TEST_MODEL_REPO}/{TEST_MODEL_FILE}"
 @pytest.fixture()
 def models_dir(tmp_path: Path) -> Path:
     """Create a temporary models directory with a registered test model."""
-    from lilbee.registry import ModelManifest, ModelRegistry
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
     models = tmp_path / "models"
     models.mkdir()

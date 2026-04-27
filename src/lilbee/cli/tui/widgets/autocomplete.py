@@ -52,7 +52,7 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
 
 def _model_options() -> list[str]:
     try:
-        from lilbee.models import list_installed_models
+        from lilbee.modelhub.models import list_installed_models
 
         return list_installed_models()
     except Exception:
