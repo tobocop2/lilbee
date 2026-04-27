@@ -11,9 +11,7 @@ HTTP, TUI) import these functions via the package façade in
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-import math
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -25,12 +23,14 @@ from lilbee.core.config import cfg
 from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
-from lilbee.crawler.models import (
-    ConcurrencySpec,
-    CrawlResult,
-    FetchedPage,
-    FilterSpec,
+from lilbee.crawler.discovery import _build_concurrency_spec, _build_filter_spec
+from lilbee.crawler.events import (
+    _drain_page_stream,
+    _fetched_to_result,
+    _handle_crawl_teardown_error,
+    _pages_cap,
 )
+from lilbee.crawler.models import CrawlResult
 from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
 from lilbee.crawler.url_filter import validate_crawl_url
 from lilbee.runtime.progress import (
@@ -98,38 +98,6 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     return effective
 
 
-def _build_concurrency_spec() -> ConcurrencySpec:
-    """Snapshot the crawl-concurrency settings from ``cfg`` into a spec."""
-    return ConcurrencySpec(
-        semaphore_count=cfg.crawl_concurrent_requests,
-        mean_delay=cfg.crawl_mean_delay,
-        max_delay_range=cfg.crawl_max_delay_range,
-        retry_on_rate_limit=cfg.crawl_retry_on_rate_limit,
-        retry_base_delay_min=cfg.crawl_retry_base_delay_min,
-        retry_base_delay_max=cfg.crawl_retry_base_delay_max,
-        retry_max_backoff=cfg.crawl_retry_max_backoff,
-        retry_max_attempts=cfg.crawl_retry_max_attempts,
-    )
-
-
-def _build_filter_spec(*, include_subdomains: bool) -> FilterSpec:
-    """Snapshot the filter settings from ``cfg`` + caller flags."""
-    return FilterSpec(
-        exclude_patterns=list(cfg.crawl_exclude_patterns),
-        include_subdomains=include_subdomains,
-    )
-
-
-def _fetched_to_result(page: FetchedPage) -> CrawlResult:
-    """Translate the fetcher's value type to the public ``CrawlResult`` shape."""
-    return CrawlResult(
-        url=page.url,
-        markdown=page.markdown,
-        success=page.success,
-        error=page.error,
-    )
-
-
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     """Fetch a single URL.
 
@@ -151,88 +119,6 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
         return CrawlResult(url=url, success=False, error=str(exc))
-
-
-def _pages_cap(pages: int | None) -> float:
-    """Return the per-result counter ceiling for visible progress.
-
-    ``None`` (unbounded) maps to ``math.inf`` so the streaming loop's hard
-    cap check is a pure numeric compare with no branching.
-    """
-    return math.inf if pages is None else pages
-
-
-async def _drain_page_stream(
-    page_stream: Any,
-    *,
-    on_progress: DetailedProgressCallback | None,
-    on_result: Callable[[CrawlResult], Any] | None,
-    sitemap_total: int,
-    pages_cap: float,
-    cancel: threading.Event | None,
-) -> list[CrawlResult]:
-    """Consume a fetcher's page stream, emitting events and flushing per page.
-
-    Returns the accumulated ``CrawlResult`` list. The stream is closed
-    deterministically by the caller; this helper only iterates.
-    """
-    results: list[CrawlResult] = []
-    counter = 0
-
-    def _should_cancel() -> bool:
-        return cancel is not None and cancel.is_set()
-
-    async for page in page_stream:
-        if _should_cancel():
-            break
-        counter += 1
-        if on_progress:
-            on_progress(
-                EventType.CRAWL_PAGE,
-                CrawlPageEvent(url=page.url, current=counter, total=sitemap_total),
-            )
-        new_result = _fetched_to_result(page)
-        results.append(new_result)
-        if on_result is not None:
-            try:
-                rv = on_result(new_result)
-                if inspect.isawaitable(rv):
-                    await rv
-            except OSError:
-                # A disk-side flush failure must not masquerade as a crawl
-                # failure. Log and keep streaming; the caller still sees the
-                # result in its returned list.
-                log.exception("Flush callback failed for %s", new_result.url)
-        # Hard cap on visible progress. The BFS may emit failed / redirected
-        # pages that push the per-result counter past the cap even after the
-        # strategy has stopped dispatching. Break explicitly so the
-        # user-visible count never exceeds the number the caller asked for.
-        if counter >= pages_cap:
-            break
-    return results
-
-
-def _handle_crawl_teardown_error(
-    url: str,
-    exc: Exception,
-    *,
-    cancel: threading.Event | None,
-    results: list[CrawlResult],
-) -> None:
-    """Classify a recursive-crawl exception: cancel-teardown vs real failure.
-
-    After cancel, crawl4ai may raise BrowserContext teardown errors as
-    in-flight URLs bail. That's expected noise, not a failure worth
-    surfacing. Otherwise, log and append a synthetic error result (only
-    when nothing was produced so callers always see at least one entry).
-    """
-    cancelled = cancel is not None and cancel.is_set()
-    if cancelled:
-        log.debug("Recursive crawl of %s ended during cancel teardown: %s", url, exc)
-        return
-    log.warning("Recursive crawl of %s failed: %s", url, exc)
-    if not results:
-        results.append(CrawlResult(url=url, success=False, error=str(exc)))
 
 
 async def crawl_recursive(

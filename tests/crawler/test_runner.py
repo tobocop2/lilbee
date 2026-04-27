@@ -1,6 +1,6 @@
 """Orchestration-layer tests backed by an inline ``FakeFetcher``.
 
-Covers the contract that ``api.py`` exposes to lilbee callers without
+Covers the contract that the runner exposes to lilbee callers without
 pulling in crawl4ai: progress events, cancel tokens, per-page flush,
 metadata batching, and auto-sync.
 
@@ -20,15 +20,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.crawler import api as api_mod
 from lilbee.crawler import crawl4ai_fetcher as crawl4ai_fetcher_mod
-from lilbee.crawler.api import crawl_and_save, crawl_recursive
+from lilbee.crawler import discovery as discovery_mod
+from lilbee.crawler import events as events_mod
+from lilbee.crawler import runner as runner_mod
 from lilbee.crawler.models import (
     ConcurrencySpec,
     CrawlResult,
     FetchedPage,
     FilterSpec,
 )
+from lilbee.crawler.runner import crawl_and_save, crawl_recursive
 from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
 
 
@@ -142,7 +144,7 @@ class TestCrawlRecursiveOrchestration:
         cfg.crawl_retry_on_rate_limit = True
         cfg.crawl_retry_base_delay_min = 1.0
         fake = FakeFetcher(pages=[])
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert fake.recursive_calls
         spec: ConcurrencySpec = fake.recursive_calls[0]["concurrency"]
@@ -154,7 +156,7 @@ class TestCrawlRecursiveOrchestration:
     async def test_builds_filter_spec_from_cfg_and_flag(self):
         cfg.crawl_exclude_patterns = ["/tag/", "/page/\\d+"]
         fake = FakeFetcher(pages=[])
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -175,7 +177,7 @@ class TestCrawlRecursiveOrchestration:
         def on_progress(event_type: EventType, data: Any) -> None:
             events.append((event_type, data))
 
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             results = await crawl_recursive(
                 "https://example.com", max_depth=2, max_pages=10, on_progress=on_progress
             )
@@ -188,7 +190,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 6)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=3)
         assert len(results) == 3
         assert [r.url for r in results] == [
@@ -213,7 +215,7 @@ class TestCrawlRecursiveOrchestration:
                         cancel.set()
 
         fake = _CancelAfterTwo(pages=pages)
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=10, cancel=cancel
             )
@@ -226,7 +228,7 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         observed: list[str] = []
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -243,7 +245,7 @@ class TestCrawlRecursiveOrchestration:
         def flaky(result: CrawlResult) -> None:
             raise OSError("disk full")
 
-        with patch.object(api_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             # Should not raise even though the callback errors.
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=5, on_result=flaky
@@ -272,8 +274,8 @@ class TestCrawlAndSaveOrchestration:
             )
         )
         # Patch at the submodule path where ``crawl_single`` is defined;
-        # ``crawl_and_save`` looks it up on the ``api`` module at call time.
-        with patch("lilbee.crawler.api.crawl_single", fake_single):
+        # ``crawl_and_save`` looks it up on the runner module at call time.
+        with patch("lilbee.crawler.runner.crawl_single", fake_single):
             paths = await crawl_and_save("https://example.com/only", depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
@@ -296,7 +298,7 @@ class TestCrawlAndSaveOrchestration:
                         await rv
             return results
 
-        with patch("lilbee.crawler.api.crawl_recursive", side_effect=fake_recursive):
+        with patch("lilbee.crawler.runner.crawl_recursive", side_effect=fake_recursive):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=5)
         assert len(paths) == 2
         assert {p.read_text(encoding="utf-8") for p in paths} == {"# A", "# B"}
@@ -307,7 +309,7 @@ class TestCrawlAndSaveOrchestration:
         async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
             return []
 
-        with patch("lilbee.crawler.api.crawl_recursive", side_effect=_noop_recursive):
+        with patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive):
             await crawl_and_save(
                 "https://example.com",
                 depth=1,
@@ -331,8 +333,10 @@ class TestCrawlAndSaveOrchestration:
             return []
 
         with (
-            patch("lilbee.crawler.api.crawl_recursive", side_effect=_noop_recursive),
-            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
+            patch(
+                "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
+            ) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=1, cancel=cancel)
         mock_sync.assert_not_awaited()
@@ -342,8 +346,10 @@ class TestCrawlAndSaveOrchestration:
             return []
 
         with (
-            patch("lilbee.crawler.api.crawl_recursive", side_effect=_noop_recursive),
-            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
+            patch(
+                "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
+            ) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=1)
         mock_sync.assert_awaited_once()
@@ -356,22 +362,22 @@ class TestConcurrencySemaphore:
         """``crawl_max_concurrent <= 0`` means no semaphore construction."""
         cfg.crawl_max_concurrent = 0
         # Force fresh state so prior tests don't hide the branch.
-        api_mod._state.reset()
-        assert api_mod._get_crawl_semaphore() is None
+        runner_mod._state.reset()
+        assert runner_mod._get_crawl_semaphore() is None
 
     async def test_semaphore_reused_at_same_limit(self):
         cfg.crawl_max_concurrent = 2
-        api_mod._state.reset()
-        sem1 = api_mod._get_crawl_semaphore()
-        sem2 = api_mod._get_crawl_semaphore()
+        runner_mod._state.reset()
+        sem1 = runner_mod._get_crawl_semaphore()
+        sem2 = runner_mod._get_crawl_semaphore()
         assert sem1 is sem2
 
     async def test_semaphore_rebuilt_on_limit_change(self):
         cfg.crawl_max_concurrent = 2
-        api_mod._state.reset()
-        first = api_mod._get_crawl_semaphore()
+        runner_mod._state.reset()
+        first = runner_mod._get_crawl_semaphore()
         cfg.crawl_max_concurrent = 4
-        second = api_mod._get_crawl_semaphore()
+        second = runner_mod._get_crawl_semaphore()
         assert first is not second
 
 
@@ -387,7 +393,7 @@ class TestBuildSpecs:
         cfg.crawl_retry_base_delay_max = 2.0
         cfg.crawl_retry_max_backoff = 30.0
         cfg.crawl_retry_max_attempts = 4
-        spec = api_mod._build_concurrency_spec()
+        spec = discovery_mod._build_concurrency_spec()
         assert spec.semaphore_count == 11
         assert spec.mean_delay == pytest.approx(2.5)
         assert spec.max_delay_range == pytest.approx(3.5)
@@ -399,7 +405,7 @@ class TestBuildSpecs:
 
     def test_filter_spec_copies_patterns(self):
         cfg.crawl_exclude_patterns = ["/a/", "/b/"]
-        spec = api_mod._build_filter_spec(include_subdomains=True)
+        spec = discovery_mod._build_filter_spec(include_subdomains=True)
         assert spec.exclude_patterns == ["/a/", "/b/"]
         assert spec.include_subdomains is True
         # Mutating the spec list must not feed back into cfg.
@@ -412,7 +418,7 @@ class TestFetchedToResult:
 
     def test_success_mapping(self):
         page = FetchedPage(url="https://x", markdown="# X", success=True)
-        result = api_mod._fetched_to_result(page)
+        result = events_mod._fetched_to_result(page)
         assert result.url == "https://x"
         assert result.markdown == "# X"
         assert result.success is True
@@ -420,7 +426,7 @@ class TestFetchedToResult:
 
     def test_failure_mapping(self):
         page = FetchedPage(url="https://x", markdown="", success=False, error="timeout")
-        result = api_mod._fetched_to_result(page)
+        result = events_mod._fetched_to_result(page)
         assert result.success is False
         assert result.error == "timeout"
 
@@ -429,21 +435,21 @@ class TestResolveLimit:
     """Pure-Python limit resolver: None / positive / zero-negative."""
 
     def test_none_with_no_ceiling_is_none(self):
-        assert api_mod._resolve_limit(None, None) is None
+        assert runner_mod._resolve_limit(None, None) is None
 
     def test_none_with_ceiling_uses_ceiling(self):
-        assert api_mod._resolve_limit(None, 25) == 25
+        assert runner_mod._resolve_limit(None, 25) == 25
 
     def test_positive_value_wins_over_ceiling(self):
-        assert api_mod._resolve_limit(99, 10) == 99
+        assert runner_mod._resolve_limit(99, 10) == 99
 
     def test_zero_raises(self):
         with pytest.raises(ValueError, match="positive"):
-            api_mod._resolve_limit(0, 10)
+            runner_mod._resolve_limit(0, 10)
 
     def test_negative_raises(self):
         with pytest.raises(ValueError, match="positive"):
-            api_mod._resolve_limit(-1, None)
+            runner_mod._resolve_limit(-1, None)
 
 
 class TestFetcherModuleNotDirectlyImported:
@@ -454,9 +460,9 @@ class TestFetcherModuleNotDirectlyImported:
     stay backend-neutral.
     """
 
-    def test_api_module_has_no_crawl4ai_import(self):
-        source = (api_mod.__file__ or "").strip()
-        assert source, "api module must have a __file__"
+    def test_runner_module_has_no_crawl4ai_import(self):
+        source = (runner_mod.__file__ or "").strip()
+        assert source, "runner module must have a __file__"
         with open(source, encoding="utf-8") as fh:
             text = fh.read()
         assert "import crawl4ai" not in text

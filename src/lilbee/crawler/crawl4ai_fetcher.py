@@ -5,7 +5,7 @@ THIS IS THE ONLY FILE IN THE PROJECT THAT IMPORTS ``crawl4ai``.
 Swapping to a different web-fetching SDK is a one-file change:
 delete this module, add a replacement that implements
 :class:`lilbee.crawler.fetcher.WebFetcher`, and update the one
-import in :mod:`lilbee.crawler.api`.
+import in :mod:`lilbee.crawler.runner`.
 """
 
 from __future__ import annotations
@@ -218,7 +218,7 @@ class Crawl4aiFetcher:
 
     Migrating off crawl4ai means replacing this class with another
     :class:`WebFetcher` implementor (e.g. a ``KreuzcrawlFetcher``) and
-    updating the one construction site in :mod:`lilbee.crawler.api`.
+    updating the one construction site in :mod:`lilbee.crawler.runner`.
     """
 
     def __init__(self, *, quiet: bool = False) -> None:

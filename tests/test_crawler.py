@@ -22,7 +22,7 @@ from lilbee.crawler import (
     url_to_filename,
     validate_crawl_url,
 )
-from lilbee.crawler.api import _get_crawl_semaphore, _maybe_periodic_sync
+from lilbee.crawler.runner import _get_crawl_semaphore, _maybe_periodic_sync
 from lilbee.crawler.save import _save_single_result, _update_single_metadata
 from lilbee.runtime.progress import EventType
 
@@ -1056,14 +1056,14 @@ class TestSitemapCounting:
 
 
 class TestCrawlAndSave:
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
         self, mock_crawl_single, isolated_env, monkeypatch
     ):
@@ -1096,7 +1096,7 @@ class TestCrawlAndSave:
             await crawl_and_save("https://example.com", depth=0)
         assert bootstrap_called == []
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):
         streamed = [
             CrawlResult(url="https://example.com", markdown="# Home"),
@@ -1119,7 +1119,7 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_default_depth_is_recursive(self, mock_crawl_recursive, isolated_env):
         """No depth kwarg means recursive (whole-site) crawl, not single page."""
         mock_crawl_recursive.return_value = [
@@ -1129,14 +1129,14 @@ class TestCrawlAndSave:
         mock_crawl_recursive.assert_awaited_once()
         assert mock_crawl_recursive.await_args.kwargs["max_depth"] is None
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_quiet_forwarded_to_crawl_single(self, mock_crawl_single, isolated_env):
         """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         await crawl_and_save("https://example.com", depth=0, quiet=True)
         mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
         """quiet=True is forwarded to crawl_recursive."""
         mock_crawl_recursive.return_value = []
@@ -1144,21 +1144,21 @@ class TestCrawlAndSave:
         call_kwargs = mock_crawl_recursive.call_args[1]
         assert call_kwargs["quiet"] is True
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
         """whole-site default is exact-host scoping."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is False
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_include_subdomains_threaded_through(self, mock_crawl_recursive, isolated_env):
         """Opting into subdomain scope reaches the recursive crawl."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2, include_subdomains=True)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is True
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_cancel_threaded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
         """The cancel event is threaded through to crawl_recursive for BFS abort."""
         import threading
@@ -1168,7 +1168,7 @@ class TestCrawlAndSave:
         await crawl_and_save("https://example.com", depth=2, cancel=cancel)
         assert mock_crawl_recursive.call_args[1]["cancel"] is cancel
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page_with_progress(self, mock_crawl_single, isolated_env):
         """Progress callback receives crawl_start, crawl_page, crawl_done for single page."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
@@ -1183,7 +1183,7 @@ class TestCrawlAndSave:
         assert "crawl_page" in event_types
         assert "crawl_done" in event_types
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_updates_metadata(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
@@ -1192,7 +1192,7 @@ class TestCrawlAndSave:
         meta = load_crawl_metadata()
         assert "https://example.com/page" in meta
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
         """Same content on re-crawl skips saving (hash-based detection)."""
         mock_crawl_single.return_value = CrawlResult(
@@ -1211,7 +1211,7 @@ class TestCrawlAndSave:
         assert paths2 == []
         mock_crawl_single.assert_awaited_once()
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_changed_content_updates_file(self, mock_crawl_single, isolated_env):
         """Changed content on re-crawl saves updated file."""
         mock_crawl_single.return_value = CrawlResult(
@@ -1229,7 +1229,7 @@ class TestCrawlAndSave:
 
     async def test_semaphore_limits_concurrency(self, isolated_env):
         """The semaphore limits concurrent crawls based on config."""
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 5
@@ -1242,7 +1242,7 @@ class TestCrawlAndSave:
         """Default concurrency matches CPU count."""
         import os
 
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = os.cpu_count() or 4
@@ -1253,14 +1253,14 @@ class TestCrawlAndSave:
 
     async def test_semaphore_unlimited_when_zero(self, isolated_env):
         """Setting crawl_max_concurrent=0 disables the semaphore."""
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 0
         assert _get_crawl_semaphore() is None
         crawler_mod._state.semaphore = None
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_cancel_keeps_fetched_page(self, mock_crawl_single, isolated_env):
         """A single-URL crawl that gets cancelled still keeps the page it fetched.
 
@@ -1283,7 +1283,7 @@ class TestPeriodicSync:
         """No sync fires when crawl_sync_interval is 0."""
         import threading
 
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         cfg.crawl_sync_interval = 0
         crawler_mod._state.last_sync_time = 0.0
@@ -1297,7 +1297,7 @@ class TestPeriodicSync:
         """No new sync is started if one is already in progress."""
         import threading
 
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -1316,7 +1316,7 @@ class TestPeriodicSync:
         import threading
         import time
 
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         cfg.crawl_sync_interval = 9999
         crawler_mod._state.last_sync_time = time.monotonic()
@@ -1331,7 +1331,7 @@ class TestPeriodicSync:
         import asyncio
         import threading
 
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -1349,7 +1349,7 @@ class TestPeriodicSync:
         import asyncio
         import threading
 
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -1369,7 +1369,7 @@ class TestPeriodicSync:
 class TestCrawlerStateReset:
     def test_reset_clears_all_state(self, isolated_env):
         """CrawlerState.reset() restores all fields to initial values."""
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         state = crawler_mod._state
         state.semaphore = asyncio.Semaphore(3)
@@ -1387,10 +1387,10 @@ class TestCrawlerStateReset:
 
 
 class TestCrawlAndSaveSemaphore:
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_semaphore_acquired_and_released(self, mock_crawl_single, isolated_env):
         """When crawl_max_concurrent > 0, sem.acquire/release are called."""
-        from lilbee.crawler import api as crawler_mod
+        from lilbee.crawler import runner as crawler_mod
 
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cfg.crawl_max_concurrent = 2
@@ -1993,7 +1993,7 @@ class TestStreamingFlush:
         assert paths[0].name == "index.md"
         assert paths[0].read_text(encoding="utf-8") == "# NewPage"
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_url_flushes_via_per_page_path(self, mock_crawl_single, isolated_env):
         """depth=0 uses the same flush_page callback, not the old batch helpers."""
         mock_crawl_single.return_value = CrawlResult(
@@ -2059,7 +2059,9 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch(
+                "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
+            ) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
         mock_sync.assert_not_awaited()
@@ -2079,7 +2081,9 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch(
+                "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
+            ) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
         mock_sync.assert_awaited_once()
@@ -2167,7 +2171,7 @@ class TestStreamingFlush:
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_depth_zero_flush_failure_does_not_fail_the_crawl(
         self, mock_crawl_single, isolated_env
     ):
