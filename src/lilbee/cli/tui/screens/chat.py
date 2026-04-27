@@ -80,16 +80,7 @@ class ChatWelcome(Static):
 
     Posted into ``#chat-log`` like a normal entry so the conversation has no
     separate "empty" mode. Removed the first time a real message is mounted.
-    """
-
-    DEFAULT_CSS = """
-    ChatWelcome {
-        width: 100%;
-        height: auto;
-        padding: 4 0;
-        content-align: center middle;
-        color: $text-muted;
-    }
+    Styled in ``chat.tcss``.
     """
 
     def __init__(self, *, id: str | None = None) -> None:

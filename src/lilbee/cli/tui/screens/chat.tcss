@@ -3,6 +3,14 @@
     align: left bottom;
 }
 
+ChatWelcome {
+    width: 100%;
+    height: auto;
+    padding: 4 0;
+    content-align: center middle;
+    color: $text-muted;
+}
+
 .user-message {
     border-left: thick $primary;
     padding: 0 1;

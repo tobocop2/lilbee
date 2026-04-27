@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import NamedTuple
+from pathlib import Path
+from typing import ClassVar, NamedTuple
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -250,6 +251,8 @@ def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> N
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 
+_CSS_FILE = Path(__file__).parent / "model_bar.tcss"
+
 # Presentation labels for the scope toggle. Values match ``SearchScope``
 # so the widget's ``.value`` feeds directly into ``scope_to_chunk_type``.
 _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -262,61 +265,11 @@ _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
-    # Textual's SelectOverlay floats with overlay: screen and can leak
-    # border cells into terminal scrollback on collapse. Capping the
-    # height and constraining inside the screen keeps the overlay from
-    # crossing the viewport; the refresh in _watch_overlay_collapse
-    # forces the compositor to re-paint the covered region.
-    DEFAULT_CSS = """
-    ModelBar {
-        height: auto;
-        padding: 0;
-        background: transparent;
-    }
-    ModelBar Horizontal {
-        height: 1;
-        width: 100%;
-    }
-    ModelBar .model-bar-pill {
-        width: auto;
-        padding: 0 1 0 0;
-    }
-    ModelBar Select {
-        width: 1fr;
-        height: 1;
-        max-height: 1;
-        margin: 0 1 0 0;
-        border: none;
-        padding: 0;
-    }
-    ModelBar Select:focus {
-        border: none;
-    }
-    ModelBar Select > SelectCurrent {
-        height: 1;
-        padding: 0 1;
-        border: none;
-    }
-    ModelBar Select:focus > SelectCurrent {
-        border: none;
-        background: $primary 30%;
-        color: $text;
-        text-style: bold;
-    }
-    ModelBar Select > SelectOverlay {
-        max-height: 12;
-        constrain: inflect inflect;
-    }
-    ModelBar .cloud-warning {
-        display: none;
-        color: $warning;
-        text-style: bold;
-        padding: 0 1;
-    }
-    ModelBar .cloud-warning.-visible {
-        display: block;
-    }
-    """
+    # CSS lives in model_bar.tcss; Widget has no CSS_PATH so we read the file
+    # at import time. SelectOverlay max-height + inflect keeps the dropdown on
+    # screen and a paired screen.refresh() on collapse stops border cells from
+    # leaking into terminal scrollback.
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
