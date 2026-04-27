@@ -19,7 +19,7 @@ from lilbee.catalog import (
     download_model,
     make_download_callback,
 )
-from lilbee.catalog.hf_client import _CallbackProgressBar, _ProgressTracker
+from lilbee.catalog.download_progress import _CallbackProgressBar, _ProgressTracker
 from lilbee.core.config import cfg
 
 

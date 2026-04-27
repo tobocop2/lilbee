@@ -3202,7 +3202,9 @@ async def test_catalog_install_already_installed(tmp_path):
             dest = tmp_path / "resolved.gguf"
             dest.write_text("fake")
             with (
-                patch("lilbee.cli.tui.screens.catalog.resolve_filename", return_value="resolved.gguf"),
+                patch(
+                    "lilbee.cli.tui.screens.catalog.resolve_filename", return_value="resolved.gguf"
+                ),
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
@@ -7083,7 +7085,9 @@ async def test_fetch_installed_names_exception():
             app.push_screen(screen)
             await _pilot.pause()
             screen._installed_names = set()
-            with patch("lilbee.cli.tui.screens.catalog.ModelRegistry", side_effect=Exception("fail")):
+            with patch(
+                "lilbee.cli.tui.screens.catalog.ModelRegistry", side_effect=Exception("fail")
+            ):
                 screen._fetch_installed_names()
             assert screen._installed_names == set()
 
@@ -8523,7 +8527,10 @@ async def test_catalog_install_model_resolve_exception():
 
             cm = _make_catalog_model(name="fail-resolve")
             with (
-                patch("lilbee.cli.tui.screens.catalog.resolve_filename", side_effect=RuntimeError("fail")),
+                patch(
+                    "lilbee.cli.tui.screens.catalog.resolve_filename",
+                    side_effect=RuntimeError("fail"),
+                ),
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):
                 screen._install_model(cm)

@@ -18,7 +18,7 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 # leak cursor escapes into the TUI. Our custom tqdm_class is NOT a subclass
 # of huggingface_hub.utils.tqdm, so huggingface_hub's `_create_progress_bar`
 # instantiates it directly without honoring this flag. Download callbacks
-# continue to fire. See lilbee/catalog.py::_CallbackProgressBar.
+# continue to fire. See lilbee/catalog/download_progress.py::_CallbackProgressBar.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 

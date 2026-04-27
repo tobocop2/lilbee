@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
@@ -35,6 +36,7 @@ class Services:
     clusterer: Clusterer
     searcher: Searcher
     registry: ModelRegistry
+    hf_client: HfClient
 
 
 _svc: Services | None = None
@@ -54,6 +56,7 @@ def get_services() -> Services:
     if _svc is not None:
         return _svc
 
+    from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
     from lilbee.modelhub.registry import ModelRegistry
@@ -72,6 +75,7 @@ def get_services() -> Services:
     clusterer = Clusterer(cfg, store)
     registry = ModelRegistry(cfg.models_dir)
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
+    hf_client = HfClient()
     _svc = Services(
         provider=provider,
         store=store,
@@ -81,6 +85,7 @@ def get_services() -> Services:
         clusterer=clusterer,
         searcher=searcher,
         registry=registry,
+        hf_client=hf_client,
     )
     return _svc
 

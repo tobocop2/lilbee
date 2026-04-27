@@ -10,14 +10,9 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.featured import _DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
-from lilbee.catalog.hf_client import (
-    _DEFAULT_TIMEOUT,
-    ProgressCallback,
-    _hf_headers,
-    _hf_token,
-    _ProgressTracker,
-)
+from lilbee.catalog.hf_client import _DEFAULT_TIMEOUT, _hf_headers, _hf_token
 from lilbee.catalog.models import CatalogModel
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.models import ModelTask

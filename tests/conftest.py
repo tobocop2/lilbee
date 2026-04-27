@@ -235,6 +235,12 @@ def make_mock_services(**overrides):
     if registry is None:
         registry = MagicMock()
 
+    hf_client = overrides.pop("hf_client", None)
+    if hf_client is None:
+        from lilbee.catalog.hf_client import HfClient
+
+        hf_client = HfClient()
+
     return Services(
         provider=provider,
         store=store,
@@ -244,6 +250,7 @@ def make_mock_services(**overrides):
         clusterer=clusterer,
         searcher=searcher,
         registry=registry,
+        hf_client=hf_client,
     )
 
 

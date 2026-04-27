@@ -42,9 +42,7 @@ def get_catalog(
     model_manager: Any = None,
 ) -> CatalogResult:
     """Get paginated, filtered catalog of models."""
-    # Local import: hf_client itself imports from query for _pipeline_to_task,
-    # so keep this lazy to avoid an import cycle.
-    from lilbee.catalog import hf_client
+    from lilbee.core.services import get_services
 
     # Featured models only on the first page
     all_models = list(FEATURED_ALL) if offset == 0 else []
@@ -53,7 +51,7 @@ def get_catalog(
     # Optionally fetch from HF API
     if not featured:
         hf_task, hf_library = _task_to_pipeline(task)
-        hf_page = hf_client._fetch_hf_models(
+        hf_page = get_services().hf_client.fetch_models(
             pipeline_tag=hf_task,
             limit=limit,
             offset=offset,

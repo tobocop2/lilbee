@@ -13,6 +13,7 @@ from lilbee.catalog.download import (
     find_mmproj_file,
     resolve_filename,
 )
+from lilbee.catalog.download_progress import ProgressCallback, make_download_callback
 from lilbee.catalog.families import get_families
 from lilbee.catalog.featured import (
     FEATURED_ALL,
@@ -32,7 +33,7 @@ from lilbee.catalog.formatting import (
     extract_quant,
     quant_tier,
 )
-from lilbee.catalog.hf_client import HF_API_URL, ProgressCallback, make_download_callback
+from lilbee.catalog.hf_client import HF_API_URL
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
