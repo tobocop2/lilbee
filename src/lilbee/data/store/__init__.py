@@ -13,23 +13,18 @@ from .ranking import cosine_sim, mmr_rerank
 from .types import (
     CHUNK_TYPE_RAW,
     CHUNK_TYPE_WIKI,
-    META_SCHEMA_VERSION,
-    READ_CONSISTENCY_INTERVAL,
     CitationRecord,
     EmbeddingModelMismatchError,
     RemoveResult,
     SearchChunk,
     SearchScope,
     SourceRecord,
-    StoreMeta,
     scope_to_chunk_type,
 )
 
 __all__ = [
     "CHUNK_TYPE_RAW",
     "CHUNK_TYPE_WIKI",
-    "META_SCHEMA_VERSION",
-    "READ_CONSISTENCY_INTERVAL",
     "CitationRecord",
     "EmbeddingModelMismatchError",
     "RemoveResult",
@@ -37,7 +32,6 @@ __all__ = [
     "SearchScope",
     "SourceRecord",
     "Store",
-    "StoreMeta",
     "cosine_sim",
     "ensure_table",
     "escape_sql_string",

@@ -1,10 +1,9 @@
 """CLI command subpackage.
 
 Top-level Typer commands are split across submodules by domain. This
-``__init__`` registers each command function on the shared ``app`` in the
-exact order the original ``commands.py`` did so ``lilbee --help`` is
-unchanged. Sub-typers (``setup``, ``wiki``) are then attached so they
-appear after all top-level commands in the help.
+``__init__`` registers each command function on the shared ``app``.
+Top-level commands are listed first so ``lilbee --help`` shows them
+above the ``setup`` and ``wiki`` sub-typers (attached at the bottom).
 """
 
 from __future__ import annotations
@@ -12,10 +11,9 @@ from __future__ import annotations
 from lilbee.cli.app import app
 from lilbee.cli.commands import ingest_sync, meta, search_chat, servers, wiki
 from lilbee.cli.commands import setup as setup_module
-from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 
-# Top-level command registration. Order here is the order shown in
-# `lilbee --help` and must match the original commands.py definition order.
+# Top-level commands listed first so `lilbee --help` shows them before the
+# `setup` and `wiki` sub-typers, which read better grouped at the bottom.
 app.command()(search_chat.search)
 app.command(name="sync")(ingest_sync.sync_cmd)
 app.command()(ingest_sync.rebuild)
@@ -40,4 +38,4 @@ app.command(name="mcp")(servers.mcp_cmd)
 app.add_typer(setup_module.setup_app, name="setup")
 app.add_typer(wiki.wiki_app, name="wiki")
 
-__all__ = ["CHUNK_PREVIEW_LEN", "app"]
+__all__ = ["app"]

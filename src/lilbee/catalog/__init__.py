@@ -33,7 +33,6 @@ from lilbee.catalog.formatting import (
     extract_quant,
     quant_tier,
 )
-from lilbee.catalog.hf_client import HF_API_URL
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
@@ -56,7 +55,6 @@ __all__ = [
     "FEATURED_EMBEDDING",
     "FEATURED_RERANK",
     "FEATURED_VISION",
-    "HF_API_URL",
     "PARAM_COUNT_RE",
     "QUANT_TIERS",
     "VISION_MMPROJ_FILES",

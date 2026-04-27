@@ -31,7 +31,6 @@ from lilbee.server.handlers.ingest import (
 )
 from lilbee.server.handlers.models import (
     TASK_ENDPOINT_PATH,
-    ModelCatalogEntry,
     ModelCatalogSection,
     ModelsResponse,
     format_task_mismatch,
@@ -77,7 +76,6 @@ async def status() -> StatusResponse:
 __all__ = [
     "MAX_ADD_FILES",
     "TASK_ENDPOINT_PATH",
-    "ModelCatalogEntry",
     "ModelCatalogSection",
     "ModelsResponse",
     "SseStream",
