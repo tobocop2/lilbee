@@ -1,5 +1,6 @@
 #chat-log {
     height: 1fr;
+    align: left bottom;
 }
 
 .user-message {
@@ -51,17 +52,11 @@ Markdown {
     text-style: bold;
 }
 
-#chat-status-line {
-    height: 1;
-    padding: 0 1;
-}
-
-/* chat-prompt-area lives inside the BottomBars wrapper, which docks the
- * whole bottom stack. Docking the prompt area here directly would collide
- * with TaskBar/ViewTabs/Footer (Textual stacks dock-bottom siblings at the
- * same row; see BottomBars docstring). */
+/* The prompt block wraps the input AND the model strip so they share a single
+ * focus border. Children (input on top, model strip below) read as one zone. */
 #chat-prompt-area {
     height: auto;
+    padding: 0 1;
     border: tall transparent;
 }
 

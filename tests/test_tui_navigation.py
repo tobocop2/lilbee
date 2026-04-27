@@ -280,24 +280,22 @@ async def test_catalog_nav_noop_when_search_focused():
         assert isinstance(screen.focused, Input)
 
 
-async def test_chat_tab_skips_when_input_not_focused():
-    """Tab triggers SkipAction when chat input doesn't have focus."""
-    from textual.actions import SkipAction
+async def test_chat_tab_focuses_model_select_when_input_not_focused():
+    """Tab from outside the input jumps to the chat model dropdown."""
+    from textual.widgets import Select
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Escape to normal mode — input loses focus
+        # Escape to normal mode -- input loses focus
         await pilot.press("escape")
         await pilot.pause()
 
         screen = app.screen
-        try:
-            screen.action_complete()
-            raised = False
-        except SkipAction:
-            raised = True
-        assert raised, "action_complete should raise SkipAction when input not focused"
+        screen.action_complete()
+        await pilot.pause()
+        chat_sel = screen.query_one("#chat-model-select", Select)
+        assert chat_sel.has_focus
 
 
 async def test_chat_escape_from_model_select():

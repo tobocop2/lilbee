@@ -17,22 +17,19 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
-from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Label, Select, Static
+from textual.widgets import Footer, Input, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee import asyncio_loop, settings
-from lilbee.catalog import display_label_for_ref
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.command_registry import build_dispatch_dict
-from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -78,23 +75,29 @@ def _remove_copied_files(names: list[str]) -> None:
             log.debug("Could not remove copied file %s", target, exc_info=True)
 
 
-class ChatStatusLine(Label):
-    """One-line status bar showing current models as pill badges with dot separators."""
+class ChatWelcome(Static):
+    """Empty-state welcome shown inside the chat log until the first message arrives.
 
-    model_name: var[str] = var("")
+    Posted into ``#chat-log`` like a normal entry so the conversation has no
+    separate "empty" mode. Removed the first time a real message is mounted.
+    """
 
-    def watch_model_name(self, name: str) -> None:
-        """Re-render when model name changes."""
-        if not name:
-            self.update("")
-            return
-        chat_label = display_label_for_ref(name)
-        parts: list[Content | tuple[str, str]] = [pill(chat_label, "$primary", "$text")]
-        if cfg.embedding_model:
-            embed_label = display_label_for_ref(cfg.embedding_model)
-            parts.append((DOT_SEP, "$text-muted"))
-            parts.append(pill(embed_label, "$secondary", "$text"))
-        self.update(Content.assemble(*parts))
+    DEFAULT_CSS = """
+    ChatWelcome {
+        width: 100%;
+        height: auto;
+        padding: 4 0;
+        content-align: center middle;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, *, id: str | None = None) -> None:
+        title = Content.styled(msg.CHAT_WELCOME_TITLE, "bold $primary")
+        tagline = Content.styled(msg.CHAT_WELCOME_TAGLINE, "$text-muted")
+        hint = Content.styled(msg.CHAT_WELCOME_HINT, "$text-muted")
+        body = Content.assemble(title, "\n", tagline, "\n\n", hint)
+        super().__init__(body, id=id)
 
 
 class PromptArea(Vertical):
@@ -120,7 +123,7 @@ class ChatScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "complete", "Tab", show=False, priority=True),
+        Binding("tab", "complete", "Tab models / complete", show=True, priority=True),
         Binding("ctrl+n", "complete_next", "^n next", show=False),
         Binding("ctrl+p", "complete_prev", "^p prev", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
@@ -162,12 +165,13 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.widgets.top_bars import TopBars
 
         with TopBars():
-            yield ModelBar(id="model-bar")
             yield ViewTabs()
             yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
-        yield VerticalScroll(id="chat-log")
+        yield VerticalScroll(
+            ChatWelcome(id="chat-welcome"),
+            id="chat-log",
+        )
         yield CompletionOverlay(id="completion-overlay")
-        yield ChatStatusLine(id="chat-status-line")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
                 yield NavAwareInput(
@@ -175,12 +179,12 @@ class ChatScreen(Screen[None]):
                     id="chat-input",
                     suggester=SlashSuggester(use_cache=False),
                 )
+                yield ModelBar(id="model-bar")
             yield TaskBar()
             yield Footer()
 
     def on_mount(self) -> None:
         self._update_input_style()
-        self._refresh_status_line()
         self.query_one("#chat-only-banner", Static).display = False
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
@@ -284,6 +288,9 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
+            # Let a focused Select handle Enter / i / a / o itself.
+            if isinstance(self.focused, Select):
+                return
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
@@ -752,7 +759,11 @@ class ChatScreen(Screen[None]):
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
+        from textual.css.query import NoMatches
+
         log = self.query_one("#chat-log", VerticalScroll)
+        with contextlib.suppress(NoMatches):
+            log.query_one("#chat-welcome", ChatWelcome).remove()
         log.mount(UserMessage(text))
 
         assistant_msg = AssistantMessage()
@@ -969,10 +980,14 @@ class ChatScreen(Screen[None]):
             self.query_one("#chat-model-select", Select).focus()
 
     def action_complete(self) -> None:
-        """Tab completion: show or cycle autocomplete options."""
+        """Tab: cycle autocomplete in input, else focus the next model dropdown."""
         inp = self.query_one("#chat-input", Input)
         if not inp.has_focus:
-            raise SkipAction()
+            if isinstance(self.focused, Select):
+                self.screen.focus_next()
+            else:
+                self.query_one("#chat-model-select", Select).focus()
+            return
         overlay = self.query_one("#completion-overlay", CompletionOverlay)
 
         if overlay.is_visible:
@@ -998,6 +1013,9 @@ class ChatScreen(Screen[None]):
                 inp.value = first
                 inp.action_end()
             self._completing = False
+            return
+
+        self.screen.focus_next()
 
     def action_complete_next(self) -> None:
         """Ctrl+N: show completions or cycle forward."""
@@ -1073,13 +1091,8 @@ class ChatScreen(Screen[None]):
             overlay.hide()
 
     def refresh_model_bar(self) -> None:
-        """Update the model status bar and status line."""
+        """Re-scan installed models and refresh the dropdowns."""
         self.query_one("#model-bar", ModelBar).refresh_models()
-        self._refresh_status_line()
-
-    def _refresh_status_line(self) -> None:
-        """Update the status line pill with the current chat model."""
-        self.query_one("#chat-status-line", ChatStatusLine).model_name = cfg.chat_model
 
     def action_vim_scroll_down(self) -> None:
         """Vim j: scroll down in normal mode."""
