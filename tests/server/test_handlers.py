@@ -58,11 +58,11 @@ def reset_ingest_locks():
     Locks are bound to the event loop; leaking them across tests produces
     cryptic 'attached to a different loop' errors.
     """
-    from lilbee.server.handlers.ingest import _reset_ingest_locks
+    from lilbee.core.services import get_services
 
-    _reset_ingest_locks()
+    get_services().ingest_lock_registry.reset()
     yield
-    _reset_ingest_locks()
+    get_services().ingest_lock_registry.reset()
 
 
 def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks: int = 1):
@@ -365,33 +365,33 @@ class TestAddIngestMutex:
 
     async def test_try_acquire_rejects_while_held(self, isolated_env):
         """A second ``_try_acquire_source`` for a held name returns ``None``."""
-        from lilbee.server.handlers.ingest import _try_acquire_source
+        from lilbee.core.services import get_services
 
-        first = await _try_acquire_source("doc.txt")
+        first = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert first is not None
         try:
-            second = await _try_acquire_source("doc.txt")
+            second = await get_services().ingest_lock_registry.try_acquire("doc.txt")
             assert second is None
         finally:
             first.release()
 
     async def test_try_acquire_succeeds_after_release(self, isolated_env):
         """Once released, the same name can be acquired again."""
-        from lilbee.server.handlers.ingest import _try_acquire_source
+        from lilbee.core.services import get_services
 
-        first = await _try_acquire_source("doc.txt")
+        first = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert first is not None
         first.release()
-        second = await _try_acquire_source("doc.txt")
+        second = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert second is not None
         second.release()
 
     async def test_try_acquire_distinct_names_run_parallel(self, isolated_env):
         """Locks for different source names are independent."""
-        from lilbee.server.handlers.ingest import _try_acquire_source
+        from lilbee.core.services import get_services
 
-        a = await _try_acquire_source("a.txt")
-        b = await _try_acquire_source("b.txt")
+        a = await get_services().ingest_lock_registry.try_acquire("a.txt")
+        b = await get_services().ingest_lock_registry.try_acquire("b.txt")
         assert a is not None
         assert b is not None
         a.release()
@@ -399,31 +399,32 @@ class TestAddIngestMutex:
 
     async def test_canonical_name_matches_basename(self, isolated_env):
         """Canonical source names match what ``copy_files`` writes on disk."""
-        from lilbee.server.handlers.ingest import _canonical_source_name
+        from lilbee.server.handlers.ingest import IngestLockRegistry
 
-        assert _canonical_source_name("/some/path/doc.txt") == "doc.txt"
-        assert _canonical_source_name("doc.txt") == "doc.txt"
+        assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
+        assert IngestLockRegistry.canonical_source_name("doc.txt") == "doc.txt"
 
     async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
         """Duplicate paths in one request collapse to a single acquired lock."""
-        from lilbee.server.handlers.ingest import _acquire_add_locks, _release_add_locks
+        from lilbee.core.services import get_services
 
-        acquired, busy = await _acquire_add_locks(["/x/doc.txt", "/y/doc.txt"])
+        registry = get_services().ingest_lock_registry
+        acquired, busy = await registry.acquire(["/x/doc.txt", "/y/doc.txt"])
         try:
             assert busy == []
             assert [name for name, _ in acquired] == ["doc.txt"]
         finally:
-            _release_add_locks(acquired)
+            registry.release(acquired)
 
     async def test_second_concurrent_add_emits_already_ingesting(self, isolated_env, tmp_path):
         """Second /api/add for a held source yields already_ingesting, no done."""
+        from lilbee.core.services import get_services
         from lilbee.server.handlers import add_files_stream
-        from lilbee.server.handlers.ingest import _try_acquire_source
 
         src = tmp_path / "holdme.txt"
         src.write_text("payload")
 
-        lock = await _try_acquire_source("holdme.txt")
+        lock = await get_services().ingest_lock_registry.try_acquire("holdme.txt")
         assert lock is not None
         try:
             events = await self._collect(add_files_stream({"paths": [str(src)]}))
@@ -436,15 +437,15 @@ class TestAddIngestMutex:
 
     async def test_partial_contention_partitions_paths(self, isolated_env, tmp_path):
         """Held paths emit already_ingesting; free paths still run to done."""
+        from lilbee.core.services import get_services
         from lilbee.server.handlers import add_files_stream
-        from lilbee.server.handlers.ingest import _try_acquire_source
 
         held = tmp_path / "held.txt"
         held.write_text("held payload")
         free = tmp_path / "free.txt"
         free.write_text("free payload")
 
-        lock = await _try_acquire_source("held.txt")
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
         assert lock is not None
         try:
             with mock.patch(
@@ -489,8 +490,8 @@ class TestAddIngestMutex:
 
     async def test_mutex_released_on_exception(self, isolated_env, tmp_path):
         """If ingest raises, the source mutex is released so retries succeed."""
+        from lilbee.core.services import get_services
         from lilbee.server.handlers import add_files_stream
-        from lilbee.server.handlers.ingest import _try_acquire_source
 
         src = tmp_path / "boom.txt"
         src.write_text("contents")
@@ -503,14 +504,14 @@ class TestAddIngestMutex:
 
         assert any(t == "error" for t, _ in events)
 
-        retry = await _try_acquire_source("boom.txt")
+        retry = await get_services().ingest_lock_registry.try_acquire("boom.txt")
         assert retry is not None
         retry.release()
 
     async def test_mutex_released_on_task_cancellation(self, isolated_env, tmp_path):
         """Task cancellation during ingest still releases the source mutex."""
+        from lilbee.core.services import get_services
         from lilbee.server.handlers import add_files_stream
-        from lilbee.server.handlers.ingest import _try_acquire_source
 
         src = tmp_path / "slow.txt"
         src.write_text("contents")
@@ -527,7 +528,7 @@ class TestAddIngestMutex:
                 await outer
             await gen.aclose()
 
-        retry = await _try_acquire_source("slow.txt")
+        retry = await get_services().ingest_lock_registry.try_acquire("slow.txt")
         assert retry is not None
         retry.release()
 

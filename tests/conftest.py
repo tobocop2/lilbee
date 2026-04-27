@@ -241,6 +241,12 @@ def make_mock_services(**overrides):
 
         hf_client = HfClient()
 
+    ingest_lock_registry = overrides.pop("ingest_lock_registry", None)
+    if ingest_lock_registry is None:
+        from lilbee.server.handlers.ingest import IngestLockRegistry
+
+        ingest_lock_registry = IngestLockRegistry()
+
     return Services(
         provider=provider,
         store=store,
@@ -251,6 +257,7 @@ def make_mock_services(**overrides):
         searcher=searcher,
         registry=registry,
         hf_client=hf_client,
+        ingest_lock_registry=ingest_lock_registry,
     )
 
 

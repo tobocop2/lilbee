@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
+    from lilbee.server.handlers.ingest import IngestLockRegistry
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class Services:
     searcher: Searcher
     registry: ModelRegistry
     hf_client: HfClient
+    ingest_lock_registry: IngestLockRegistry
 
 
 _svc: Services | None = None
@@ -66,6 +68,7 @@ def get_services() -> Services:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
+    from lilbee.server.handlers.ingest import IngestLockRegistry
 
     provider = create_provider(cfg)
     store = Store(cfg)
@@ -76,6 +79,7 @@ def get_services() -> Services:
     registry = ModelRegistry(cfg.models_dir)
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     hf_client = HfClient()
+    ingest_lock_registry = IngestLockRegistry()
     _svc = Services(
         provider=provider,
         store=store,
@@ -86,6 +90,7 @@ def get_services() -> Services:
         searcher=searcher,
         registry=registry,
         hf_client=hf_client,
+        ingest_lock_registry=ingest_lock_registry,
     )
     return _svc
 

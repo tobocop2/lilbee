@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from lilbee.cli.helpers import copy_files
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.core.services import get_services
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
@@ -43,43 +44,72 @@ async def _run_sync_with_sentinel(
         sse.queue.put_nowait(None)
 
 
-# Registry lock serializes lock creation and the check-and-acquire step to
-# avoid a TOCTOU between locked() and acquire() under concurrent /api/add.
-_INGEST_LOCKS: dict[str, asyncio.Lock] = {}
-_INGEST_LOCK_REGISTRY: asyncio.Lock | None = None
+class IngestLockRegistry:
+    """Per-source ingest locks with a serialized check-and-acquire step.
 
+    The registry lock serializes lock creation and the check-and-acquire
+    so concurrent ``/api/add`` calls cannot TOCTOU between
+    ``locked()`` and ``acquire()``. One instance is held by ``Services``
+    and discarded by ``reset_services()``.
+    """
 
-def _get_registry_lock() -> asyncio.Lock:
-    """Return the registry lock, creating it on the running loop if needed."""
-    global _INGEST_LOCK_REGISTRY
-    if _INGEST_LOCK_REGISTRY is None:
-        _INGEST_LOCK_REGISTRY = asyncio.Lock()
-    return _INGEST_LOCK_REGISTRY
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._registry_lock: asyncio.Lock | None = None
 
+    def _get_registry_lock(self) -> asyncio.Lock:
+        if self._registry_lock is None:
+            self._registry_lock = asyncio.Lock()
+        return self._registry_lock
 
-def _reset_ingest_locks() -> None:
-    """Test hook: clear per-source locks and the registry lock."""
-    global _INGEST_LOCK_REGISTRY
-    _INGEST_LOCKS.clear()
-    _INGEST_LOCK_REGISTRY = None
+    def reset(self) -> None:
+        """Test hook: clear per-source locks and the registry lock."""
+        self._locks.clear()
+        self._registry_lock = None
 
+    async def try_acquire(self, name: str) -> asyncio.Lock | None:
+        """Acquire the lock for ``name`` or return ``None`` if already held."""
+        async with self._get_registry_lock():
+            lock = self._locks.get(name)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[name] = lock
+            if lock.locked():
+                return None
+            await lock.acquire()
+            return lock
 
-async def _try_acquire_source(name: str) -> asyncio.Lock | None:
-    """Acquire the lock for ``name`` or return ``None`` if already held."""
-    async with _get_registry_lock():
-        lock = _INGEST_LOCKS.get(name)
-        if lock is None:
-            lock = asyncio.Lock()
-            _INGEST_LOCKS[name] = lock
-        if lock.locked():
-            return None
-        await lock.acquire()
-        return lock
+    @staticmethod
+    def canonical_source_name(p_str: str) -> str:
+        """Match the basename ``copy_files`` writes under ``cfg.documents_dir``."""
+        return Path(p_str).name
 
+    async def acquire(
+        self, paths: list[str]
+    ) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
+        """Return ``(acquired, busy)`` partitioning of ``paths`` by lock state."""
+        acquired: list[tuple[str, asyncio.Lock]] = []
+        busy: list[str] = []
+        seen: set[str] = set()
+        for p_str in paths:
+            name = self.canonical_source_name(p_str)
+            if name in seen:
+                continue
+            seen.add(name)
+            lock = await self.try_acquire(name)
+            if lock is None:
+                busy.append(name)
+            else:
+                acquired.append((name, lock))
+        return acquired, busy
 
-def _canonical_source_name(p_str: str) -> str:
-    """Match the basename ``copy_files`` writes under ``cfg.documents_dir``."""
-    return Path(p_str).name
+    @staticmethod
+    def release(acquired: list[tuple[str, asyncio.Lock]]) -> None:
+        """Release every lock in ``acquired``. Safe to call multiple times."""
+        while acquired:
+            _, lock = acquired.pop()
+            if lock.locked():
+                lock.release()
 
 
 async def sync_stream(
@@ -141,34 +171,6 @@ async def _run_add(
         sse.queue.put_nowait(None)
 
 
-async def _acquire_add_locks(
-    paths: list[str],
-) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
-    """Return ``(acquired, busy)`` partitioning of ``paths`` by lock state."""
-    acquired: list[tuple[str, asyncio.Lock]] = []
-    busy: list[str] = []
-    seen: set[str] = set()
-    for p_str in paths:
-        name = _canonical_source_name(p_str)
-        if name in seen:
-            continue
-        seen.add(name)
-        lock = await _try_acquire_source(name)
-        if lock is None:
-            busy.append(name)
-        else:
-            acquired.append((name, lock))
-    return acquired, busy
-
-
-def _release_add_locks(acquired: list[tuple[str, asyncio.Lock]]) -> None:
-    """Release every lock in ``acquired``. Safe to call multiple times."""
-    while acquired:
-        _, lock = acquired.pop()
-        if lock.locked():
-            lock.release()
-
-
 def validate_add_paths(
     data: dict[str, Any],
 ) -> tuple[list[str], bool, bool | None, float | None]:
@@ -208,7 +210,8 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
     force = bool(data.get("force", False))
     enable_ocr, ocr_timeout = _parse_ocr_params(data)
 
-    acquired, busy = await _acquire_add_locks(paths)
+    registry = get_services().ingest_lock_registry
+    acquired, busy = await registry.acquire(paths)
     try:
         for name in busy:
             log.info("Rejecting /api/add for %s: already ingesting", name)
@@ -235,4 +238,4 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
     finally:
-        _release_add_locks(acquired)
+        IngestLockRegistry.release(acquired)
