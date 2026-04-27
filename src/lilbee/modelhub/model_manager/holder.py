@@ -1,5 +1,6 @@
 """Singleton holder for the ModelManager instance."""
 
+from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.core import ModelManager
 
 
@@ -11,8 +12,6 @@ class _ManagerHolder:
 
     def get(self) -> ModelManager:
         if self._instance is None:
-            from lilbee.core.config import cfg
-
             self._instance = ModelManager(cfg.models_dir, cfg.remote_base_url)
         return self._instance
 

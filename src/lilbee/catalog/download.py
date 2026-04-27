@@ -18,19 +18,12 @@ from lilbee.catalog.hf_client import (
     _ProgressTracker,
 )
 from lilbee.catalog.models import CatalogModel
+from lilbee.core.config.model import cfg
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.runtime.cancellation import TaskCancelled
 
 log = logging.getLogger(__name__)
-
-
-def _cfg() -> Any:
-    """Lazy accessor for the global ``cfg`` singleton (see circular-import note)."""
-    # circular: lilbee.catalog -> lilbee.config via cfg
-    from lilbee.core.config import cfg
-
-    return cfg
 
 
 class DownloadConfig(BaseModel):
@@ -57,10 +50,10 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
-    _cfg().models_dir.mkdir(parents=True, exist_ok=True)
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
 
     filename = resolve_filename(entry)
-    dest = _cfg().models_dir / filename
+    dest = cfg.models_dir / filename
     if dest.exists():
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
@@ -68,7 +61,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
             on_progress(size, size)  # Report 100% immediately
         return _finalize_download(entry, dest, on_progress=on_progress)
 
-    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, _cfg().models_dir)
+    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
     token = _hf_token()
 
     tracker = _ProgressTracker(on_progress) if on_progress else None
@@ -76,7 +69,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         repo_id=entry.hf_repo,
         filename=filename,
         token=token,
-        cache_dir=str(_cfg().models_dir),
+        cache_dir=str(cfg.models_dir),
         tqdm_class=tracker.make_tqdm_class() if tracker else None,
     )
 
@@ -127,7 +120,7 @@ def _finalize_download(
 
 def _register_model(entry: CatalogModel, file_path: Path) -> None:
     """Create a registry manifest for a downloaded model."""
-    registry = ModelRegistry(_cfg().models_dir)
+    registry = ModelRegistry(cfg.models_dir)
     manifest = ModelManifest(
         hf_repo=entry.hf_repo,
         gguf_filename=file_path.name,
@@ -162,12 +155,12 @@ def _download_mmproj(
     from huggingface_hub import hf_hub_download
 
     tracker = _ProgressTracker(on_progress) if on_progress else None
-    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, _cfg().models_dir)
+    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, cfg.models_dir)
     path = Path(
         hf_hub_download(
             repo_id=entry.hf_repo,
             filename=mmproj_filename,
-            cache_dir=str(_cfg().models_dir),
+            cache_dir=str(cfg.models_dir),
             token=_hf_token(),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
@@ -211,8 +204,8 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
 
 
 def _mmproj_in_models_dir_matching(pattern: str) -> Path | None:
-    """Return the first ``*.gguf`` under ``_cfg().models_dir`` that matches."""
-    models_dir: Path = _cfg().models_dir
+    """Return the first ``*.gguf`` under ``cfg.models_dir`` that matches."""
+    models_dir: Path = cfg.models_dir
     for p in models_dir.rglob("*.gguf"):
         if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
             return p
@@ -220,7 +213,7 @@ def _mmproj_in_models_dir_matching(pattern: str) -> Path | None:
 
 
 def find_mmproj_file(model_ref: str) -> Path | None:
-    """Find the mmproj for a ``FEATURED_VISION`` entry under ``_cfg().models_dir``.
+    """Find the mmproj for a ``FEATURED_VISION`` entry under ``cfg.models_dir``.
 
     *model_ref* is matched against each featured vision entry's
     ``hf_repo``. Returns ``None`` when nothing matches. Never falls back
@@ -231,7 +224,7 @@ def find_mmproj_file(model_ref: str) -> Path | None:
     # Local import to avoid pulling featured.py into hf_client/ etc.
     from lilbee.catalog.featured import FEATURED_VISION
 
-    if not _cfg().models_dir.exists():
+    if not cfg.models_dir.exists():
         return None
     for entry in FEATURED_VISION:
         if model_ref not in entry.hf_repo and entry.hf_repo not in model_ref:

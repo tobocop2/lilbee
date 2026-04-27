@@ -10,6 +10,8 @@ from typing import Any
 
 from gguf import GGUFReader
 
+from lilbee.core.config.model import cfg
+
 log = logging.getLogger(__name__)
 
 
@@ -91,7 +93,6 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
     from llama_cpp import Llama
 
-    from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp_provider import (
         find_mmproj_for_model,
         install_llama_log_handler,

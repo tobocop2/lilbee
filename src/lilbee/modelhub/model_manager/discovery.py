@@ -5,6 +5,7 @@ import os
 
 import httpx
 
+from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import (
@@ -84,11 +85,6 @@ def _has_provider_key(cfg_field: str, env_var: str) -> bool:
     """Return True if a usable API key exists via env var or lilbee config."""
     if os.environ.get(env_var):
         return True
-    # circular: model_manager -> config via cfg; config.py's catalog
-    # imports pull model_manager in transitively, so we defer cfg access
-    # to call time to avoid a module-init cycle.
-    from lilbee.core.config import cfg
-
     return bool(getattr(cfg, cfg_field, ""))
 
 
