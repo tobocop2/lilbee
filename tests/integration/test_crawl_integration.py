@@ -24,7 +24,7 @@ from lilbee.crawler import (  # noqa: E402
 )
 from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
 from lilbee.crawler.save import _save_single_result  # noqa: E402
-from lilbee.progress import EventType  # noqa: E402
+from lilbee.runtime.progress import EventType  # noqa: E402
 
 HOME_HTML = """\
 <html><head><title>Home</title></head>

@@ -4,9 +4,9 @@ import logging
 import math
 
 from lilbee.core.config import Config
-from lilbee.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 
 log = logging.getLogger(__name__)
 

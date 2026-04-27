@@ -112,10 +112,10 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - **No filterwarnings** without explicit user approval; fix warnings at the source
 
 ### Configuration & State
-- **No mutable module-level globals** — all config lives in the `Config` dataclass singleton (`from lilbee.config import cfg`)
+- **No mutable module-level globals** — all config lives in the `Config` dataclass singleton (`from lilbee.core.config import cfg`)
 - Never duplicate state across modules (e.g. no `store_mod.LANCEDB_DIR` mirroring `cfg.lancedb_dir`)
 - Prefer dependency injection (pass values as parameters) over reading globals inside functions
-- Access config via `cfg.attribute` (late-bound), never `from lilbee.config import SOME_CONSTANT` (early-bound copy)
+- Access config via `cfg.attribute` (late-bound), never `from lilbee.core.config import SOME_CONSTANT` (early-bound copy)
 
 ### Import Discipline
 
@@ -130,7 +130,7 @@ Default: **every import lives at module top**, ordered stdlib, third-party, loca
 **Never lazy-import the following:**
 
 - Stdlib modules (`os`, `struct`, `enum`, `io`, `fnmatch`, …) — zero cost.
-- Local lilbee modules that don't pull in heavy third-party deps at their own module top (`lilbee.config`, `lilbee.services`, `lilbee.catalog`, `lilbee.models`, `lilbee.registry`, …).
+- Local lilbee modules that don't pull in heavy third-party deps at their own module top (`lilbee.core.config`, `lilbee.core.services`, `lilbee.catalog`, `lilbee.modelhub.models`, `lilbee.modelhub.registry`, …).
 - Third-party libs already dragged in transitively by the module's top-level imports — re-importing them later is pure noise.
 - Project dependencies added explicitly to `pyproject.toml` that measure under 50 ms (`httpx`, `pydantic`, `tiktoken`, `numpy`, `pillow`, `gguf`, …).
 
@@ -152,7 +152,7 @@ Other rules:
 - **Snapshot/restore pattern** for config isolation:
   ```python
   from dataclasses import fields, replace
-  from lilbee.config import cfg
+  from lilbee.core.config import cfg
 
   @pytest.fixture(autouse=True)
   def isolated_env(tmp_path):
@@ -304,19 +304,20 @@ Every command returns a single JSON object on stdout. Errors return non-zero exi
 See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 
 ## Key Files
-- `config.py` — All settings (env-var configurable)
-- `ingest.py` — Document sync engine (hash-based change detection)
-- `query.py` — RAG pipeline (embed → search → generate)
-- `store.py` — LanceDB operations
-- `chunker.py` — Text chunking (token-based recursive)
-- `code_chunker.py` — Code chunking (tree-sitter AST)
+- `core/config/` — All settings (env-var configurable)
+- `data/ingest/` — Document sync engine (hash-based change detection)
+- `retrieval/query/` — RAG pipeline (embed → search → generate)
+- `data/store/` — LanceDB operations
+- `data/chunk.py` — Text chunking (token-based recursive)
+- `data/code_chunker.py` — Code chunking (tree-sitter AST)
 - `providers/` — LLM provider abstraction (base protocol, llama-cpp, litellm, factory)
-- `catalog.py` — Model discovery from HuggingFace
-- `model_manager.py` — Model lifecycle (install, remove, list)
-- `embedder.py` — Embedding wrapper (uses provider abstraction)
-- `platform.py` — OS helpers, `find_local_root()` for `.lilbee/` discovery
-- `cli.py` — Typer CLI with --model, --data-dir, --version, and --json flags
+- `catalog/` — Model discovery from HuggingFace
+- `modelhub/model_manager/` — Model lifecycle (install, remove, list)
+- `retrieval/embedder.py` — Embedding wrapper (uses provider abstraction)
+- `core/platform.py` — OS helpers, `find_local_root()` for `.lilbee/` discovery
+- `cli/` — Typer CLI with --model, --data-dir, --version, and --json flags
 - `mcp.py` — MCP server exposing search, ask, status, sync, init as tools
+- `runtime/` — process lifecycle (launcher, splash, asyncio loop, cancellation, progress, lock, crawl_task, temporal)
 
 ## Wiki Conventions
 

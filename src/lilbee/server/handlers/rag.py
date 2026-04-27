@@ -12,7 +12,7 @@ from lilbee.cli.helpers import clean_result
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
 from lilbee.core.services import get_services
-from lilbee.progress import SseEvent
+from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,
     _resolve_generation_options,

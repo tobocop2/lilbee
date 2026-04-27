@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from lilbee.cli import sync as sync_mod
 from lilbee.cli import theme
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     EmbedEvent,
     EventType,
     ExtractEvent,

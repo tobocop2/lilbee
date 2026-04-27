@@ -3208,7 +3208,7 @@ class TestChromiumBootstrapTarget:
         """With total_bytes set, the target formats 'chromium: N/M MB'."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets import task_bar
-        from lilbee.progress import EventType, SetupDoneEvent, SetupProgressEvent
+        from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupProgressEvent
 
         reporter = mock.MagicMock()
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.lock import (
+from lilbee.runtime.lock import (
     LockTimeoutError,
     _lock_path,
     write_lock,
@@ -93,7 +93,7 @@ class TestWriteLock:
 
     def test_mutex_timeout(self):
         """write_lock raises when the in-process mutex times out."""
-        from lilbee.lock import _write_mutex
+        from lilbee.runtime.lock import _write_mutex
 
         _write_mutex.acquire()
         try:

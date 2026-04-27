@@ -1,4 +1,4 @@
-"""Unit tests for lilbee.asyncio_loop."""
+"""Unit tests for lilbee.runtime.asyncio_loop."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from lilbee import asyncio_loop
+from lilbee.runtime import asyncio_loop
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +83,7 @@ def test_shutdown_without_start_is_noop() -> None:
 
 def test_atexit_register_called_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """Repeated get_loop/shutdown cycles must not stack atexit callbacks."""
-    import lilbee.asyncio_loop as mod
+    import lilbee.runtime.asyncio_loop as mod
 
     # Reset the register-once flag so this test sees a clean register path.
     mod._atexit_registered = False
@@ -163,6 +163,6 @@ def test_shutdown_drain_swallows_exceptions(monkeypatch: pytest.MonkeyPatch) -> 
         fut.set_exception(RuntimeError("drain failed"))
         return fut
 
-    monkeypatch.setattr("lilbee.asyncio_loop.asyncio.run_coroutine_threadsafe", boom)
+    monkeypatch.setattr("lilbee.runtime.asyncio_loop.asyncio.run_coroutine_threadsafe", boom)
     asyncio_loop.shutdown()
     assert loop.is_closed()

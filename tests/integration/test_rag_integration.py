@@ -366,7 +366,7 @@ class TestTemporalFilter:
 
     def test_temporal_keywords_detected(self, rag_pipeline):
         """Temporal keywords are detected in queries."""
-        from lilbee.temporal import detect_temporal
+        from lilbee.runtime.temporal import detect_temporal
 
         assert detect_temporal("recent changes") is not None
         assert detect_temporal("latest updates") is not None

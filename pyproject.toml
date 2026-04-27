@@ -63,7 +63,7 @@ Repository = "https://github.com/tobocop2/lilbee"
 Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
-lilbee = "lilbee.launcher:main"
+lilbee = "lilbee.runtime.launcher:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -102,7 +102,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py", "src/lilbee/launcher.py"]
+omit = ["src/lilbee/__main__.py", "src/lilbee/runtime/launcher.py"]
 concurrency = ["thread"]
 
 [tool.coverage.report]
@@ -116,7 +116,7 @@ exclude_lines = [
 ]
 omit = [
     "src/lilbee/__main__.py",
-    "src/lilbee/launcher.py",
+    "src/lilbee/runtime/launcher.py",
     "src/lilbee/core/platform.py",
 ]
 

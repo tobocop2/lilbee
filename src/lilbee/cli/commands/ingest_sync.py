@@ -112,7 +112,12 @@ def _crawl_urls_blocking(
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
-    from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
+    from lilbee.runtime.progress import (
+        CrawlPageEvent,
+        DetailedProgressCallback,
+        EventType,
+        ProgressEvent,
+    )
 
     if crawl:
         effective_depth = depth

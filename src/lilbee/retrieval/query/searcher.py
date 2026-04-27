@@ -86,7 +86,7 @@ class Searcher:
     ) -> list[SearchChunk]:
         if not self._config.temporal_filtering:
             return results
-        from lilbee.temporal import detect_temporal, resolve_date_range
+        from lilbee.runtime.temporal import detect_temporal, resolve_date_range
 
         keyword = detect_temporal(question)
         if keyword is None:

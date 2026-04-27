@@ -902,7 +902,7 @@ class TestDownloadModel:
         cancelled downloads to land as FAILED instead of CANCELLED in the
         Task Center.
         """
-        from lilbee.cancellation import TaskCancelled
+        from lilbee.runtime.cancellation import TaskCancelled
 
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]

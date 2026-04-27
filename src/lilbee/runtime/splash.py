@@ -58,7 +58,7 @@ def start() -> SplashHandle | None:
     # Trusted: sys.executable is this interpreter, module path is static,
     # the one runtime value (read_fd) is an int from os.pipe().
     proc = subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "lilbee._splash_runner", str(read_fd)],
+        [sys.executable, "-m", "lilbee.runtime._splash_runner", str(read_fd)],
         close_fds=False,
         stderr=None,
         stdout=subprocess.DEVNULL,

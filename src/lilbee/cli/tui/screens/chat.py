@@ -25,7 +25,6 @@ from textual.widgets import Footer, Input, Label, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee import asyncio_loop
 from lilbee.catalog import display_label_for_ref
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
@@ -45,10 +44,11 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
-from lilbee.progress import EventType, ProgressEvent
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
+from lilbee.runtime import asyncio_loop
+from lilbee.runtime.progress import EventType, ProgressEvent
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -194,7 +194,7 @@ class ChatScreen(Screen[None]):
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
-        from lilbee.splash import dismiss
+        from lilbee.runtime.splash import dismiss
 
         dismiss()
         self.refresh_model_bar()
@@ -374,7 +374,7 @@ class ChatScreen(Screen[None]):
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.cli.helpers import copy_files
         from lilbee.data.ingest import sync
-        from lilbee.progress import FileStartEvent
+        from lilbee.runtime.progress import FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
         copy_result = copy_files([path], force=force)
@@ -517,7 +517,7 @@ class ChatScreen(Screen[None]):
     ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
-        from lilbee.progress import CrawlPageEvent, SetupProgressEvent
+        from lilbee.runtime.progress import CrawlPageEvent, SetupProgressEvent
 
         reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
 
@@ -913,7 +913,7 @@ class ChatScreen(Screen[None]):
     def _do_sync(self, reporter: ProgressReporter) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
-        from lilbee.progress import EmbedEvent, FileDoneEvent, FileStartEvent, SyncDoneEvent
+        from lilbee.runtime.progress import EmbedEvent, FileDoneEvent, FileStartEvent, SyncDoneEvent
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
 

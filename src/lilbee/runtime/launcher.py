@@ -21,7 +21,7 @@ def main() -> None:
         app()
         return
 
-    from lilbee.splash import start, stop
+    from lilbee.runtime.splash import start, stop
 
     handle = start()
 

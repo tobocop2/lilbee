@@ -6,7 +6,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from lilbee.lock import write_lock
+from lilbee.runtime.lock import write_lock
 
 from .types import CHUNK_TYPE_RAW
 

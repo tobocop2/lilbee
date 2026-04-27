@@ -18,7 +18,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.core.security import validate_path_within
-from lilbee.lock import write_lock
+from lilbee.runtime.lock import write_lock
 
 from .lance_helpers import (
     _chunk_type_predicate,

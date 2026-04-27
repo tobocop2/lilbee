@@ -20,7 +20,7 @@ from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed
-from lilbee.progress import EventType, SetupProgressEvent
+from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 _SELF_CHECK_CHAT_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
 _SELF_CHECK_CHAT_FILE = "SmolLM2-135M-Instruct-Q3_K_S.gguf"

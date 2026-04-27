@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-from lilbee.cancellation import TaskCancelled
 from lilbee.catalog.featured import _DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
 from lilbee.catalog.hf_client import (
     _DEFAULT_TIMEOUT,
@@ -21,6 +20,7 @@ from lilbee.catalog.hf_client import (
 from lilbee.catalog.models import CatalogModel
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.runtime.cancellation import TaskCancelled
 
 log = logging.getLogger(__name__)
 

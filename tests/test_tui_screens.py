@@ -3758,7 +3758,7 @@ async def test_chat_run_sync_worker():
     """Cover _run_sync lines 356-376 via actual worker."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         async def fake_sync(quiet=False, on_progress=None, cancel=None):
             if on_progress:
@@ -3780,7 +3780,7 @@ async def test_chat_sync_file_done_bad_type():
     """Sync progress raises TypeError when FILE_DONE data is not FileDoneEvent."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType
+        from lilbee.runtime.progress import EventType
 
         async def fake_sync(quiet=False, on_progress=None):
             if on_progress:
@@ -3804,7 +3804,7 @@ async def test_chat_sync_file_start_bad_type():
     """Sync progress raises TypeError when FILE_START data is not FileStartEvent."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType
+        from lilbee.runtime.progress import EventType
 
         async def fake_sync(quiet=False, on_progress=None, cancel=None):
             if on_progress:
@@ -3831,7 +3831,7 @@ async def test_chat_sync_embed_bad_type():
     """Sync progress silently skips when EMBED data is not EmbedEvent."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType
+        from lilbee.runtime.progress import EventType
 
         async def fake_sync(quiet=False, on_progress=None, cancel=None):
             if on_progress:
@@ -7420,7 +7420,7 @@ async def test_chat_on_show_calls_dismiss():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        with patch("lilbee.splash.dismiss") as mock_dismiss:
+        with patch("lilbee.runtime.splash.dismiss") as mock_dismiss:
             app.screen.on_show()
             mock_dismiss.assert_called_once()
 

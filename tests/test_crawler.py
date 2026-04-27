@@ -24,7 +24,7 @@ from lilbee.crawler import (
 )
 from lilbee.crawler.api import _get_crawl_semaphore, _maybe_periodic_sync
 from lilbee.crawler.save import _save_single_result, _update_single_metadata
-from lilbee.progress import EventType
+from lilbee.runtime.progress import EventType
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +60,7 @@ def isolated_env(tmp_path, monkeypatch, request):
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
     # opt out of this autopatch.
     if cls != "TestSitemapCounting":
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         monkeypatch.setattr(
             "lilbee.crawler.sitemap._count_sitemap_urls",
@@ -444,7 +444,7 @@ class TestBootstrapChromium:
     async def test_short_circuits_when_already_installed(self, monkeypatch):
         """No subprocess, no stream events, when Chromium is already present."""
         from lilbee.crawler.bootstrap import bootstrap_chromium
-        from lilbee.progress import EventType, SetupDoneEvent
+        from lilbee.runtime.progress import EventType, SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         events: list[tuple[EventType, object]] = []
@@ -460,7 +460,7 @@ class TestBootstrapChromium:
     async def test_parses_progress_from_fake_subprocess(self, monkeypatch):
         """Feed canned stdout through the subprocess to drive progress events."""
         from lilbee.crawler.bootstrap import bootstrap_chromium
-        from lilbee.progress import EventType, SetupProgressEvent, SetupStartEvent
+        from lilbee.runtime.progress import EventType, SetupProgressEvent, SetupStartEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
 
@@ -507,7 +507,7 @@ class TestBootstrapChromium:
     async def test_raises_crawler_browser_missing_on_subprocess_failure(self, monkeypatch):
         """Non-zero exit → CrawlerBrowserMissing with stderr tail."""
         from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
-        from lilbee.progress import EventType, SetupDoneEvent
+        from lilbee.runtime.progress import EventType, SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
 
@@ -672,7 +672,7 @@ class TestCrawlRecursive:
         assert results[1].url == "https://example.com/about"
         assert len(progress_calls) == 2
         # Streaming semantics: total is unknown during BFS, counter advances per page.
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         assert [c[1].current for c in progress_calls] == [1, 2]
         assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in progress_calls)
@@ -963,7 +963,7 @@ class TestSitemapCounting:
         import httpx
 
         from lilbee.crawler.sitemap import _count_sitemap_urls
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         def _raise(*a, **kw):
             raise httpx.ConnectError("boom")
@@ -976,7 +976,7 @@ class TestSitemapCounting:
 
     def test_returns_unknown_on_4xx(self, monkeypatch):
         from lilbee.crawler.sitemap import _count_sitemap_urls
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         fake = MagicMock(status_code=404, text="")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
@@ -1019,7 +1019,7 @@ class TestSitemapCounting:
     def test_returns_unknown_when_start_url_has_no_host(self):
         """A malformed start URL short-circuits before hitting the network."""
         from lilbee.crawler.sitemap import _count_sitemap_urls
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         # file:///foo has no hostname, so the helper bails immediately.
         assert (

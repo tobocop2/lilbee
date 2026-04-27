@@ -24,7 +24,7 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.progress import DetailedProgressCallback, noop_callback
+from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.data.store import CHUNK_TYPE_RAW
 from lilbee.vision import extract_pdf_vision
 

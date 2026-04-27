@@ -10,10 +10,16 @@ from rich.console import Console
 
 from lilbee.cli import theme
 from lilbee.data.ingest import sync
-from lilbee.progress import EventType, ExtractEvent, FileStartEvent, ProgressEvent, SyncDoneEvent
+from lilbee.runtime.progress import (
+    EventType,
+    ExtractEvent,
+    FileStartEvent,
+    ProgressEvent,
+    SyncDoneEvent,
+)
 
 if TYPE_CHECKING:
-    from lilbee.progress import DetailedProgressCallback
+    from lilbee.runtime.progress import DetailedProgressCallback
 
 
 def _format_sync_summary(added: int, updated: int, removed: int, failed: int) -> str | None:

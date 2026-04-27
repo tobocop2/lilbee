@@ -10,20 +10,20 @@ import pytest
 
 
 def test_apply_color_non_empty():
-    from lilbee._splash_runner import AMBER_BRIGHT, RESET, apply_color
+    from lilbee.runtime._splash_runner import AMBER_BRIGHT, RESET, apply_color
 
     result = apply_color("hello", AMBER_BRIGHT)
     assert result == AMBER_BRIGHT + "hello" + RESET
 
 
 def test_apply_color_empty_line():
-    from lilbee._splash_runner import apply_color
+    from lilbee.runtime._splash_runner import apply_color
 
     assert apply_color("   ", "color") == "   "
 
 
 def test_build_logo_frames():
-    from lilbee._splash_runner import COLOR_SEQUENCE, build_logo_frames
+    from lilbee.runtime._splash_runner import COLOR_SEQUENCE, build_logo_frames
 
     frames = build_logo_frames()
     assert len(frames) == len(COLOR_SEQUENCE)
@@ -31,14 +31,14 @@ def test_build_logo_frames():
 
 
 def test_build_knight_rider_frames():
-    from lilbee._splash_runner import LOGO_WIDTH, build_knight_rider_frames
+    from lilbee.runtime._splash_runner import LOGO_WIDTH, build_knight_rider_frames
 
     frames = build_knight_rider_frames()
     assert len(frames) == (LOGO_WIDTH - 1) * 2
 
 
 def test_render_frame():
-    from lilbee._splash_runner import render_frame
+    from lilbee.runtime._splash_runner import render_frame
 
     result = render_frame(["line1", "line2"], "bar")
     assert isinstance(result, bytes)
@@ -47,7 +47,7 @@ def test_render_frame():
 
 
 def test_move_up_and_clear():
-    from lilbee._splash_runner import move_up_and_clear
+    from lilbee.runtime._splash_runner import move_up_and_clear
 
     result = move_up_and_clear(3)
     assert isinstance(result, bytes)
@@ -61,7 +61,7 @@ def test_clear_screen():
     never writes a cursor-home escape into Textual's alt-screen.
     Restores cursor visibility so non-TUI exits leave the terminal clean.
     """
-    from lilbee._splash_runner import clear_screen
+    from lilbee.runtime._splash_runner import clear_screen
 
     result = clear_screen(5)
     assert b"\033[A" in result  # move-up sequences
@@ -75,7 +75,7 @@ def test_pipe_closed_returns_true_on_eof():
     """pipe_closed returns True when the read end gets EOF."""
     r, w = os.pipe()
     os.close(w)  # close write end -> read gets EOF
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     assert pipe_closed(r) is True
     os.close(r)
@@ -84,7 +84,7 @@ def test_pipe_closed_returns_true_on_eof():
 def test_pipe_closed_returns_false_when_open():
     """pipe_closed returns False when pipe is still open."""
     r, w = os.pipe()
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     assert pipe_closed(r) is False
     os.close(w)
@@ -95,7 +95,7 @@ def test_pipe_closed_with_data_available():
     """pipe_closed returns False when data is written but pipe not closed."""
     r, w = os.pipe()
     os.write(w, b"x")
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     assert pipe_closed(r) is False
     os.close(w)
@@ -107,14 +107,14 @@ def test_pipe_closed_returns_true_on_bad_fd():
     r, w = os.pipe()
     os.close(w)
     os.close(r)
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     assert pipe_closed(r) is True
 
 
 def test_read_eof_with_bad_fd():
     """_read_eof returns True when os.read raises OSError."""
-    from lilbee._splash_runner import _read_eof
+    from lilbee.runtime._splash_runner import _read_eof
 
     assert _read_eof(-1) is True
 
@@ -122,7 +122,7 @@ def test_read_eof_with_bad_fd():
 @pytest.mark.skipif(sys.platform == "win32", reason="select-based path is Unix-only")
 def test_pipe_closed_select_error_returns_true():
     """pipe_closed returns True when select raises."""
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     with patch("select.select", side_effect=ValueError("bad fd")):
         assert pipe_closed(-1) is True
@@ -133,7 +133,7 @@ def test_pipe_closed_select_error_returns_true():
 @patch("select.select", return_value=([42], [], []))
 def test_pipe_closed_read_error_returns_true(_mock_select: object, _mock_read: object):
     """pipe_closed returns True when os.read raises after select succeeds."""
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     assert pipe_closed(42) is True
 
@@ -143,19 +143,19 @@ def test_animation_loop_exits_on_closed_pipe():
     r, w = os.pipe()
     os.close(w)
 
-    from lilbee._splash_runner import animation_loop
+    from lilbee.runtime._splash_runner import animation_loop
 
     animation_loop(r)
     os.close(r)
 
 
-@patch("lilbee._splash_runner.STARTUP_DELAY", 0)
-@patch("lilbee._splash_runner.FRAME_INTERVAL", 0.003)
-@patch("lilbee._splash_runner.POLL_INTERVAL", 0.001)
+@patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0)
+@patch("lilbee.runtime._splash_runner.FRAME_INTERVAL", 0.003)
+@patch("lilbee.runtime._splash_runner.POLL_INTERVAL", 0.001)
 @patch("time.sleep")
 def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
     """animation_loop renders at least one frame with move_up_and_clear."""
-    from lilbee._splash_runner import animation_loop
+    from lilbee.runtime._splash_runner import animation_loop
 
     call_count = 0
 
@@ -173,7 +173,7 @@ def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
         return len(data)
 
     with (
-        patch("lilbee._splash_runner.pipe_closed", side_effect=mock_pipe_closed),
+        patch("lilbee.runtime._splash_runner.pipe_closed", side_effect=mock_pipe_closed),
         patch("os.write", side_effect=mock_write),
     ):
         animation_loop(0)
@@ -182,12 +182,12 @@ def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
     assert len(written) >= 3
 
 
-@patch("lilbee._splash_runner.STARTUP_DELAY", 0)
-@patch("lilbee._splash_runner.FRAME_INTERVAL", 0)
+@patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0)
+@patch("lilbee.runtime._splash_runner.FRAME_INTERVAL", 0)
 @patch("os.write", side_effect=OSError("broken"))
 def test_animation_loop_handles_write_error(_mock_write: object):
     """animation_loop handles OSError during rendering."""
-    from lilbee._splash_runner import animation_loop
+    from lilbee.runtime._splash_runner import animation_loop
 
     r, w = os.pipe()
     os.close(w)
@@ -196,15 +196,15 @@ def test_animation_loop_handles_write_error(_mock_write: object):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM not catchable on Windows")
-@patch("lilbee._splash_runner.STARTUP_DELAY", 0)
-@patch("lilbee._splash_runner.FRAME_INTERVAL", 0.05)
-@patch("lilbee._splash_runner.POLL_INTERVAL", 0.001)
+@patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0)
+@patch("lilbee.runtime._splash_runner.FRAME_INTERVAL", 0.05)
+@patch("lilbee.runtime._splash_runner.POLL_INTERVAL", 0.001)
 def test_animation_loop_exits_on_sigterm():
     """animation_loop exits when SIGTERM is received (covers line 140)."""
     import signal
     import threading
 
-    from lilbee._splash_runner import animation_loop
+    from lilbee.runtime._splash_runner import animation_loop
 
     r, w = os.pipe()
 
@@ -225,11 +225,11 @@ def test_animation_loop_exits_on_sigterm():
     os.close(r)
 
 
-@patch("lilbee._splash_runner.STARTUP_DELAY", 0.01)
-@patch("lilbee._splash_runner.POLL_INTERVAL", 0.001)
+@patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0.01)
+@patch("lilbee.runtime._splash_runner.POLL_INTERVAL", 0.001)
 def test_animation_loop_startup_delay_with_open_pipe():
     """animation_loop sleeps during startup delay when pipe is open."""
-    from lilbee._splash_runner import animation_loop
+    from lilbee.runtime._splash_runner import animation_loop
 
     r, w = os.pipe()
 
@@ -255,7 +255,7 @@ def test_animation_loop_startup_delay_with_open_pipe():
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows pipe_closed path")
 def test_pipe_closed_windows_path():
     """pipe_closed uses os.read on Windows."""
-    from lilbee._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import pipe_closed
 
     r, w = os.pipe()
     os.close(w)
@@ -268,22 +268,22 @@ def test_main_guard():
     import runpy
 
     with (
-        patch("lilbee._splash_runner.main"),
+        patch("lilbee.runtime._splash_runner.main"),
         pytest.raises(SystemExit),
     ):
         # Remove from sys.modules after patch setup (which imports it)
         # so runpy doesn't warn about pre-existing module
-        saved = sys.modules.pop("lilbee._splash_runner", None)
+        saved = sys.modules.pop("lilbee.runtime._splash_runner", None)
         try:
-            runpy.run_module("lilbee._splash_runner", run_name="__main__")
+            runpy.run_module("lilbee.runtime._splash_runner", run_name="__main__")
         finally:
             if saved is not None:
-                sys.modules["lilbee._splash_runner"] = saved
+                sys.modules["lilbee.runtime._splash_runner"] = saved
 
 
 def test_main_missing_args():
     """main exits with code 1 when no pipe_fd argument."""
-    from lilbee._splash_runner import main
+    from lilbee.runtime._splash_runner import main
 
     with patch("sys.argv", ["_splash_runner"]), pytest.raises(SystemExit, match="1"):
         main()
@@ -291,7 +291,7 @@ def test_main_missing_args():
 
 def test_main_invalid_fd():
     """main exits with code 1 when pipe_fd is not an integer."""
-    from lilbee._splash_runner import main
+    from lilbee.runtime._splash_runner import main
 
     with patch("sys.argv", ["_splash_runner", "abc"]), pytest.raises(SystemExit, match="1"):
         main()
@@ -302,7 +302,7 @@ def test_main_valid_fd():
     r, w = os.pipe()
     os.close(w)
 
-    from lilbee._splash_runner import main
+    from lilbee.runtime._splash_runner import main
 
     with patch("sys.argv", ["_splash_runner", str(r)]):
         main()

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any
 
-from lilbee.progress.types import (
+from lilbee.runtime.progress.types import (
     BatchProgressEvent,
     CrawlDoneEvent,
     CrawlPageEvent,

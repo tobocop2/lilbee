@@ -29,13 +29,13 @@ from textual.app import ComposeResult
 from textual.timer import Timer
 from textual.widgets import Label, Static
 
-from lilbee import asyncio_loop
-from lilbee.cancellation import TaskCancelled
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
-from lilbee.progress import EventType, SetupProgressEvent
+from lilbee.runtime import asyncio_loop
+from lilbee.runtime.cancellation import TaskCancelled
+from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
     from textual.app import App

@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from lilbee.core.config import cfg
-from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
+from lilbee.runtime.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
 
 log = logging.getLogger(__name__)
 

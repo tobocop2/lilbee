@@ -16,8 +16,8 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import ModelSource, get_model_manager
 from lilbee.modelhub.models import ModelTask
-from lilbee.progress import SseEvent
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
 from lilbee.server.models import (
     CatalogEntryResponse,

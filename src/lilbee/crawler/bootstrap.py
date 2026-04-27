@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
     SetupDoneEvent,

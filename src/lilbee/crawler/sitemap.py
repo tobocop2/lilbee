@@ -15,7 +15,7 @@ import re
 from urllib.parse import urlparse
 
 from lilbee.crawler.url_filter import host_in_scope
-from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
 # Sitemap lookups are best-effort progress hints; never block the actual crawl.
 _SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0

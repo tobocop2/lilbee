@@ -25,7 +25,7 @@ from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
     EventType,

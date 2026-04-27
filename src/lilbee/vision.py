@@ -15,7 +15,7 @@ from typing import Any, NamedTuple, cast
 
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
     ExtractEvent,

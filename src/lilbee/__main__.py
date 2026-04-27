@@ -55,6 +55,6 @@ if __name__ == "__main__":
 
     multiprocessing.freeze_support()
 
-    from lilbee.launcher import main
+    from lilbee.runtime.launcher import main
 
     main()

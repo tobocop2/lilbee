@@ -29,7 +29,7 @@ from lilbee.crawler.models import (
     FetchedPage,
     FilterSpec,
 )
-from lilbee.progress import CrawlDoneEvent, CrawlStartEvent, EventType
+from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +61,7 @@ def isolated_env(tmp_path, monkeypatch):
         lambda host, port, *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
     )
     # Keep the sitemap denominator deterministic.
-    from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+    from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
     monkeypatch.setattr(
         "lilbee.crawler.sitemap._count_sitemap_urls",

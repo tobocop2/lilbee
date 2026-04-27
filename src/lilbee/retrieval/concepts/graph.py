@@ -76,7 +76,7 @@ class ConceptGraph:
     ) -> None:
         """Build co-occurrence graph from chunk concepts, compute PMI, store tables."""
         from lilbee.data.store import ensure_table
-        from lilbee.lock import write_lock
+        from lilbee.runtime.lock import write_lock
 
         if not chunk_ids:
             return
@@ -244,7 +244,7 @@ class ConceptGraph:
     def rebuild_clusters(self) -> None:
         """Re-run Leiden clustering on the existing edge table."""
         from lilbee.data.store import ensure_table
-        from lilbee.lock import write_lock
+        from lilbee.runtime.lock import write_lock
 
         edges_table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if edges_table is None:

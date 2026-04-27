@@ -133,7 +133,9 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
                 with (
                     patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
                     patch("lilbee.data.ingest.sync", new=MagicMock(return_value=None)),
-                    patch("lilbee.asyncio_loop.run", new=MagicMock(return_value=SyncResult())),
+                    patch(
+                        "lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=SyncResult())
+                    ),
                 ):
                     screen._do_add(src, reporter)
             except BaseException as e:  # pragma: no cover
@@ -178,7 +180,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
-                        "lilbee.asyncio_loop.run",
+                        "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
                                 "lilbee.data.ingest", fromlist=["SyncResult"]
@@ -231,7 +233,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                 with (
                     patch("lilbee.cli.helpers.copy_files", new=mock_copy),
                     patch(
-                        "lilbee.asyncio_loop.run",
+                        "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
                                 "lilbee.data.ingest", fromlist=["SyncResult"]
@@ -260,7 +262,7 @@ def test_do_crawl_reports_setup_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EventType, SetupProgressEvent
+    from lilbee.runtime.progress import EventType, SetupProgressEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -303,7 +305,7 @@ def test_do_crawl_reports_page_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import CrawlPageEvent, EventType
+    from lilbee.runtime.progress import CrawlPageEvent, EventType
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -339,7 +341,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EmbedEvent, EventType, FileDoneEvent, FileStartEvent
+    from lilbee.runtime.progress import EmbedEvent, EventType, FileDoneEvent, FileStartEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -378,7 +380,7 @@ def test_do_sync_done_event_reports_completion() -> None:
 
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.data.ingest import SyncResult
-    from lilbee.progress import EventType, SyncDoneEvent
+    from lilbee.runtime.progress import EventType, SyncDoneEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -697,7 +699,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EventType, FileStartEvent
+    from lilbee.runtime.progress import EventType, FileStartEvent
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
@@ -757,7 +759,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EmbedEvent, EventType
+    from lilbee.runtime.progress import EmbedEvent, EventType
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)

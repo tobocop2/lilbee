@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from lilbee.crawler import crawl_and_save
-from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
+from lilbee.runtime.progress import (
+    CrawlPageEvent,
+    DetailedProgressCallback,
+    EventType,
+    ProgressEvent,
+)
 
 log = logging.getLogger(__name__)
 

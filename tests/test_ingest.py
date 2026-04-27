@@ -1400,7 +1400,7 @@ class TestSharedProgress:
     )
     async def test_contextvar_set_during_progress(self, mock_extract_file, isolated_env):
         """shared_progress contextvar is set inside _collect_results_with_progress."""
-        from lilbee.progress import shared_progress
+        from lilbee.runtime.progress import shared_progress
 
         (isolated_env / "a.txt").write_text("Content for shared progress test.")
 
@@ -1425,7 +1425,7 @@ class TestSharedProgress:
     )
     async def test_contextvar_not_set_in_quiet_mode(self, mock_extract_file, isolated_env):
         """shared_progress contextvar is NOT set in quiet mode (no progress bar)."""
-        from lilbee.progress import shared_progress
+        from lilbee.runtime.progress import shared_progress
 
         (isolated_env / "b.txt").write_text("Content for quiet mode test.")
 
@@ -1446,7 +1446,7 @@ class TestSharedProgress:
     )
     async def test_contextvar_reset_after_progress(self, mock_extract_file, isolated_env):
         """shared_progress is reset to None after _collect_results_with_progress completes."""
-        from lilbee.progress import shared_progress
+        from lilbee.runtime.progress import shared_progress
 
         (isolated_env / "c.txt").write_text("Content for reset test.")
         from lilbee.data.ingest import sync

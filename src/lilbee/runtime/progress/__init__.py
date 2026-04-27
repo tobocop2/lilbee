@@ -1,12 +1,12 @@
 """Granular progress callback protocol for streaming pipeline events."""
 
-from lilbee.progress.callbacks import (
+from lilbee.runtime.progress.callbacks import (
     DetailedProgressCallback,
     ProgressEvent,
     noop_callback,
     shared_progress,
 )
-from lilbee.progress.types import (
+from lilbee.runtime.progress.types import (
     CRAWL_TOTAL_UNKNOWN,
     BatchProgressEvent,
     CrawlDoneEvent,

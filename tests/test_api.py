@@ -259,3 +259,12 @@ class TestIsolation:
         assert "b.md" in status_b["sources"]
         assert "b.md" not in status_a["sources"]
         assert "a.md" not in status_b["sources"]
+
+
+class TestPackageGetattr:
+    def test_unknown_attribute_raises(self):
+        """Package-level ``__getattr__`` raises AttributeError for unknown names."""
+        import lilbee
+
+        with pytest.raises(AttributeError, match="has no attribute 'definitely_not_a_thing'"):
+            getattr(lilbee, "definitely_not_a_thing")  # noqa: B009

@@ -329,7 +329,7 @@ class TestGracefulDegradation:
 
 
 class TestBuildFromChunks:
-    @patch("lilbee.lock.write_lock")
+    @patch("lilbee.runtime.lock.write_lock")
     def test_build_from_chunks(self, mock_lock, cg):
         mock_lock.return_value.__enter__ = MagicMock()
         mock_lock.return_value.__exit__ = MagicMock(return_value=False)
@@ -587,7 +587,7 @@ class TestRebuildClusters:
         mock_svc.store.open_table.return_value = mock_table
         cg.rebuild_clusters()
 
-    @patch("lilbee.lock.write_lock")
+    @patch("lilbee.runtime.lock.write_lock")
     @patch("lilbee.data.store.ensure_table")
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_with_edges(self, mock_leiden, mock_ensure, mock_lock, cg, mock_svc):

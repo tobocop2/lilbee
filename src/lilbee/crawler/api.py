@@ -33,7 +33,7 @@ from lilbee.crawler.models import (
 )
 from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
 from lilbee.crawler.url_filter import validate_crawl_url
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     CrawlDoneEvent,
     CrawlPageEvent,
     CrawlStartEvent,

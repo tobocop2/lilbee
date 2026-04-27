@@ -428,7 +428,7 @@ class TestSyncStream:
 
         async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import FileDoneEvent, SyncDoneEvent
+                from lilbee.runtime.progress import FileDoneEvent, SyncDoneEvent
 
                 on_progress("file_done", FileDoneEvent(file="a.txt", status="ok", chunks=3))
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
@@ -450,7 +450,7 @@ class TestSyncStream:
 
         async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
+                from lilbee.runtime.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
 
                 on_progress(
                     "file_start",
@@ -495,7 +495,7 @@ class TestSyncStream:
         async def blocking_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             captured_cancel.append(cancel)
             if on_progress:
-                from lilbee.progress import FileStartEvent
+                from lilbee.runtime.progress import FileStartEvent
 
                 on_progress(
                     "file_start", FileStartEvent(file="a.txt", total_files=1, current_file=1)
@@ -562,7 +562,7 @@ class TestSyncStreamDoneDelivery:
 
         async def instant_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import SyncDoneEvent
+                from lilbee.runtime.progress import SyncDoneEvent
 
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
@@ -586,7 +586,7 @@ class TestSyncStreamDoneDelivery:
 
         async def noop_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import SyncDoneEvent
+                from lilbee.runtime.progress import SyncDoneEvent
 
                 on_progress("done", SyncDoneEvent(added=0, updated=0, removed=0, failed=0))
             return sync_result
@@ -1752,7 +1752,7 @@ class TestCrawlStream:
         from pathlib import Path
 
         async def fake_crawl(url, *, depth, max_pages, on_progress, cancel=None):
-            from lilbee.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
+            from lilbee.runtime.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
             on_progress("crawl_page", CrawlPageEvent(url=url, current=1, total=1))
@@ -1784,7 +1784,7 @@ class TestCrawlStream:
         barrier = threading.Event()
 
         async def blocking_crawl(url, *, depth, max_pages, on_progress, cancel=None):
-            from lilbee.progress import CrawlStartEvent
+            from lilbee.runtime.progress import CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
             barrier.wait(timeout=2)

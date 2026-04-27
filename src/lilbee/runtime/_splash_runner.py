@@ -196,7 +196,7 @@ def animation_loop(pipe_fd: int) -> None:
 
 
 def main() -> None:
-    """Entry point when run as ``python -m lilbee._splash_runner <pipe_fd>``."""
+    """Entry point when run as ``python -m lilbee.runtime._splash_runner <pipe_fd>``."""
     if len(sys.argv) != 2:
         sys.exit(1)
 

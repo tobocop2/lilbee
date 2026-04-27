@@ -2155,7 +2155,7 @@ class TestCrawlUrlsBlocking:
 
         async def _fake_crawl(url, **kwargs):
             # Call the on_progress callback to cover the closure body
-            from lilbee.progress import CrawlPageEvent, EventType
+            from lilbee.runtime.progress import CrawlPageEvent, EventType
 
             cb = kwargs.get("on_progress")
             if cb:
@@ -2982,7 +2982,7 @@ class TestWikiDraftsCli:
 class TestCrawlProgressCallback:
     def test_crawl_page_event(self):
         """Crawl progress callback handles CrawlPageEvent."""
-        from lilbee.progress import CrawlPageEvent
+        from lilbee.runtime.progress import CrawlPageEvent
 
         event = CrawlPageEvent(url="https://example.com", current=3, total=10)
         # The callback in commands.py checks isinstance(data, CrawlPageEvent)
@@ -2994,7 +2994,7 @@ class TestCrawlProgressCallback:
         # Simulate what _make_callback does
         from unittest.mock import MagicMock
 
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         MagicMock()
 
@@ -3002,7 +3002,7 @@ class TestCrawlProgressCallback:
             if event_type == EventType.CRAWL_PAGE and not isinstance(data, CrawlPageEvent):
                 raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
 
-        from lilbee.progress import CrawlPageEvent
+        from lilbee.runtime.progress import CrawlPageEvent
 
         bad_event = FileStartEvent(file="x", total_files=1, current_file=1)
         with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
@@ -3012,7 +3012,7 @@ class TestCrawlProgressCallback:
     def test_crawl_callback_wrong_type_real_code(self, mock_crawl, isolated_env):
         """Exercise the real _make_callback with a bad event type."""
         from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         async def _fake_crawl(url, **kwargs):
             cb = kwargs.get("on_progress")
@@ -3068,7 +3068,7 @@ class TestSyncProgressPrinter:
     def test_file_start_event(self):
         """_sync_progress_printer handles FILE_START event."""
         from lilbee.cli.sync import _sync_progress_printer
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         con = MagicMock()
         cb = _sync_progress_printer(con)
@@ -3079,7 +3079,7 @@ class TestSyncProgressPrinter:
     def test_done_event(self):
         """_sync_progress_printer handles DONE event with summary."""
         from lilbee.cli.sync import _sync_progress_printer
-        from lilbee.progress import EventType, SyncDoneEvent
+        from lilbee.runtime.progress import EventType, SyncDoneEvent
 
         con = MagicMock()
         cb = _sync_progress_printer(con)
@@ -3090,7 +3090,7 @@ class TestSyncProgressPrinter:
     def test_file_start_wrong_type_raises(self):
         """_sync_progress_printer raises TypeError for wrong event type."""
         from lilbee.cli.sync import _sync_progress_printer
-        from lilbee.progress import EventType, SyncDoneEvent
+        from lilbee.runtime.progress import EventType, SyncDoneEvent
 
         con = MagicMock()
         cb = _sync_progress_printer(con)
@@ -3101,7 +3101,7 @@ class TestSyncProgressPrinter:
     def test_done_wrong_type_raises(self):
         """_sync_progress_printer raises TypeError for wrong data type on DONE."""
         from lilbee.cli.sync import _sync_progress_printer
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         con = MagicMock()
         cb = _sync_progress_printer(con)
@@ -3113,7 +3113,7 @@ class TestChatSyncCallback:
     def test_file_start_updates_status(self):
         """Background sync callback updates status on FILE_START."""
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
@@ -3123,7 +3123,7 @@ class TestChatSyncCallback:
     def test_extract_updates_status(self):
         """Background sync callback updates status on EXTRACT."""
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType, ExtractEvent
+        from lilbee.runtime.progress import EventType, ExtractEvent
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
@@ -3134,7 +3134,7 @@ class TestChatSyncCallback:
     def test_done_clears_status(self):
         """Background sync callback clears status on DONE."""
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType, SyncDoneEvent
+        from lilbee.runtime.progress import EventType, SyncDoneEvent
 
         status = SyncStatus()
         status.text = "something"
@@ -3145,7 +3145,7 @@ class TestChatSyncCallback:
 
     def test_file_start_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType, SyncDoneEvent
+        from lilbee.runtime.progress import EventType, SyncDoneEvent
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
@@ -3155,7 +3155,7 @@ class TestChatSyncCallback:
 
     def test_extract_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
@@ -3164,7 +3164,7 @@ class TestChatSyncCallback:
 
     def test_done_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
@@ -3235,7 +3235,7 @@ class TestSetupCrawlerCommand:
 
     def test_runs_bootstrap_emits_progress_and_json_success(self):
         """--json with missing chromium emits progress via on_progress, then 'installed: true'."""
-        from lilbee.progress import EventType, SetupProgressEvent
+        from lilbee.runtime.progress import EventType, SetupProgressEvent
 
         async def _fake_bootstrap(on_progress=None):
             # Exercise the progress-echo and percent-dedup branches.
@@ -3281,7 +3281,7 @@ class TestSetupCrawlerCommand:
 
     def test_runs_bootstrap_emits_progress_non_json(self):
         """Non-json mode prints 'chromium: NN%' for each new percent."""
-        from lilbee.progress import EventType, SetupProgressEvent
+        from lilbee.runtime.progress import EventType, SetupProgressEvent
 
         async def _fake_bootstrap(on_progress=None):
             assert on_progress is not None

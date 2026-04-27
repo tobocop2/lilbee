@@ -14,9 +14,9 @@ from lilbee.cli.app import overlay_persisted_settings
 from lilbee.cli.helpers import clean_result
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
-from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.data.store import SearchScope, scope_to_chunk_type
+from lilbee.runtime.crawl_task import get_task, start_crawl
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUMMARIES_SUBDIR,

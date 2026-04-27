@@ -860,7 +860,7 @@ class TestSetupCrawlerRoutes:
 
     def test_post_setup_crawler_streams_setup_events(self, client):
         """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
-        from lilbee.progress import EventType, SetupDoneEvent, SetupStartEvent
+        from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupStartEvent
 
         async def _fake_bootstrap(on_progress=None):
             if on_progress is not None:
