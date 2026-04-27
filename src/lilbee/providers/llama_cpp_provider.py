@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from gguf import GGUFReader, GGUFValueType
 
@@ -26,9 +26,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.services import get_services
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED, MODE_RERANK, LoaderMode
-
-if TYPE_CHECKING:
-    from lilbee.providers.worker_process import WorkerProcess
+from lilbee.providers.worker import WorkerManager
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +104,7 @@ class LlamaCppProvider(LLMProvider):
         self._embed_thread.start()
         self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
         self._rerank_thread.start()
-        self._subprocess_worker: WorkerProcess | None = None
+        self._subprocess_worker: WorkerManager | None = None
         self._subprocess_enabled = cfg.subprocess_embed
 
     def _embed_worker(self) -> None:
@@ -210,12 +208,10 @@ class LlamaCppProvider(LLMProvider):
         model_path = resolve_model_path(model_name)
         return self._cache.load_model(model_path, mode=MODE_RERANK)
 
-    def _get_subprocess_worker(self) -> WorkerProcess:
+    def _get_subprocess_worker(self) -> WorkerManager:
         """Lazy-create and return the subprocess worker."""
         if self._subprocess_worker is None:
-            from lilbee.providers.worker_process import WorkerProcess
-
-            self._subprocess_worker = WorkerProcess()
+            self._subprocess_worker = WorkerManager()
         return self._subprocess_worker
 
     def embed(self, texts: list[str]) -> list[list[float]]:

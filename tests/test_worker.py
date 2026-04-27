@@ -12,7 +12,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.providers.worker_process import (
+from lilbee.providers.worker import (
     ConfigSnapshot,
     EmbedRequest,
     EmbedResponse,
@@ -20,14 +20,16 @@ from lilbee.providers.worker_process import (
     ShutdownRequest,
     VisionRequest,
     VisionResponse,
-    WorkerProcess,
+    WorkerManager,
+)
+from lilbee.providers.worker.protocol import config_snapshot_from_cfg
+from lilbee.providers.worker.worker import (
     _close_model,
     _handle_embed,
     _handle_vision,
     _load_embed_model,
     _load_vision_model,
     _worker_main,
-    config_snapshot_from_cfg,
 )
 
 
@@ -37,7 +39,7 @@ def _no_stdio_redirect():
     In a real child process the redirect suppresses llama-cpp C-level output.
     In tests it leaks unclosed devnull files and fights with pytest capture.
     """
-    with mock.patch("lilbee.providers.worker_process._redirect_stdio"):
+    with mock.patch("lilbee.providers.worker.worker._redirect_stdio"):
         yield
 
 
@@ -213,11 +215,11 @@ class TestWorkerMain:
 
         with (
             mock.patch(
-                "lilbee.providers.worker_process._load_embed_model",
+                "lilbee.providers.worker.worker._load_embed_model",
                 return_value=mock.MagicMock(),
             ),
             mock.patch(
-                "lilbee.providers.worker_process._handle_embed",
+                "lilbee.providers.worker.worker._handle_embed",
                 return_value=EmbedResponse(vectors=[[1.0]], request_id=1),
             ),
         ):
@@ -238,11 +240,11 @@ class TestWorkerMain:
 
         with (
             mock.patch(
-                "lilbee.providers.worker_process._load_vision_model",
+                "lilbee.providers.worker.worker._load_vision_model",
                 return_value=mock.MagicMock(),
             ),
             mock.patch(
-                "lilbee.providers.worker_process._handle_vision",
+                "lilbee.providers.worker.worker._handle_vision",
                 return_value=VisionResponse(text="extracted", request_id=2),
             ),
         ):
@@ -271,7 +273,7 @@ class TestWorkerMain:
         resp_q = mock.MagicMock()
 
         with mock.patch(
-            "lilbee.providers.worker_process._load_vision_model",
+            "lilbee.providers.worker.worker._load_vision_model",
         ) as mock_load:
             _worker_main(req_q, resp_q, empty_snap)
 
@@ -289,7 +291,7 @@ class TestWorkerMain:
         req_q.put(LoadModelRequest(model="new-model", model_type="embed"))
         req_q.put(ShutdownRequest())
 
-        with mock.patch("lilbee.providers.worker_process._close_model") as mock_close:
+        with mock.patch("lilbee.providers.worker.worker._close_model") as mock_close:
             _worker_main(req_q, resp_q, config_snap)
         # _close_model called for embed (None initially) + shutdown cleanup (2x None)
         assert mock_close.call_count >= 1
@@ -302,7 +304,7 @@ class TestWorkerMain:
         req_q.put(LoadModelRequest(model="new-vision", model_type="vision"))
         req_q.put(ShutdownRequest())
 
-        with mock.patch("lilbee.providers.worker_process._close_model") as mock_close:
+        with mock.patch("lilbee.providers.worker.worker._close_model") as mock_close:
             _worker_main(req_q, resp_q, config_snap)
         assert mock_close.call_count >= 1
 
@@ -317,11 +319,11 @@ class TestWorkerMain:
 
         with (
             mock.patch(
-                "lilbee.providers.worker_process._load_embed_model",
+                "lilbee.providers.worker.worker._load_embed_model",
                 return_value=mock.MagicMock(),
             ) as mock_load,
             mock.patch(
-                "lilbee.providers.worker_process._handle_embed",
+                "lilbee.providers.worker.worker._handle_embed",
                 return_value=EmbedResponse(vectors=[[1.0]]),
             ),
         ):
@@ -341,11 +343,11 @@ class TestWorkerMain:
 
         with (
             mock.patch(
-                "lilbee.providers.worker_process._load_embed_model",
+                "lilbee.providers.worker.worker._load_embed_model",
                 return_value=mock.MagicMock(),
             ) as mock_load,
             mock.patch(
-                "lilbee.providers.worker_process._handle_embed",
+                "lilbee.providers.worker.worker._handle_embed",
                 return_value=EmbedResponse(vectors=[[1.0]]),
             ),
         ):
@@ -364,11 +366,11 @@ class TestWorkerMain:
 
         with (
             mock.patch(
-                "lilbee.providers.worker_process._load_vision_model",
+                "lilbee.providers.worker.worker._load_vision_model",
                 return_value=mock.MagicMock(),
             ) as mock_load,
             mock.patch(
-                "lilbee.providers.worker_process._handle_vision",
+                "lilbee.providers.worker.worker._handle_vision",
                 return_value=VisionResponse(text="ok"),
             ),
         ):
@@ -417,9 +419,9 @@ class TestWorkerMain:
         # Should not raise
 
 
-class TestWorkerProcessLifecycle:
+class TestWorkerManagerLifecycle:
     def test_start_and_stop(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         with mock.patch.object(wp, "_ctx") as mock_ctx:
             mock_proc = mock.MagicMock()
             mock_proc.is_alive.return_value = True
@@ -437,7 +439,7 @@ class TestWorkerProcessLifecycle:
             assert wp._process is None
 
     def test_start_noop_when_running(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
         wp._process = mock_proc
@@ -448,11 +450,11 @@ class TestWorkerProcessLifecycle:
         mock_proc.start.assert_not_called()
 
     def test_stop_noop_when_not_started(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp.stop()  # Should not raise
 
     def test_stop_terminates_on_timeout(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True  # Never exits gracefully
         wp._process = mock_proc
@@ -463,7 +465,7 @@ class TestWorkerProcessLifecycle:
         mock_proc.terminate.assert_called_once()
 
     def test_stop_handles_broken_queue(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = False
         wp._process = mock_proc
@@ -475,31 +477,31 @@ class TestWorkerProcessLifecycle:
         wp.stop()  # Should not raise
 
     def test_restart(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         with (
             mock.patch.object(wp, "stop") as mock_stop,
             mock.patch.object(wp, "start") as mock_start,
-            mock.patch("lilbee.providers.worker_process.time.sleep"),
+            mock.patch("lilbee.providers.worker.manager.time.sleep"),
         ):
             wp.restart()
             mock_stop.assert_called_once()
             mock_start.assert_called_once()
 
     def test_is_alive_false_when_no_process(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         assert wp.is_alive() is False
 
     def test_is_alive_delegates_to_process(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
         wp._process = mock_proc
         assert wp.is_alive() is True
 
 
-class TestWorkerProcessEmbed:
+class TestWorkerManagerEmbed:
     def test_embed_success(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -514,7 +516,7 @@ class TestWorkerProcessEmbed:
         assert result == [[0.1, 0.2]]
 
     def test_embed_error_raises(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -529,7 +531,7 @@ class TestWorkerProcessEmbed:
             wp.embed(["hello"])
 
     def test_embed_crash_retries_once(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         # First call: alive then dead (crash), second: alive
@@ -560,7 +562,7 @@ class TestWorkerProcessEmbed:
         mock_restart.assert_called_once()
 
     def test_embed_crash_retry_also_fails(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -579,7 +581,7 @@ class TestWorkerProcessEmbed:
             wp.embed(["hello"])
 
     def test_embed_unexpected_response_type(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -593,7 +595,7 @@ class TestWorkerProcessEmbed:
             wp.embed(["hello"])
 
     def test_embed_timeout(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -607,7 +609,7 @@ class TestWorkerProcessEmbed:
             wp.embed(["hello"])
 
     def test_embed_autostart(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         with (
             mock.patch.object(wp, "start") as mock_start,
             mock.patch.object(
@@ -621,9 +623,9 @@ class TestWorkerProcessEmbed:
         mock_start.assert_called_once()
 
 
-class TestWorkerProcessVision:
+class TestWorkerManagerVision:
     def test_vision_success(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -637,7 +639,7 @@ class TestWorkerProcessVision:
         assert result == "extracted text"
 
     def test_vision_error_raises(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -653,7 +655,7 @@ class TestWorkerProcessVision:
             wp.vision_ocr(b"png", "model")
 
     def test_vision_crash_retries(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -672,7 +674,7 @@ class TestWorkerProcessVision:
         assert result == "recovered"
 
     def test_vision_crash_retry_fails(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -687,7 +689,7 @@ class TestWorkerProcessVision:
             wp.vision_ocr(b"png", "model")
 
     def test_vision_unexpected_response_type(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -701,7 +703,7 @@ class TestWorkerProcessVision:
             wp.vision_ocr(b"png", "model")
 
     def test_vision_retry_unexpected_type(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -720,7 +722,7 @@ class TestWorkerProcessVision:
             wp.vision_ocr(b"png", "model")
 
     def test_vision_retry_error_response(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -747,7 +749,7 @@ class TestWorkerProcessVision:
         """
         from lilbee.core.config import cfg
 
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -772,7 +774,7 @@ class TestWorkerProcessVision:
         """
         from lilbee.core.config import cfg
 
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -792,9 +794,9 @@ class TestWorkerProcessVision:
         assert seen == [86_400.0]
 
 
-class TestWorkerProcessLoadModel:
+class TestWorkerManagerLoadModel:
     def test_load_model_sends_request(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -810,7 +812,7 @@ class TestWorkerProcessLoadModel:
 
 class TestGetResponse:
     def test_returns_response_from_queue(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
         wp._process = mock_proc
@@ -826,7 +828,7 @@ class TestGetResponse:
     def test_returns_none_when_worker_dead(self, config_snap: ConfigSnapshot) -> None:
         import queue as _queue
 
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = False
         wp._process = mock_proc
@@ -841,7 +843,7 @@ class TestGetResponse:
     def test_timeout_raises(self, config_snap: ConfigSnapshot) -> None:
         import queue as _queue
 
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
         wp._process = mock_proc
@@ -856,16 +858,16 @@ class TestGetResponse:
 
 class TestEnsureConfig:
     def test_uses_provided_config(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         assert wp._ensure_config() is config_snap
 
     def test_builds_from_cfg_when_none(self) -> None:
-        wp = WorkerProcess(config=None)
+        wp = WorkerManager(config=None)
         result = wp._ensure_config()
         assert isinstance(result, ConfigSnapshot)
 
     def test_caches_built_config(self) -> None:
-        wp = WorkerProcess(config=None)
+        wp = WorkerManager(config=None)
         first = wp._ensure_config()
         second = wp._ensure_config()
         assert first is second
@@ -873,7 +875,7 @@ class TestEnsureConfig:
 
 class TestNextRequestId:
     def test_increments(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         id1 = wp._next_request_id()
         id2 = wp._next_request_id()
         assert id2 == id1 + 1
@@ -881,7 +883,7 @@ class TestNextRequestId:
 
 class TestEmbedRetryUnexpectedType:
     def test_retry_returns_unexpected_type(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -900,7 +902,7 @@ class TestEmbedRetryUnexpectedType:
             wp.embed(["hello"])
 
     def test_retry_error_response(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
@@ -942,7 +944,7 @@ class TestWorkerNotStartedGuards:
     """Cover all 'Worker not started' RuntimeError guards when _request_queue is None."""
 
     def test_round_trip_not_started(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         wp._request_queue = None
         req = EmbedRequest(texts=["hello"], model="m", request_id=1)
@@ -951,7 +953,7 @@ class TestWorkerNotStartedGuards:
 
     def test_put_and_get_retry_not_started(self, config_snap: ConfigSnapshot) -> None:
         """After a crash the retry leg hits the same Worker-not-started guard."""
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         wp._request_queue = None
 
@@ -970,13 +972,13 @@ class TestWorkerNotStartedGuards:
             )
 
     def test_get_response_not_started(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._response_queue = None
         with pytest.raises(RuntimeError, match="Worker not started"):
             wp._get_response(timeout=1.0)
 
     def test_load_model_not_started(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
+        wp = WorkerManager(config_snap)
         wp._started = True
         wp._request_queue = None
         with (
@@ -1007,7 +1009,7 @@ class TestLoadVisionModel:
 
 class TestConfigureWorkerLogging:
     def test_no_data_dir_env_is_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.worker_process import _configure_worker_logging
+        from lilbee.providers.worker.worker import _configure_worker_logging
 
         monkeypatch.delenv("LILBEE_DATA", raising=False)
         root = logging.getLogger()
@@ -1018,7 +1020,7 @@ class TestConfigureWorkerLogging:
     def test_attaches_file_handler_to_root_logger(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from lilbee.providers.worker_process import _configure_worker_logging
+        from lilbee.providers.worker.worker import _configure_worker_logging
 
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
         root = logging.getLogger()
@@ -1053,7 +1055,7 @@ def test_redirect_stdio_points_stdout_stderr_to_devnull(tmp_path: Path) -> None:
     script = textwrap.dedent(
         f"""
         import json, os, sys
-        from lilbee.providers.worker_process import _redirect_stdio
+        from lilbee.providers.worker.worker import _redirect_stdio
 
         _redirect_stdio()
         with open({str(verdict)!r}, "w") as fh:

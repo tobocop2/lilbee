@@ -1060,7 +1060,7 @@ class TestLiteLLMShowModelCapabilities:
 # ---------------------------------------------------------------------------
 # Phase 2: _dispatch_batch, embed fallback, vision_ocr, chat stream,
 # show_model None, shutdown, _LockedStreamIterator, GGUF helpers,
-# vision handler resolution, WorkerProcess None-response paths
+# vision handler resolution, WorkerManager None-response paths
 # ---------------------------------------------------------------------------
 
 
@@ -1495,15 +1495,15 @@ class TestAdaptGgufTemplate:
 
 
 # ---------------------------------------------------------------------------
-# WorkerProcess None-response paths
+# WorkerManager None-response paths
 # ---------------------------------------------------------------------------
 
 
-class TestWorkerProcessNoneResponses:
+class TestWorkerManagerNoneResponses:
     def test_embed_round_trip_none_retries(self) -> None:
-        from lilbee.providers.worker_process import EmbedResponse, WorkerProcess
+        from lilbee.providers.worker import EmbedResponse, WorkerManager
 
-        wp = WorkerProcess()
+        wp = WorkerManager()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1523,9 +1523,9 @@ class TestWorkerProcessNoneResponses:
         assert result == [[0.1]]
 
     def test_embed_round_trip_retry_still_none_raises(self) -> None:
-        from lilbee.providers.worker_process import WorkerProcess
+        from lilbee.providers.worker import WorkerManager
 
-        wp = WorkerProcess()
+        wp = WorkerManager()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1539,9 +1539,9 @@ class TestWorkerProcessNoneResponses:
             wp.embed(["hello"], model="test")
 
     def test_vision_round_trip_none_retries(self) -> None:
-        from lilbee.providers.worker_process import VisionResponse, WorkerProcess
+        from lilbee.providers.worker import VisionResponse, WorkerManager
 
-        wp = WorkerProcess()
+        wp = WorkerManager()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1560,9 +1560,9 @@ class TestWorkerProcessNoneResponses:
         assert result == "ocr result"
 
     def test_vision_round_trip_retry_still_none_raises(self) -> None:
-        from lilbee.providers.worker_process import WorkerProcess
+        from lilbee.providers.worker import WorkerManager
 
-        wp = WorkerProcess()
+        wp = WorkerManager()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1576,9 +1576,9 @@ class TestWorkerProcessNoneResponses:
             wp.vision_ocr(b"\x89PNG", model="vis")
 
     def test_get_response_dead_worker_returns_none(self) -> None:
-        from lilbee.providers.worker_process import WorkerProcess
+        from lilbee.providers.worker import WorkerManager
 
-        wp = WorkerProcess()
+        wp = WorkerManager()
         wp._response_queue = mock.MagicMock()
         wp._response_queue.get.side_effect = Exception("empty")
         wp._process = mock.MagicMock()
@@ -1588,9 +1588,9 @@ class TestWorkerProcessNoneResponses:
         assert result is None
 
     def test_load_model_sends_request(self) -> None:
-        from lilbee.providers.worker_process import LoadModelRequest, WorkerProcess
+        from lilbee.providers.worker import LoadModelRequest, WorkerManager
 
-        wp = WorkerProcess()
+        wp = WorkerManager()
         wp._request_queue = mock.MagicMock()
         wp._started = True
         wp._process = mock.MagicMock()
@@ -1723,10 +1723,10 @@ class TestLlamaCppProviderMethods:
         provider._cache.load_model.assert_called_once_with(Path("/models/embed.gguf"), mode="embed")
 
     def test_get_subprocess_worker(self) -> None:
-        """_get_subprocess_worker lazy-creates a WorkerProcess."""
+        """_get_subprocess_worker lazy-creates a WorkerManager."""
         provider = _make_provider_no_thread()
 
-        with mock.patch("lilbee.providers.worker_process.WorkerProcess") as mock_wp_cls:
+        with mock.patch("lilbee.providers.llama_cpp_provider.WorkerManager") as mock_wp_cls:
             result = provider._get_subprocess_worker()
 
         assert result == mock_wp_cls.return_value
