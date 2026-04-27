@@ -66,11 +66,8 @@ def pre_clean_for_ner(text: str) -> str:
 class NerConceptsExtractor:
     """Emit typed NER entities (``EntityKind.ENTITY`` only).
 
-    Phase D removed the noun-chunk concept loop: LLM-curated concept
-    pages are produced downstream by the per-source batched call in
-    :mod:`lilbee.wiki.generation`. The class name is kept for backwards
-    compatibility at the factory dispatch site; the implementation
-    emits only ``EntityKind.ENTITY`` records now.
+    LLM-curated concept pages are produced downstream by the per-source
+    batched call in :mod:`lilbee.wiki.generation`.
     """
 
     def __init__(self, provider: LLMProvider, config: Config) -> None:

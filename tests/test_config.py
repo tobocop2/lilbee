@@ -8,13 +8,13 @@ from unittest import mock
 import pytest
 
 from lilbee.core.config import (
-    _DEFAULT_CORS_ORIGIN_REGEX,
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
     SOURCES_TABLE,
     Config,
     cfg,
 )
+from lilbee.core.config.defaults import _DEFAULT_CORS_ORIGIN_REGEX
 
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
@@ -508,19 +508,19 @@ class TestTopicThresholdConfig:
 
 class TestParseBool:
     def test_truthy_values(self) -> None:
-        from lilbee.core.config import _parse_bool
+        from lilbee.core.config.parsing import _parse_bool
 
         for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
             assert _parse_bool(truthy) is True
 
     def test_falsy_values(self) -> None:
-        from lilbee.core.config import _parse_bool
+        from lilbee.core.config.parsing import _parse_bool
 
         for falsy in ("false", "FALSE", "0", "no", "  NO  "):
             assert _parse_bool(falsy) is False
 
     def test_invalid_raises(self) -> None:
-        from lilbee.core.config import _parse_bool
+        from lilbee.core.config.parsing import _parse_bool
 
         with pytest.raises(ValueError, match="Invalid boolean"):
             _parse_bool("maybe")
@@ -968,7 +968,8 @@ class TestDefaultCrawlExcludePatterns:
 
     def test_every_category_contributes(self):
         """Each per-category tuple appears in the master default list."""
-        from lilbee.core.config import (
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+        from lilbee.core.config.defaults import (
             _ARCHIVE_EXCLUDE,
             _ATTACHMENT_EXCLUDE,
             _AUTH_EXCLUDE,
@@ -978,7 +979,6 @@ class TestDefaultCrawlExcludePatterns:
             _META_EXCLUDE,
             _TRACKING_EXCLUDE,
             _WP_EXCLUDE,
-            DEFAULT_CRAWL_EXCLUDE_PATTERNS,
         )
 
         for category in (
@@ -1292,7 +1292,7 @@ class TestBuildCfgFallback:
 
     def test_falls_back_to_defaults_on_validation_error(self, tmp_path):
         """A toml carrying an invalid model ref triggers the fallback path."""
-        from lilbee.core.config import _build_cfg
+        from lilbee.core.config.model import _build_cfg
 
         toml_path = tmp_path / "config.toml"
         # Bare ``name:tag`` is rejected by the new validator.
@@ -1307,7 +1307,7 @@ class TestBuildCfgFallback:
         assert built_cfg.chat_model.endswith(".gguf")
 
     def test_returns_none_error_on_clean_load(self, tmp_path):
-        from lilbee.core.config import _build_cfg
+        from lilbee.core.config.model import _build_cfg
 
         env = _clean_env(tmp_path)
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"

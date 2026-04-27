@@ -34,11 +34,6 @@ from lilbee.wiki.shared import (
     parse_frontmatter,
 )
 
-# Re-export the kind constants from wiki.shared so existing imports
-# (``from lilbee.wiki.drafts import PENDING_KIND_PARSE``) keep working.
-# Their canonical home is :mod:`lilbee.wiki.shared`. The writer side
-# in :mod:`lilbee.wiki.persistence` would create a circular import if
-# it reached into this module for them.
 __all__ = [
     "PENDING_KIND_COLLISION",
     "PENDING_KIND_DRIFT",

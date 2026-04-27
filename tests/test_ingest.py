@@ -279,8 +279,7 @@ class TestSync:
         (isolated_env / "bad.txt").write_text("This will fail.")
 
         from lilbee.data.ingest import sync
-
-        orig_ingest = __import__("lilbee.data.ingest", fromlist=["_ingest_file"])._ingest_file
+        from lilbee.data.ingest.pipeline import _ingest_file as orig_ingest
 
         async def _failing_ingest(path, name, content_type, **kwargs):
             if "bad" in name:
@@ -307,7 +306,7 @@ class TestSync:
 
         f.write_text("Version 2, will fail")
 
-        orig_ingest = __import__("lilbee.data.ingest", fromlist=["_ingest_file"])._ingest_file
+        from lilbee.data.ingest.pipeline import _ingest_file as orig_ingest
 
         async def _failing_ingest(path, name, content_type, **kwargs):
             if "flaky" in name:
@@ -345,7 +344,7 @@ class TestSync:
         await sync()  # First ingest succeeds
         f.write_text("Version 2, fail quietly")
 
-        orig = __import__("lilbee.data.ingest", fromlist=["_ingest_file"])._ingest_file
+        from lilbee.data.ingest.pipeline import _ingest_file as orig
 
         async def _fail(path, name, ct, **kwargs):
             if "qflaky" in name:
@@ -593,7 +592,8 @@ class TestFileHash:
 
 class TestApplyResultZeroChunks:
     def test_zero_chunks_not_recorded_as_added(self):
-        from lilbee.data.ingest import _apply_result, _IngestResult
+        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.types import _IngestResult
 
         added = ["scanned.pdf"]
         updated: list[str] = []
@@ -604,7 +604,8 @@ class TestApplyResultZeroChunks:
         assert "scanned.pdf" not in failed
 
     def test_zero_chunks_not_recorded_as_updated(self):
-        from lilbee.data.ingest import _apply_result, _IngestResult
+        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.types import _IngestResult
 
         added: list[str] = []
         updated = ["scanned.pdf"]
@@ -615,7 +616,8 @@ class TestApplyResultZeroChunks:
         assert "scanned.pdf" not in failed
 
     def test_nonzero_chunks_recorded(self, mock_svc):
-        from lilbee.data.ingest import _apply_result, _IngestResult
+        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.types import _IngestResult
 
         added = ["doc.pdf"]
         updated: list[str] = []
@@ -637,7 +639,8 @@ class TestApplyResultZeroChunks:
         """
         import logging
 
-        from lilbee.data.ingest import _apply_result, _IngestResult
+        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.types import _IngestResult
 
         added: list[str] = []
         updated: list[str] = []
@@ -905,13 +908,13 @@ class TestSyncStructuredFormats:
 
 class TestHasMeaningfulText:
     def test_empty_chunks_returns_false(self):
-        from lilbee.data.ingest import _has_meaningful_text
+        from lilbee.data.ingest.extract import _has_meaningful_text
 
         result = mock.MagicMock(chunks=[])
         assert _has_meaningful_text(result) is False
 
     def test_short_text_returns_false(self):
-        from lilbee.data.ingest import _has_meaningful_text
+        from lilbee.data.ingest.extract import _has_meaningful_text
 
         chunk = mock.MagicMock()
         chunk.content = "short"
@@ -919,7 +922,7 @@ class TestHasMeaningfulText:
         assert _has_meaningful_text(result) is False
 
     def test_meaningful_text_returns_true(self):
-        from lilbee.data.ingest import _has_meaningful_text
+        from lilbee.data.ingest.extract import _has_meaningful_text
 
         chunk = mock.MagicMock()
         chunk.content = "A" * 100
@@ -1001,7 +1004,7 @@ class TestVisionFallback:
         with mock.patch(
             "lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
-            from lilbee.data.ingest import _ingest_file
+            from lilbee.data.ingest.pipeline import _ingest_file
 
             await _ingest_file(f, "scanned.pdf", "pdf", quiet=True)
         mock_vision.assert_called_once_with(
@@ -1136,7 +1139,7 @@ class TestShouldRunOcrAutoDetect:
         """When enable_ocr is None, _should_run_ocr reflects cfg.vision_model."""
         cfg.enable_ocr = None
         cfg.vision_model = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
-        from lilbee.data.ingest import _should_run_ocr
+        from lilbee.data.ingest.extract import _should_run_ocr
 
         assert _should_run_ocr() is True
 
@@ -1144,7 +1147,7 @@ class TestShouldRunOcrAutoDetect:
         """When enable_ocr is None and cfg.vision_model is empty, returns False."""
         cfg.enable_ocr = None
         cfg.vision_model = ""
-        from lilbee.data.ingest import _should_run_ocr
+        from lilbee.data.ingest.extract import _should_run_ocr
 
         assert _should_run_ocr() is False
 
@@ -1152,7 +1155,7 @@ class TestShouldRunOcrAutoDetect:
         """enable_ocr=True still returns True; caller may fall back to Tesseract."""
         cfg.enable_ocr = True
         cfg.vision_model = ""
-        from lilbee.data.ingest import _should_run_ocr
+        from lilbee.data.ingest.extract import _should_run_ocr
 
         assert _should_run_ocr() is True
 
@@ -1160,7 +1163,7 @@ class TestShouldRunOcrAutoDetect:
         """enable_ocr=False always returns False regardless of vision_model."""
         cfg.enable_ocr = False
         cfg.vision_model = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
-        from lilbee.data.ingest import _should_run_ocr
+        from lilbee.data.ingest.extract import _should_run_ocr
 
         assert _should_run_ocr() is False
 
@@ -1171,7 +1174,7 @@ class TestVisionFallbackEmptyVisionModel:
 
         The chat model must never be substituted in for vision OCR.
         """
-        from lilbee.data.ingest import _vision_fallback
+        from lilbee.data.ingest.extract import _vision_fallback
 
         cfg.vision_model = ""
         f = isolated_env / "scanned.pdf"

@@ -8,9 +8,6 @@ from lilbee.core.services import get_services
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query import (
     Searcher,
-    _extract_cited_indices,
-    _format_citation,
-    _relevance_weight,
     build_context,
     deduplicate_sources,
     filter_results,
@@ -18,6 +15,8 @@ from lilbee.retrieval.query import (
     sort_by_relevance,
     strip_llm_citations,
 )
+from lilbee.retrieval.query.dedup import _relevance_weight
+from lilbee.retrieval.query.formatting import _extract_cited_indices, _format_citation
 from tests.conftest import make_citation
 
 

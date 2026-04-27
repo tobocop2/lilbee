@@ -180,7 +180,7 @@ def _require_model_available(model: str) -> str:
 
 def _build_task_to_field() -> dict[ModelTask, str]:
     """Invert config's ``_MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
-    from lilbee.core.config import _MODEL_FIELD_TO_TASK
+    from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
 
     return {ModelTask(task): field for field, task in _MODEL_FIELD_TO_TASK.items()}
 

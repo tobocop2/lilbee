@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.ingest import _incremental_wiki_update
+from lilbee.data.ingest.pipeline import _incremental_wiki_update
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,

@@ -16,11 +16,11 @@ import pytest
 from lilbee.catalog import (
     CatalogModel,
     DownloadProgress,
-    _CallbackProgressBar,
-    _ProgressTracker,
     download_model,
     make_download_callback,
 )
+from lilbee.catalog.hf_client import _CallbackProgressBar, _ProgressTracker
+from lilbee.core.config import cfg
 
 
 def _tracker_tqdm_class(callback):
@@ -366,7 +366,7 @@ class TestDownloadModelProgressChain:
         """download_model passes incremental progress to the user callback."""
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
         monkeypatch.setattr("huggingface_hub.hf_hub_download", self._fake_download_with_chunks)
 
@@ -390,9 +390,8 @@ class TestDownloadModelProgressChain:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Pre-existing files report (size, size) — a single 100% call."""
-        from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = _test_entry()
         existing = tmp_path / entry.gguf_filename
         existing.write_bytes(b"fake model data")
@@ -409,7 +408,7 @@ class TestDownloadModelProgressChain:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_cached_download(**kwargs: Any) -> str:
@@ -445,7 +444,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_timeout(**kwargs: Any) -> str:
@@ -464,7 +463,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_connect(**kwargs: Any) -> str:
@@ -481,7 +480,7 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_oserror(**kwargs: Any) -> str:
@@ -498,7 +497,7 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_unexpected(**kwargs: Any) -> str:
@@ -517,7 +516,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_gated(**kwargs: Any) -> str:
@@ -536,7 +535,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_not_found(**kwargs: Any) -> str:

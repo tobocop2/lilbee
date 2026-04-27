@@ -12,6 +12,15 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.server import handlers
+from lilbee.server.handlers import (
+    ingest as _ingest_h,
+)
+from lilbee.server.handlers import (
+    rag as _rag_h,
+)
+from lilbee.server.handlers import (
+    sse as _sse_h,
+)
 
 _SAMPLE_CHUNK = SearchChunk(
     source="a.pdf",
@@ -1611,7 +1620,7 @@ class TestSetVisionModel:
         assert result.model == _VISION_REF
         assert cfg.vision_model == _VISION_REF
 
-    @patch("lilbee.server.handlers.settings.set_value")
+    @patch("lilbee.server.handlers.models.settings.set_value")
     @patch("lilbee.server.handlers.models.get_services")
     async def test_empty_string_unsets(self, mock_svc, mock_set_value):
         cfg.vision_model = _VISION_REF
@@ -1654,7 +1663,7 @@ class TestSetRerankerModel:
         assert result.model == _RERANK_REF
         assert cfg.reranker_model == _RERANK_REF
 
-    @patch("lilbee.server.handlers.settings.set_value")
+    @patch("lilbee.server.handlers.models.settings.set_value")
     @patch("lilbee.server.handlers.models.get_services")
     async def test_empty_string_unsets(self, mock_svc, mock_set_value):
         cfg.reranker_model = _RERANK_REF
@@ -1814,11 +1823,11 @@ class TestSseHelpers:
 
 class TestResolveGenerationOptions:
     def test_with_options(self):
-        result = handlers._resolve_generation_options({"temperature": 0.5})
+        result = _sse_h._resolve_generation_options({"temperature": 0.5})
         assert result is not None
 
     def test_without_options(self):
-        result = handlers._resolve_generation_options(None)
+        result = _sse_h._resolve_generation_options(None)
         assert result is None
 
 
@@ -1904,7 +1913,7 @@ class TestRunLlmStreamCancel:
 
         with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
             mock_svc.return_value.provider = mock_provider
-            handlers._run_llm_stream(
+            _rag_h._run_llm_stream(
                 [{"role": "user", "content": "hi"}],
                 None,
                 queue,
@@ -1921,7 +1930,7 @@ class TestRunLlmStreamCancel:
 class TestParseOcrParams:
     def test_ocr_timeout_coerced_to_float(self):
         """_parse_ocr_params coerces ocr_timeout to float."""
-        enable_ocr, ocr_timeout = handlers._parse_ocr_params({"ocr_timeout": "60"})
+        enable_ocr, ocr_timeout = _ingest_h._parse_ocr_params({"ocr_timeout": "60"})
         assert ocr_timeout == 60.0
         assert isinstance(ocr_timeout, float)
         assert enable_ocr is None
@@ -1940,7 +1949,7 @@ class TestAddHandlerCancel:
         copy_result.skipped = []
 
         with patch("lilbee.server.handlers.ingest.copy_files", return_value=copy_result):
-            result = await handlers._run_add(
+            result = await _ingest_h._run_add(
                 paths=[],
                 force=False,
                 enable_ocr=None,

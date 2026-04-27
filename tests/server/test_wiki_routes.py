@@ -225,7 +225,7 @@ class TestWikiEnabled:
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_wiki.return_value = []
-        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.core.services.get_services", lambda: mock_svc)
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "cited")
         async with AsyncTestClient(_create_app()) as client:
@@ -238,7 +238,7 @@ class TestWikiEnabled:
     async def test_page_citations_missing_page(self, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
 
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.core.services.get_services", make_mock_services)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/summaries/nope/citations", headers=_h())
         assert resp.status_code == 404
@@ -248,7 +248,7 @@ class TestWikiEnabled:
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_source.return_value = []
-        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.core.services.get_services", lambda: mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get(
                 "/api/wiki/citations", params={"source": "test.txt"}, headers=_h()
@@ -287,7 +287,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.core.services.get_services", make_mock_services)
         monkeypatch.setattr(
             lint_mod,
             "lint_all",
@@ -422,7 +422,7 @@ class TestWikiEnabled:
             services.store = None
             return services
 
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.core.services.get_services", make_mock_services)
         monkeypatch.setattr("lilbee.server.wiki.svc_mod.get_services", make_mock_services)
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:

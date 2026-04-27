@@ -2,8 +2,6 @@
 
 from lilbee.modelhub.model_manager.core import ModelManager
 from lilbee.modelhub.model_manager.discovery import (
-    _classify_remote_task,
-    _has_provider_key,
     classify_remote_models,
     detect_remote_embedding_models,
     discover_api_models,
@@ -16,8 +14,6 @@ __all__ = [
     "ModelNotFoundError",
     "ModelSource",
     "RemoteModel",
-    "_classify_remote_task",
-    "_has_provider_key",
     "classify_remote_models",
     "detect_remote_embedding_models",
     "discover_api_models",

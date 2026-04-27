@@ -243,7 +243,7 @@ class TestEnsureSpacyModel:
         mock_spacy = MagicMock()
         mock_spacy.load.return_value = MagicMock()
         with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": MagicMock()}):
-            from lilbee.retrieval.concepts import _ensure_spacy_model
+            from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
 
             result = _ensure_spacy_model()
             mock_spacy.load.assert_called_once_with("en_core_web_sm")
@@ -255,7 +255,7 @@ class TestEnsureSpacyModel:
         mock_cli = MagicMock()
         mock_spacy.cli = mock_cli
         with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
-            from lilbee.retrieval.concepts import _ensure_spacy_model
+            from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
 
             result = _ensure_spacy_model()
             mock_cli.download.assert_called_once_with("en_core_web_sm")
@@ -268,7 +268,7 @@ class TestEnsureSpacyModel:
         mock_cli.download.side_effect = SystemExit(1)
         mock_spacy.cli = mock_cli
         with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
-            from lilbee.retrieval.concepts import _ensure_spacy_model
+            from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
 
             with pytest.raises(ImportError, match="auto-download failed"):
                 _ensure_spacy_model()
@@ -641,7 +641,7 @@ class TestComputePmi:
     def test_basic_ppmi(self):
         from collections import Counter
 
-        from lilbee.retrieval.concepts import _compute_pmi
+        from lilbee.retrieval.concepts.community import _compute_pmi
 
         cooccurrences = Counter({("a", "b"): 5})
         concept_counts = Counter({"a": 8, "b": 6})
@@ -654,7 +654,7 @@ class TestComputePmi:
         """Anti-correlated pairs should get PPMI = 0."""
         from collections import Counter
 
-        from lilbee.retrieval.concepts import _compute_pmi
+        from lilbee.retrieval.concepts.community import _compute_pmi
 
         # a and b rarely co-occur but each appear often -> negative PMI -> clamped to 0
         cooccurrences = Counter({("a", "b"): 1})
@@ -666,7 +666,7 @@ class TestComputePmi:
         """Concepts with zero count are skipped (avoid division by zero)."""
         from collections import Counter
 
-        from lilbee.retrieval.concepts import _compute_pmi
+        from lilbee.retrieval.concepts.community import _compute_pmi
 
         cooccurrences = Counter({("a", "b"): 1})
         concept_counts = Counter({"a": 0, "b": 5})
@@ -679,7 +679,7 @@ class TestLeidenPartition:
         mock_graspologic = MagicMock()
         mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0, "c": 1})
         with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
-            from lilbee.retrieval.concepts import _leiden_partition
+            from lilbee.retrieval.concepts.community import _leiden_partition
 
             edge_rows = [
                 {"source": "a", "target": "b", "weight": 2.0},
@@ -696,7 +696,7 @@ class TestLeidenPartition:
         mock_graspologic = MagicMock()
         mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0})
         with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
-            from lilbee.retrieval.concepts import _MIN_LEIDEN_WEIGHT, _leiden_partition
+            from lilbee.retrieval.concepts.community import _MIN_LEIDEN_WEIGHT, _leiden_partition
 
             edge_rows = [{"source": "a", "target": "b", "weight": 0.0}]
             _leiden_partition(edge_rows)
@@ -841,14 +841,14 @@ class TestGetClusterLabel:
 
 class TestFilterNounChunks:
     def test_filter_noun_chunks(self):
-        from lilbee.retrieval.concepts import _filter_noun_chunks
+        from lilbee.retrieval.concepts.nlp import _filter_noun_chunks
 
         doc = _make_mock_doc(["Hello World", "a", "Good Stuff", "Hello World"])
         result = _filter_noun_chunks(doc, max_concepts=10)
         assert result == ["hello world", "good stuff"]
 
     def test_filter_noun_chunks_max(self):
-        from lilbee.retrieval.concepts import _filter_noun_chunks
+        from lilbee.retrieval.concepts.nlp import _filter_noun_chunks
 
         doc = _make_mock_doc(["alpha", "beta", "gamma"])
         result = _filter_noun_chunks(doc, max_concepts=2)
@@ -860,7 +860,7 @@ class TestFilterNounChunks:
         own filter drops the table, page-number, and paren-prefix
         patterns even without going through ``extract_concepts``.
         """
-        from lilbee.retrieval.concepts import _filter_noun_chunks
+        from lilbee.retrieval.concepts.nlp import _filter_noun_chunks
 
         doc = _make_mock_doc(
             [

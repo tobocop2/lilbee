@@ -11,11 +11,11 @@ from lilbee.modelhub.model_manager import (
     ModelManager,
     ModelSource,
     RemoteModel,
-    _has_provider_key,
     discover_api_models,
     get_model_manager,
     reset_model_manager,
 )
+from lilbee.modelhub.model_manager.discovery import _has_provider_key
 from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import detect_backend_name
 
@@ -748,7 +748,7 @@ class TestDetectProvider:
 class TestClassifyRemoteTask:
     def test_bge_reranker_classified_as_rerank(self) -> None:
         """bge-reranker-* classifies as rerank despite bge being in _EMBEDDING_FAMILIES."""
-        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
         from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-reranker-base", "bge") == ModelTask.RERANK
@@ -756,26 +756,26 @@ class TestClassifyRemoteTask:
 
     def test_bge_m3_classified_as_embedding(self) -> None:
         """Regular bge embedding models still classify as EMBEDDING."""
-        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
         from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-m3:latest", "bge") == ModelTask.EMBEDDING
 
     def test_cross_encoder_classified_as_rerank(self) -> None:
         """cross-encoder/* sentence-transformers rerankers hit the reranker path."""
-        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
         from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("cross-encoder/ms-marco-MiniLM-L-6-v2", "") == ModelTask.RERANK
 
     def test_chat_model_classified_as_chat(self) -> None:
-        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
         from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("qwen3:8b", "qwen") == ModelTask.CHAT
 
     def test_vision_model_classified_as_vision(self) -> None:
-        from lilbee.modelhub.model_manager import _classify_remote_task
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
         from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("llava:13b", "llama") == ModelTask.VISION
