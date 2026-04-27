@@ -1,6 +1,6 @@
 """Setup wizard: Enter-on-card installs via TaskBarController.
 
-After the Bucket 2 UX redesign there's no Install & Go button — pressing
+After the Bucket 2 UX redesign there's no Install & Go button: pressing
 Enter on a model card (which fires ``GridSelect.Selected``) routes
 directly to ``_commit_selection``, which writes settings and submits
 the download to the app-level controller.

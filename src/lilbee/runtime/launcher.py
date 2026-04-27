@@ -1,4 +1,4 @@
-"""Thin CLI entry point — shows splash animation while heavy deps load.
+"""Thin CLI entry point: shows splash animation while heavy deps load.
 
 This module imports only ``splash`` (which uses only stdlib + subprocess),
 launches the animation process, then performs the heavy

@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
 
+# SI thresholds for short download counts ("12.3M" / "456K") and binary
+# thresholds for sizes ("4.2 GB" / "768 MB").
+_DOWNLOADS_PER_M = 1_000_000
+_DOWNLOADS_PER_K = 1_000
+_MB_PER_GB = 1024
+
 
 @dataclass
 class TableRow:
@@ -46,10 +52,10 @@ def parse_param_label(name: str) -> str:
 
 
 def _format_downloads(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}K"
+    if n >= _DOWNLOADS_PER_M:
+        return f"{n / _DOWNLOADS_PER_M:.1f}M"
+    if n >= _DOWNLOADS_PER_K:
+        return f"{n / _DOWNLOADS_PER_K:.0f}K"
     return str(n)
 
 
@@ -57,8 +63,8 @@ def _format_size_mb(size_mb: int) -> str:
     """Format size in MB to a human-readable string."""
     if size_mb == 0:
         return "--"
-    if size_mb >= 1024:
-        return f"{size_mb / 1024:.1f} GB"
+    if size_mb >= _MB_PER_GB:
+        return f"{size_mb / _MB_PER_GB:.1f} GB"
     return f"{size_mb} MB"
 
 

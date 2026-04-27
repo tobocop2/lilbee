@@ -27,9 +27,14 @@ from .validators import ConfigField
 
 log = logging.getLogger(__name__)
 
+# Sentinel for unset Path-typed fields. ``Field(default=Path())`` produces an
+# instance equal to this, so the model_validator can distinguish "user passed
+# the default" from "user explicitly set a value".
+_UNSET_PATH = Path()
+
 
 class Config(BaseSettings):
-    """Runtime configuration — one singleton instance, mutated by CLI overrides."""
+    """Runtime configuration: one singleton instance, mutated by CLI overrides."""
 
     model_config = SettingsConfigDict(
         env_prefix="LILBEE_",
@@ -38,7 +43,7 @@ class Config(BaseSettings):
         extra="ignore",
     )
 
-    # Paths — resolved from env/defaults in model_validator(mode='before')
+    # Paths: resolved from env/defaults in model_validator(mode='before')
     data_root: Path = Field(default=Path())
     # Writable so plugin-managed servers can pivot storage to a vault path on
     # first boot; rebuild the index after migrating.
@@ -76,7 +81,7 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
-    # Max concurrent vision-OCR requests per PDF. Default 1 (serial) — raise
+    # Max concurrent vision-OCR requests per PDF. Default 1 (serial): raise
     # only when the vision model is network-hosted with meaningful latency
     # (remote API, separate Ollama host). Local GPU models contend on a
     # single device and get slower with concurrency > 1.
@@ -419,7 +424,7 @@ class Config(BaseSettings):
         ),
     )
 
-    # Class variable — not a settings field
+    # Class variable: not a settings field
     _toml_cache: ClassVar[dict[str, Any]] = {}
 
     @field_validator(
@@ -563,9 +568,7 @@ class Config(BaseSettings):
         if not isinstance(data, dict):  # pragma: no cover
             return data
 
-        _UNSET = Path()
-
-        if data.get("data_root") in (None, _UNSET):
+        if data.get("data_root") in (None, _UNSET_PATH):
             data_env = os.environ.get("LILBEE_DATA", "").strip()
             if data_env:
                 data["data_root"] = Path(data_env)
@@ -573,13 +576,13 @@ class Config(BaseSettings):
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
         root = data["data_root"]
-        if data.get("documents_dir") in (None, _UNSET):
+        if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
-        if data.get("data_dir") in (None, _UNSET):
+        if data.get("data_dir") in (None, _UNSET_PATH):
             data["data_dir"] = root / "data"
-        if data.get("lancedb_dir") in (None, _UNSET):
+        if data.get("lancedb_dir") in (None, _UNSET_PATH):
             data["lancedb_dir"] = root / "data" / "lancedb"
-        if data.get("models_dir") in (None, _UNSET):
+        if data.get("models_dir") in (None, _UNSET_PATH):
             data["models_dir"] = canonical_models_dir()
 
         return data

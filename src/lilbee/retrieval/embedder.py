@@ -54,7 +54,7 @@ def is_model_available(model: str, provider: LLMProvider) -> bool:
 
 
 class Embedder:
-    """Embedding wrapper — truncates, batches, and validates vectors."""
+    """Embedding wrapper: truncates, batches, and validates vectors."""
 
     def __init__(self, config: Config, provider: LLMProvider) -> None:
         self._config = config

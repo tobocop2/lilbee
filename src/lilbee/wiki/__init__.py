@@ -1,4 +1,4 @@
-"""Wiki layer — LLM-maintained synthesis pages with citation provenance."""
+"""Wiki layer: LLM-maintained synthesis pages with citation provenance."""
 
 from lilbee.wiki.browse import (
     WikiPageContent,

@@ -70,13 +70,13 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     2. Snapshot current values, then apply each update via setattr (pydantic's
        validate_assignment catches type errors). If any field fails type
        validation, roll back ALL fields from the snapshot so the config
-       stays consistent — no half-applied updates.
+       stays consistent: no half-applied updates.
     3. Persist to disk in batch (one file write for sets, one for deletes)
        rather than per-field, avoiding partial writes on crash.
 
     Why not just setattr-and-save per field? A multi-field PATCH like
     {"chunk_size": 1024, "chunk_overlap": "bad"} would leave chunk_size
-    changed but chunk_overlap unchanged — the caller gets an error but
+    changed but chunk_overlap unchanged: the caller gets an error but
     the config is silently modified. The snapshot/rollback prevents that.
     """
     _validate_config_updates(updates)

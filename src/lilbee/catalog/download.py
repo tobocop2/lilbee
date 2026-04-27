@@ -3,6 +3,7 @@
 import fnmatch
 import logging
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ from lilbee.catalog.models import CatalogModel
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
-from lilbee.runtime.cancellation import TaskCancelled
+from lilbee.runtime.cancellation import TaskCancelledError
 
 log = logging.getLogger(__name__)
 
@@ -37,48 +38,17 @@ class DownloadConfig(BaseModel):
     tqdm_class: Any = None
 
 
-def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
-    """Download a GGUF model from HuggingFace to cfg.models_dir.
-    Uses huggingface_hub for resumable downloads, caching, and auth.
-    The optional *on_progress(downloaded, total)* callback receives byte counts.
-    For vision models, also downloads the mmproj (CLIP projection) file.
-
-    Raises:
-        PermissionError: gated repo requiring authentication
-        RuntimeError: repo not found or download failure with details
-    """
+def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = resolve_filename(entry)
-    dest = cfg.models_dir / filename
-    if dest.exists():
-        log.info("Model already downloaded: %s", dest)
-        if on_progress is not None:
-            size = dest.stat().st_size
-            on_progress(size, size)  # Report 100% immediately
-        return _finalize_download(entry, dest, on_progress=on_progress)
-
-    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
-    token = _hf_token()
-
-    tracker = _ProgressTracker(on_progress) if on_progress else None
-    config = DownloadConfig(
-        repo_id=entry.hf_repo,
-        filename=filename,
-        token=token,
-        cache_dir=str(cfg.models_dir),
-        tqdm_class=tracker.make_tqdm_class() if tracker else None,
-    )
-
     try:
         # HF_HUB_DISABLE_XET is set in lilbee/__init__.py at import time.
-        # Setting it here is too late — huggingface_hub.constants already
+        # Setting it here is too late: huggingface_hub.constants already
         # captured the value when this module first imported it.
-        cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
-    except TaskCancelled:
+        return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+    except TaskCancelledError:
         raise
     except GatedRepoError:
         raise PermissionError(
@@ -96,13 +66,46 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
 
+
+def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
+    """Download a GGUF model from HuggingFace to cfg.models_dir.
+    Uses huggingface_hub for resumable downloads, caching, and auth.
+    The optional *on_progress(downloaded, total)* callback receives byte counts.
+    For vision models, also downloads the mmproj (CLIP projection) file.
+
+    Raises:
+        PermissionError: gated repo requiring authentication
+        RuntimeError: repo not found or download failure with details
+    """
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = resolve_filename(entry)
+    dest = cfg.models_dir / filename
+    if dest.exists():
+        log.info("Model already downloaded: %s", dest)
+        if on_progress is not None:
+            size = dest.stat().st_size
+            on_progress(size, size)  # Report 100% immediately
+        return _finalize_download(entry, dest, on_progress=on_progress)
+
+    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
+    tracker = _ProgressTracker(on_progress) if on_progress else None
+    config = DownloadConfig(
+        repo_id=entry.hf_repo,
+        filename=filename,
+        token=_hf_token(),
+        cache_dir=str(cfg.models_dir),
+        tqdm_class=tracker.make_tqdm_class() if tracker else None,
+    )
+
+    cached = _hf_download_or_translate(entry, config)
+
     if on_progress:
         actual_size = cached.stat().st_size
         if not tracker or not tracker.was_used:
             log.info("Model found in HuggingFace cache: %s", cached)
         on_progress(actual_size, actual_size)
-    dest = cached
-    return _finalize_download(entry, dest, on_progress=on_progress)
+    return _finalize_download(entry, cached, on_progress=on_progress)
 
 
 def _finalize_download(
@@ -166,7 +169,7 @@ def _download_mmproj(
         )
     )
     if on_progress is not None and (not tracker or not tracker.was_used):
-        # Cache hit — HF returned the cached path without invoking tqdm.
+        # Cache hit: HF returned the cached path without invoking tqdm.
         size = path.stat().st_size
         on_progress(size, size)
     return path
@@ -253,7 +256,7 @@ def resolve_filename(entry: CatalogModel) -> str:
             timeout=_DEFAULT_TIMEOUT,
             headers=_hf_headers(),
         )
-        if resp.status_code == 401:
+        if resp.status_code == HTTPStatus.UNAUTHORIZED:
             raise PermissionError(
                 f"{entry.hf_repo} requires HuggingFace authentication. "
                 "Set HF_TOKEN env var or visit the repo page to request access."

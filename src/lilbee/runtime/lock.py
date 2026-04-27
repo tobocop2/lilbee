@@ -26,7 +26,7 @@ class LockTimeoutError(TimeoutError):
     """Raised when a lock cannot be acquired within the timeout."""
 
 
-# In-process write mutex — serializes writers within the same process
+# In-process write mutex: serializes writers within the same process
 _write_mutex = threading.Lock()
 
 

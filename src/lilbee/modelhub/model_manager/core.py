@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from http import HTTPStatus
 from pathlib import Path
 
 import httpx
@@ -219,10 +220,10 @@ class ModelManager:
                 headers={"Content-Type": "application/json"},
                 timeout=DEFAULT_HTTP_TIMEOUT,
             )
-            if resp.status_code == 200:
+            if resp.status_code == HTTPStatus.OK:
                 log.info("Removed backend model %s", model)
                 return True
-            if resp.status_code == 404:
+            if resp.status_code == HTTPStatus.NOT_FOUND:
                 return False
             log.warning("Unexpected status %d removing %s", resp.status_code, model)
             return False

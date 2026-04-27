@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from http import HTTPStatus
 from typing import Any
 
 import httpx
@@ -73,7 +74,7 @@ def make_download_callback(
 class _CallbackProgressBar(_base_tqdm):
     """tqdm subclass that forwards progress to a plain callback.
     Fully suppresses terminal output by disabling tqdm rendering and redirecting
-    its file handle to a devnull sink — prevents ANSI escape sequences from leaking
+    its file handle to a devnull sink: prevents ANSI escape sequences from leaking
     into Textual's managed terminal.
 
     Overrides ``get_lock`` to return a threading lock instead of tqdm's default
@@ -217,7 +218,7 @@ def _fetch_hf_models(
         params = params.add("library", library)
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
-        if resp.status_code >= 400:
+        if resp.status_code >= HTTPStatus.BAD_REQUEST:
             log.warning("HuggingFace API returned HTTP %d", resp.status_code)
             return _EMPTY_HF_PAGE
         data = resp.json()
@@ -274,4 +275,4 @@ def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
             max_bytes = max(max_bytes, sib.size or 0)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
-    return 0.0  # unknown — display as "?" in UI
+    return 0.0  # unknown: display as "?" in UI

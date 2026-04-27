@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 # (page-type headings, per-source branches, inner-section branches) use None.
 _LEAF_SUFFIX = ""
 _INDEX_STEM = "index"
+# Wiki slugs of the form ``<subdir>/<name>`` carry a meaningful page type;
+# bare slugs (no slash) do not.
+_SLUG_WITH_TYPE_MIN_PARTS = 2
 
 
 def _wiki_root() -> Path:
@@ -253,7 +256,7 @@ class WikiScreen(Screen[None]):
 
         page_type = ""
         parts = slug.split("/")
-        if len(parts) >= 2:
+        if len(parts) >= _SLUG_WITH_TYPE_MIN_PARTS:
             from lilbee.wiki.shared import SUBDIR_TO_TYPE
 
             page_type = SUBDIR_TO_TYPE.get(parts[0], "")

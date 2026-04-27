@@ -435,7 +435,7 @@ class TestCheckFaithfulness:
         chunks = [_chunk_with_vector([1.0, 0.0])]
         score = _check_faithfulness(chunks, _COHERENT_WIKI, "test")
         assert score == pytest.approx(1.0)
-        # Only ONE call, and its argument is the body text list — no
+        # Only ONE call, and its argument is the body text list: no
         # chunks_text batch embedding.
         assert svc.embedder.embed_batch.call_count == 1
         body_arg = svc.embedder.embed_batch.call_args[0][0]
@@ -1470,8 +1470,7 @@ class TestRunFullSynthesize:
         captured: dict[str, object] = {}
 
         def fake_get_services():
-            svc = MagicMock()
-            return svc
+            return MagicMock()
 
         def fake_generate(provider, store, clusterer, config):
             captured["config"] = config

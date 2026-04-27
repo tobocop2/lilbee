@@ -1,4 +1,4 @@
-"""Tests for lilbee.cli.sync — background sync, executor, and status."""
+"""Tests for lilbee.cli.sync: background sync, executor, and status."""
 
 from __future__ import annotations
 

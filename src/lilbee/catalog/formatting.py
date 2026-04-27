@@ -12,6 +12,10 @@ _DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECA
 _DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
 _DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
 
+# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
+# two ``/`` separators; one-slash refs are bare repo IDs.
+_NATIVE_GGUF_REF_MIN_SLASHES = 2
+
 
 def clean_display_name(repo_id: str) -> str:
     """Derive a human-friendly display name from a HuggingFace repo ID.
@@ -39,7 +43,7 @@ def display_label_for_ref(ref: str) -> str:
     """
     if not ref:
         return ""
-    if ref.endswith(".gguf") and ref.count("/") >= 2:
+    if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
         return clean_display_name(ref.rsplit("/", 1)[0])
     if "/" in ref:
         return ref.split("/", 1)[1]
@@ -72,8 +76,8 @@ QUANT_TIERS: dict[str, str] = {
 def quant_tier(quant: str) -> str:
     """Map a quantization label to a human-readable quality tier."""
     if not quant:
-        return "—"
-    return QUANT_TIERS.get(quant, "—")
+        return "--"
+    return QUANT_TIERS.get(quant, "--")
 
 
 def _derive_param_count(model: CatalogModel) -> str:

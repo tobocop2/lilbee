@@ -8,5 +8,5 @@ background task should abort. Lives in a neutral module so that
 from __future__ import annotations
 
 
-class TaskCancelled(Exception):
+class TaskCancelledError(Exception):
     """Raised inside a progress callback to abort a long-running task."""

@@ -206,7 +206,7 @@ def _finalize_section(
     call. Returns the written page path, or ``None`` if the section
     failed any gate (no citations, empty body, slug collision marker
     handled via side channel). ``shared_parsed_citations`` is the
-    definition list parsed once over the whole response — every
+    definition list parsed once over the whole response: every
     section replays it so pages other than the last one still have
     their footnotes resolved.
     """

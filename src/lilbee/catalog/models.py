@@ -1,4 +1,4 @@
-"""Catalog dataclasses and pydantic types — leaf module, no sibling imports."""
+"""Catalog dataclasses and pydantic types: leaf module, no sibling imports."""
 
 from dataclasses import dataclass
 

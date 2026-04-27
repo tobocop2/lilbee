@@ -1,4 +1,4 @@
-"""Integration tests for web crawling — real crawl4ai against a local HTTP server.
+"""Integration tests for web crawling: real crawl4ai against a local HTTP server.
 
 These tests exercise the full pipeline: crawl4ai fetches real HTML from a local
 pytest-httpserver, saves as markdown, and verifies the files land correctly.
@@ -165,7 +165,7 @@ class TestRecursiveCrawl:
 
 class TestContentChangeDetection:
     async def test_unchanged_content_skips_save(self, test_site, allow_localhost):
-        """Crawl same URL twice with same content — second skips save."""
+        """Crawl same URL twice with same content: second skips save."""
         url = str(test_site.url_for("/"))
         paths1 = await crawl_and_save(url, depth=0)
         assert len(paths1) == 1
@@ -180,7 +180,7 @@ class TestContentChangeDetection:
         assert paths1[0].stat().st_mtime == mtime1
 
     async def test_changed_content_updates_file(self, httpserver, allow_localhost):
-        """Crawl URL, change server content, crawl again — file updated."""
+        """Crawl URL, change server content, crawl again: file updated."""
         httpserver.expect_request("/changing").respond_with_data(
             "<html><body><h1>Version 1</h1><p>Original content.</p></body></html>",
             content_type="text/html",
@@ -270,7 +270,7 @@ class TestErrors:
         # crawl4ai may return success=False or empty markdown for 404s
         # Either way, crawl_and_save should not raise
         paths = await crawl_and_save(url, depth=0)
-        # May be 0 (failed) or 1 (crawl4ai returned something) — just verify no crash
+        # May be 0 (failed) or 1 (crawl4ai returned something): just verify no crash
         assert isinstance(paths, list)
 
     async def test_crawl_unreachable_host(self):

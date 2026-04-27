@@ -172,7 +172,7 @@ class ConceptGraph:
     def get_related_concepts(self, concept: str, depth: int = 1) -> list[str]:
         """Find concepts related to *concept* via graph edges, up to *depth* hops.
 
-        One batched query per depth level — O(depth) DB round-trips,
+        One batched query per depth level: O(depth) DB round-trips,
         independent of frontier size.
         """
         table = self._store.open_table(CONCEPT_EDGES_TABLE)

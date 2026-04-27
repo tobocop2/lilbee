@@ -462,7 +462,7 @@ class TestAddIngestMutex:
         assert "done" in event_types
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
-        """Disjoint sources do not contend — both requests complete with done."""
+        """Disjoint sources do not contend: both requests complete with done."""
         from lilbee.server.handlers import add_files_stream
 
         a = tmp_path / "a.txt"
@@ -536,7 +536,7 @@ class TestAddIngestHardening:
     """Option-A hardening: ``sync()`` always passes ``needs_cleanup=True``."""
 
     async def test_new_file_triggers_cleanup(self, isolated_env, tmp_path, mock_svc):
-        """New files still call delete_by_source before adding — closes the
+        """New files still call delete_by_source before adding: closes the
         orphaned-chunks race when a prior ingest died before upsert_source."""
         from lilbee.data.ingest import sync
 

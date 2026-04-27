@@ -1,7 +1,7 @@
 """RAG pipeline integration tests with real models.
 
 Uses llama-cpp-python with real GGUF models downloaded from HuggingFace.
-No external server required. Marked slow — excluded from default test runs.
+No external server required. Marked slow: excluded from default test runs.
 
 Run with:
     uv run pytest tests/integration/test_rag_integration.py -v -m slow
@@ -266,13 +266,13 @@ class TestQueryExpansion:
         assert "specs.md" in sources, f"specs.md not in {sources}"
 
     def test_expansion_produces_variants(self, rag_pipeline):
-        """Expansion broadens results — at least as many as without expansion."""
+        """Expansion broadens results: at least as many as without expansion."""
         results = search_context("engine specs", top_k=10)
         assert len(results) > 0, "Expected non-empty results with expansion enabled"
 
 
 class TestHydeSearch:
-    """Tests with HyDE enabled — generates a hypothetical answer, embeds it, searches."""
+    """Tests with HyDE enabled: generates a hypothetical answer, embeds it, searches."""
 
     @pytest.fixture(autouse=True)
     def _enable_hyde(self):
@@ -297,7 +297,7 @@ class TestHydeSearch:
 
 
 class TestConceptGraph:
-    """Tests with concept_graph enabled — requires spacy and graspologic."""
+    """Tests with concept_graph enabled: requires spacy and graspologic."""
 
     @pytest.fixture(autouse=True)
     def _enable_concepts(self, rag_pipeline, run_async):
@@ -346,7 +346,7 @@ class TestConceptGraph:
 
 
 class TestTemporalFilter:
-    """Tests with temporal_filtering enabled — filters by ingestion date."""
+    """Tests with temporal_filtering enabled: filters by ingestion date."""
 
     @pytest.fixture(autouse=True)
     def _enable_temporal(self):
@@ -462,7 +462,7 @@ class TestDownloadProgressCallbacks:
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
 
-        # Re-download the embedding model (cached — returns from HF cache immediately)
+        # Re-download the embedding model (cached: returns from HF cache immediately)
         download_model(FEATURED_EMBEDDING[0], on_progress=on_progress)
         # Cached download fires a single completion callback
         assert len(progress_calls) == 1

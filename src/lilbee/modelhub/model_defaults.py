@@ -32,6 +32,9 @@ _GGUF_KEY_MAP: dict[str, str] = {
     "general.repeat_penalty": "repeat_penalty",
 }
 
+# ``str.split(None, 1)`` returns at most this many tokens for valid ``key value`` lines.
+_KV_PARTS = 2
+
 
 @dataclass(frozen=True)
 class ModelDefaults:
@@ -63,7 +66,7 @@ class _DefaultsCache:
 
 _defaults_cache = _DefaultsCache()
 
-# Public API — preserves existing call sites.
+# Public API: preserves existing call sites.
 get_defaults = _defaults_cache.get
 set_defaults = _defaults_cache.set
 clear_cache = _defaults_cache.clear
@@ -86,7 +89,7 @@ def parse_kv_parameters(text: str) -> ModelDefaults:
         if not line:
             continue
         parts = line.split(None, 1)
-        if len(parts) != 2:
+        if len(parts) != _KV_PARTS:
             continue
         key, raw_value = parts
         if key not in _KNOWN_PARAM_TYPES:

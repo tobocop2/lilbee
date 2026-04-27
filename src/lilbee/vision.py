@@ -198,6 +198,35 @@ def _record_page(
         progress_ctx.advance(progress_task)  # type: ignore[attr-defined]
 
 
+def _collate_extracted_pages(
+    extracted: dict[int, str | None],
+) -> tuple[list[PageText], int]:
+    """Sort extracted pages by index, returning ``(pages, failed_count)``."""
+    result: list[PageText] = []
+    failed = 0
+    for i in sorted(extracted):
+        text = extracted[i]
+        if text is None:
+            failed += 1
+        elif text.strip():
+            result.append(PageText(i + 1, text))
+    return result, failed
+
+
+def _report_vision_failures(failed: int, total: int, extracted: int, quiet: bool) -> None:
+    """Log + print a yellow warning when any pages failed OCR."""
+    if not failed:
+        return
+    log.warning("Vision OCR: %d/%d pages failed", failed, total)
+    if not quiet:
+        from rich.console import Console
+
+        Console(stderr=True).print(
+            f"[yellow]Vision OCR: {failed}/{total} pages failed, "
+            f"{extracted}/{total} extracted[/yellow]"
+        )
+
+
 def extract_pdf_vision(
     path: Path,
     model: str,
@@ -243,23 +272,6 @@ def extract_pdf_vision(
         for fut in concurrent.futures.as_completed(inflight):
             _record_page(fut, extracted, on_progress, progress_ctx, progress_task, path, total)
 
-    result: list[PageText] = []
-    failed = 0
-    for i in sorted(extracted):
-        text = extracted[i]
-        if text is None:
-            failed += 1
-        elif text.strip():
-            result.append(PageText(i + 1, text))
-
-    if failed:
-        log.warning("Vision OCR: %d/%d pages failed", failed, total)
-        if not quiet:
-            from rich.console import Console
-
-            Console(stderr=True).print(
-                f"[yellow]Vision OCR: {failed}/{total} pages failed, "
-                f"{len(result)}/{total} extracted[/yellow]"
-            )
-
+    result, failed = _collate_extracted_pages(extracted)
+    _report_vision_failures(failed, total, extracted=len(result), quiet=quiet)
     return result

@@ -1,4 +1,4 @@
-"""Tests for the RAG query pipeline (mocked — no live server needed)."""
+"""Tests for the RAG query pipeline (mocked: no live server needed)."""
 
 import pytest
 

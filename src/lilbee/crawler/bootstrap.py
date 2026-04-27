@@ -23,11 +23,11 @@ from lilbee.runtime.progress import (
 )
 
 
-class CrawlerBrowserMissing(RuntimeError):
+class CrawlerBrowserError(RuntimeError):
     """Playwright is installed but its Chromium browser binary is not."""
 
 
-class CrawlerBackendMissing(RuntimeError):
+class CrawlerBackendError(RuntimeError):
     """The ``crawler`` extra (crawl4ai) was never installed."""
 
 
@@ -174,7 +174,7 @@ async def bootstrap_chromium(
     ``setup_start`` before spawning, ``setup_progress`` for each
     recognizable progress line on stdout, and ``setup_done`` on exit
     (``success=False`` + the subprocess stderr tail on failure). Raises
-    :class:`CrawlerBrowserMissing` with the tail so task workers route
+    :class:`CrawlerBrowserError` with the tail so task workers route
     to FAILED cleanly.
 
     Uses the current Python interpreter's ``playwright`` module so this
@@ -211,6 +211,6 @@ async def bootstrap_chromium(
     if returncode != 0:
         tail = "\n".join(stderr_tail[-10:]) or f"exit code {returncode}"
         _emit_setup_done(on_progress, success=False, error=tail)
-        raise CrawlerBrowserMissing(f"Chromium bootstrap failed (exit {returncode}): {tail}")
+        raise CrawlerBrowserError(f"Chromium bootstrap failed (exit {returncode}): {tail}")
 
     _emit_setup_done(on_progress, success=True, error=None)

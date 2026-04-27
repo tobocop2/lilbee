@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -14,7 +15,7 @@ from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings as _settings_module
 from lilbee.core.config import cfg, config_load_error
 
-app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
+app = typer.Typer(help="lilbee: Local RAG knowledge base", invoke_without_command=True)
 console = Console()
 
 data_dir_option = typer.Option(
@@ -93,6 +94,21 @@ def overlay_persisted_settings(root: Path) -> None:
             )
 
 
+def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:
+    """Resolve the data-root precedence: --data-dir | --global | LILBEE_DATA | default."""
+    if use_global:
+        from lilbee.core.platform import default_data_dir
+
+        _apply_data_root(default_data_dir())
+        return
+    if data_dir is not None:
+        _apply_data_root(data_dir)
+        return
+    data_env = os.environ.get("LILBEE_DATA", "")
+    if data_env:
+        _apply_data_root(Path(data_env))
+
+
 def apply_overrides(
     data_dir: Path | None = None,
     model: str | None = None,
@@ -111,31 +127,20 @@ def apply_overrides(
     if data_dir is not None and use_global:
         raise typer.BadParameter("Cannot use --global with --data-dir")
 
-    if use_global:
-        from lilbee.core.platform import default_data_dir
+    _resolve_data_root(data_dir, use_global)
 
-        _apply_data_root(default_data_dir())
-    elif data_dir is not None:
-        _apply_data_root(data_dir)
-    else:
-        data_env = os.environ.get("LILBEE_DATA", "")
-        if data_env:
-            _apply_data_root(Path(data_env))
-
-    if model is not None:
-        cfg.chat_model = model
-    if temperature is not None:
-        cfg.temperature = temperature
-    if top_p is not None:
-        cfg.top_p = top_p
-    if top_k_sampling is not None:
-        cfg.top_k_sampling = top_k_sampling
-    if repeat_penalty is not None:
-        cfg.repeat_penalty = repeat_penalty
-    if num_ctx is not None:
-        cfg.num_ctx = num_ctx
-    if seed is not None:
-        cfg.seed = seed
+    overrides: dict[str, Any] = {
+        "chat_model": model,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k_sampling": top_k_sampling,
+        "repeat_penalty": repeat_penalty,
+        "num_ctx": num_ctx,
+        "seed": seed,
+    }
+    for attr, value in overrides.items():
+        if value is not None:
+            setattr(cfg, attr, value)
 
 
 @app.callback()
@@ -183,7 +188,7 @@ def _default(
     # basicConfig is a no-op when handlers already exist, so always set level explicitly
     logging.getLogger().setLevel(level)
 
-    # Swallow lancedb's shutdown-time thread noise — opt-in side effect, not
+    # Swallow lancedb's shutdown-time thread noise: opt-in side effect, not
     # imposed on library consumers of lilbee.
     from lilbee.data.store import install_lancedb_thread_error_suppressor
 

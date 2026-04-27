@@ -33,7 +33,7 @@ class TestWriteLock:
     def test_releases_on_error(self):
         with pytest.raises(RuntimeError, match="boom"), write_lock(timeout=2):
             raise RuntimeError("boom")
-        # Lock should be released — a subsequent write lock should succeed
+        # Lock should be released: a subsequent write lock should succeed
         with write_lock(timeout=1):
             pass
 

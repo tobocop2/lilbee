@@ -26,5 +26,5 @@ def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None
             shutdown_executor()
             reset_services()
         except (KeyboardInterrupt, Exception):
-            # Rapid Ctrl+C during shutdown — force exit immediately
+            # Rapid Ctrl+C during shutdown: force exit immediately
             os._exit(1)

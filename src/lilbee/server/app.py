@@ -1,4 +1,4 @@
-"""Litestar application factory — imports routes from modules, creates app with lifespan."""
+"""Litestar application factory: imports routes from modules, creates app with lifespan."""
 
 from __future__ import annotations
 

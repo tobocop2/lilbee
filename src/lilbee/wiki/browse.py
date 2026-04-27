@@ -1,4 +1,4 @@
-"""Wiki browse — shared page listing, reading, and resolution logic."""
+"""Wiki browse: shared page listing, reading, and resolution logic."""
 
 from __future__ import annotations
 
@@ -16,6 +16,10 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     parse_frontmatter,
 )
+
+# Wiki paths under the root take the form ``<subdir>/<slug>.md``; only paths
+# with at least this many components carry a meaningful page type.
+_WIKI_PATH_MIN_PARTS = 2
 
 
 @dataclass
@@ -63,7 +67,7 @@ def _page_type_from_path(path: Path, wiki_root: Path) -> str:
     except ValueError:
         return "unknown"
     parts = relative.parts
-    if len(parts) >= 2:
+    if len(parts) >= _WIKI_PATH_MIN_PARTS:
         return SUBDIR_TO_TYPE.get(parts[0], "unknown")
     return "unknown"
 

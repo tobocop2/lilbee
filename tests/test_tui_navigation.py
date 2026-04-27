@@ -1,4 +1,4 @@
-"""Navigation flow tests — verify keyboard-driven TUI interactions.
+"""Navigation flow tests: verify keyboard-driven TUI interactions.
 
 Every test uses pilot.press() to simulate actual keystrokes, never
 action_* methods directly. This catches key resolution, focus routing,
@@ -81,7 +81,7 @@ async def test_bracket_keys_cycle_all_screens():
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
-        # Chat starts in insert mode — Escape to normal mode first
+        # Chat starts in insert mode: Escape to normal mode first
         await pilot.press("escape")
         await pilot.pause()
 
@@ -111,7 +111,7 @@ async def test_bracket_keys_work_with_chat_input_focused():
         assert isinstance(app.screen, CatalogScreen), (
             f"Expected CatalogScreen after ], got {type(app.screen).__name__}"
         )
-        # The original chat_input reference must still be unchanged — the ]
+        # The original chat_input reference must still be unchanged: the ]
         # keypress must not have been typed into it before the screen switched.
         assert chat_input.value == "", (
             f"] was typed into chat input instead of navigating (value={chat_input.value!r})"
@@ -287,7 +287,7 @@ async def test_chat_tab_skips_when_input_not_focused():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Escape to normal mode — input loses focus
+        # Escape to normal mode: input loses focus
         await pilot.press("escape")
         await pilot.pause()
 

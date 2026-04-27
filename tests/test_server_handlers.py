@@ -1081,7 +1081,7 @@ class TestModelsPull:
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
-            return None
+            return
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
@@ -1098,7 +1098,7 @@ class TestModelsPull:
             if on_progress:
                 on_progress({"status": "downloading"})
                 on_progress({"status": "success"})
-            return None
+            return
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.models.get_model_manager", return_value=mock_manager):
@@ -1291,7 +1291,7 @@ class TestUpdateConfig:
         original_temp = cfg.temperature
         with pytest.raises(ValueError, match="does not accept null"):
             await handlers.update_config({"temperature": 0.9, "system_prompt": None})
-        # temperature should be unchanged — validation happens before apply
+        # temperature should be unchanged: validation happens before apply
         assert cfg.temperature == original_temp
 
     async def test_multi_field_success(self, tmp_path):

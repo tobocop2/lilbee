@@ -72,7 +72,7 @@ def shutdown_executor() -> None:
 
 
 def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = False) -> None:
-    """Callback attached to background sync futures — logs errors."""
+    """Callback attached to background sync futures: logs errors."""
     exc = future.exception()
     if exc is None:
         return
@@ -89,7 +89,7 @@ def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = Fal
 class SyncStatus:
     """Thread-safe holder for background sync status text.
     The background sync callback writes here; prompt_toolkit's
-    ``bottom_toolbar`` reads it on every render cycle — no cursor
+    ``bottom_toolbar`` reads it on every render cycle: no cursor
     manipulation, no flickering.
     """
 

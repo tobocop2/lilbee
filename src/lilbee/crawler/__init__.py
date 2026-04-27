@@ -28,8 +28,8 @@ from lilbee.crawler.api import (
     crawl_single,
 )
 from lilbee.crawler.bootstrap import (
-    CrawlerBackendMissing,
-    CrawlerBrowserMissing,
+    CrawlerBackendError,
+    CrawlerBrowserError,
     bootstrap_chromium,
     chromium_installed,
     crawler_browsers_path,
@@ -64,8 +64,8 @@ __all__ = [
     "ConcurrencySpec",
     "CrawlMeta",
     "CrawlResult",
-    "CrawlerBackendMissing",
-    "CrawlerBrowserMissing",
+    "CrawlerBackendError",
+    "CrawlerBrowserError",
     "FetchedPage",
     "FilterSpec",
     "WebFetcher",

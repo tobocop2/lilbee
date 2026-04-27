@@ -19,7 +19,7 @@ from lilbee.cli.app import (
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
-from lilbee.crawler import CrawlerBrowserMissing, bootstrap_chromium, chromium_installed
+from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 _SELF_CHECK_CHAT_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
@@ -46,7 +46,7 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     last_exc: BaseException | None = None
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 — literal https url
+            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310  literal https url
                 dest.write_bytes(response.read())
             return dest
         except (OSError, urllib.error.URLError) as exc:
@@ -258,7 +258,7 @@ def setup_crawler_cmd() -> None:
 
     try:
         asyncio.run(bootstrap_chromium(on_progress=_on_progress))
-    except CrawlerBrowserMissing as exc:
+    except CrawlerBrowserError as exc:
         if cfg.json_mode:
             typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))
         else:

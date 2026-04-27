@@ -13,7 +13,7 @@ class ClustererBackend(StrEnum):
 class WikiEntityMode(StrEnum):
     """Strategy used to extract entities for the wiki.
 
-    Phase D: the extractor no longer emits concepts — concept pages
+    Phase D: the extractor no longer emits concepts: concept pages
     are proposed by the LLM inside the per-source batched call in
     ``wiki.gen``. The enum values reflect the extractor's current
     responsibility (typed NER entities only).

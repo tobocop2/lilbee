@@ -1,4 +1,4 @@
-"""Model status bar — Select dropdowns for chat and embedding models."""
+"""Model status bar: Select dropdowns for chat and embedding models."""
 
 from __future__ import annotations
 
@@ -232,7 +232,7 @@ def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> N
 
     Textual's ``Select.set_options`` updates the option list but doesn't
     re-render ``SelectCurrent`` if the existing ``value`` still matches
-    an option — the reactive watcher short-circuits on ``old == new``.
+    an option: the reactive watcher short-circuits on ``old == new``.
     That meant a freshly-labelled option (e.g. ``"<ref> (not installed)"``)
     kept the compose-time bare-ref label on screen. Poke the inner
     widget directly so the visible label matches what tests assert.

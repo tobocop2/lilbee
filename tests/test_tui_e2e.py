@@ -200,7 +200,7 @@ class TestModelSwitchSafety:
             bar = screen.query_one("#model-bar", ModelBar)
             bar._populating = False
 
-            # Simulate model change — set sel.value synchronously so that
+            # Simulate model change: set sel.value synchronously so that
             # _extract_value's stale-event check (event.value must match
             # sel.value) is satisfied. In production, Textual posts the
             # Changed event from the value reactive, so the two always
@@ -2092,7 +2092,7 @@ class TestChatPromptBorder:
             await pilot.pause()
             area = app.screen.query_one("#chat-prompt-area")
             inp = app.screen.query_one("#chat-input")
-            # No mode classes on the prompt area — border driven by :focus-within CSS
+            # No mode classes on the prompt area: border driven by :focus-within CSS
             assert not area.has_class("insert-mode")
             assert not area.has_class("normal-mode")
             # Input should not have its own border

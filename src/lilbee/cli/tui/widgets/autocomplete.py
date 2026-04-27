@@ -22,6 +22,9 @@ log = logging.getLogger(__name__)
 
 _SLASH_COMMANDS = completion_names()
 _MAX_VISIBLE = 8  # max dropdown items shown at once
+# Hard cap on path completions surfaced for /add so a deep directory doesn't
+# stall the dropdown rebuild.
+_MAX_PATH_COMPLETIONS = 20
 
 
 def get_completions(text: str) -> list[str]:
@@ -103,7 +106,7 @@ def _path_options(partial: str = "") -> list[str]:
             if p.is_dir():
                 display = display.rstrip("/") + "/"
             results.append(display)
-            if len(results) >= 20:
+            if len(results) >= _MAX_PATH_COMPLETIONS:
                 break
         return results
     except Exception:

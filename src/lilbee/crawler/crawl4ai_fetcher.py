@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from lilbee.crawler import bootstrap
-from lilbee.crawler.bootstrap import CrawlerBrowserMissing
+from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
@@ -98,7 +98,7 @@ class _LilbeeAsyncCrawler:
 async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
     """Open a crawler.
 
-    Raises :class:`CrawlerBrowserMissing` early if the Chromium binary
+    Raises :class:`CrawlerBrowserError` early if the Chromium binary
     hasn't been downloaded. Without this guard Playwright prints a full
     ASCII install banner that leaks into the TUI.
 
@@ -108,7 +108,7 @@ async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> Async
     one, so it passes None and gets a bare AsyncWebCrawler.
     """
     if not bootstrap.chromium_installed():
-        raise CrawlerBrowserMissing(
+        raise CrawlerBrowserError(
             "Playwright Chromium browser not installed. "
             "Run 'uv run playwright install chromium' to enable /crawl."
         )

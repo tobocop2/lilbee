@@ -1,9 +1,9 @@
-"""First-run setup — single-screen model picker with RAM-based recommendations.
+"""First-run setup: single-screen model picker with RAM-based recommendations.
 
 The wizard mirrors the catalog's grid aesthetic: one ``GridSelect`` per
 section (chat, embed), pressing Enter on a card installs that model
 immediately via ``TaskBarController.start_download``. No separate
-Install & Go button, no Browse, no Skip — pick what you want, press
+Install & Go button, no Browse, no Skip: pick what you want, press
 Esc when done. Downloads continue under the app-level controller, so
 dismissing the wizard while they're in flight is fine.
 
@@ -95,7 +95,7 @@ def _pending_download(card: ModelCard | None) -> CatalogModel | None:
 
 
 class SetupWizard(Screen[str | None]):
-    """First-run setup — pick chat + embedding, Enter installs, Esc exits.
+    """First-run setup: pick chat + embedding, Enter installs, Esc exits.
 
     Each card you press Enter on:
       1. Becomes the saved selection for its task (chat or embedding).

@@ -1,4 +1,4 @@
-"""Tests for reasoning token filter — <think>...</think> tag detection."""
+"""Tests for reasoning token filter: <think>...</think> tag detection."""
 
 from lilbee.retrieval.reasoning import StreamToken, filter_reasoning, strip_reasoning
 
@@ -108,20 +108,20 @@ class TestCouldBePartial:
         assert "text" in content
 
     def test_unterminated_thinking_flushed_when_show(self):
-        """Thinking block never closed — buffer flushed as reasoning at end."""
+        """Thinking block never closed: buffer flushed as reasoning at end."""
         result = _collect(["<think>unterminated"], show=True)
         reasoning = [st for st in result if st.is_reasoning]
         assert len(reasoning) >= 1
         assert "unterminated" in "".join(st.content for st in reasoning)
 
     def test_unterminated_thinking_with_partial_close(self):
-        """Thinking with partial close tag at end — flushed as reasoning."""
+        """Thinking with partial close tag at end: flushed as reasoning."""
         result = _collect(["<think>deep thought</thi"], show=True)
         reasoning = "".join(st.content for st in result if st.is_reasoning)
         assert "deep thought" in reasoning
 
     def test_unterminated_thinking_stripped_when_hidden(self):
-        """Thinking block never closed — buffer discarded when show=False."""
+        """Thinking block never closed: buffer discarded when show=False."""
         result = _collect(["<think>unterminated"], show=False)
         content = "".join(st.content for st in result)
         assert content == ""
@@ -133,7 +133,7 @@ class TestCouldBePartial:
         assert "trailing" in response
 
     def test_normal_text_ending_with_partial_tag(self):
-        """Buffer has normal text ending with '<t' — flushed as normal at end."""
+        """Buffer has normal text ending with '<t': flushed as normal at end."""
         result = _collect(["hello<t"], show=False)
         content = "".join(st.content for st in result)
         assert "hello<t" in content
@@ -184,7 +184,7 @@ class TestReasoningTruncation:
         from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 1000)
-        tokens = list(f"<think>{long_think}")  # no closing tag — infinite reasoning
+        tokens = list(f"<think>{long_think}")  # no closing tag: infinite reasoning
         result = _collect(tokens, show=False)
         # Should terminate (not hang) and yield the truncation marker
         truncation_markers = [st for st in result if "truncated" in st.content]

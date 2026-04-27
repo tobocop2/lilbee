@@ -1,4 +1,4 @@
-"""Tests for model_manager.py — model lifecycle management across sources."""
+"""Tests for model_manager.py: model lifecycle management across sources."""
 
 from collections.abc import Iterator
 from pathlib import Path
@@ -195,7 +195,7 @@ class TestModelManagerListInstalled:
             mock.patch("httpx.get", return_value=mock_response) as mock_get,
             mock.patch.object(mm_core.time, "monotonic") as mock_clock,
         ):
-            # One clock tick per list_installed call — second tick is past TTL.
+            # One clock tick per list_installed call: second tick is past TTL.
             mock_clock.side_effect = [0.0, 100.0]
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
             mgr.list_installed(ModelSource.REMOTE)

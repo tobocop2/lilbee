@@ -1,4 +1,4 @@
-"""Security helpers — path validation, input sanitization."""
+"""Security helpers: path validation, input sanitization."""
 
 from __future__ import annotations
 

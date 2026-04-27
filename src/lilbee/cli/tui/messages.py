@@ -161,7 +161,7 @@ SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
 SETUP_INTRO = (
     "lilbee needs two models to work: one for chat and one for search. "
-    "Pick one of each below — highlight a card and press [b]Enter[/b] to install. "
+    "Pick one of each below: highlight a card and press [b]Enter[/b] to install. "
     "Downloads continue in the background, so you can keep picking or press [b]Esc[/b] when done."
 )
 SETUP_HEADING_CHAT = "Chat Models"

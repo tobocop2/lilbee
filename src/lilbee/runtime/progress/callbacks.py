@@ -43,4 +43,4 @@ shared_progress: ContextVar[tuple[Any, Any] | None] = ContextVar("shared_progres
 
 
 def noop_callback(event_type: EventType, data: ProgressEvent) -> None:
-    """Default no-op callback — discards all events."""
+    """Default no-op callback: discards all events."""

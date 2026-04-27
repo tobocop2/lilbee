@@ -1,4 +1,4 @@
-"""Standalone splash animation process — zero lilbee imports, stdlib only.
+"""Standalone splash animation process: zero lilbee imports, stdlib only.
 
 Launched as a subprocess by ``splash.start()``. Reads a pipe fd from argv
 and animates until the pipe signals EOF (parent closed its write end, or
@@ -27,6 +27,13 @@ RESET = "\033[0m"
 FRAME_INTERVAL = 0.15
 STARTUP_DELAY = 0.08
 POLL_INTERVAL = 0.01
+
+# Knight-rider bar uses three falloff steps after the bright head.
+_BAR_FALLOFF_DENSE = 1
+_BAR_FALLOFF_LIGHT = 2
+
+# Subprocess entry point expects exactly ``python -m ... <pipe_fd>`` (script name + 1 arg).
+_EXPECTED_ARGV_LEN = 2
 
 BEE_LINES = [
     "                                                       ",
@@ -74,9 +81,9 @@ def build_knight_rider_frames() -> list[str]:
             dist = abs(i - head_pos)
             if dist == 0:
                 bar += AMBER_BRIGHT + "\u2593" + RESET
-            elif dist == 1:
+            elif dist == _BAR_FALLOFF_DENSE:
                 bar += AMBER_DIM + "\u2592" + RESET
-            elif dist == 2:
+            elif dist == _BAR_FALLOFF_LIGHT:
                 bar += AMBER_DIM + "\u2591" + RESET
             else:
                 bar += " "
@@ -108,40 +115,48 @@ def clear_screen(frame_height: int) -> bytes:
 
 
 def _read_eof(pipe_fd: int) -> bool:
-    """Try to read one byte — returns True if EOF, False if data available."""
+    """Try to read one byte: returns True if EOF, False if data available."""
     try:
         return len(os.read(pipe_fd, 1)) == 0
     except OSError:
         return True
 
 
+def _pipe_closed_win32(pipe_fd: int) -> bool:
+    """Win32 pipe-EOF check using PeekNamedPipe."""
+    import ctypes
+    import msvcrt
+
+    try:
+        handle = msvcrt.get_osfhandle(pipe_fd)  # type: ignore[attr-defined]
+    except OSError:
+        return True  # bad fd, pipe is gone
+    avail = ctypes.c_ulong(0)
+    if not ctypes.windll.kernel32.PeekNamedPipe(  # type: ignore[attr-defined]
+        handle, None, 0, None, ctypes.byref(avail), None
+    ):
+        return True
+    if avail.value == 0:
+        return False
+    return _read_eof(pipe_fd)
+
+
+def _pipe_closed_posix(pipe_fd: int) -> bool:
+    """POSIX pipe-EOF check using select."""
+    try:
+        readable, _, _ = select.select([pipe_fd], [], [], 0)
+    except (ValueError, OSError):
+        return True
+    if not readable:
+        return False
+    return _read_eof(pipe_fd)
+
+
 def pipe_closed(pipe_fd: int) -> bool:
     """Check if the pipe has been closed (EOF) without blocking."""
     if sys.platform == "win32":
-        import ctypes
-        import msvcrt
-
-        try:
-            handle = msvcrt.get_osfhandle(pipe_fd)
-        except OSError:
-            return True  # bad fd, pipe is gone
-        avail = ctypes.c_ulong(0)
-        if not ctypes.windll.kernel32.PeekNamedPipe(
-            handle, None, 0, None, ctypes.byref(avail), None
-        ):
-            return True
-        if avail.value == 0:
-            return False
-        return _read_eof(pipe_fd)
-    if sys.platform != "win32":
-        try:
-            readable, _, _ = select.select([pipe_fd], [], [], 0)
-        except (ValueError, OSError):
-            return True
-        if not readable:
-            return False
-        return _read_eof(pipe_fd)
-    return True  # pragma: no cover
+        return _pipe_closed_win32(pipe_fd)
+    return _pipe_closed_posix(pipe_fd)
 
 
 def animation_loop(pipe_fd: int) -> None:
@@ -197,7 +212,7 @@ def animation_loop(pipe_fd: int) -> None:
 
 def main() -> None:
     """Entry point when run as ``python -m lilbee.runtime._splash_runner <pipe_fd>``."""
-    if len(sys.argv) != 2:
+    if len(sys.argv) != _EXPECTED_ARGV_LEN:
         sys.exit(1)
 
     try:

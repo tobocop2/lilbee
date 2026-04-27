@@ -439,7 +439,7 @@ def _apply_result(
     updated: list[str],
     failed: list[str],
 ) -> None:
-    """Record an ingestion result — update store on success, track failure."""
+    """Record an ingestion result: update store on success, track failure."""
     if result.error is not None:
         # Log the error message without the traceback: ingest failures are
         # already surfaced to callers via SyncResult.failed, and the raw

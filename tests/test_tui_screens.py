@@ -467,7 +467,7 @@ class TestGroupRowsForGrid:
 
     def test_unknown_task_gets_its_own_section(self) -> None:
         """A row whose task is outside _TASK_BUCKET_ORDER still appears,
-        in a section after the known buckets — never silently dropped."""
+        in a section after the known buckets: never silently dropped."""
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
 
         row = self._row("experimental")  # type: ignore[arg-type]
@@ -2346,7 +2346,7 @@ async def test_chat_slash_add_empty_args():
 
 
 async def test_chat_slash_set_empty_args():
-    """Cover early return when /set has no args — no notification posted."""
+    """Cover early return when /set has no args: no notification posted."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
@@ -6182,7 +6182,7 @@ class TestWikiDraftsScreen:
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
             table = screen.query_one("#wiki-drafts-table", DataTable)
-            # Return a row-key whose .value is None — matches the defensive
+            # Return a row-key whose .value is None: matches the defensive
             # branch protecting against DataTable giving us a sentinel key.
             monkeypatch.setattr(
                 table,
@@ -8366,7 +8366,7 @@ async def test_chat_cmd_crawl_no_args_opens_dialog():
 
 
 def test_chat_embedding_ready_real_code_false():
-    """Placeholder — real test is in test_tui_e2e.py to avoid autouse fixture."""
+    """Placeholder: real test is in test_tui_e2e.py to avoid autouse fixture."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     assert hasattr(ChatScreen, "_embedding_ready")
@@ -8934,7 +8934,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
 
     Regression test: previously Enter from the search Input only
     refocused the grid (landing on the hidden default card), so users
-    had to press Enter twice — and the second press queued the wrong
+    had to press Enter twice: and the second press queued the wrong
     (invisible) model.
     """
     from unittest.mock import patch
@@ -8952,7 +8952,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
             assert grids, "catalog should mount at least one GridSelect"
             grid = grids[0]
             assert len(grid.children) >= 2
-            # Simulate a filter hiding all cards except the second one —
+            # Simulate a filter hiding all cards except the second one --
             # the old handler would install the first (now-hidden) card
             # via highlighted=0; the fix must land on the visible one.
             for card in grid.children:

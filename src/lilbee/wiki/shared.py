@@ -1,4 +1,4 @@
-"""Shared wiki utilities — frontmatter parsing, constants, slug generation."""
+"""Shared wiki utilities: frontmatter parsing, constants, slug generation."""
 
 from __future__ import annotations
 
@@ -160,9 +160,9 @@ def is_valid_label(label: str) -> bool:
     - empty or sub-three-char fragments,
     - markdown table delimiters (``| | designer``),
     - page-number-prefixed tokens (``158 vehicle``),
-    - paren-prefixed numerics (``(7.0 l)`` — would otherwise slug to
+    - paren-prefixed numerics (``(7.0 l)``: would otherwise slug to
       ``70-l`` after punctuation cleanup),
-    - hyphen-prefixed fragments (``-answers`` — trailing text from
+    - hyphen-prefixed fragments (``-answers``: trailing text from
       markdown bracket-link extraction).
 
     Requires the first non-whitespace character to be a Unicode letter

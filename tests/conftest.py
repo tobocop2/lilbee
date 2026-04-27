@@ -137,7 +137,7 @@ def _ignore_user_global_config(monkeypatch):
     A developer's persisted ``~/Library/Application Support/lilbee/config.toml``
     can hold values from a previous schema. ``Config()`` would crash at
     construction. Setting this env var tells ``settings_customise_sources``
-    not to add the toml source — env + defaults only.
+    not to add the toml source: env + defaults only.
     """
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
 

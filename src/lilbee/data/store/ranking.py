@@ -27,7 +27,7 @@ def mmr_rerank(
     top_k: int,
     mmr_lambda: float | None = None,
 ) -> list[SearchChunk]:
-    """Maximal Marginal Relevance — select diverse results.
+    """Maximal Marginal Relevance: select diverse results.
     Algorithm: Carbonell & Goldstein 1998,
     "The Use of MMR, Diversity-Based Reranking for Reordering Documents
     and Producing Summaries."

@@ -97,7 +97,7 @@ def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float)
 
 
 class Store:
-    """LanceDB vector store — wraps all DB operations with config-driven defaults."""
+    """LanceDB vector store: wraps all DB operations with config-driven defaults."""
 
     def __init__(self, config: Config) -> None:
         self._config = config

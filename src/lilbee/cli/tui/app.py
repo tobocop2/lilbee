@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
 _CHAT_SCREEN_NAME = "chat"
+# Two-press Ctrl+C window: a second press inside this many seconds force-quits.
+_FORCE_QUIT_WINDOW_SECONDS = 2.0
 DARK_THEMES = (
     "monokai",
     "dracula",
@@ -152,7 +154,7 @@ class LilbeeApp(App[None]):
         yield from ()  # screens compose their own ViewTabs + Footer
 
     def on_mount(self) -> None:
-        self.title = f"lilbee — {cfg.chat_model}"
+        self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the gruvbox default.
         persisted = cfg.theme or _DEFAULT_THEME
@@ -209,7 +211,7 @@ class LilbeeApp(App[None]):
         import time
 
         now = time.monotonic()
-        if now - self.last_quit_time < 2.0:
+        if now - self.last_quit_time < _FORCE_QUIT_WINDOW_SECONDS:
             self._force_quit()
             return
         self.last_quit_time = now

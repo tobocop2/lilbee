@@ -16,14 +16,14 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from lilbee.core.config import cfg
 from lilbee.crawler import bootstrap, save, sitemap
-from lilbee.crawler.bootstrap import CrawlerBrowserMissing
+from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
 from lilbee.crawler.models import (
     ConcurrencySpec,
@@ -133,20 +133,20 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     """Fetch a single URL.
 
-    Raises :class:`CrawlerBackendMissing` if the crawler extra isn't installed.
+    Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
     """
     validate_crawl_url(url)
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
-        raise bootstrap.CrawlerBackendMissing(
+        raise bootstrap.CrawlerBackendError(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
         return _fetched_to_result(page)
-    except CrawlerBrowserMissing:
+    except CrawlerBrowserError:
         raise
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
@@ -273,14 +273,14 @@ async def crawl_recursive(
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
-        raise bootstrap.CrawlerBackendMissing(
+        raise bootstrap.CrawlerBackendError(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
 
     # Fail fast before pulling in backend submodules so callers get a clean
-    # CrawlerBrowserMissing instead of a Playwright install banner.
+    # CrawlerBrowserError instead of a Playwright install banner.
     if not bootstrap.chromium_installed():
-        raise CrawlerBrowserMissing(
+        raise CrawlerBrowserError(
             "Playwright Chromium browser not installed. "
             "Run 'uv run playwright install chromium' to enable /crawl."
         )
@@ -323,7 +323,7 @@ async def crawl_recursive(
                 )
             finally:
                 await page_stream.aclose()
-    except CrawlerBrowserMissing:
+    except CrawlerBrowserError:
         raise
     except Exception as exc:
         _handle_crawl_teardown_error(url, exc, cancel=cancel, results=results)
@@ -398,6 +398,61 @@ def _make_flush_page(
     return flush_page
 
 
+async def _ensure_crawler_ready(
+    on_progress: DetailedProgressCallback | None,
+) -> None:
+    """Reject early when the extra is missing; bootstrap Chromium on first use.
+
+    Runs before the Chromium bootstrap so a user without [crawler] doesn't pay
+    the ~160 MB download just to hit the same error afterward. The bootstrap
+    short-circuits when Chromium is already installed; any progress is forwarded
+    through ``on_progress`` so downstream UIs surface a 'setup' stage.
+    """
+    from lilbee.crawler import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendError(
+            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
+        )
+
+    if not bootstrap.chromium_installed():
+        await bootstrap.bootstrap_chromium(on_progress=on_progress)
+
+
+async def _run_crawl(
+    url: str,
+    *,
+    depth: int | None,
+    max_pages: int | None,
+    on_progress: DetailedProgressCallback | None,
+    cancel: threading.Event | None,
+    quiet: bool,
+    include_subdomains: bool,
+    flush_page: Callable[[Any], Awaitable[Path | None]],
+) -> int:
+    """Run the single-URL or recursive crawl. Returns ``pages_seen``."""
+    if depth == 0:
+        result = await crawl_single(url, quiet=quiet)
+        try:
+            await flush_page(result)
+        except OSError:
+            log.exception("Flush failed for %s", result.url)
+        if on_progress:
+            on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+        return 1
+    results = await crawl_recursive(
+        url,
+        max_depth=depth,
+        max_pages=max_pages,
+        on_progress=on_progress,
+        cancel=cancel,
+        quiet=quiet,
+        include_subdomains=include_subdomains,
+        on_result=flush_page,
+    )
+    return len(results)
+
+
 async def crawl_and_save(
     url: str,
     *,
@@ -425,23 +480,7 @@ async def crawl_and_save(
     stream so a cancelled crawl preserves the pages already fetched instead
     of discarding them.
     """
-    # Reject early when the crawler extra isn't installed. Runs before the
-    # Chromium bootstrap so a user without [crawler] doesn't pay the ~160 MB
-    # download just to hit the same error afterward.
-    from lilbee.crawler import crawler_available
-
-    if not crawler_available():
-        raise bootstrap.CrawlerBackendMissing(
-            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
-        )
-
-    # Auto-bootstrap Chromium on first use so every crawl entry point works
-    # on a fresh install without a separate setup step. ``bootstrap_chromium``
-    # short-circuits when Chromium is already installed. Any progress is
-    # forwarded through the same ``on_progress`` callback so downstream UIs
-    # surface a 'setup' stage before the crawl events.
-    if not bootstrap.chromium_installed():
-        await bootstrap.bootstrap_chromium(on_progress=on_progress)
+    await _ensure_crawler_ready(on_progress)
 
     sem = _get_crawl_semaphore()
     if sem is not None:
@@ -453,31 +492,19 @@ async def crawl_and_save(
 
         meta = save.load_crawl_metadata()
         written_paths: list[Path] = []
-        pages_seen = 0
         counter = {"pending": 0}
         flush_page = _make_flush_page(meta, written_paths, counter)
 
-        if depth == 0:
-            result = await crawl_single(url, quiet=quiet)
-            pages_seen = 1
-            try:
-                await flush_page(result)
-            except OSError:
-                log.exception("Flush failed for %s", result.url)
-            if on_progress:
-                on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
-        else:
-            results = await crawl_recursive(
-                url,
-                max_depth=depth,
-                max_pages=max_pages,
-                on_progress=on_progress,
-                cancel=cancel,
-                quiet=quiet,
-                include_subdomains=include_subdomains,
-                on_result=flush_page,
-            )
-            pages_seen = len(results)
+        pages_seen = await _run_crawl(
+            url,
+            depth=depth,
+            max_pages=max_pages,
+            on_progress=on_progress,
+            cancel=cancel,
+            quiet=quiet,
+            include_subdomains=include_subdomains,
+            flush_page=flush_page,
+        )
 
         if counter["pending"] > 0:
             try:

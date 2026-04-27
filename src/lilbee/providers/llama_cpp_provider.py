@@ -49,7 +49,7 @@ _GGML_TO_PY_LEVEL = {
     _GGML_LOG_LEVEL_DEBUG: logging.DEBUG,
 }
 
-_BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+_BATCH_WINDOW_S = 0.01  # 10ms: collect concurrent requests before dispatching
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
@@ -213,9 +213,9 @@ class LlamaCppProvider(LLMProvider):
     def _get_subprocess_worker(self) -> WorkerProcess:
         """Lazy-create and return the subprocess worker."""
         if self._subprocess_worker is None:
-            from lilbee.providers.worker_process import WorkerProcess as WP
+            from lilbee.providers.worker_process import WorkerProcess
 
-            self._subprocess_worker = WP()
+            self._subprocess_worker = WorkerProcess()
         return self._subprocess_worker
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -254,7 +254,7 @@ class LlamaCppProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | Iterator[str]:
-        """Chat completion — serialized via lock (Llama is not thread-safe)."""
+        """Chat completion: serialized via lock (Llama is not thread-safe)."""
         self._chat_lock.acquire()
         try:
             llm = self._get_chat_llm(model)
@@ -284,7 +284,7 @@ class LlamaCppProvider(LLMProvider):
         return []
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
-        """Not supported directly — catalog.py handles downloads."""
+        """Not supported directly: catalog.py handles downloads."""
         raise NotImplementedError(
             f"llama-cpp provider cannot pull model {model!r}. "
             "Download GGUF files manually or use the catalog."

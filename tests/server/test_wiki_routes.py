@@ -277,7 +277,7 @@ class TestWikiEnabled:
         drafts = resp.json()
         assert len(drafts) == 1
         # The Phase D DraftInfo slug is relative to the drafts subdir, not
-        # the wiki root — matches the CLI / service-layer contract.
+        # the wiki root: matches the CLI / service-layer contract.
         assert drafts[0]["slug"] == "failed-page"
         assert drafts[0]["pending_kind"] is None
         assert drafts[0]["faithfulness_score"] == 0.9
@@ -329,7 +329,7 @@ class TestWikiEnabled:
         assert body["paths"] == ["wiki/concepts/x.md"]
 
     async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
-        """Concurrent build calls don't run in parallel — the lock serializes them.
+        """Concurrent build calls don't run in parallel: the lock serializes them.
 
         Asserts that ``run_full_build`` is invoked from a non-loop thread
         (so an LLM-blocking build won't freeze the event loop) and that

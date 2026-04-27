@@ -1,4 +1,4 @@
-"""Reasoning token filter — detects <think>...</think> tags in streaming output.
+"""Reasoning token filter: detects <think>...</think> tags in streaming output.
 
 Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
 ``<think>...</think>`` tags. This module provides a stateful filter that
@@ -92,7 +92,10 @@ class _TagParser:
         return StreamToken(content=before, is_reasoning=False)
 
 
-_MAX_REASONING_CHARS = 16_000  # ~4K tokens — safety limit for runaway reasoning
+_MAX_REASONING_CHARS = 16_000  # ~4K tokens, safety limit for runaway reasoning
+# Drain cap kept low: each token pull triggers a model inference step, so a
+# large cap hangs on slow CI runners after a `</think>` truncation.
+_DRAIN_CAP = 512
 
 
 def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
@@ -121,11 +124,15 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
         if final and final.content:
             yield final
         return
-    # Drain a small number of tokens after truncation to capture any
-    # response content that follows a closed </think> tag. Keep the cap
-    # low: each token pull triggers a model inference step, so a large
-    # cap hangs on slow CI runners.
-    _DRAIN_CAP = 512
+    yield from _drain_after_truncation(parser, tokens)
+
+
+def _drain_after_truncation(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
+    """Drain a bounded suffix after `</think>` truncation.
+
+    Captures response content that follows a closed `</think>` tag without
+    pulling the whole stream; bounded by `_DRAIN_CAP` characters.
+    """
     drain_chars = 0
     for token in tokens:
         drain_chars += len(token)

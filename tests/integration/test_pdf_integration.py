@@ -1,4 +1,4 @@
-"""Integration tests for PDF extraction — scanned documents, OCR fallbacks.
+"""Integration tests for PDF extraction: scanned documents, OCR fallbacks.
 
 Uses a rasterized PDF fixture (no selectable text) to exercise the full
 extraction pipeline including Tesseract OCR and vision model fallbacks.

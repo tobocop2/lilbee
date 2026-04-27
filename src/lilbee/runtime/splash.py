@@ -1,11 +1,11 @@
-"""Splash animation lifecycle — starts and stops the animation subprocess.
+"""Splash animation lifecycle: starts and stops the animation subprocess.
 
 The animation itself lives in ``_splash_runner.py`` (stdlib-only, zero lilbee
 imports). This module manages the subprocess, pipe-based IPC, and cleanup.
 
 IPC uses an OS pipe: parent holds the write end, child polls the read end.
 When the parent closes the write end (or dies), the child sees EOF and exits.
-This guarantees no orphan processes — the OS closes the pipe on parent death.
+This guarantees no orphan processes: the OS closes the pipe on parent death.
 """
 
 from __future__ import annotations

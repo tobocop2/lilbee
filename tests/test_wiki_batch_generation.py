@@ -167,7 +167,7 @@ class TestPrefixHeading:
         assert "body text" in out
 
     def test_preserves_existing_h1(self):
-        # Body already starts with an H1 — we keep it verbatim.
+        # Body already starts with an H1: we keep it verbatim.
         already = "# Henry Ford\n\nbody"
         assert _prefix_heading("Henry Ford", already) == already
 
@@ -272,7 +272,7 @@ class TestFinalizeSectionGuards:
     def test_empty_header_label_produces_empty_slug_and_skips(self, stub_embedder, caplog):
         """A header that slugifies to empty (all-punctuation) is dropped."""
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
-        # ``---`` splits into a section whose header is ``---`` — after
+        # ``---`` splits into a section whose header is ``---``: after
         # make_slug, this yields the empty string and the section is
         # dropped with an INFO log. The downstream faithfulness /
         # citation checks never run.
@@ -388,7 +388,7 @@ class TestAllSourcesInScope:
             config=cfg,
             extract_concepts=True,
         )
-        # Still a single-element set — dedup kept the grouped entry.
+        # Still a single-element set: dedup kept the grouped entry.
         assert result == {"a.md"}
 
     def test_skips_sources_below_min_chunks(self):

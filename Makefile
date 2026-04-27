@@ -2,6 +2,7 @@
 
 lint:
 	uv run ruff check src/ tests/
+	uv run python scripts/check_style_rules.py
 
 format:
 	uv run ruff format src/ tests/

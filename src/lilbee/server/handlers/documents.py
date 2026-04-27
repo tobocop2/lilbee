@@ -22,7 +22,7 @@ mimetypes.add_type("text/markdown", ".md")
 
 # Types that can carry script even within an "inline-rendered" category.
 # Keep the deny narrow and explicit. Broadening this set is a security-relevant
-# change — file an issue with the ``security`` label before adding entries.
+# change: file an issue with the ``security`` label before adding entries.
 _RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset(
     {
         "text/html",

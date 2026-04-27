@@ -48,7 +48,7 @@ def isolated_env(tmp_path, monkeypatch):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
     # The ``crawl_recursive`` entry point now gates on ``crawler_available()``
-    # so a missing ``[crawler]`` extra produces ``CrawlerBackendMissing``.
+    # so a missing ``[crawler]`` extra produces ``CrawlerBackendError``.
     # Stub it True here so orchestration tests don't require the crawler extra.
     # Both the SDK façade (used by callers) and the impl (used by tests that
     # import directly) are patched so the value is consistent across import paths.
@@ -256,9 +256,9 @@ class TestCrawlRecursiveOrchestration:
 
     async def test_raises_when_chromium_missing(self, monkeypatch):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
-        with pytest.raises(CrawlerBrowserMissing):
+        with pytest.raises(CrawlerBrowserError):
             await crawl_recursive("https://example.com", max_depth=1)
 
 

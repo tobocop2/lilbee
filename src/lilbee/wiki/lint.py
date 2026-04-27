@@ -187,7 +187,7 @@ def lint_wiki_page(
             issues.append(issue)
 
     wiki_root = config.data_root / config.wiki_dir
-    # wiki_source is like "wiki/summaries/doc.md" — strip the wiki_dir prefix
+    # wiki_source is like "wiki/summaries/doc.md": strip the wiki_dir prefix
     relative = str(wiki_source).removeprefix(str(config.wiki_dir) + "/")
     wiki_path = wiki_root / relative
     if wiki_path.exists():

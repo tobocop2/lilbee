@@ -162,7 +162,7 @@ class TestMarkdownChunking:
 
 @pytest.mark.xdist_group("tree_sitter")
 class TestCodeChunker:
-    """Tree-sitter code chunker tests — grouped to avoid fork-unsafe C parser collisions."""
+    """Tree-sitter code chunker tests: grouped to avoid fork-unsafe C parser collisions."""
 
     def test_python_function_extraction(self):
         from lilbee.data.code_chunker import chunk_code

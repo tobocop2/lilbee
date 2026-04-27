@@ -628,7 +628,7 @@ class TestCorsOriginRegexConfig:
 
     def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
         # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
-        # to set a regex that matches nothing — e.g. ^$.
+        # to set a regex that matches nothing: e.g. ^$.
         env = _clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
         with mock.patch.dict(os.environ, env, clear=True):
@@ -1303,7 +1303,7 @@ class TestBuildCfgFallback:
             built_cfg, error = _build_cfg()
         assert error is not None
         assert "must be a HuggingFace ref" in str(error)
-        # Falls back to defaults — chat_model is the featured Qwen3 ref.
+        # Falls back to defaults: chat_model is the featured Qwen3 ref.
         assert built_cfg.chat_model.endswith(".gguf")
 
     def test_returns_none_error_on_clean_load(self, tmp_path):

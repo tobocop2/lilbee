@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 class LLMOptions(BaseModel):
     """Validated options passed to LLM providers.
-    Only these fields are forwarded — everything else is rejected
+    Only these fields are forwarded: everything else is rejected
     to prevent injection of sensitive parameters like api_base or api_key.
     """
 

@@ -1,4 +1,4 @@
-"""Tests for the document sync engine (mocked — no live server needed)."""
+"""Tests for the document sync engine (mocked: no live server needed)."""
 
 import sys
 from pathlib import Path
@@ -1307,7 +1307,7 @@ class TestTesseractOcrMiddleTier:
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_timeout_zero_disables_cap(self, mock_kf, isolated_env):
-        """``cfg.tesseract_timeout == 0`` means "no limit" — await without wait_for."""
+        """``cfg.tesseract_timeout == 0`` means "no limit": await without wait_for."""
         cfg.enable_ocr = False
         cfg.tesseract_timeout = 0
         empty = _make_empty_result()
@@ -1487,7 +1487,7 @@ class TestIngestMarkdownEdgeCases:
 
 class TestIngestDocumentEdgeCases:
     async def test_empty_extraction_returns_empty(self, isolated_env):
-        """Structured formats now go through kreuzberg — empty result yields no chunks."""
+        """Structured formats now go through kreuzberg: empty result yields no chunks."""
         from lilbee.data.ingest import ingest_document
 
         empty_result = mock.MagicMock(chunks=[])

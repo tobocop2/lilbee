@@ -1,4 +1,4 @@
-"""Tests for _splash_runner.py — animation subprocess utilities."""
+"""Tests for _splash_runner.py: animation subprocess utilities."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""ModelCard — compact card widget for the catalog grid view."""
+"""ModelCard: compact card widget for the catalog grid view."""
 
 from __future__ import annotations
 

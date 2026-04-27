@@ -15,6 +15,7 @@ import multiprocessing.queues
 import os
 import queue
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from typing import Any, TypeVar
@@ -296,6 +297,105 @@ def _configure_worker_logging() -> None:
     root.setLevel(logging.INFO)
 
 
+@dataclass
+class _ModelSlot:
+    """Lazy-loaded model handle plus the name it was loaded for."""
+
+    llm: Any = None
+    name: str = ""
+
+    def reload_for(self, requested: str, loader: Callable[[str], Any]) -> Any:
+        """Return the cached LLM for *requested*, swapping it in if stale."""
+        if self.llm is None or requested != self.name:
+            _close_model(self.llm)
+            self.llm = loader(requested)
+            self.name = requested
+        return self.llm
+
+    def reset(self) -> None:
+        """Drop the cached LLM."""
+        _close_model(self.llm)
+        self.llm = None
+        self.name = ""
+
+
+def _handle_load_model_request(
+    request: LoadModelRequest, embed_slot: _ModelSlot, vision_slot: _ModelSlot
+) -> None:
+    """Reset the appropriate slot when an explicit reload is requested."""
+    if request.model_type == "embed":
+        embed_slot.reset()
+    else:
+        vision_slot.reset()
+
+
+def _handle_embed_request(
+    request: EmbedRequest,
+    config: ConfigSnapshot,
+    embed_slot: _ModelSlot,
+    resp_q: multiprocessing.Queue[_WorkerResponse],
+) -> None:
+    """Resolve the embed model and dispatch."""
+    model_name = request.model or config.embedding_model
+    embed_llm = embed_slot.reload_for(model_name, _load_embed_model)
+    resp_q.put(_handle_embed(embed_llm, request))
+
+
+def _handle_vision_request(
+    request: VisionRequest,
+    config: ConfigSnapshot,
+    vision_slot: _ModelSlot,
+    resp_q: multiprocessing.Queue[_WorkerResponse],
+) -> None:
+    """Resolve the vision model and dispatch (or report "no vision model")."""
+    model_name = request.model or config.vision_model
+    if not model_name:
+        resp_q.put(
+            VisionResponse(
+                request_id=request.request_id,
+                text="",
+                error="No vision model configured; vision OCR is disabled.",
+            )
+        )
+        return
+    vision_llm = vision_slot.reload_for(model_name, _load_vision_model)
+    resp_q.put(_handle_vision(vision_llm, request))
+
+
+def _drain_request_loop(
+    req_q: multiprocessing.Queue[_WorkerRequest],
+    resp_q: multiprocessing.Queue[_WorkerResponse],
+    config: ConfigSnapshot,
+    embed_slot: _ModelSlot,
+    vision_slot: _ModelSlot,
+) -> None:
+    """Pull from req_q until shutdown or queue failure."""
+    while True:
+        try:
+            request = req_q.get()
+        except (EOFError, OSError):
+            return
+        if isinstance(request, ShutdownRequest):
+            return
+        if isinstance(request, LoadModelRequest):
+            _handle_load_model_request(request, embed_slot, vision_slot)
+            continue
+        if isinstance(request, EmbedRequest):
+            _handle_embed_request(request, config, embed_slot, resp_q)
+            continue
+        if isinstance(request, VisionRequest):
+            _handle_vision_request(request, config, vision_slot, resp_q)
+
+
+def _close_queues(*queues: multiprocessing.Queue[Any]) -> None:
+    """Close + join_thread each queue, swallowing any errors."""
+    for q in queues:
+        with contextlib.suppress(Exception):
+            q.close()
+        with contextlib.suppress(Exception):
+            q.join_thread()
+
+
 def _worker_main(
     req_q: multiprocessing.Queue[_WorkerRequest],
     resp_q: multiprocessing.Queue[_WorkerResponse],
@@ -307,71 +407,15 @@ def _worker_main(
     _apply_config_snapshot(config)
     log.info("Worker subprocess online (pid=%s)", os.getpid())
 
-    embed_llm: Any = None
-    vision_llm: Any = None
-    current_embed_model = ""
-    current_vision_model = ""
+    embed_slot = _ModelSlot()
+    vision_slot = _ModelSlot()
 
     try:
-        while True:
-            try:
-                request = req_q.get()
-            except (EOFError, OSError):
-                break
-
-            if isinstance(request, ShutdownRequest):
-                _close_model(embed_llm)
-                _close_model(vision_llm)
-                break
-
-            if isinstance(request, LoadModelRequest):
-                if request.model_type == "embed":
-                    _close_model(embed_llm)
-                    embed_llm = None
-                    current_embed_model = ""
-                else:
-                    _close_model(vision_llm)
-                    vision_llm = None
-                    current_vision_model = ""
-                continue
-
-            if isinstance(request, EmbedRequest):
-                model_name = request.model or config.embedding_model
-                if embed_llm is None or model_name != current_embed_model:
-                    _close_model(embed_llm)
-                    embed_llm = _load_embed_model(model_name)
-                    current_embed_model = model_name
-                embed_resp = _handle_embed(embed_llm, request)
-                resp_q.put(embed_resp)
-                continue
-
-            if isinstance(request, VisionRequest):
-                model_name = request.model or config.vision_model
-                if not model_name:
-                    resp_q.put(
-                        VisionResponse(
-                            request_id=request.request_id,
-                            text="",
-                            error="No vision model configured; vision OCR is disabled.",
-                        )
-                    )
-                    continue
-                if vision_llm is None or model_name != current_vision_model:
-                    _close_model(vision_llm)
-                    vision_llm = _load_vision_model(model_name)
-                    current_vision_model = model_name
-                vision_resp = _handle_vision(vision_llm, request)
-                resp_q.put(vision_resp)
-                continue
+        _drain_request_loop(req_q, resp_q, config, embed_slot, vision_slot)
     finally:
-        with contextlib.suppress(Exception):
-            req_q.close()
-        with contextlib.suppress(Exception):
-            req_q.join_thread()
-        with contextlib.suppress(Exception):
-            resp_q.close()
-        with contextlib.suppress(Exception):
-            resp_q.join_thread()
+        embed_slot.reset()
+        vision_slot.reset()
+        _close_queues(req_q, resp_q)
 
 
 def _close_model(model: Any) -> None:

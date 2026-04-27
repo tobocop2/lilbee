@@ -85,10 +85,7 @@ class NerConceptsExtractor:
         allowed_ent_types = self._config.concept_allowed_ent_types
 
         debug_enabled = log.isEnabledFor(logging.DEBUG)
-        # Per-pass funnel counters; emitted once after the loop so the
-        # DEBUG trace captures the whole corpus in one line instead of
-        # one per chunk.
-        funnel = {
+        funnel: dict[str, int] = {
             "raw_ents": 0,
             "type_filter_dropped": 0,
             "label_sanity_dropped_entities": 0,
@@ -97,23 +94,9 @@ class NerConceptsExtractor:
         cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
         for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
             ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
-            for ent in doc.ents:
-                funnel["raw_ents"] += 1
-                if ent.label_ not in allowed_ent_types:
-                    funnel["type_filter_dropped"] += 1
-                    continue
-                surface = ent.text.strip()
-                if not is_valid_label(surface):
-                    funnel["label_sanity_dropped_entities"] += 1
-                    if debug_enabled:
-                        log.debug("label-sanity: rejected entity %r", surface)
-                    continue
-                key = _normalize(surface)
-                rec = entity_records.setdefault(
-                    key, _Aggregate(label=surface, type_hint=ent.label_)
-                )
-                rec.refs.add(ref)
-                funnel["kept_entity_surfaces"] += 1
+            _accumulate_doc_entities(
+                doc, ref, entity_records, allowed_ent_types, funnel, debug_enabled
+            )
 
         if debug_enabled:
             log.debug(
@@ -132,6 +115,32 @@ class NerConceptsExtractor:
                 results.append(record)
         results.sort(key=lambda e: (e.kind.value, e.slug))
         return results
+
+
+def _accumulate_doc_entities(
+    doc: Any,
+    ref: ChunkRef,
+    entity_records: dict[str, _Aggregate],
+    allowed_ent_types: set[str] | frozenset[str],
+    funnel: dict[str, int],
+    debug_enabled: bool,
+) -> None:
+    """Fold one spaCy doc's entities into ``entity_records`` (mutated in place)."""
+    for ent in doc.ents:
+        funnel["raw_ents"] += 1
+        if ent.label_ not in allowed_ent_types:
+            funnel["type_filter_dropped"] += 1
+            continue
+        surface = ent.text.strip()
+        if not is_valid_label(surface):
+            funnel["label_sanity_dropped_entities"] += 1
+            if debug_enabled:
+                log.debug("label-sanity: rejected entity %r", surface)
+            continue
+        key = _normalize(surface)
+        rec = entity_records.setdefault(key, _Aggregate(label=surface, type_hint=ent.label_))
+        rec.refs.add(ref)
+        funnel["kept_entity_surfaces"] += 1
 
 
 class _Aggregate:

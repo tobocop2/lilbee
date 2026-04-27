@@ -1,4 +1,4 @@
-"""Chat message widgets — user and assistant bubbles."""
+"""Chat message widgets: user and assistant bubbles."""
 
 from __future__ import annotations
 

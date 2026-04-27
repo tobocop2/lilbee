@@ -360,6 +360,6 @@ class TestPruneWiki:
 
     def test_uses_default_config_when_none(self, tmp_path: Path):
         store = MagicMock(spec=Store)
-        # Should not raise — uses cfg as default
+        # Should not raise: uses cfg as default
         report = prune_wiki(store, config=None)
         assert isinstance(report, PruneReport)

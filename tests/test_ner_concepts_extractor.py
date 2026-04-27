@@ -33,7 +33,7 @@ class _FakeSpan:
 @dataclass
 class _FakeDoc:
     """Stand-in for a spaCy ``Doc``. ``noun_chunks`` is accepted and
-    ignored — the Phase D extractor does not read it — so older
+    ignored: the Phase D extractor does not read it: so older
     fixtures and integration tests that still populate it keep
     compiling."""
 

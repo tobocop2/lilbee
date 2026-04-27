@@ -131,7 +131,7 @@ def _split_batched_output(
     right ``EntityKind``; unknown headers are dropped. Labels whose
     section could not be recovered at all are surfaced to the caller
     (they show up as *missing from the return dict* rather than a
-    separate list — caller loops over the expected sets to write
+    separate list: caller loops over the expected sets to write
     PENDING markers).
     """
     concepts = expected_concept_labels or set()
@@ -152,7 +152,7 @@ def _split_batched_output(
         if kind_label is None:
             kind_label = _match_label(lowered, concepts, EntityKind.CONCEPT)
         if kind_label is None:
-            # Concept labels come from the LLM itself — tag any
+            # Concept labels come from the LLM itself: tag any
             # unmatched section as CONCEPT only when the caller is
             # expecting concept curation; otherwise drop it as
             # noise.
@@ -196,7 +196,7 @@ def _build_batch_prompt(
     entity_labels = ", ".join(clean_label_for_display(e.label) for e in entities) or "(none)"
     if extract_concepts:
         concept_instruction = (
-            "First, identify 3-5 CONCEPTS — abstract topics or domain terms "
+            "First, identify 3-5 CONCEPTS: abstract topics or domain terms "
             "from the source that deserve a standalone wiki page. Do NOT include "
             "pronouns, articles, or generic nouns.\n\n"
             "Then write a wiki section for each of the concepts you identified, "

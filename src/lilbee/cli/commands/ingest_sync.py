@@ -275,6 +275,70 @@ def rebuild(
     console.print(f"Rebuilt: {len(result.added)} documents ingested")
 
 
+def _validate_file_paths(file_paths: list[Path]) -> None:
+    """Exit on the first missing path; respects ``cfg.json_mode``."""
+    for fp in file_paths:
+        if fp.exists():
+            continue
+        if cfg.json_mode:
+            json_output({"error": f"Path not found: {fp}"})
+            raise SystemExit(1)
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Path not found: {fp}")
+        raise SystemExit(1)
+
+
+def _crawl_urls_step(
+    urls: list[str],
+    *,
+    crawl: bool,
+    depth: int | None,
+    max_pages: int | None,
+    include_subdomains: bool,
+) -> list[Path]:
+    """Crawl URLs (or fail fast when crawler extra is missing). Returns saved paths."""
+    if not urls:
+        return []
+    from lilbee.crawler import crawler_available
+
+    if not crawler_available():
+        console.print(
+            f"[{theme.ERROR}]Web crawling requires: pip install 'lilbee[crawler]'[/{theme.ERROR}]"
+        )
+        raise SystemExit(1)
+    crawled_paths = _crawl_urls_blocking(
+        urls,
+        crawl=crawl,
+        depth=depth,
+        max_pages=max_pages,
+        include_subdomains=include_subdomains,
+    )
+    if not cfg.json_mode:
+        console.print(
+            f"[{theme.MUTED}]Crawled {len(crawled_paths)} page(s)"
+            f" from {len(urls)} URL(s)[/{theme.MUTED}]"
+        )
+    return crawled_paths
+
+
+def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: bool) -> None:
+    """Run the JSON-mode finish: copy files, sync, emit one structured result."""
+    from lilbee.data.ingest import sync
+
+    copy_result = CopyResult()
+    if file_paths:
+        copy_result = copy_files(file_paths, force=force)
+    result = asyncio.run(sync(quiet=True))
+    json_output(
+        {
+            "command": "add",
+            "copied": copy_result.copied,
+            "skipped": copy_result.skipped,
+            "crawled": len(crawled_paths),
+            "sync": sync_result_to_json(result),
+        }
+    )
+
+
 def add(
     paths: list[str] = _paths_argument,
     data_dir: Path | None = data_dir_option,
@@ -292,56 +356,19 @@ def add(
     _apply_ocr_overrides(ocr, ocr_timeout)
 
     file_paths, urls = _partition_inputs(paths)
-    # Validate file paths exist
-    for fp in file_paths:
-        if not fp.exists():
-            if cfg.json_mode:
-                json_output({"error": f"Path not found: {fp}"})
-                raise SystemExit(1)
-            console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Path not found: {fp}")
-            raise SystemExit(1)
+    _validate_file_paths(file_paths)
 
     try:
-        # Crawl URLs first (saves .md files into documents/_web/)
-        crawled_paths: list[Path] = []
-        if urls:
-            from lilbee.crawler import crawler_available
-
-            if not crawler_available():
-                console.print(
-                    f"[{theme.ERROR}]Web crawling requires: "
-                    f"pip install 'lilbee[crawler]'[/{theme.ERROR}]"
-                )
-                raise SystemExit(1)
-            crawled_paths = _crawl_urls_blocking(
-                urls,
-                crawl=crawl,
-                depth=depth,
-                max_pages=max_pages,
-                include_subdomains=include_subdomains,
-            )
-            if not cfg.json_mode:
-                console.print(
-                    f"[{theme.MUTED}]Crawled {len(crawled_paths)} page(s)"
-                    f" from {len(urls)} URL(s)[/{theme.MUTED}]"
-                )
+        crawled_paths = _crawl_urls_step(
+            urls,
+            crawl=crawl,
+            depth=depth,
+            max_pages=max_pages,
+            include_subdomains=include_subdomains,
+        )
 
         if cfg.json_mode:
-            from lilbee.data.ingest import sync
-
-            copy_result = CopyResult()
-            if file_paths:
-                copy_result = copy_files(file_paths, force=force)
-            result = asyncio.run(sync(quiet=True))
-            json_output(
-                {
-                    "command": "add",
-                    "copied": copy_result.copied,
-                    "skipped": copy_result.skipped,
-                    "crawled": len(crawled_paths),
-                    "sync": sync_result_to_json(result),
-                }
-            )
+            _add_json_mode(file_paths, crawled_paths, force=force)
             return
 
         if file_paths:

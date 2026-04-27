@@ -1,4 +1,4 @@
-"""Tests for Textual TUI widgets — 100 % coverage target."""
+"""Tests for Textual TUI widgets: 100 % coverage target."""
 
 from __future__ import annotations
 
@@ -880,14 +880,14 @@ class TestSlashSuggester:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         s = SlashSuggester(use_cache=False)
-        # Has space but doesn't start with / — hits _suggest_argument which returns None
+        # Has space but doesn't start with /: hits _suggest_argument which returns None
         assert await s.get_suggestion("hello world") is None
 
     async def test_plain_text_no_space_returns_none(self) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         s = SlashSuggester(use_cache=False)
-        # No space, doesn't start with / — hits line 43 return None
+        # No space, doesn't start with /: hits line 43 return None
         assert await s.get_suggestion("hello") is None
 
     async def test_no_match_returns_none(self) -> None:
@@ -2296,7 +2296,7 @@ class TestGridSelect:
             assert gs is not None
             # highlighted < width means top row, triggers LeaveUp
             assert grid.highlighted < gs[0]
-            # Just verify it doesn't crash — LeaveUp is posted
+            # Just verify it doesn't crash: LeaveUp is posted
             grid.action_cursor_up()
             await pilot.pause()
 
@@ -2523,7 +2523,7 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            # Populate with empty lists — falls back to configured default
+            # Populate with empty lists: falls back to configured default
             bar._populate([], [])
             await pilot.pause()
             from textual.widgets import Select
@@ -2748,7 +2748,7 @@ class TestSyncSelectPrepend:
 
         Regression test for bb-6jpp: Textual's ``set_options`` doesn't
         refresh the closed-state label when the existing value still
-        matches — ``_sync_select`` now forces that refresh via
+        matches: ``_sync_select`` now forces that refresh via
         ``_refresh_select_label``.
         """
         from textual.app import App
@@ -4299,7 +4299,7 @@ class TestModelListItem:
 
 
 class TestSearchHFCtaItem:
-    """Direct-construction pattern (no run_test) — same rationale as TestModelListItem."""
+    """Direct-construction pattern (no run_test): same rationale as TestModelListItem."""
 
     def test_action_select_posts_message_with_term(self) -> None:
         from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem

@@ -1,7 +1,7 @@
 """Process-lifetime background asyncio loop for TUI workers.
 
 One loop on a daemon thread, used by every @work(thread=True) worker.
-CLI one-shots and the server own their own loops — don't route them here.
+CLI one-shots and the server own their own loops: don't route them here.
 """
 
 from __future__ import annotations

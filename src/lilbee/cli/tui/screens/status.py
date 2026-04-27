@@ -1,4 +1,4 @@
-"""Status screen — knowledge base info with collapsible sections."""
+"""Status screen: knowledge base info with collapsible sections."""
 
 from __future__ import annotations
 

@@ -248,7 +248,7 @@ async def _handle_scanned_pdf_fallback(
         return []
 
     log.info(
-        "Scanned PDF detected — extracted with Tesseract OCR: %s. "
+        "Scanned PDF detected: extracted with Tesseract OCR: %s. "
         "For structured markdown output (tables, headings), "
         "configure a vision model via PUT /api/models/vision.",
         source_name,
@@ -284,7 +284,7 @@ async def ingest_document(
         )
         if isinstance(fallback, list):
             return fallback
-        # Tesseract OCR succeeded — use the updated ExtractionResult
+        # Tesseract OCR succeeded: use the updated ExtractionResult
         result = fallback
 
     if not result.chunks:

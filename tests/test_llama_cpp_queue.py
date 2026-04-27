@@ -257,7 +257,7 @@ class TestChatLock:
         for t in threads:
             t.join(timeout=5)
 
-        assert not overlap_detected.is_set(), "Chat calls overlapped — lock not working"
+        assert not overlap_detected.is_set(), "Chat calls overlapped: lock not working"
         for r in results:
             assert r == "ok"
         provider.shutdown()
@@ -467,7 +467,7 @@ class TestLockedStreamIteratorExceptionRelease:
         stream = _LockedStreamIterator(exploding_iter(), lock)
         # First call succeeds
         assert next(stream) == "ok"
-        # Second call hits the ValueError — lock should be released
+        # Second call hits the ValueError: lock should be released
         with pytest.raises(ValueError, match="boom"):
             next(stream)
         assert lock.acquire(blocking=False)

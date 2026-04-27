@@ -33,6 +33,9 @@ from lilbee.core.services import get_services
 from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 
+# How many top concepts to show inline before truncating with a ``+N more`` tail.
+_TOPIC_PREVIEW_LIMIT = 5
+
 _scope_option = typer.Option(
     SearchScope.BOTH,
     "--scope",
@@ -272,8 +275,8 @@ def _topics_overview(top_k: int) -> None:
     table.add_column("Size", justify="right")
     table.add_column("Top Concepts", style=theme.ACCENT)
     for comm in communities:
-        preview = ", ".join(comm.concepts[:5])
-        if len(comm.concepts) > 5:
-            preview += f" (+{len(comm.concepts) - 5} more)"
+        preview = ", ".join(comm.concepts[:_TOPIC_PREVIEW_LIMIT])
+        if len(comm.concepts) > _TOPIC_PREVIEW_LIMIT:
+            preview += f" (+{len(comm.concepts) - _TOPIC_PREVIEW_LIMIT} more)"
         table.add_row(str(comm.cluster_id), str(comm.size), preview)
     console.print(table)

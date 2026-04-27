@@ -1,4 +1,4 @@
-"""Tests for catalog.py — model catalog, HF API fetching, filtering, downloading."""
+"""Tests for catalog.py: model catalog, HF API fetching, filtering, downloading."""
 
 from pathlib import Path
 from typing import Any
@@ -911,24 +911,24 @@ class TestDownloadModel:
     def test_task_cancelled_propagates_unwrapped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """TaskCancelled from the progress callback must bubble up as-is.
+        """TaskCancelledError from the progress callback must bubble up as-is.
 
-        Regression test for bb-nis1: catalog.py used to wrap TaskCancelled in
+        Regression test for bb-nis1: catalog.py used to wrap TaskCancelledError in
         a generic RuntimeError via its 'except Exception' block, causing
         cancelled downloads to land as FAILED instead of CANCELLED in the
         Task Center.
         """
-        from lilbee.runtime.cancellation import TaskCancelled
+        from lilbee.runtime.cancellation import TaskCancelledError
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
-            raise TaskCancelled
+            raise TaskCancelledError
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
-        with pytest.raises(TaskCancelled):
+        with pytest.raises(TaskCancelledError):
             download_model(entry)
 
     def test_repo_not_found_raises_runtime_error(
@@ -1798,10 +1798,10 @@ class TestQuantTier:
             assert quant_tier(quant_name) == expected_tier
 
     def test_empty_returns_dash(self) -> None:
-        assert quant_tier("") == "—"
+        assert quant_tier("") == "--"
 
     def test_unknown_returns_dash(self) -> None:
-        assert quant_tier("WEIRD_QUANT") == "—"
+        assert quant_tier("WEIRD_QUANT") == "--"
 
     def test_compact_tiers(self) -> None:
         for q in ("Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L"):

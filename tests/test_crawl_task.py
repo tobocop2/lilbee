@@ -132,9 +132,9 @@ class TestRunCrawl:
     async def test_crawler_backend_missing_surfaces_actionable_error(self, mock_crawl):
         """When the crawler extra isn't installed, the task.error reaches the
         client with the ``uv sync --extra crawler`` hint, not a raw stack trace."""
-        from lilbee.crawler import CrawlerBackendMissing
+        from lilbee.crawler import CrawlerBackendError
 
-        mock_crawl.side_effect = CrawlerBackendMissing(
+        mock_crawl.side_effect = CrawlerBackendError(
             "Web crawling is not available. Run `uv sync --extra crawler` to enable it."
         )
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)

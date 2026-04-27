@@ -203,7 +203,7 @@ def _resolve_multi_source_citations(
         if not matched_source and source_names:
             # No citation match found; default to first listed source
             log.warning(
-                "No citation match for chunk — defaulting to first source: %s",
+                "No citation match for chunk: defaulting to first source: %s",
                 source_names[0],
             )
             matched_source = source_names[0]

@@ -30,6 +30,16 @@ if TYPE_CHECKING:
 
 wiki_app = typer.Typer(help="Wiki layer commands: generate, lint, citations, status, prune.")
 
+# Citations table renders excerpts truncated to ``_CITATION_EXCERPT_MAX_CHARS``;
+# the ellipsis insertion point is one ``...`` shorter so the visible string never
+# exceeds the column width.
+_CITATION_EXCERPT_MAX_CHARS = 60
+_CITATION_EXCERPT_TRUNCATE_AT = 57
+
+# Dry-run NER output previews the first ``_NER_DRY_RUN_PREVIEW_LIMIT`` sources
+# per row, with ``", ..."`` appended when more were dropped.
+_NER_DRY_RUN_PREVIEW_LIMIT = 3
+
 
 def _count_md_files(directory: Path) -> int:
     """Count markdown files in a directory."""
@@ -119,9 +129,13 @@ def wiki_citations(
     table.add_column("Key", style=theme.ACCENT)
     table.add_column("Source")
     table.add_column("Type", style=theme.MUTED)
-    table.add_column("Excerpt", max_width=60)
+    table.add_column("Excerpt", max_width=_CITATION_EXCERPT_MAX_CHARS)
     for rec in records:
-        excerpt = rec["excerpt"][:57] + "..." if len(rec["excerpt"]) > 60 else rec["excerpt"]
+        excerpt = (
+            rec["excerpt"][:_CITATION_EXCERPT_TRUNCATE_AT] + "..."
+            if len(rec["excerpt"]) > _CITATION_EXCERPT_MAX_CHARS
+            else rec["excerpt"]
+        )
         table.add_row(rec["citation_key"], rec["source_filename"], rec["claim_type"], excerpt)
     console.print(table)
 
@@ -357,7 +371,8 @@ def _wiki_build_dry_run_output(entities: list[ExtractedEntity]) -> None:
             str(row["kind"]),
             str(row["type_hint"]),
             str(row["mentions"]),
-            ", ".join(sources_list[:3]) + (", ..." if len(sources_list) > 3 else ""),
+            ", ".join(sources_list[:_NER_DRY_RUN_PREVIEW_LIMIT])
+            + (", ..." if len(sources_list) > _NER_DRY_RUN_PREVIEW_LIMIT else ""),
         )
     console.print(table)
     console.print(

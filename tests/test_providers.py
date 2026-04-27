@@ -1,4 +1,4 @@
-"""Tests for the LLM provider abstraction layer (mocked — no live servers needed)."""
+"""Tests for the LLM provider abstraction layer (mocked: no live servers needed)."""
 
 from __future__ import annotations
 
@@ -529,7 +529,7 @@ class TestLlamaCppProvider:
         provider.embed(["a"])
         provider.embed(["b"])
 
-        # With explicit num_ctx, no metadata read needed — only 1 Llama call.
+        # With explicit num_ctx, no metadata read needed: only 1 Llama call.
         # Second embed reuses the cached instance.
         assert mock_llama_cpp.Llama.call_count == 1
 
@@ -2355,7 +2355,7 @@ class TestFindMmprojForModel:
             find_mmproj_for_model(blob_path)
 
     def test_hf_cache_snapshots_without_mmproj_falls_through(self, tmp_path: Path) -> None:
-        """snapshots/ tree exists but no mmproj GGUF lives in any snapshot —
+        """snapshots/ tree exists but no mmproj GGUF lives in any snapshot --
         the HF helper returns None and the flat-dir fallback takes over."""
         from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
 

@@ -1,4 +1,4 @@
-"""Background crawl task management — start, track, and query crawl operations."""
+"""Background crawl task management: start, track, and query crawl operations."""
 
 import asyncio
 import logging
@@ -113,7 +113,7 @@ async def run_crawl(task: CrawlTask) -> None:
         task.status = TaskStatus.FAILED
         task.error = str(exc)
         task.finished_at = now_iso()
-        log.warning("Crawl failed: %s — %s", task.url, exc)
+        log.warning("Crawl failed: %s: %s", task.url, exc)
     finally:
         task._async_task = None
 

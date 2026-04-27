@@ -66,7 +66,7 @@ class SessionManager:
         return hmac.compare_digest(auth_header, f"Bearer {self.token}")
 
 
-# Singleton instance — used by AuthMiddleware and the app lifespan.
+# Singleton instance: used by AuthMiddleware and the app lifespan.
 session_manager = SessionManager()
 
 

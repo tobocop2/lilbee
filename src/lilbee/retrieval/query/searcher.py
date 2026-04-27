@@ -44,6 +44,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# BM25 probe needs at least this many hits to compare top vs. runner-up
+# scores for the expansion-skip heuristic.
+_MIN_BM25_PROBE_RESULTS = 2
+
 
 class ChatMessage(TypedDict):
     """A single chat message with role and content."""
@@ -187,7 +191,7 @@ class Searcher:
         top_score = results[0].relevance_score or 0
         if top_score < self._config.expansion_skip_threshold:
             return False
-        if len(results) < 2:
+        if len(results) < _MIN_BM25_PROBE_RESULTS:
             return True
         second_score = results[1].relevance_score or 0
         return (top_score - second_score) >= self._config.expansion_skip_gap
@@ -292,6 +296,46 @@ class Searcher:
         selected.sort()
         return [results[i] for i in selected]
 
+    def _merge_variant_results(
+        self,
+        question: str,
+        query_vec: list[float],
+        results: list[SearchChunk],
+        seen: set[tuple[str, int]],
+        top_k: int,
+        chunk_type: str | None,
+    ) -> None:
+        """Append unseen variant-search hits to ``results`` (in place)."""
+        for variant, variant_vec in self._expand_query(question, query_vec):
+            variant_results = self._store.search(
+                variant_vec,
+                top_k=top_k,
+                query_text=variant,
+                chunk_type=chunk_type,
+            )
+            for r in variant_results:
+                key = (r.source, r.chunk_index)
+                if key not in seen:
+                    results.append(r)
+                    seen.add(key)
+
+    def _merge_hyde_results(
+        self,
+        question: str,
+        results: list[SearchChunk],
+        seen: set[tuple[str, int]],
+        top_k: int,
+    ) -> None:
+        """Append unseen HyDE hits to ``results`` (in place), reweighted by ``hyde_weight``."""
+        for r in self._hyde_search(question, top_k):
+            key = (r.source, r.chunk_index)
+            if key in seen:
+                continue
+            if r.distance is not None and self._config.hyde_weight > 0:
+                r = r.model_copy(update={"distance": r.distance / self._config.hyde_weight})
+            results.append(r)
+            seen.add(key)
+
     def search(
         self,
         question: str,
@@ -309,8 +353,8 @@ class Searcher:
 
         When ``chunk_type="wiki"`` but wiki generation is disabled on the
         config, the filter is normalized to ``None`` (mixed pool) and a
-        warning is logged — with wiki off the chunks table has no wiki
-        rows, so honouring the filter would silently return zero results.
+        warning is logged: with wiki off the chunks table has no wiki rows,
+        so honouring the filter would silently return zero results.
         """
         if top_k == 0:
             top_k = self._config.top_k
@@ -328,27 +372,9 @@ class Searcher:
         if self._should_skip_expansion(question):
             return results[: top_k * 2]
         seen = {(r.source, r.chunk_index) for r in results}
-        for variant, variant_vec in self._expand_query(question, query_vec):
-            variant_results = self._store.search(
-                variant_vec,
-                top_k=top_k,
-                query_text=variant,
-                chunk_type=chunk_type,
-            )
-            for r in variant_results:
-                key = (r.source, r.chunk_index)
-                if key not in seen:
-                    results.append(r)
-                    seen.add(key)
+        self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
         if self._config.hyde:
-            hyde_results = self._hyde_search(question, top_k)
-            for r in hyde_results:
-                key = (r.source, r.chunk_index)
-                if key not in seen:
-                    if r.distance is not None and self._config.hyde_weight > 0:
-                        r = r.model_copy(update={"distance": r.distance / self._config.hyde_weight})
-                    results.append(r)
-                    seen.add(key)
+            self._merge_hyde_results(question, results, seen, top_k)
         results = self._apply_concept_boost(results, question)
         return results[: top_k * 2]
 
@@ -385,7 +411,7 @@ class Searcher:
         return results, messages
 
     _NO_EMBED_WARNING = (
-        "Chat only — no document search configured. "
+        "Chat only: no document search configured. "
         "Install an embedding model: lilbee models install nomic-embed-text\n\n"
     )
     _NO_RESULTS_MESSAGE = "No relevant documents found for this query."
@@ -456,6 +482,30 @@ class Searcher:
         citations = deduplicate_sources(source_list)
         return f"{answer}\n\nSources:\n" + "\n".join(citations)
 
+    def _stream_no_embed_path(
+        self,
+        question: str,
+        history: list[ChatMessage] | None,
+        options: dict[str, Any] | None,
+    ) -> Generator[StreamToken, None, None]:
+        """Streaming branch when no embedding model is configured (chat-only)."""
+        from lilbee.retrieval.reasoning import StreamToken, filter_reasoning
+
+        yield StreamToken(content=self._NO_EMBED_WARNING, is_reasoning=False)
+        messages = self._direct_messages(question, history)
+        provider_messages = self._messages_for_provider(messages)
+        opts = options if options is not None else self._config.generation_options()
+        raw = self._provider.chat(provider_messages, stream=True, options=opts or None)
+        try:
+            for st in filter_reasoning(cast(Iterator[str], raw), show=self._config.show_reasoning):
+                if st.content:
+                    yield st
+        except (ConnectionError, OSError) as exc:
+            yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
+        finally:
+            if hasattr(raw, "close"):
+                raw.close()
+
     def ask_stream(
         self,
         question: str,
@@ -469,22 +519,7 @@ class Searcher:
         from lilbee.retrieval.reasoning import StreamToken, filter_reasoning
 
         if not self._embedder.embedding_available():
-            yield StreamToken(content=self._NO_EMBED_WARNING, is_reasoning=False)
-            messages = self._direct_messages(question, history)
-            provider_messages = self._messages_for_provider(messages)
-            opts = options if options is not None else self._config.generation_options()
-            raw = self._provider.chat(provider_messages, stream=True, options=opts or None)
-            try:
-                for st in filter_reasoning(
-                    cast(Iterator[str], raw), show=self._config.show_reasoning
-                ):
-                    if st.content:
-                        yield st
-            except (ConnectionError, OSError) as exc:
-                yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
-            finally:
-                if hasattr(raw, "close"):
-                    raw.close()
+            yield from self._stream_no_embed_path(question, history, options)
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
@@ -511,7 +546,7 @@ class Searcher:
         finally:
             if hasattr(raw_stream, "close"):
                 raw_stream.close()
-        # Note: LLM-generated citation blocks in streamed tokens cannot be
+        # LLM-generated citation blocks in streamed tokens cannot be
         # retroactively stripped. The system prompt discourages them; this
         # only filters the code-appended Sources block to cited chunks.
         full_answer = "".join(answer_parts)

@@ -560,7 +560,7 @@ class TestConfigUpdateRoute:
         _inner()
 
     def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
-        # Invalid character class — `p-a` is a backwards range; should be rejected
+        # Invalid character class: `p-a` is a backwards range; should be rejected
         # at PATCH time rather than crashing the next crawl with an opaque error.
         resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
         assert resp.status_code == 400
@@ -879,10 +879,10 @@ class TestSetupCrawlerRoutes:
 
     def test_post_setup_crawler_emits_error_when_bootstrap_raises(self, client):
         """Non-zero-exit bootstrap routes through sse_error before done."""
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         async def _fake_bootstrap(on_progress=None):
-            raise CrawlerBrowserMissing("network unreachable")
+            raise CrawlerBrowserError("network unreachable")
 
         with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
             resp = client.post("/setup/crawler")

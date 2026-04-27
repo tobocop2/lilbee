@@ -9,7 +9,7 @@ from pydantic import Field
 from lilbee.providers.model_ref import PROVIDER_PREFIXES
 
 
-def ConfigField(
+def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCase
     *args: Any,
     writable: bool = False,
     reindex: bool = False,
@@ -49,6 +49,10 @@ _MODEL_FIELD_TO_TASK: dict[str, str] = {
     "vision_model": "vision",
     "reranker_model": "rerank",
 }
+
+# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
+# two ``/`` separators; one-slash refs are bare repo IDs.
+_NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 
 def _find_model_catalog_entry(ref: str) -> Any:
@@ -92,7 +96,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     _enforce_role_match(ref, entry, field_name)
     # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
     # the exact installed quant; fall back to the catalog ref otherwise.
-    if ref.endswith(".gguf") and ref.count("/") >= 2:
+    if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
         return ref
     canonical: str = entry.ref
     return canonical

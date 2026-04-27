@@ -1,4 +1,4 @@
-"""Real-file format tests — full sync() pipeline with actual files on disk.
+"""Real-file format tests: full sync() pipeline with actual files on disk.
 
 All document formats go through kreuzberg. Code files still use tree-sitter.
 Embeddings are mocked (no live LLM server needed). kreuzberg is mocked for document
@@ -156,7 +156,7 @@ class TestSyncImage:
 
 
 # ---------------------------------------------------------------------------
-# Code — all supported languages through full sync pipeline
+# Code: all supported languages through full sync pipeline
 # ---------------------------------------------------------------------------
 
 _CODE_FIXTURES: dict[str, tuple[str, str]] = {

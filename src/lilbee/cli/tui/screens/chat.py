@@ -1,4 +1,4 @@
-"""Chat screen — scrollable message log with streaming markdown responses."""
+"""Chat screen: scrollable message log with streaming markdown responses."""
 
 from __future__ import annotations
 
@@ -58,6 +58,11 @@ log = logging.getLogger(__name__)
 _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
+# Throttle auto-scroll to ~6 fps so heavy token streams don't peg the renderer.
+_STREAM_SCROLL_INTERVAL_SECONDS = 0.15
+# Treat the user as "still at the bottom" when within this many lines so a tiny
+# stray scroll doesn't disable auto-follow during streaming.
+_AUTO_SCROLL_TAIL_LINES = 5
 
 
 def _remove_copied_files(names: list[str]) -> None:
@@ -806,7 +811,7 @@ class ChatScreen(Screen[None]):
                         response_parts.append(token.content)
                         call_from_thread(self, widget.append_content, token.content)
                     now = time.monotonic()
-                    if now - last_scroll >= 0.15:
+                    if now - last_scroll >= _STREAM_SCROLL_INTERVAL_SECONDS:
                         call_from_thread(self, self._scroll_to_bottom)
                         last_scroll = now
                 except Exception:
@@ -832,9 +837,9 @@ class ChatScreen(Screen[None]):
 
     def _scroll_to_bottom(self) -> None:
         log_widget = self.query_one("#chat-log", VerticalScroll)
-        # Only auto-scroll if user is near the bottom (within 5 lines).
+        # Only auto-scroll while the user is still tailing the output.
         # If they scrolled up to read, don't yank them back.
-        if log_widget.max_scroll_y - log_widget.scroll_y < 5:
+        if log_widget.max_scroll_y - log_widget.scroll_y < _AUTO_SCROLL_TAIL_LINES:
             log_widget.scroll_end(animate=False)
 
     def action_scroll_up(self) -> None:

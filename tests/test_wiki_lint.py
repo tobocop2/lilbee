@@ -296,7 +296,7 @@ class TestOrphanDetection:
         assert "wiki/entities/henry-ford.md" not in orphan_slugs
 
     def test_alias_link_form_counts_as_inbound(self, tmp_path: Path):
-        # [[slug|display text]] should still count — slug is the left side.
+        # [[slug|display text]] should still count: slug is the left side.
         write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
         write_wiki_page(tmp_path, "summaries", "doc", "See [[braking|the brake chapter]].\n")
         store = MagicMock(spec=Store)
@@ -376,7 +376,7 @@ class TestLintModelChanged:
         assert any("model_changed" in i.message for i in issues)
 
     def test_model_changed_does_not_trigger_regen(self):
-        """Model change is a warning, not an error — no auto-regeneration."""
+        """Model change is a warning, not an error: no auto-regeneration."""
         text = "---\ngenerated_by: old-model\n---\n\n# Doc\n"
         result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is not None

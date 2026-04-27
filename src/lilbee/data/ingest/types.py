@@ -21,7 +21,7 @@ class FileToProcess(NamedTuple):
 
 
 # Minimum total chars for extracted text to be considered meaningful.
-# 50 chars ≈ 12 words — if a PDF yields less, it's almost certainly a scanned
+# 50 chars ≈ 12 words: if a PDF yields less, it's almost certainly a scanned
 # document with no embedded text layer. Text PDFs with even just a title page
 # easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
 _MIN_MEANINGFUL_CHARS = 50

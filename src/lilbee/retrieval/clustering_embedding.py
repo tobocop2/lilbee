@@ -1,4 +1,4 @@
-"""Chunk-level mutual-kNN source clusterer — default wiki synthesis backend.
+"""Chunk-level mutual-kNN source clusterer: default wiki synthesis backend.
 
 Pipeline:
 
@@ -76,7 +76,7 @@ _MIN_K = 5
 _MAX_K = 20
 
 # Minimum token length for TF-IDF labeling. Shorter tokens are mostly
-# articles, prepositions, and single letters — noise that inflates term
+# articles, prepositions, and single letters: noise that inflates term
 # counts without adding topic signal. Three characters keeps useful
 # acronyms (api, xml, sql).
 _MIN_TF_TOKEN_LEN = 3
@@ -212,7 +212,7 @@ def mutual_knn(matrix: np.ndarray, k: int) -> dict[int, set[int]]:
         block_rows = np.arange(stop - start)
         sim_block[block_rows, np.arange(start, stop)] = -math.inf
         # Partition by largest similarities without allocating a negated
-        # copy of the block — pass a negative kth to select the tail.
+        # copy of the block: pass a negative kth to select the tail.
         neighbor_idx = np.argpartition(sim_block, -effective_k, axis=1)[:, -effective_k:]
         for local_row, global_row in enumerate(range(start, stop)):
             top_neighbors[global_row] = set(neighbor_idx[local_row].tolist())
@@ -235,7 +235,7 @@ def label_propagation(
     broken by smallest label id so the outcome is reproducible across
     runs on the same corpus. The caller is responsible for passing a
     complete ``adjacency`` (one entry per node 0..n-1) and an ``order``
-    that covers every node — ``get_clusters`` guarantees both.
+    that covers every node: ``get_clusters`` guarantees both.
     """
     n = len(adjacency)
     labels = list(range(n))
@@ -402,7 +402,7 @@ class EmbeddingClusterer:
         ``count_rows()`` is a LanceDB call that can raise on transient
         backend issues (concurrent compaction, schema rewrites). When
         it does, we optimistically report available=True and let
-        ``get_clusters`` surface the real error on the next scan — the
+        ``get_clusters`` surface the real error on the next scan: the
         alternative would silently disable wiki synthesis without the
         user seeing why. A WARNING is emitted so the failure is still
         visible at the default log level.
@@ -436,10 +436,10 @@ class EmbeddingClusterer:
         adjacency = mutual_knn(matrix, k)
         if not any(adjacency.values()):
             # WARNING (not INFO) so users see why synthesis produced zero
-            # pages at the default log level — matches the other degenerate
+            # pages at the default log level: matches the other degenerate
             # clustering outcome, ``_warn_if_undersegmented``.
             log.warning(
-                "wiki clustering: N=%d k=%d no mutual edges — skipping synthesis",
+                "wiki clustering: N=%d k=%d no mutual edges: skipping synthesis",
                 len(records),
                 k,
             )

@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 _PENDING_PARSE_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_PARSE}"
 _PENDING_COLLISION_MARKER_PREFIX = f"<!-- {PENDING_MARKER_KEYWORD_COLLISION}"
 
+# A ``<wiki_dir>/<subdir>/<slug>.md`` source has at least this many ``/``-split
+# parts. Anything shorter is a malformed wiki source and has no subdir.
+_WIKI_SOURCE_MIN_PARTS = 2
+
 
 def _divert_to_drafts(
     new_content: str,
@@ -63,7 +67,7 @@ def _subdir_from_wiki_source(wiki_source: str) -> str | None:
     fewer than two components.
     """
     parts = wiki_source.split("/")
-    return parts[1] if len(parts) >= 2 else None
+    return parts[1] if len(parts) >= _WIKI_SOURCE_MIN_PARTS else None
 
 
 def _persist_and_finalize(

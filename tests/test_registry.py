@@ -1,4 +1,4 @@
-"""Tests for registry.py — manifest-keyed by (hf_repo, gguf_filename)."""
+"""Tests for registry.py: manifest-keyed by (hf_repo, gguf_filename)."""
 
 from __future__ import annotations
 

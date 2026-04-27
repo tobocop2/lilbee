@@ -1,4 +1,4 @@
-"""Integration test — proves real-time download progress with an actual HF download.
+"""Integration test: proves real-time download progress with an actual HF download.
 
 Downloads a tiny model (~3 MB) and verifies:
 1. Progress callback fires incrementally (not just 0 → 100)

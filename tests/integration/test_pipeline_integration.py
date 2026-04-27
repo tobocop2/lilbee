@@ -1,7 +1,7 @@
 """Embedder + store round-trip integration tests.
 
 Requires a real embedding model (nomic-embed-text) installed.
-Moved from tests/test_pipeline.py — these need live model inference.
+Moved from tests/test_pipeline.py: these need live model inference.
 
 Run with:
     uv run pytest tests/integration/test_pipeline_integration.py -v

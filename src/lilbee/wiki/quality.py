@@ -120,7 +120,7 @@ def _embedding_faithfulness_score(
     Falls through to :func:`cosine_sim` so a non-normalized vector
     does not silently produce an out-of-range value. Result is
     clamped at zero because a negative cosine means the body vector
-    points the other way from the mean of the sources — treat that
+    points the other way from the mean of the sources: treat that
     the same as uncorrelated for threshold purposes.
 
     Returns 0.0 on a dimension mismatch between the body vector and

@@ -1,4 +1,4 @@
-"""Typed service container — single point of access for all singletons.
+"""Typed service container: single point of access for all singletons.
 
 All runtime dependencies (provider, store, embedder, reranker, concepts,
 clusterer, searcher) are created lazily on first call to ``get_services()``

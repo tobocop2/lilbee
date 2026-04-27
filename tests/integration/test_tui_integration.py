@@ -1,7 +1,7 @@
 """TUI integration tests with real backends.
 
 These tests exercise the Textual TUI against a real RAG pipeline with
-downloaded models and indexed documents. No mocks — real embeddings,
+downloaded models and indexed documents. No mocks: real embeddings,
 real LLM streaming, real LanceDB queries.
 
 Run with:
@@ -293,7 +293,7 @@ class _WikiApp(App[None]):
 
 
 class TestWikiScreen:
-    """WikiScreen integration tests — verify page listing and content display."""
+    """WikiScreen integration tests: verify page listing and content display."""
 
     @pytest.fixture(autouse=True)
     def _setup_wiki(self, tmp_path):

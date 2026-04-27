@@ -73,7 +73,7 @@ async def test_catalog_enqueue_download_without_lilbee_app_notifies() -> None:
         def compose(self) -> ComposeResult:
             yield Footer()
 
-    # Run under a plain app — CatalogScreen.app won't be a LilbeeApp.
+    # Run under a plain app: CatalogScreen.app won't be a LilbeeApp.
     with patch("lilbee.cli.tui.screens.catalog.get_catalog"):
         app = _PlainApp()
         async with app.run_test() as pilot:

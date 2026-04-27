@@ -1,4 +1,4 @@
-"""Wiki layer route handlers — page listing, reading, citations, lint, generation, pruning."""
+"""Wiki layer route handlers: page listing, reading, citations, lint, generation, pruning."""
 
 from __future__ import annotations
 

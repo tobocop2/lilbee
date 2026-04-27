@@ -2063,7 +2063,7 @@ class TestAddWithUrls:
         result = runner.invoke(app, ["--json", "add", "https://example.com"])
         assert result.exit_code == 0
         raw = result.output.strip()
-        # Must start with '{' — no [INIT]/[FETCH]/spinner text leaked to stdout
+        # Must start with '{': no [INIT]/[FETCH]/spinner text leaked to stdout
         assert raw.startswith("{"), f"stdout has non-JSON prefix: {raw[:80]}"
         data = json.loads(raw)
         assert data["command"] == "add"
@@ -2593,7 +2593,7 @@ class TestWikiBuild:
         def build_boom(*a, **kw):
             raise AssertionError("build_wiki must not run in --dry-run")
 
-        # Patch the impl, not the re-export — `run_full_build` resolves
+        # Patch the impl, not the re-export: `run_full_build` resolves
         # `build_wiki` from `lilbee.wiki.generation`, so a dry-run regression that
         # accidentally fell through to the build path would only trip a
         # boom installed there.
@@ -2627,7 +2627,7 @@ class TestWikiBuild:
         def build_boom(*a, **kw):
             raise AssertionError("build_wiki must not run in --dry-run")
 
-        # Patch the impl, not the re-export — `run_full_build` resolves
+        # Patch the impl, not the re-export: `run_full_build` resolves
         # `build_wiki` from `lilbee.wiki.generation`, so a dry-run regression that
         # accidentally fell through to the build path would only trip a
         # boom installed there.
@@ -2719,7 +2719,7 @@ class TestWikiCitations:
         ]
         result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
         assert result.exit_code == 0
-        # Full 80-char excerpt should not appear — truncated by code or Rich
+        # Full 80-char excerpt should not appear: truncated by code or Rich
         assert long_excerpt not in result.output
 
     def test_citations_json_output(self, mock_svc):
@@ -3214,10 +3214,10 @@ class TestSetupCrawlerCommand:
         assert "installed" in result.stdout.lower()
 
     def test_propagates_bootstrap_failure_as_exit_1(self):
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         async def _fake_bootstrap(on_progress=None):
-            raise CrawlerBrowserMissing("offline")
+            raise CrawlerBrowserError("offline")
 
         with (
             mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
@@ -3249,7 +3249,7 @@ class TestSetupCrawlerCommand:
                     detail="...",
                 ),
             )
-            # Same pct again — should not re-emit.
+            # Same pct again: should not re-emit.
             on_progress(
                 EventType.SETUP_PROGRESS,
                 SetupProgressEvent(
@@ -3304,10 +3304,10 @@ class TestSetupCrawlerCommand:
 
     def test_bootstrap_failure_json_mode(self):
         """--json with a bootstrap failure yields error JSON + exit 1."""
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         async def _fake_bootstrap(on_progress=None):
-            raise CrawlerBrowserMissing("offline")
+            raise CrawlerBrowserError("offline")
 
         with (
             mock.patch("lilbee.cli.commands.setup.chromium_installed", return_value=False),
@@ -3322,15 +3322,15 @@ class TestSetupCrawlerCommand:
 class TestSelfCheck:
     """`lilbee self-check` exercises llama_cpp.Llama end-to-end on two legs.
 
-    Leg 1: chat (`create_completion`) — proves the vendored shared libraries
+    Leg 1: chat (`create_completion`): proves the vendored shared libraries
     load and decoder-style inference works.
-    Leg 2: embedding (`create_embedding`) — proves encoder-only models work,
+    Leg 2: embedding (`create_embedding`): proves encoder-only models work,
     which is what the "Memory is not initialized" assert in 0.3.18 broke.
 
     Tests stub both the urllib download and the llama_cpp module so they
-    don't hit HuggingFace or load a real GGUF. Every branch — chat-load,
+    don't hit HuggingFace or load a real GGUF. Every branch: chat-load,
     chat-empty, embed-load, embed-empty, --skip-embedding, both human and
-    --json output — gets a case.
+    --json output: gets a case.
     """
 
     @staticmethod

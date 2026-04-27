@@ -53,7 +53,7 @@ class TestSplashE2EWithPTY:
 
 
 class TestSplashE2ENonTTY:
-    """Tests running without a TTY — animation should be suppressed."""
+    """Tests running without a TTY: animation should be suppressed."""
 
     def test_no_animation_in_pipe(self) -> None:
         """When stdout/stderr are pipes (not a TTY), no animation should appear."""

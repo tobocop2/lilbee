@@ -24,6 +24,10 @@ _SIZE_RANGES: dict[str, tuple[float, float]] = {
     "large": (10.0, float("inf")),
 }
 
+# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
+# two ``/`` separators; one-slash refs are bare repo IDs.
+_NATIVE_GGUF_REF_MIN_SLASHES = 2
+
 
 def get_catalog(
     task: str | None = None,
@@ -188,7 +192,7 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     # Strip the filename for ``<repo>/<filename>.gguf`` queries so the
     # bare-repo index catches featured entries whose gguf_filename is a
     # glob (most are).
-    if q.endswith(".gguf") and q.count("/") >= 2:
+    if q.endswith(".gguf") and q.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
         candidates.append(q.rsplit("/", 1)[0])
     if "/" in q:
         prefix, rest = q.split("/", 1)

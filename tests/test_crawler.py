@@ -409,13 +409,13 @@ class TestCrawlSingle:
         Regression test for bb-60mj: without this guard Playwright prints
         a raw ASCII install banner into the TUI and the task lands as DONE.
         """
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         # Stub crawl4ai so the test runs even when the `crawler` extra
         # isn't installed in the unit-test env.
         monkeypatch.setitem(__import__("sys").modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+        with pytest.raises(CrawlerBrowserError, match="Chromium"):
             await crawl_single("https://example.com")
 
     async def test_missing_crawler_extra_raises_backend_missing(
@@ -427,14 +427,14 @@ class TestCrawlSingle:
         would be swallowed by the broad ``except Exception`` at the bottom
         of crawl_single, turning a missing-extra install into a silent
         ``CrawlResult(success=False)`` and a ``crawl_done`` with
-        ``files_written=0`` — same silent failure the recursive path
+        ``files_written=0``: same silent failure the recursive path
         already guards against.
         """
-        from lilbee.crawler import CrawlerBackendMissing
+        from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_single("https://example.com")
 
 
@@ -449,7 +449,7 @@ class TestBootstrapChromium:
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         events: list[tuple[EventType, object]] = []
         await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
-        # Only a single setup_done (success) — no start/progress when we
+        # Only a single setup_done (success): no start/progress when we
         # short-circuit.
         assert len(events) == 1
         evt, payload = events[0]
@@ -505,8 +505,8 @@ class TestBootstrapChromium:
         assert isinstance(progress_events[0], SetupProgressEvent)
 
     async def test_raises_crawler_browser_missing_on_subprocess_failure(self, monkeypatch):
-        """Non-zero exit → CrawlerBrowserMissing with stderr tail."""
-        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
+        """Non-zero exit → CrawlerBrowserError with stderr tail."""
+        from lilbee.crawler.bootstrap import CrawlerBrowserError, bootstrap_chromium
         from lilbee.runtime.progress import EventType, SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
@@ -534,7 +534,7 @@ class TestBootstrapChromium:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
 
         events: list[tuple[EventType, object]] = []
-        with pytest.raises(CrawlerBrowserMissing, match="exit 42"):
+        with pytest.raises(CrawlerBrowserError, match="exit 42"):
             await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
         final = events[-1]
         assert final[0] == EventType.SETUP_DONE
@@ -840,28 +840,28 @@ class TestCrawlRecursive:
         mock_crawler_cls.assert_called_once_with(verbose=False)
 
     async def test_reraises_browser_missing_from_crawler_open(self, monkeypatch):
-        """CrawlerBrowserMissing raised inside the try block propagates past the broad except."""
-        from lilbee.crawler import CrawlerBrowserMissing
+        """CrawlerBrowserError raised inside the try block propagates past the broad except."""
+        from lilbee.crawler import CrawlerBrowserError
 
         mock_instance = AsyncMock()
-        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserMissing("chromium gone"))
+        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserError("chromium gone"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            pytest.raises(CrawlerBrowserMissing, match="chromium gone"),
+            pytest.raises(CrawlerBrowserError, match="chromium gone"),
         ):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
 
     async def test_propagates_crawler_browser_missing(self, monkeypatch):
-        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
+        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserError past its broad except."""
         import sys as _sys
 
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         # Stub crawl4ai + the deep_crawling submodule so the test runs even
-        # when the `crawler` extra isn't installed — crawl_recursive imports
+        # when the `crawler` extra isn't installed: crawl_recursive imports
         # both at the top of its body before _open_crawler can fire.
         monkeypatch.setitem(_sys.modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
         monkeypatch.setitem(
@@ -873,7 +873,7 @@ class TestCrawlRecursive:
             MagicMock(FilterChain=MagicMock(), URLPatternFilter=MagicMock()),
         )
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+        with pytest.raises(CrawlerBrowserError, match="Chromium"):
             await crawl_recursive("https://example.com", max_depth=1)
 
     async def test_missing_crawler_extra_raises_backend_missing(
@@ -887,11 +887,11 @@ class TestCrawlRecursive:
         the server's SSE layer surface ``event: error`` with a fix-it
         message instead of a zero-results ``crawl_done``.
         """
-        from lilbee.crawler import CrawlerBackendMissing
+        from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_recursive("https://example.com", max_depth=1)
 
 
@@ -1080,8 +1080,8 @@ class TestCrawlAndSave:
         assert called == [None]
 
     async def test_raises_backend_missing_before_bootstrap(self, isolated_env, monkeypatch):
-        """Without [crawler] extra, fail fast — never trigger Chromium bootstrap."""
-        from lilbee.crawler import CrawlerBackendMissing
+        """Without [crawler] extra, fail fast: never trigger Chromium bootstrap."""
+        from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
@@ -1092,7 +1092,7 @@ class TestCrawlAndSave:
             bootstrap_called.append(on_progress)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
-        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_and_save("https://example.com", depth=0)
         assert bootstrap_called == []
 
@@ -2157,7 +2157,7 @@ class TestStreamingFlush:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise OSError("disk full")
-            return None  # second page falls through unchanged
+            return  # second page falls through unchanged
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),

@@ -38,7 +38,7 @@ def _dispatch_frozen_child() -> bool:
     code = _multiprocessing_child_code(sys.argv)
     if code is None:
         return False
-    exec(  # noqa: S102 — payload is emitted by Python's own stdlib into sys.executable
+    exec(  # noqa: S102  payload is emitted by Python's own stdlib into sys.executable
         compile(code, "<pyi-mp-child>", "exec"),
         {"__name__": "__main__", "__builtins__": __builtins__},
     )

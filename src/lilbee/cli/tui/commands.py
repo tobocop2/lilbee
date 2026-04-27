@@ -107,7 +107,7 @@ class LilbeeCommandProvider(Provider):
         display = value or "off"
         self.screen.app.notify(f"{attr}: {display}")
         if attr == "chat_model":
-            self.screen.app.title = f"lilbee — {value}"
+            self.screen.app.title = f"lilbee: {value}"
 
     def _delete_doc(self, name: str) -> None:
         store = get_services().store

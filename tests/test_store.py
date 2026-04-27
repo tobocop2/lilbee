@@ -1,4 +1,4 @@
-"""Tests for LanceDB store operations — hybrid search + FTS index lifecycle."""
+"""Tests for LanceDB store operations: hybrid search + FTS index lifecycle."""
 
 from unittest import mock
 
@@ -912,7 +912,7 @@ class TestSuppressLancedbThreadError:
             args = threading.ExceptHookArgs(
                 (RuntimeError, RuntimeError("shutdown"), None, lance_thread)
             )
-            # Should return without calling original hook — no exception raised.
+            # Should return without calling original hook: no exception raised.
             threading.excepthook(args)
         finally:
             threading.excepthook = original

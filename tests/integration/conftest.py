@@ -1,4 +1,4 @@
-"""Integration test configuration — shared fixtures for real-backend tests."""
+"""Integration test configuration: shared fixtures for real-backend tests."""
 
 from __future__ import annotations
 

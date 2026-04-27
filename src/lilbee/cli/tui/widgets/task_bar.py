@@ -34,7 +34,7 @@ from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.cancellation import TaskCancelled
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
@@ -85,16 +85,16 @@ class ProgressReporter:
         return task is not None and task.status == TaskStatus.CANCELLED
 
     def check_cancelled(self) -> None:
-        """Raise ``TaskCancelled`` if the task was cancelled from the UI."""
+        """Raise ``TaskCancelledError`` if the task was cancelled from the UI."""
         if self.cancelled:
-            raise TaskCancelled
+            raise TaskCancelledError
 
     def update(
         self, progress: float, detail: str = "", *, indeterminate: bool | None = None
     ) -> None:
         """Write a progress snapshot to the shared queue.
 
-        Raises ``TaskCancelled`` first if the UI cancelled the task, so
+        Raises ``TaskCancelledError`` first if the UI cancelled the task, so
         callers can use ``update`` as both a progress write and a cancel
         checkpoint.
         """
@@ -141,7 +141,7 @@ class TaskBarController:
     ``LilbeeApp.__init__``. All task lifecycle methods
     (add/update/complete/fail/cancel) go through here so every ``TaskBar``
     widget sees the same state, and every long-running op is spawned by
-    this controller — never by a screen that may dismiss mid-flight.
+    this controller: never by a screen that may dismiss mid-flight.
     """
 
     def __init__(self, app: App[Any]) -> None:
@@ -259,7 +259,7 @@ class TaskBarController:
 
         On success (target returns normally) the queue marks the task DONE
         and ``on_success`` (if provided) runs after on the same worker
-        thread. On ``TaskCancelled`` the task is marked CANCELLED. On any
+        thread. On ``TaskCancelledError`` the task is marked CANCELLED. On any
         other exception the task is marked FAILED with ``str(exc)`` as
         detail. Rows linger in the Task Center under their final status
         until the user presses capital ``C`` to clear; the bottom bar
@@ -304,7 +304,7 @@ class TaskBarController:
         reporter = ProgressReporter(self, task_id)
         try:
             target(reporter)
-        except TaskCancelled:
+        except TaskCancelledError:
             log.info("Task %s cancelled", task_id)
             self._post_finalize(task_id, TaskOutcome.CANCELLED, "", task_type)
         except Exception as exc:
@@ -327,7 +327,7 @@ class TaskBarController:
 
         Main-thread execution matters because ``set_timer`` (used for the
         flash-then-remove cycle) isn't safe from workers. ``call_from_thread``
-        targets ``self.app`` — the App is long-lived; screens are not.
+        targets ``self.app``: the App is long-lived; screens are not.
         """
         call_from_thread(self.app, self._finalize_task, task_id, outcome, detail, task_type)
 
@@ -382,7 +382,7 @@ class TaskBarController:
 
         Thin specialization of ``start_task`` that wires the HuggingFace
         ``download_model`` API and translates ``PermissionError`` into a
-        friendly "repo requires login" message — gated repos are a common
+        friendly "repo requires login" message: gated repos are a common
         failure mode and the raw exception text is opaque.
         """
         return self.start_task(
