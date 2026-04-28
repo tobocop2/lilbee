@@ -451,6 +451,30 @@ class TestLockedStreamIteratorClose:
         assert lock.acquire(blocking=False)
         lock.release()
 
+    def test_close_drain_cap_does_not_hang_on_runaway_model(self):
+        """A runaway model (never-closing <think>) must not block close() forever."""
+        from lilbee.providers.llama_cpp_provider import (
+            _LOCKED_STREAM_DRAIN_CAP,
+            _LockedStreamIterator,
+        )
+
+        consumed = [0]
+
+        def runaway() -> object:
+            while True:
+                consumed[0] += 1
+                yield {"choices": [{"delta": {"content": "x"}}]}
+
+        lock = threading.Lock()
+        lock.acquire()
+        stream = _LockedStreamIterator(runaway(), lock)
+        stream.close()
+        # Lock is released even though the iterator never naturally ends.
+        assert lock.acquire(blocking=False)
+        lock.release()
+        # Drain stopped near the configured cap; no infinite consumption.
+        assert consumed[0] <= _LOCKED_STREAM_DRAIN_CAP + 2
+
 
 class TestLockedStreamIteratorExceptionRelease:
     def test_non_stop_iteration_exception_releases_lock(self):
@@ -512,6 +536,73 @@ class TestVisionModel:
         result = find_mmproj_for_model(models_dir / "test-model.gguf")
         assert result == mmproj
 
+    def test_load_vision_llama_clamps_n_ctx_to_training_window(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """LILBEE_NUM_CTX > vision training_ctx clamps to avoid n_ctx_seq overflow."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        cfg.num_ctx = 8192
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+
+    def test_load_vision_llama_unset_num_ctx_uses_model_default(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """When LILBEE_NUM_CTX is unset, vision passes n_ctx=0 (model picks)."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        cfg.num_ctx = None
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 0
+
+    def test_load_vision_llama_handles_missing_metadata(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """If GGUF metadata read fails, vision honors LILBEE_NUM_CTX verbatim."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        cfg.num_ctx = 4096
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                side_effect=RuntimeError("metadata read broken"),
+            ),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 4096
+
 
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
@@ -533,14 +624,17 @@ class TestLoadLlamaNCtx:
         assert call_kwargs["n_batch"] == 2048
 
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """When num_ctx is set, load_llama uses it for n_ctx and n_batch."""
+        """When num_ctx is set, embedding load clamps to the model's training context."""
         from lilbee.providers.llama_cpp_provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = 8192
+        # Embedding model trains at 8192; cfg.num_ctx fits, no clamp.
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "8192",
+        }
         load_llama(models_dir / "test-model.gguf", mode=MODE_EMBED)
-
-        # No metadata read needed when n_ctx is explicit
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 8192
         assert call_kwargs["n_batch"] == 8192
@@ -561,11 +655,11 @@ class TestLoadLlamaNCtx:
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
 
-    def test_chat_default_caps_at_safe_value_when_num_ctx_unset(
+    def test_chat_default_stays_below_safe_ceiling_when_num_ctx_unset(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """num_ctx=None on chat mode caps at 8192 even when the model trains at 128K."""
-        from lilbee.providers.llama_cpp_provider import DEFAULT_NUM_CTX, load_llama
+        """num_ctx=None on chat mode never lets a 128K training window dictate KV size."""
+        from lilbee.providers.llama_cpp_provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = None
@@ -578,7 +672,10 @@ class TestLoadLlamaNCtx:
         load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == DEFAULT_NUM_CTX  # 8192
+        # Dynamic picker stays at or below the configured ceiling.
+        assert call_kwargs["n_ctx"] <= cfg.num_ctx_max
+        assert call_kwargs["n_ctx"] < 131072
+        assert call_kwargs["n_ctx"] % 256 == 0
 
     def test_chat_default_uses_training_ctx_when_smaller(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock

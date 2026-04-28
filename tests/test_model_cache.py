@@ -13,8 +13,10 @@ from lilbee.providers.model_cache import (
     MemoryAwareModelCache,
     _CacheEntry,
     _try_nvidia_memory,
+    compute_dynamic_ctx,
     estimate_model_memory,
     get_available_memory,
+    kv_bytes_per_token,
 )
 
 
@@ -356,3 +358,142 @@ def test_try_nvidia_memory_nvidia_smi_nonzero_exit() -> None:
         result = _try_nvidia_memory()
 
     assert result is None
+
+
+@mock.patch("psutil.virtual_memory")
+def test_get_available_memory_windows_nvidia(mock_vm: mock.MagicMock) -> None:
+    """Windows + NVIDIA picks pynvml VRAM, not system RAM."""
+    mock_vm.return_value = mock.MagicMock(total=16 * 1024**3)
+    gpu_total = 8 * 1024**3
+    with (
+        mock.patch("lilbee.providers.model_cache.platform.system", return_value="Windows"),
+        mock.patch("lilbee.providers.model_cache._try_nvidia_memory", return_value=gpu_total),
+    ):
+        result = get_available_memory(0.75)
+    assert result == int(gpu_total * 0.75)
+
+
+@mock.patch("psutil.virtual_memory")
+def test_get_available_memory_windows_no_nvidia(mock_vm: mock.MagicMock) -> None:
+    """Windows without NVIDIA falls back to system RAM."""
+    mock_vm.return_value = mock.MagicMock(total=16 * 1024**3)
+    with (
+        mock.patch("lilbee.providers.model_cache.platform.system", return_value="Windows"),
+        mock.patch("lilbee.providers.model_cache._try_nvidia_memory", return_value=None),
+    ):
+        result = get_available_memory(0.5)
+    assert result == int(16 * 1024**3 * 0.5)
+
+
+def test_kv_bytes_per_token_uses_metadata() -> None:
+    """KV bytes/token = 2 * n_layers * n_kv_heads * (key_length + value_length) * elem_bytes."""
+    meta = {
+        "block_count": "32",
+        "head_count_kv": "8",
+        "key_length": "128",
+        "value_length": "128",
+    }
+    # f16: 2 bytes/elem, no leading factor of 2 here because key+value already sum
+    expected = 32 * 8 * (128 + 128) * 2
+    assert kv_bytes_per_token(meta, kv_elem_bytes=2) == expected
+
+
+def test_kv_bytes_per_token_quantized_kv() -> None:
+    """q8_0 cuts per-token bytes in half vs f16."""
+    meta = {
+        "block_count": "32",
+        "head_count_kv": "8",
+        "key_length": "128",
+        "value_length": "128",
+    }
+    f16 = kv_bytes_per_token(meta, kv_elem_bytes=2)
+    q8 = kv_bytes_per_token(meta, kv_elem_bytes=1)
+    assert q8 == f16 // 2
+
+
+def test_kv_bytes_per_token_fallback_when_meta_missing() -> None:
+    """Missing metadata returns the conservative flat constant."""
+    assert kv_bytes_per_token(None) == 2048
+    assert kv_bytes_per_token({}) == 2048
+
+
+def test_kv_bytes_per_token_derives_head_dim_from_embedding() -> None:
+    """Without explicit key_length, fall back to embedding_length / head_count."""
+    meta = {
+        "block_count": "16",
+        "head_count_kv": "4",
+        "head_count": "8",
+        "embedding_length": "1024",
+    }
+    head_dim = 1024 // 8
+    expected = 16 * 4 * (2 * head_dim) * 2
+    assert kv_bytes_per_token(meta, kv_elem_bytes=2) == expected
+
+
+def test_compute_dynamic_ctx_typical_case() -> None:
+    """Picks the largest 256-multiple ctx that fits the budget."""
+    # 4 GB model, 8 GB available, 256 KB/token KV.
+    model_bytes = 4 * 1024**3
+    available = 8 * 1024**3
+    kv_per_tok = 256 * 1024
+    ctx = compute_dynamic_ctx(
+        model_bytes=model_bytes,
+        available_bytes=available,
+        training_ctx=131072,
+        kv_bytes_per_tok=kv_per_tok,
+        ceiling=16384,
+    )
+    overhead = int(model_bytes * 0.10)
+    budget = available - model_bytes - overhead
+    raw = budget // kv_per_tok
+    expected = (min(raw, 16384) // 256) * 256
+    assert ctx == expected
+    assert ctx % 256 == 0
+
+
+def test_compute_dynamic_ctx_returns_floor_when_oversubscribed() -> None:
+    """When the model alone exceeds available memory, return the floor."""
+    ctx = compute_dynamic_ctx(
+        model_bytes=10 * 1024**3,
+        available_bytes=2 * 1024**3,
+        training_ctx=8192,
+        kv_bytes_per_tok=128 * 1024,
+        ceiling=16384,
+    )
+    assert ctx == 512
+
+
+def test_compute_dynamic_ctx_honors_training_ctx_upper_bound() -> None:
+    """Even with infinite memory, never exceed the model's training window."""
+    ctx = compute_dynamic_ctx(
+        model_bytes=100,
+        available_bytes=10**12,
+        training_ctx=4096,
+        kv_bytes_per_tok=1,
+        ceiling=131072,
+    )
+    assert ctx == 4096
+
+
+def test_compute_dynamic_ctx_honors_ceiling() -> None:
+    """The ceiling caps a generous training window on a generous host."""
+    ctx = compute_dynamic_ctx(
+        model_bytes=100,
+        available_bytes=10**12,
+        training_ctx=131072,
+        kv_bytes_per_tok=1,
+        ceiling=8192,
+    )
+    assert ctx == 8192
+
+
+def test_compute_dynamic_ctx_zero_kv_falls_back_to_training_or_ceiling() -> None:
+    """Zero/negative kv_bytes_per_tok (degenerate metadata) returns min(training, ceiling)."""
+    ctx = compute_dynamic_ctx(
+        model_bytes=1_000_000,
+        available_bytes=10**12,
+        training_ctx=4096,
+        kv_bytes_per_tok=0,
+        ceiling=8192,
+    )
+    assert ctx == 4096

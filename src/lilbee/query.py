@@ -20,7 +20,7 @@ from typing_extensions import TypedDict
 
 from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import ClosableIterator, LLMProvider
 from lilbee.reasoning import strip_reasoning
 from lilbee.store import (
     CHUNK_TYPE_RAW,
@@ -744,7 +744,7 @@ class Searcher:
             except (ConnectionError, OSError) as exc:
                 yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
             finally:
-                if hasattr(raw, "close"):
+                if isinstance(raw, ClosableIterator):
                     raw.close()
             return
 
@@ -770,7 +770,7 @@ class Searcher:
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         finally:
-            if hasattr(raw_stream, "close"):
+            if isinstance(raw_stream, ClosableIterator):
                 raw_stream.close()
         # Note: LLM-generated citation blocks in streamed tokens cannot be
         # retroactively stripped. The system prompt discourages them; this
