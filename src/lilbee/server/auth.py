@@ -18,6 +18,10 @@ from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
+# Bytes of randomness fed to ``secrets.token_urlsafe``. A persisted token
+# whose string length falls below this is treated as malformed.
+_TOKEN_BYTES = 32
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -41,15 +45,45 @@ class SessionManager:
     def __init__(self) -> None:
         self.token: str | None = None
 
-    def generate(self) -> str:
-        """Generate a random session token and persist to server.json."""
-        self.token = secrets.token_urlsafe(32)
+    def load_or_generate(self) -> str:
+        """Reuse the persisted token from server.json if it parses cleanly.
+
+        Generates a fresh token and rewrites server.json only when the file
+        is missing, malformed, or its ``token`` field fails the shape check
+        (must be a non-empty string of at least 32 chars — the minimum
+        produced by :func:`secrets.token_urlsafe(32)`). The token is removed
+        only on full server shutdown via :meth:`cleanup`, so any client that
+        cached the token across a ``lilbee serve`` restart stays valid.
+        """
         path = server_json_path()
+        existing = self._read_persisted_token(path)
+        if existing is not None:
+            self.token = existing
+            return existing
+        self.token = secrets.token_urlsafe(_TOKEN_BYTES)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": self.token}))
         if sys.platform != "win32":
             path.chmod(0o600)
         return self.token
+
+    @staticmethod
+    def _read_persisted_token(path: Path) -> str | None:
+        """Return a previously-persisted token if shape-valid, else None."""
+        try:
+            raw = path.read_text()
+        except (FileNotFoundError, OSError):
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        token = data.get("token")
+        if not isinstance(token, str) or len(token) < _TOKEN_BYTES:
+            return None
+        return token
 
     def cleanup(self) -> None:
         """Remove server.json on shutdown and clear the in-memory token."""
