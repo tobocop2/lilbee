@@ -224,6 +224,54 @@ class TestReasoningTruncation:
         result = _collect(tokens, show=True)
         assert any("truncated" in st.content for st in result)
 
+    def test_upstream_generator_closed_on_truncation(self):
+        """Truncation closes the upstream iterator so llama.cpp doesn't hang.
+
+        Without this, a runaway think loop leaves llama.cpp suspended at
+        its yield point and the chat lock isn't released until garbage
+        collection eventually fires __del__.
+        """
+        from lilbee.reasoning import filter_reasoning
+
+        closed = {"value": False}
+
+        def runaway_tokens():
+            """Yields forever; never emits </think>. Simulates a stuck model."""
+            try:
+                yield "<think>"
+                while True:
+                    yield "x"
+            except GeneratorExit:
+                closed["value"] = True
+                raise
+
+        # Drive the filter to completion. Truncation should fire and the
+        # generator must be left in a suspended state for close() to act on.
+        list(filter_reasoning(runaway_tokens(), show=True))
+        assert closed["value"], "filter_reasoning must close upstream iterator"
+
+    def test_close_called_on_stream_wrapper_early_exit(self):
+        """A stream-wrapper iterator (e.g. _LockedStreamIterator) gets close()."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS, filter_reasoning
+
+        class FakeStream:
+            def __init__(self) -> None:
+                self.tokens = iter(["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100))
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.tokens)
+
+            def close(self) -> None:
+                self.closed = True
+
+        stream = FakeStream()
+        list(filter_reasoning(stream, show=True))
+        assert stream.closed, "filter_reasoning must call close() on stream wrapper"
+
 
 class TestStripReasoning:
     def test_strips_think_block(self):

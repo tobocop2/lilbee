@@ -236,7 +236,7 @@ class TestPullWithProgress:
         def fake_pull(model, source, *, on_bytes=None):
             if on_bytes:
                 on_bytes(100, 100)
-            return None
+            return
 
         mock_manager.pull.side_effect = fake_pull
         mock_get_manager.return_value = mock_manager
@@ -250,7 +250,7 @@ class TestPullWithProgress:
         def fake_pull(model, source, *, on_bytes=None):
             if on_bytes:
                 on_bytes(0, 0)
-            return None
+            return
 
         mock_manager.pull.side_effect = fake_pull
         mock_get_manager.return_value = mock_manager

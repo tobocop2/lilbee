@@ -351,7 +351,11 @@ LLM output shape. Unset values fall through to the model's own defaults.
 | `LILBEE_TOP_P` | *(model default)* | Nucleus sampling threshold |
 | `LILBEE_TOP_K_SAMPLING` | *(model default)* | Top-k sampling |
 | `LILBEE_REPEAT_PENALTY` | *(model default)* | Repetition penalty |
-| `LILBEE_NUM_CTX` | *(model default)* | Context window size |
+| `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically to the host's available memory, capped at `LILBEE_NUM_CTX_MAX`. Set explicitly to lock a specific value |
+| `LILBEE_NUM_CTX_MAX` | `16384` | Upper bound for the auto-sized context picker. Higher allows more retrieval context on hosts with spare memory |
+| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
+| `LILBEE_KV_CACHE_TYPE` | `f16` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. Quantized variants halve or quarter cache memory but require flash attention to be enabled |
+| `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 
 ### Server

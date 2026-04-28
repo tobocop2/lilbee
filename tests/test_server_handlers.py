@@ -1072,7 +1072,7 @@ class TestModelsPull:
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
-            return None
+            return
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
@@ -1089,7 +1089,7 @@ class TestModelsPull:
             if on_progress:
                 on_progress({"status": "downloading"})
                 on_progress({"status": "success"})
-            return None
+            return
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
