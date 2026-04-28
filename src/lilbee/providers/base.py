@@ -4,9 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
+
+T_co = TypeVar("T_co", covariant=True)
+
+
+@runtime_checkable
+class ClosableIterator(Iterator[T_co], Protocol[T_co]):
+    """An iterator that releases resources when ``close()`` is called.
+
+    Streaming chat responses use this to guarantee the upstream model lock
+    is released even when callers truncate the stream before exhaustion.
+    Generators satisfy this implicitly; explicit wrappers (e.g. the llama-cpp
+    chat-lock iterator) implement it directly.
+    """
+
+    def close(self) -> None: ...
 
 
 class LLMOptions(BaseModel):
@@ -58,8 +73,8 @@ class LLMProvider(Protocol):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | Iterator[str]:
-        """Chat completion. Returns str for non-stream, Iterator[str] for stream."""
+    ) -> str | ClosableIterator[str]:
+        """Chat completion. Returns str for non-stream, ClosableIterator[str] for stream."""
         ...
 
     def list_models(self) -> list[str]:

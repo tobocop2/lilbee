@@ -56,24 +56,16 @@ class Community:
 
 
 def _ensure_spacy_model() -> Any:
-    """Load the spaCy model, auto-downloading on first use."""
+    """Load the spaCy NER model; raise ImportError with an install hint if missing."""
     import spacy
 
     model_name = "en_core_web_sm"
     try:
         return spacy.load(model_name)
-    except OSError:
-        log.info("Downloading spaCy model '%s'...", model_name)
-        try:
-            from spacy.cli import download
-
-            download(model_name)
-            return spacy.load(model_name)
-        except (SystemExit, OSError, Exception) as exc:
-            raise ImportError(
-                f"spaCy model '{model_name}' not available and auto-download failed. "
-                f"Install manually: python -m spacy download {model_name}"
-            ) from exc
+    except OSError as exc:
+        raise ImportError(
+            f"spaCy model '{model_name}' not installed. Run: python -m spacy download {model_name}"
+        ) from exc
 
 
 def load_spacy_pipeline() -> Any:

@@ -579,9 +579,9 @@ class TestThemes:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            original = app.theme
             app.set_theme("nonexistent_theme_xyz")
-            # Should still be on default theme (monokai)
-            assert app.theme == "gruvbox"
+            assert app.theme == original
 
 
 class TestDetectRemoteEmbeddings:

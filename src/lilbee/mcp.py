@@ -65,6 +65,11 @@ def status() -> dict[str, Any]:
             "vision_model": cfg.vision_model,
             "reranker_model": cfg.reranker_model,
             "enable_ocr": cfg.enable_ocr,
+            "num_ctx": cfg.num_ctx,
+            "num_ctx_max": cfg.num_ctx_max,
+            "flash_attention": cfg.flash_attention,
+            "kv_cache_type": cfg.kv_cache_type.value,
+            "n_gpu_layers": cfg.n_gpu_layers,
         },
         "sources": [
             {"filename": s["filename"], "chunk_count": s["chunk_count"]}

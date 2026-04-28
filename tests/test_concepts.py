@@ -249,28 +249,18 @@ class TestEnsureSpacyModel:
             mock_spacy.load.assert_called_once_with("en_core_web_sm")
             assert result is not None
 
-    def test_downloads_on_oserror(self):
-        mock_spacy = MagicMock()
-        mock_spacy.load.side_effect = [OSError("not found"), MagicMock()]
-        mock_cli = MagicMock()
-        mock_spacy.cli = mock_cli
-        with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
-            from lilbee.concepts import _ensure_spacy_model
+    def test_raises_import_error_with_install_hint_when_model_missing(self):
+        """Missing spaCy model emits a manual-install hint rather than shelling out.
 
-            result = _ensure_spacy_model()
-            mock_cli.download.assert_called_once_with("en_core_web_sm")
-            assert result is not None
-
-    def test_raises_import_error_when_download_fails(self):
+        Auto-download via spacy.cli.download surfaced uv stderr in the chat
+        panel under uv tool install layouts; we now degrade gracefully.
+        """
         mock_spacy = MagicMock()
         mock_spacy.load.side_effect = OSError("not found")
-        mock_cli = MagicMock()
-        mock_cli.download.side_effect = SystemExit(1)
-        mock_spacy.cli = mock_cli
-        with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
+        with patch.dict("sys.modules", {"spacy": mock_spacy}):
             from lilbee.concepts import _ensure_spacy_model
 
-            with pytest.raises(ImportError, match="auto-download failed"):
+            with pytest.raises(ImportError, match="python -m spacy download en_core_web_sm"):
                 _ensure_spacy_model()
 
     def test_load_spacy_pipeline_delegates_to_ensure(self):
