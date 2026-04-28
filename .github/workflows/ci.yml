@@ -34,6 +34,7 @@ jobs:
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
             -DGGML_CPU_ALL_VARIANTS=ON
+            -DGGML_BACKEND_DL=ON
 
       - name: Lint
         run: make lint
@@ -88,12 +89,13 @@ jobs:
           # picks the highest one the host CPU supports at runtime. Without it,
           # ggml's default still bakes in AVX2/FMA/BMI2 and SIGILLs on runners
           # whose CPU lacks them. arm64 has no equivalent flag (NEON is mandatory).
+          # GGML_BACKEND_DL=ON is required by GGML_CPU_ALL_VARIANTS.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
             -DGGML_BLAS=OFF
             -DGGML_CUDA=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON' || '' }}
 
       - name: Run unit tests
         # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
@@ -184,7 +186,7 @@ jobs:
             -DGGML_NATIVE=OFF
             -DGGML_CUDA=OFF
             ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON' || '' }}
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
@@ -342,7 +344,7 @@ jobs:
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON' || '' }}
 
       - name: Build dev portal (coverage + API docs)
         run: make docs-site
