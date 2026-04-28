@@ -6,6 +6,13 @@ name: QA Phase 0 — harness smoke
 # harness is proven across all three OSes.
 
 on:
+  push:
+    branches: [qa-matrix]
+    paths:
+      - 'tools/qa/_phase0_harness_smoke.py'
+      - 'tools/qa/drivers/tui.py'
+      - 'tools/qa/requirements.txt'
+      - '.github/workflows/qa-phase0.yml'
   workflow_dispatch:
     inputs:
       lilbee_version:
