@@ -1,13 +1,13 @@
 .PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo build publish docs docs-api docs-site
 
 lint:
-	uv run ruff check src/ tests/
+	uv run ruff check src/ tests/ tools/qa/
 
 format:
-	uv run ruff format src/ tests/
+	uv run ruff format src/ tests/ tools/qa/
 
 format-check:
-	uv run ruff format --check src/ tests/
+	uv run ruff format --check src/ tests/ tools/qa/
 
 typecheck:
 	uv run mypy src/lilbee/
