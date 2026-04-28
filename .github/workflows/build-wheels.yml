@@ -12,8 +12,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 env:
   # 0.3.20 brings the Gemma 4 chat-template fix not in 0.3.19. abetlen
@@ -27,8 +25,6 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
-      pages: write
-      id-token: write
 
   # Default-backend wheels for PyPI:
   #   * Linux x86_64       → vulkan
@@ -299,94 +295,6 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
-  # PEP 503 simple repository hosted on GitHub Pages. Users opt in with
-  # `--extra-index-url`. Always runs even if some extra-backend lanes
-  # failed — `if: always()` + filtering in the artifact step.
-  publish-extra-index:
-    if: github.event_name == 'release' && always()
-    needs: [build-extra-wheels, build-default-wheels]
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    permissions:
-      pages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-          pattern: "wheel-*"
-
-      - name: Build PEP 503 simple index per backend
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p public
-          # Each artifact dir name is wheel-default-<os>-<backend>-pyX.YZ
-          # or wheel-extra-<os>-<backend>-pyX.YZ. Group by backend.
-          backends=$(find artifacts -mindepth 1 -maxdepth 1 -type d -name "wheel-*" | \
-                     awk -F'-' '{print $(NF-2)}' | sort -u)
-          for backend in ${backends}; do
-            mkdir -p "public/${backend}/lilbee"
-            for dir in artifacts/wheel-*-${backend}-*; do
-              [ -d "${dir}" ] || continue
-              cp "${dir}"/lilbee-*.whl "public/${backend}/lilbee/" 2>/dev/null || true
-            done
-            count=$(ls "public/${backend}/lilbee/"*.whl 2>/dev/null | wc -l)
-            echo "backend=${backend} wheels=${count}"
-            if [ "${count}" = "0" ]; then
-              rm -rf "public/${backend}"
-              continue
-            fi
-            (
-              cd "public/${backend}/lilbee"
-              {
-                echo '<!DOCTYPE html><html><body>'
-                for whl in lilbee-*.whl; do
-                  echo "<a href=\"${whl}\">${whl}</a><br>"
-                done
-                echo '</body></html>'
-              } > index.html
-            )
-            (
-              cd "public/${backend}"
-              {
-                echo '<!DOCTYPE html><html><body>'
-                echo '<a href="lilbee/">lilbee</a><br>'
-                echo '</body></html>'
-              } > index.html
-            )
-          done
-          {
-            echo '<!DOCTYPE html><html><body>'
-            echo '<h1>lilbee — per-backend wheel indexes</h1>'
-            echo '<p><code>pip install lilbee --extra-index-url https://tobocop2.github.io/lilbee/&lt;backend&gt;/</code></p>'
-            echo '<ul>'
-            for d in public/*/; do
-              [ -d "${d}" ] || continue
-              name=$(basename "${d}")
-              echo "<li><a href=\"${name}/\">${name}</a></li>"
-            done
-            echo '</ul></body></html>'
-          } > public/index.html
-          ls -R public/
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: public/
-
-      - name: Deploy to Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
 
   verify-pypi:
     if: github.event_name == 'release'
