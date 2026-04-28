@@ -882,6 +882,8 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     """Start uvicorn, write port file, and clean up on shutdown."""
     import atexit
 
+    from lilbee.parent_monitor import parse_parent_pid, watch_parent_async
+
     port_path = _port_file()
 
     def _cleanup_port_file() -> None:
@@ -891,6 +893,16 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         config.load()
     server.lifespan = config.lifespan_class(config)
     await server.startup()
+
+    parent_pid = parse_parent_pid()
+    parent_watcher: asyncio.Task[None] | None = None
+    if parent_pid is not None:
+
+        def _on_parent_death() -> None:
+            server.should_exit = True
+
+        parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
+
     try:
         if server.servers:
             sock = server.servers[0].sockets[0]
@@ -901,6 +913,8 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:
+        if parent_watcher is not None and not parent_watcher.done():
+            parent_watcher.cancel()
         port_path.unlink(missing_ok=True)
         await server.shutdown()
 

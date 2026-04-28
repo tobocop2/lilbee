@@ -18,8 +18,6 @@ from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
-# Bytes of randomness fed to ``secrets.token_urlsafe``. A persisted token
-# whose string length falls below this is treated as malformed.
 _TOKEN_BYTES = 32
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -46,15 +44,7 @@ class SessionManager:
         self.token: str | None = None
 
     def load_or_generate(self) -> str:
-        """Reuse the persisted token from server.json if it parses cleanly.
-
-        Generates a fresh token and rewrites server.json only when the file
-        is missing, malformed, or its ``token`` field fails the shape check
-        (must be a non-empty string of at least 32 chars — the minimum
-        produced by :func:`secrets.token_urlsafe(32)`). The token is removed
-        only on full server shutdown via :meth:`cleanup`, so any client that
-        cached the token across a ``lilbee serve`` restart stays valid.
-        """
+        """Return the persisted token if shape-valid; generate a new one otherwise."""
         path = server_json_path()
         existing = self._read_persisted_token(path)
         if existing is not None:
