@@ -77,7 +77,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
-    session_manager.generate()
+    session_manager.load_or_generate()
 
     inject_provider_keys()
 
