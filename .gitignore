@@ -16,6 +16,10 @@ htmlcov/
 *.html
 *.txt
 !tests/fixtures/**
+# QA matrix corpus + pinned requirements need to be tracked.
+!tools/qa/**/*.txt
+!tools/qa/**/*.pdf
+!tools/qa/**/*.html
 CLAUDE.md
 .worktrees/
 docs/plans/
