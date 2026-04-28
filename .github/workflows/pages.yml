@@ -70,10 +70,12 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             run_id="${{ github.event.workflow_run.id }}"
           else
+            # Build Platform Wheels runs on `release: published` against
+            # tag refs, not branches, so --branch=main returns nothing.
             run_id=$(gh run list \
               --workflow=build-wheels.yml \
               --status=success \
-              --branch=main \
+              --event=release \
               --limit=1 \
               --json databaseId \
               -q '.[0].databaseId // ""')
