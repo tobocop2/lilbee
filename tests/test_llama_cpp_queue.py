@@ -536,6 +536,73 @@ class TestVisionModel:
         result = find_mmproj_for_model(models_dir / "test-model.gguf")
         assert result == mmproj
 
+    def test_load_vision_llama_clamps_n_ctx_to_training_window(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """LILBEE_NUM_CTX > vision training_ctx clamps to avoid n_ctx_seq overflow."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        cfg.num_ctx = 8192
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+
+    def test_load_vision_llama_unset_num_ctx_uses_model_default(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """When LILBEE_NUM_CTX is unset, vision passes n_ctx=0 (model picks)."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        cfg.num_ctx = None
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 0
+
+    def test_load_vision_llama_handles_missing_metadata(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """If GGUF metadata read fails, vision honors LILBEE_NUM_CTX verbatim."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        cfg.num_ctx = 4096
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                side_effect=RuntimeError("metadata read broken"),
+            ),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 4096
+
 
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:

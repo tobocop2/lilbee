@@ -531,24 +531,12 @@ class TestLlamaCppProvider:
         kwargs: dict[str, object] = {}
         assert _halve_ctx_for_retry(kwargs, ValueError("oom")) is False
 
-    def testload_llama_kv_cache_type_drops_to_f16_on_unknown_label(self, models_dir: Path) -> None:
-        """Unknown LILBEE_KV_CACHE_TYPE values warn and fall back to default f16."""
-        from unittest.mock import patch
+    def testkv_cache_type_rejects_unknown_values_at_assignment(self) -> None:
+        """Pydantic enforces the KvCacheType enum; unknown labels raise at assignment."""
+        from pydantic import ValidationError
 
-        from lilbee.providers.llama_cpp_provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "0"
-        cfg.kv_cache_type = "totally-not-a-real-type"
-        try:
-            with patch("llama_cpp.Llama") as mock_llama_cls:
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                kwargs = mock_llama_cls.call_args[1]
-                assert "type_k" not in kwargs
-                assert "type_v" not in kwargs
-        finally:
-            cfg.kv_cache_type = "f16"
-            cfg.flash_attention = "auto"
+        with pytest.raises(ValidationError, match="Input should be"):
+            cfg.kv_cache_type = "totally-not-a-real-type"  # type: ignore[assignment]
 
     def testload_llama_kv_cache_type_q8_0_passes_ggml_type_to_llama(self, models_dir: Path) -> None:
         """LILBEE_KV_CACHE_TYPE=q8_0 maps to llama-cpp-python's GGML_TYPE_Q8_0 constant."""

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import DEFAULT_NUM_CTX, cfg
+from lilbee.config import DEFAULT_NUM_CTX, KvCacheType, cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import (
     KV_CACHE_TYPE_BYTES,
@@ -691,62 +691,58 @@ def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
 
 def _kv_elem_bytes_for_cfg() -> int:
     """Bytes per KV element implied by the configured cache type."""
-    return KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type, 2)
+    return KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type.value, 2)
+
+
+_N_GPU_LAYERS_AUTO = -1
 
 
 def _resolve_n_gpu_layers(*, embedding: bool) -> int:
-    """Pick n_gpu_layers from cfg, honoring 'auto' / 'cpu' / explicit int."""
-    if embedding:
-        return -1
-    raw = cfg.n_gpu_layers or "auto"
-    if raw == "cpu":
-        return 0
-    if raw == "auto":
-        return -1
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, falling back to auto", raw)
-        return -1
+    """Resolve ``cfg.n_gpu_layers`` to llama-cpp-python's offload integer.
+
+    Embedding loads always use all layers; chat honors ``cfg.n_gpu_layers``
+    (None -> all, 0 -> CPU only, positive int -> partial offload).
+    """
+    if embedding or cfg.n_gpu_layers is None:
+        return _N_GPU_LAYERS_AUTO
+    return cfg.n_gpu_layers
 
 
 def _apply_flash_attention(kwargs: dict[str, Any]) -> None:
-    """Set ``flash_attn`` kwarg per ``cfg.flash_attention`` (auto/1/0)."""
-    setting = (cfg.flash_attention or "auto").lower()
-    if setting in ("0", "false", "off", "no"):
+    """Set ``flash_attn`` per ``cfg.flash_attention`` (None=auto, True/False=force)."""
+    if cfg.flash_attention is False:
         return
-    if setting in ("1", "true", "on", "yes", "auto"):
-        kwargs["flash_attn"] = True
+    # None (auto) and True both pass flash_attn=True; the construct loop
+    # drops it on TypeError if llama-cpp-python doesn't support it.
+    kwargs["flash_attn"] = True
 
 
 def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
     """Map ``cfg.kv_cache_type`` to llama-cpp-python ``type_k`` / ``type_v``."""
-    label = (cfg.kv_cache_type or "f16").lower()
-    if label == "f16":
+    if cfg.kv_cache_type is KvCacheType.F16:
         return
     type_map = _ggml_type_map()
     if type_map is None:
         log.debug("llama_cpp internal types unavailable; skipping KV quant")
         return
-    ggml_type = type_map.get(label)
-    if ggml_type is None:
-        log.warning("Unknown LILBEE_KV_CACHE_TYPE=%r, falling back to f16", label)
+    ggml_type = type_map.get(cfg.kv_cache_type)
+    if ggml_type is None:  # pragma: no cover -- defensive against new enum values
         return
     kwargs["type_k"] = ggml_type
     kwargs["type_v"] = ggml_type
 
 
-def _ggml_type_map() -> dict[str, Any] | None:
+def _ggml_type_map() -> dict[KvCacheType, Any] | None:
     """Resolve llama-cpp-python's GGML_TYPE_* constants, or None on older builds."""
     try:
         from llama_cpp import llama_cpp as _llc
     except Exception:  # pragma: no cover -- only fires on llama-cpp-python without _llc
         return None
     return {
-        "f32": getattr(_llc, "GGML_TYPE_F32", None),
-        "f16": getattr(_llc, "GGML_TYPE_F16", None),
-        "q8_0": getattr(_llc, "GGML_TYPE_Q8_0", None),
-        "q4_0": getattr(_llc, "GGML_TYPE_Q4_0", None),
+        KvCacheType.F32: getattr(_llc, "GGML_TYPE_F32", None),
+        KvCacheType.F16: getattr(_llc, "GGML_TYPE_F16", None),
+        KvCacheType.Q8_0: getattr(_llc, "GGML_TYPE_Q8_0", None),
+        KvCacheType.Q4_0: getattr(_llc, "GGML_TYPE_Q4_0", None),
     }
 
 

@@ -24,6 +24,19 @@ class ClustererBackend(StrEnum):
     CONCEPTS = "concepts"
 
 
+class KvCacheType(StrEnum):
+    """KV cache element type for llama-cpp loads.
+
+    F16 is the upstream default; the q8_0 / q4_0 variants halve or quarter
+    cache memory but require flash attention to be enabled.
+    """
+
+    F16 = "f16"
+    F32 = "f32"
+    Q8_0 = "q8_0"
+    Q4_0 = "q4_0"
+
+
 class WikiEntityMode(StrEnum):
     """Strategy used to extract entities for the wiki.
 
@@ -550,23 +563,24 @@ class Config(BaseSettings):
     subprocess_embed: bool = ConfigField(default=False, writable=True)
 
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
-    # largest power-of-256 ctx that fits in available memory and the
-    # model's training window; this caps that at a sane ceiling.
+    # largest 256-multiple ctx that fits in available memory and the
+    # model's training window; this caps it at a sane ceiling.
     num_ctx_max: int | None = ConfigField(default=16384, ge=512, writable=True)
 
-    # Flash attention: 'auto' (default, on with fallback), '1' (force on),
-    # '0' (off). Resolves the 'padding V cache to 1024' warning on models
-    # with uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
-    flash_attention: str = ConfigField(default="auto", writable=True)
+    # Flash attention. None (default) = on with TypeError fallback for
+    # older llama-cpp-python builds, True = force on, False = off.
+    # Resolves the 'padding V cache to 1024' warning on models with
+    # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
+    flash_attention: bool | None = ConfigField(default=None, writable=True)
 
-    # KV cache element type: 'f16' (default), 'q8_0', 'q4_0', 'f32'. Quantized
-    # KV halves or quarters cache memory; needs flash attention to be on.
-    kv_cache_type: str = ConfigField(default="f16", writable=True)
+    # KV cache element type. q8_0 / q4_0 halve or quarter cache memory
+    # but require flash attention to be enabled.
+    kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.F16, writable=True)
 
-    # Number of model layers to offload to GPU: 'auto' (-1, all), 'cpu'
-    # (0, none), or an explicit integer. Useful when a discrete GPU has
-    # less VRAM than the model needs.
-    n_gpu_layers: str = ConfigField(default="auto", writable=True)
+    # Number of model layers to offload to GPU. None (default) = all
+    # layers, 0 = CPU only, positive int = partial offload. Useful when a
+    # discrete GPU has less VRAM than the model needs.
+    n_gpu_layers: int | None = ConfigField(default=None, writable=True)
 
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
@@ -803,6 +817,42 @@ class Config(BaseSettings):
             except ValueError:
                 pass
         return bool(v)
+
+    @field_validator("flash_attention", mode="before")
+    @classmethod
+    def _parse_flash_attention(cls, v: Any) -> bool | None:
+        """Auto/on/off tri-state: empty/auto/none -> None, else parse bool."""
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            if v.strip().lower() in ("", "auto", "none"):
+                return None
+            try:
+                return _parse_bool(v)
+            except ValueError:
+                return None
+        return bool(v)
+
+    @field_validator("n_gpu_layers", mode="before")
+    @classmethod
+    def _parse_n_gpu_layers(cls, v: Any) -> int | None:
+        """Auto -> None, ``cpu`` alias -> 0, integers parsed verbatim."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            label = v.strip().lower()
+            if label in ("", "auto", "none"):
+                return None
+            if label == "cpu":
+                return 0
+            try:
+                return int(label)
+            except ValueError:
+                log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
+                return None
+        return int(v)
 
     @field_validator("semantic_chunking", mode="before")
     @classmethod
