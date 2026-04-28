@@ -168,35 +168,6 @@ max-complexity = 10
     "N802", "N806", "N818", "N817",
 ]
 "conftest.py" = ["S101"]
-# Pre-existing complexity / magic-value / naming hits that predate the
-# tightened rule set. Each entry is grandfathered for cleanup later (the
-# tidy-module-organization branch refactors these); rules still apply to
-# new files.
-"src/lilbee/_splash_runner.py" = ["PLR0911", "PLR2004"]
-"src/lilbee/cancellation.py" = ["N818"]
-"src/lilbee/catalog.py" = ["C901", "PLR2004"]
-"src/lilbee/cli/app.py" = ["C901"]
-"src/lilbee/cli/commands.py" = ["C901", "PLR2004"]
-"src/lilbee/cli/tui/app.py" = ["PLR2004"]
-"src/lilbee/cli/tui/screens/catalog_utils.py" = ["PLR2004"]
-"src/lilbee/cli/tui/screens/chat.py" = ["PLR2004"]
-"src/lilbee/cli/tui/screens/wiki.py" = ["PLR2004"]
-"src/lilbee/cli/tui/widgets/autocomplete.py" = ["PLR2004"]
-"src/lilbee/config.py" = ["N802", "N806", "PLR2004"]
-"src/lilbee/crawler/api.py" = ["C901", "PLR0912"]
-"src/lilbee/crawler/bootstrap.py" = ["N818"]
-"src/lilbee/crawler/sitemap.py" = ["PLR2004"]
-"src/lilbee/ingest.py" = ["C901"]
-"src/lilbee/model_defaults.py" = ["PLR2004"]
-"src/lilbee/model_manager.py" = ["PLR2004"]
-"src/lilbee/providers/worker_process.py" = ["C901", "PLR0915"]
-"src/lilbee/query.py" = ["C901", "PLR2004"]
-"src/lilbee/reasoning.py" = ["C901", "N806"]
-"src/lilbee/store.py" = ["C901"]
-"src/lilbee/vision.py" = ["C901"]
-"src/lilbee/wiki/browse.py" = ["PLR2004"]
-"src/lilbee/wiki/entity_extractor/ner_concepts.py" = ["C901"]
-"src/lilbee/wiki/gen.py" = ["PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"
