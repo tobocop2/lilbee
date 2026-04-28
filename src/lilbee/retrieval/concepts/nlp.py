@@ -30,8 +30,7 @@ def _ensure_spacy_model() -> Any:
         return spacy.load(model_name)
     except OSError as exc:
         raise ImportError(
-            f"spaCy model {model_name!r} not installed. "
-            f"Run: python -m spacy download {model_name}"
+            f"spaCy model {model_name!r} not installed. Run: python -m spacy download {model_name}"
         ) from exc
 
 
