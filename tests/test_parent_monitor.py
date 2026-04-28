@@ -175,6 +175,11 @@ class TestRunServerIntegration:
         watcher.assert_called_once()
         assert watcher.call_args.args[0] == 999999
 
+        # Invoke the on_death callback to verify it flips should_exit.
+        on_death = watcher.call_args.args[1]
+        on_death()
+        assert fake_server.should_exit is True
+
     async def test_loads_config_when_not_loaded(
         self, fake_server, fake_config, monkeypatch, tmp_path
     ):
