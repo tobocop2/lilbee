@@ -1,0 +1,78 @@
+name: QA Phase 0 — harness smoke
+
+# Validates that pywinpty/ptyprocess + pyte can drive a real lilbee binary
+# on Linux/macOS/Windows. GO/NO-GO for the rest of the QA matrix.
+# Runs on workflow_dispatch only; deleted once Phase 0 lands green and the
+# harness is proven across all three OSes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lilbee_version:
+        description: "GH release tag to pull binaries from (e.g. v0.6.66b455)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-phase0-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase0:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  asset: lilbee-linux-x86_64,        chmod: true  }
+          - { os: macos-latest,   asset: lilbee-macos-arm64,         chmod: true  }
+          - { os: windows-latest, asset: lilbee-windows-x86_64.exe,  chmod: false }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install QA harness deps
+        run: python -m pip install -r tools/qa/requirements.txt
+
+      - name: Download lilbee binary from GH release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.lilbee_version || 'latest' }}
+        shell: bash
+        run: |
+          mkdir -p _bin
+          if [ "$TAG" = "latest" ]; then
+            gh release download --repo ${{ github.repository }} --pattern "${{ matrix.asset }}" --dir _bin
+          else
+            gh release download "$TAG" --repo ${{ github.repository }} --pattern "${{ matrix.asset }}" --dir _bin
+          fi
+          ls -la _bin
+
+      - name: Make binary executable (POSIX)
+        if: matrix.chmod
+        run: chmod +x "_bin/${{ matrix.asset }}"
+
+      - name: Run Phase 0 harness smoke
+        env:
+          LILBEE_QA_BIN: ${{ github.workspace }}/_bin/${{ matrix.asset }}
+          PYTHONUNBUFFERED: "1"
+        shell: bash
+        run: |
+          python -m pytest tools/qa/_phase0_harness_smoke.py -v --tb=short
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-${{ matrix.os }}
+          path: |
+            _bin/
+            tools/qa/.pytest_cache/
+          retention-days: 7
