@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -586,4 +587,11 @@ def main() -> None:
         get_services()
     except Exception:
         log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
+
+    from lilbee.parent_monitor import parse_parent_pid, watch_parent_thread
+
+    parent_pid = parse_parent_pid()
+    if parent_pid is not None:
+        watch_parent_thread(parent_pid, lambda: os._exit(0))
+
     mcp.run()
