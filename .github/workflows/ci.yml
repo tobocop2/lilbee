@@ -30,11 +30,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
+          # x86_64 build cap at AVX baseline (Sandy Bridge 2011+) so ggml
+          # doesn't bake AVX2/FMA/BMI2 into a wheel that the runner pool's
+          # weakest CPU can't run. See tools/wheel-build/cmake_args.sh for
+          # the full rationale (CPU_ALL_VARIANTS + BACKEND_DL builds but
+          # llama-cpp-python's binding never registers the dynamic backends).
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
-            -DGGML_CPU_ALL_VARIANTS=ON
-            -DGGML_BACKEND_DL=ON
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Lint
         run: make lint
@@ -85,17 +89,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
         env:
-          # GGML_CPU_ALL_VARIANTS=ON compiles every x86_64 backend variant and
-          # picks the highest one the host CPU supports at runtime. Without it,
-          # ggml's default still bakes in AVX2/FMA/BMI2 and SIGILLs on runners
-          # whose CPU lacks them. arm64 has no equivalent flag (NEON is mandatory).
-          # GGML_BACKEND_DL=ON is required by GGML_CPU_ALL_VARIANTS.
+          # x86_64 builds cap at AVX baseline (Sandy Bridge 2011+) so ggml
+          # doesn't bake AVX2/FMA/BMI2 into a wheel that crashes with
+          # "Illegal instruction" on weaker CPUs in the GitHub runner pool.
+          # CPU_ALL_VARIANTS + BACKEND_DL builds but llama-cpp-python's
+          # Python binding never registers the dynamic backends -- see
+          # tools/wheel-build/cmake_args.sh for the upstream-binding gap.
+          # arm64 has no equivalent: NEON is mandatory in ARMv8.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
             -DGGML_BLAS=OFF
             -DGGML_CUDA=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Run unit tests
         # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
@@ -181,12 +187,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
+          # x86_64 builds cap at AVX baseline so ggml doesn't bake AVX2/FMA/BMI2
+          # into a wheel that crashes on the runner pool's weaker CPUs. See
+          # tools/wheel-build/cmake_args.sh for why CPU_ALL_VARIANTS + BACKEND_DL
+          # isn't viable with llama-cpp-python's Python binding.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
             -DGGML_CUDA=OFF
             ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
@@ -341,10 +351,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
+          # See tools/wheel-build/cmake_args.sh for why x86_64 caps at AVX baseline.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Build dev portal (coverage + API docs)
         run: make docs-site
