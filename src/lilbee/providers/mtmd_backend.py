@@ -10,6 +10,14 @@ from typing import Any
 
 from gguf import GGUFReader
 
+from lilbee.config import cfg
+from lilbee.providers.llama_cpp_provider import (
+    find_mmproj_for_model,
+    install_llama_log_handler,
+    read_gguf_metadata,
+    suppress_native_stderr,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -89,13 +97,7 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
 
 def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
-    from llama_cpp import Llama
-
-    from lilbee.providers.llama_cpp_provider import (
-        find_mmproj_for_model,
-        install_llama_log_handler,
-        suppress_native_stderr,
-    )
+    from llama_cpp import Llama  # heavy native lib; keep import lazy
 
     install_llama_log_handler()
     if mmproj_path is None:
@@ -126,15 +128,7 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
 
 
 def _resolve_vision_n_ctx(model_path: Path) -> int:
-    """Pick n_ctx for a vision load, clamped to the model's training context.
-
-    Mirrors the embedding clamp in :func:`lilbee.providers.llama_cpp_provider.load_llama`.
-    Without this, ``LILBEE_NUM_CTX`` set for chat is passed through to a
-    smaller-trained vision model and llama.cpp logs ``n_ctx_seq > n_ctx_train``.
-    """
-    from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import read_gguf_metadata
-
+    """Pick n_ctx for a vision load, clamped to the model's training context."""
     try:
         meta = read_gguf_metadata(model_path)
     except Exception:

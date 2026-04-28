@@ -551,7 +551,7 @@ class TestVisionModel:
                 return_value=mock.MagicMock(),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
                 return_value={"context_length": "2048"},
             ),
         ):
@@ -574,7 +574,7 @@ class TestVisionModel:
                 return_value=mock.MagicMock(),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
                 return_value={"context_length": "2048"},
             ),
         ):
@@ -596,7 +596,7 @@ class TestVisionModel:
                 return_value=mock.MagicMock(),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
                 side_effect=RuntimeError("metadata read broken"),
             ),
         ):

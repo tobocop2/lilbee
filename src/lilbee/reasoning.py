@@ -102,15 +102,11 @@ _DRAIN_CAP = 512
 
 
 def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
-    """Filter ``<think>...</think>`` tags from a token stream.
-    When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``.
-    When *show* is False, strips thinking content entirely.
-    Tokens outside thinking blocks are always yielded as ``is_reasoning=False``.
+    """Filter ``<think>...</think>`` tags from a token stream; cap runaway reasoning.
 
-    Reasoning is capped at ``_MAX_REASONING_CHARS`` to prevent runaway
-    thinking loops (common with Qwen3 and similar models). On truncation
-    or normal completion we close the upstream generator so llama.cpp
-    doesn't sit suspended holding the chat lock.
+    When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``;
+    when False, strips it. Always closes the upstream iterator on exit so a
+    runaway think loop doesn't leave llama.cpp holding the chat lock.
     """
     parser = _TagParser(show=show)
     try:

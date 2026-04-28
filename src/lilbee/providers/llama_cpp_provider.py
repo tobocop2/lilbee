@@ -22,10 +22,9 @@ from typing import TYPE_CHECKING, Any
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import DEFAULT_NUM_CTX, KvCacheType, cfg
+from lilbee.config import DEFAULT_NUM_CTX, KV_CACHE_TYPE_BYTES, KvCacheType, cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import (
-    KV_CACHE_TYPE_BYTES,
     MODE_CHAT,
     MODE_EMBED,
     MODE_RERANK,
@@ -584,13 +583,7 @@ def _llama_cpp_has_rank_pooling() -> bool:
 
 
 def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
-    """Load a llama_cpp.Llama instance in chat, embed, or rerank mode.
-
-    Chat picks ``n_ctx`` dynamically against host memory (unless
-    ``cfg.num_ctx`` is set) and enables flash attention with a fallback for
-    older llama-cpp-python builds. Rerank uses ``pooling_type=RANK`` so
-    llama.cpp emits cross-encoder scores instead of token embeddings.
-    """
+    """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
     from llama_cpp import Llama
 
     install_llama_log_handler()
@@ -659,12 +652,7 @@ def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 
 
 def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
-    """Pick a chat n_ctx that fits available memory.
-
-    Honors ``LILBEE_NUM_CTX_MAX`` as the upper bound. Falls back to the
-    static ``min(training_ctx, DEFAULT_NUM_CTX)`` cap if memory accounting
-    goes wrong (e.g., psutil missing).
-    """
+    """Pick the largest 256-multiple n_ctx that fits in available memory."""
     training_ctx = DEFAULT_NUM_CTX
     if meta:
         try:
@@ -691,18 +679,14 @@ def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
 
 def _kv_elem_bytes_for_cfg() -> int:
     """Bytes per KV element implied by the configured cache type."""
-    return KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type.value, 2)
+    return KV_CACHE_TYPE_BYTES[cfg.kv_cache_type]
 
 
 _N_GPU_LAYERS_AUTO = -1
 
 
 def _resolve_n_gpu_layers(*, embedding: bool) -> int:
-    """Resolve ``cfg.n_gpu_layers`` to llama-cpp-python's offload integer.
-
-    Embedding loads always use all layers; chat honors ``cfg.n_gpu_layers``
-    (None -> all, 0 -> CPU only, positive int -> partial offload).
-    """
+    """Resolve ``cfg.n_gpu_layers`` (None=all) to llama-cpp's offload integer."""
     if embedding or cfg.n_gpu_layers is None:
         return _N_GPU_LAYERS_AUTO
     return cfg.n_gpu_layers

@@ -1739,7 +1739,7 @@ class TestMtmdLoadVisionLlama:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                "lilbee.providers.mtmd_backend.find_mmproj_for_model",
                 return_value=Path("found_mmproj.gguf"),
             ),
             mock.patch(

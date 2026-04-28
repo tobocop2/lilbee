@@ -45,15 +45,6 @@ _DYNAMIC_CTX_QUANTUM = 256
 # KV cache element size for f16 (bytes). Quantized KV reduces this.
 _KV_ELEM_BYTES_F16 = 2
 
-# Map cache-type label -> bytes per KV element (rough; q* shapes are 1 byte
-# of data plus shared scales, close enough for budgeting).
-KV_CACHE_TYPE_BYTES = {
-    "f16": 2,
-    "f32": 4,
-    "q8_0": 1,
-    "q4_0": 1,
-}
-
 
 @dataclass
 class _CacheEntry:

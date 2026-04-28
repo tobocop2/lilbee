@@ -798,13 +798,7 @@ class ChatScreen(Screen[None]):
     def _stream_response(
         self, question: str, widget: AssistantMessage, chunk_type: str | None
     ) -> None:
-        """Stream LLM response in a background thread.
-
-        Tokens are coalesced into ``_STREAM_FLUSH_INTERVAL`` windows before
-        being shipped to the UI thread. At 100+ tok/s on small models, one
-        ``call_from_thread`` per token saturates the Textual message queue
-        and key events visibly lag.
-        """
+        """Stream LLM response in a background thread, coalescing UI updates."""
         response_parts: list[str] = []
         sources: list[str] = []
         stream: Any = None

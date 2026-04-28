@@ -56,14 +56,7 @@ class Community:
 
 
 def _ensure_spacy_model() -> Any:
-    """Load the spaCy model. The user is expected to install it manually.
-
-    Auto-download via ``spacy.cli.download`` shells out to pip/uv and
-    fails noisily under ``uv tool install`` layouts (uv's stderr leaks
-    'No virtual environment found' into the chat panel). Users can run
-    ``python -m spacy download en_core_web_sm`` once at install time;
-    callers gate on :func:`concepts_available` for graceful degradation.
-    """
+    """Load the spaCy NER model; raise ImportError with an install hint if missing."""
     import spacy
 
     model_name = "en_core_web_sm"
