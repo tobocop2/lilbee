@@ -29,6 +29,17 @@ _GGML_TO_PY_LEVEL = {
     _GGML_LOG_LEVEL_DEBUG: logging.DEBUG,
 }
 
+# llama.cpp emits these at GGML_LOG_LEVEL_ERROR but they're advisory: the model
+# still loads correctly. Demote to WARNING so users don't think the setup is
+# broken.
+_GGML_ERROR_SOFT_DEMOTE = (
+    "special_eos_id is not in special_eog_ids",
+    "embeddings required but some input tokens were not marked as outputs",
+    # 'n_ctx_seq (X) > n_ctx_train (Y)' -- our embed clamp prevents misuse.
+    "n_ctx_seq",
+    "tokenizer config may be incorrect",
+)
+
 _STDERR_LOCK = threading.Lock()
 
 # ctypes does not retain a Python reference to the wrapped callback;
@@ -54,16 +65,22 @@ def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
         if 0 in _llama_log_pending:
             buffered = _llama_log_pending.pop(0).rstrip()
             if buffered:
-                _llama_log.log(
-                    _GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), buffered
-                )
+                _llama_log.log(_resolve_ggml_level(_llama_log_pending_level, buffered), buffered)
         _llama_log_pending_level = level
         _llama_log_pending[0] = text
 
     if "\n" in _llama_log_pending.get(0, ""):
         full = _llama_log_pending.pop(0).rstrip()
         if full:
-            _llama_log.log(_GGML_TO_PY_LEVEL.get(_llama_log_pending_level, logging.DEBUG), full)
+            _llama_log.log(_resolve_ggml_level(_llama_log_pending_level, full), full)
+
+
+def _resolve_ggml_level(ggml_level: int, text: str) -> int:
+    """Translate ggml log level to Python, demoting known-advisory ERRORs to WARNING."""
+    py_level = _GGML_TO_PY_LEVEL.get(ggml_level, logging.DEBUG)
+    if py_level == logging.ERROR and any(s in text for s in _GGML_ERROR_SOFT_DEMOTE):
+        return logging.WARNING
+    return py_level
 
 
 def install_llama_log_handler() -> None:

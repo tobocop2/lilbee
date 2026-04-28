@@ -395,6 +395,78 @@ class TestEnableOcrConfig:
             assert c.enable_ocr is None
 
 
+class TestFlashAttentionConfig:
+    def test_default_is_none(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.flash_attention is None
+
+    def test_bool_true_passes_through(self) -> None:
+        """A bool already in the right type bypasses string parsing."""
+        with mock.patch.dict(os.environ, {"LILBEE_FLASH_ATTENTION": "true"}):
+            c = Config()
+            assert c.flash_attention is True
+
+    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
+        """Garbage values fall back to auto rather than crashing the load."""
+        env = {**_clean_env(tmp_path), "LILBEE_FLASH_ATTENTION": "maybe?"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.flash_attention is None
+
+    def test_assignment_with_bool(self, tmp_path) -> None:
+        """Validator on assignment accepts bool inputs verbatim."""
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            c.flash_attention = True
+            assert c.flash_attention is True
+
+    def test_assignment_with_int_coerces_to_bool(self, tmp_path) -> None:
+        """Non-string non-bool values fall through to bool(v)."""
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            c.flash_attention = 1  # type: ignore[assignment]
+            assert c.flash_attention is True
+
+
+class TestNGpuLayersConfig:
+    def test_default_is_none(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.n_gpu_layers is None
+
+    def test_cpu_alias_means_zero(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "cpu"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.n_gpu_layers == 0
+
+    def test_explicit_int_string(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "12"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.n_gpu_layers == 12
+
+    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.n_gpu_layers is None
+
+    def test_assignment_with_int(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            c.n_gpu_layers = 4
+            assert c.n_gpu_layers == 4
+
+    def test_assignment_with_float_coerces(self, tmp_path) -> None:
+        """Non-string non-None values fall through to int(v)."""
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            c.n_gpu_layers = 3.0  # type: ignore[assignment]
+            assert c.n_gpu_layers == 3
+
+
 class TestSemanticChunkingConfig:
     def test_default_is_false(self, tmp_path) -> None:
         """Semantic chunking is opt-in: default False, enabled via env/config."""

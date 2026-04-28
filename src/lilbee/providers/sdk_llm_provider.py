@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.model_ref import parse_model_ref, translate_options
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
@@ -109,7 +109,7 @@ class SdkLLMProvider(LLMProvider):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | ClosableIterator[str]:
         """Chat completion via the configured backend."""
         self._ensure_initialized()
         ref = parse_model_ref(model or cfg.chat_model)
@@ -133,7 +133,7 @@ class SdkLLMProvider(LLMProvider):
             ) from exc
         return result.content
 
-    def _chat_stream(self, request: CompletionRequest) -> Iterator[str]:
+    def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[str]:
         """Yield content tokens from a streaming completion.
 
         Exceptions surfaced by the backend at either call time or during

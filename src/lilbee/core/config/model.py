@@ -21,7 +21,7 @@ from .defaults import (
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
     DEFAULT_IGNORE_DIRS,
 )
-from .enums import ClustererBackend, WikiEntityMode
+from .enums import ClustererBackend, KvCacheType, WikiEntityMode
 from .parsing import _parse_bool
 from .validators import ConfigField
 
@@ -226,6 +226,26 @@ class Config(BaseSettings):
 
     # Run embedding and vision inference in a subprocess (llama-cpp only).
     subprocess_embed: bool = ConfigField(default=False, writable=True)
+
+    # Upper bound for the dynamic n_ctx picker. The picker chooses the
+    # largest 256-multiple ctx that fits in available memory and the
+    # model's training window; this caps it at a sane ceiling.
+    num_ctx_max: int = ConfigField(default=16384, ge=512, writable=True)
+
+    # Flash attention. None (default) = on with TypeError fallback for
+    # older llama-cpp-python builds, True = force on, False = off.
+    # Resolves the 'padding V cache to 1024' warning on models with
+    # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
+    flash_attention: bool | None = ConfigField(default=None, writable=True)
+
+    # KV cache element type. q8_0 / q4_0 halve or quarter cache memory
+    # but require flash attention to be enabled.
+    kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.F16, writable=True)
+
+    # Number of model layers to offload to GPU. None (default) = all
+    # layers, 0 = CPU only, positive int = partial offload. Useful when a
+    # discrete GPU has less VRAM than the model needs.
+    n_gpu_layers: int | None = ConfigField(default=None, writable=True)
 
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
@@ -462,6 +482,42 @@ class Config(BaseSettings):
             except ValueError:
                 pass
         return bool(v)
+
+    @field_validator("flash_attention", mode="before")
+    @classmethod
+    def _parse_flash_attention(cls, v: Any) -> bool | None:
+        """Auto/on/off tri-state: empty/auto/none -> None, else parse bool."""
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            if v.strip().lower() in ("", "auto", "none"):
+                return None
+            try:
+                return _parse_bool(v)
+            except ValueError:
+                return None
+        return bool(v)
+
+    @field_validator("n_gpu_layers", mode="before")
+    @classmethod
+    def _parse_n_gpu_layers(cls, v: Any) -> int | None:
+        """Auto -> None, ``cpu`` alias -> 0, integers parsed verbatim."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            label = v.strip().lower()
+            if label in ("", "auto", "none"):
+                return None
+            if label == "cpu":
+                return 0
+            try:
+                return int(label)
+            except ValueError:
+                log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
+                return None
+        return int(v)
 
     @field_validator("semantic_chunking", mode="before")
     @classmethod

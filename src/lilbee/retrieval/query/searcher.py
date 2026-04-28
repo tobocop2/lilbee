@@ -18,7 +18,7 @@ from lilbee.data.store import (
     Store,
     cosine_sim,
 )
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import ClosableIterator, LLMProvider
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
@@ -503,7 +503,7 @@ class Searcher:
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         finally:
-            if hasattr(raw, "close"):
+            if isinstance(raw, ClosableIterator):
                 raw.close()
 
     def ask_stream(
@@ -544,7 +544,7 @@ class Searcher:
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         finally:
-            if hasattr(raw_stream, "close"):
+            if isinstance(raw_stream, ClosableIterator):
                 raw_stream.close()
         # LLM-generated citation blocks in streamed tokens cannot be
         # retroactively stripped. The system prompt discourages them; this

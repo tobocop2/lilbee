@@ -22,8 +22,12 @@ _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
-    Returns a dict with keys like 'architecture', 'context_length',
-    'embedding_length', 'chat_template', 'file_type'.
+
+    Returns a dict with keys like ``architecture``, ``context_length``,
+    ``embedding_length``, ``chat_template``, ``file_type``, plus the
+    KV-cache-shape fields (``block_count``, ``head_count_kv``,
+    ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
+    against host memory.
     """
     from llama_cpp import Llama
 
@@ -43,6 +47,15 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
         emb_key = f"{arch}.embedding_length"
         if emb_key in raw:
             result["embedding_length"] = str(raw[emb_key])
+        for arch_key, out_key in (
+            (f"{arch}.block_count", "block_count"),
+            (f"{arch}.attention.head_count_kv", "head_count_kv"),
+            (f"{arch}.attention.head_count", "head_count"),
+            (f"{arch}.attention.key_length", "key_length"),
+            (f"{arch}.attention.value_length", "value_length"),
+        ):
+            if arch_key in raw:
+                result[out_key] = str(raw[arch_key])
         if "tokenizer.chat_template" in raw:
             result["chat_template"] = str(raw["tokenizer.chat_template"])
         if "general.file_type" in raw:

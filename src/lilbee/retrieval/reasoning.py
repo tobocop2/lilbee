@@ -7,9 +7,12 @@ classifies tokens as reasoning or response content.
 
 from __future__ import annotations
 
+import contextlib
 import re
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass
+
+from lilbee.providers.base import ClosableIterator
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
@@ -99,16 +102,28 @@ _DRAIN_CAP = 512
 
 
 def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
-    """Filter ``<think>...</think>`` tags from a token stream.
-    When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``.
-    When *show* is False, strips thinking content entirely.
-    Tokens outside thinking blocks are always yielded as ``is_reasoning=False``.
+    """Filter ``<think>...</think>`` tags from a token stream; cap runaway reasoning.
 
-    Reasoning is capped at ``_MAX_REASONING_CHARS`` to prevent runaway
-    thinking loops (common with Qwen3 and similar models).
+    When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``;
+    when False, strips it. Always closes the upstream iterator on exit so a
+    runaway think loop doesn't leave llama.cpp holding the chat lock.
     """
     parser = _TagParser(show=show)
-    truncated = False
+    try:
+        truncated = yield from _stream_until_cap(parser, tokens)
+        if truncated:
+            yield from _drain_after_truncation(parser, tokens)
+        final = parser.flush()
+        if final and final.content:
+            yield final
+    finally:
+        _close_iterator(tokens)
+
+
+def _stream_until_cap(
+    parser: _TagParser, tokens: Iterator[str]
+) -> Generator[StreamToken, None, bool]:
+    """Yield from *tokens* until the reasoning cap fires. Returns True if truncated."""
     for token in tokens:
         for st in parser.feed(token):
             if st.content:
@@ -117,33 +132,31 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
             parser.in_thinking = False
             parser.buf = ""
             yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
-            truncated = True
-            break
-    if not truncated:
-        final = parser.flush()
-        if final and final.content:
-            yield final
-        return
-    yield from _drain_after_truncation(parser, tokens)
+            return True
+    return False
 
 
 def _drain_after_truncation(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
-    """Drain a bounded suffix after `</think>` truncation.
+    """Drain a bounded suffix after a ``</think>`` truncation.
 
-    Captures response content that follows a closed `</think>` tag without
-    pulling the whole stream; bounded by `_DRAIN_CAP` characters.
+    Captures response content that follows a closed ``</think>`` tag without
+    pulling the whole stream; bounded by ``_DRAIN_CAP`` characters.
     """
     drain_chars = 0
     for token in tokens:
         drain_chars += len(token)
         if drain_chars > _DRAIN_CAP:
-            break
+            return
         for st in parser.feed(token):
             if st.content and not st.is_reasoning:
                 yield st
-    final = parser.flush()
-    if final and final.content:
-        yield final
+
+
+def _close_iterator(tokens: Iterator[str]) -> None:
+    """Close *tokens* if it satisfies the ClosableIterator protocol."""
+    if isinstance(tokens, ClosableIterator):
+        with contextlib.suppress(Exception):
+            tokens.close()
 
 
 def strip_reasoning(text: str) -> str:

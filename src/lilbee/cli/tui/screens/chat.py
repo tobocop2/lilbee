@@ -8,8 +8,9 @@ import logging
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on, work
 from textual.actions import SkipAction
@@ -41,6 +42,7 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
+from lilbee.providers.base import ClosableIterator
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
@@ -55,11 +57,25 @@ log = logging.getLogger(__name__)
 _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
-# Throttle auto-scroll to ~6 fps so heavy token streams don't peg the renderer.
-_STREAM_SCROLL_INTERVAL_SECONDS = 0.15
+
 # Treat the user as "still at the bottom" when within this many lines so a tiny
 # stray scroll doesn't disable auto-follow during streaming.
 _AUTO_SCROLL_TAIL_LINES = 5
+
+# Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
+# emit 100+ tokens/sec; one ``call_from_thread`` per token saturates Textual's
+# message queue and makes key events visibly lag.
+_STREAM_FLUSH_INTERVAL = 0.05
+
+# Auto-scroll throttle. ~6 fps so heavy token streams don't peg the renderer.
+_STREAM_SCROLL_INTERVAL = 0.15
+
+
+def _close_stream(stream: Any) -> None:
+    """Close a streaming iterator if it satisfies the ClosableIterator protocol."""
+    if isinstance(stream, ClosableIterator):
+        with contextlib.suppress(Exception):
+            stream.close()
 
 
 def _remove_copied_files(names: list[str]) -> None:
@@ -788,46 +804,89 @@ class ChatScreen(Screen[None]):
     def _stream_response(
         self, question: str, widget: AssistantMessage, chunk_type: str | None
     ) -> None:
-        """Stream LLM response in a background thread."""
-        worker = _get_worker()
+        """Stream LLM response in a background thread, coalescing UI updates."""
         response_parts: list[str] = []
         sources: list[str] = []
-        last_scroll = 0.0
-
+        stream: Any = None
         try:
             with self._history_lock:
                 history_snapshot = self._history[:-1]
             stream = get_services().searcher.ask_stream(
                 question, history=history_snapshot, chunk_type=chunk_type
             )
-            for token in stream:
-                if worker.is_cancelled:
-                    break
-                try:
-                    if token.is_reasoning:
-                        call_from_thread(self, widget.append_reasoning, token.content)
-                    elif token.content:
-                        response_parts.append(token.content)
-                        call_from_thread(self, widget.append_content, token.content)
-                    now = time.monotonic()
-                    if now - last_scroll >= _STREAM_SCROLL_INTERVAL_SECONDS:
-                        call_from_thread(self, self._scroll_to_bottom)
-                        last_scroll = now
-                except Exception:
-                    break  # App shutting down (Ctrl-C) -- stop streaming
+            self._consume_stream(stream, widget, response_parts)
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
-            self.streaming = False
-            full_response = "".join(response_parts)
-            if full_response:
-                with self._history_lock:
-                    self._history.append({"role": "assistant", "content": full_response})
-                    self._trim_history()
-            call_from_thread(self, widget.finish, sources)
+            _close_stream(stream)
+            self._finalize_stream(widget, sources, response_parts)
+
+    def _consume_stream(
+        self, stream: Any, widget: AssistantMessage, response_parts: list[str]
+    ) -> None:
+        """Pull tokens off *stream*, batching UI updates to ~50 ms windows."""
+        worker = _get_worker()
+        reason_buf: list[str] = []
+        content_buf: list[str] = []
+        timings = [time.monotonic(), 0.0]  # [last_flush, last_scroll]
+
+        def flush() -> None:
+            if reason_buf:
+                call_from_thread(self, widget.append_reasoning, "".join(reason_buf))
+                reason_buf.clear()
+            if content_buf:
+                call_from_thread(self, widget.append_content, "".join(content_buf))
+                content_buf.clear()
+
+        for token in stream:
+            if worker.is_cancelled:
+                break
+            try:
+                self._buffer_token(token, reason_buf, content_buf, response_parts)
+                self._maybe_flush_and_scroll(flush, timings)
+            except Exception:
+                break  # App shutting down (Ctrl-C) -- stop streaming
+        with contextlib.suppress(Exception):
+            flush()
+
+    @staticmethod
+    def _buffer_token(
+        token: Any,
+        reason_buf: list[str],
+        content_buf: list[str],
+        response_parts: list[str],
+    ) -> None:
+        """Append *token* to the right buffer; record response content for history."""
+        if token.is_reasoning:
+            reason_buf.append(token.content)
+        elif token.content:
+            response_parts.append(token.content)
+            content_buf.append(token.content)
+
+    def _maybe_flush_and_scroll(self, flush: Callable[[], None], timings: list[float]) -> None:
+        """Run *flush* and the auto-scroll on their respective intervals."""
+        now = time.monotonic()
+        if now - timings[0] >= _STREAM_FLUSH_INTERVAL:
+            flush()
+            timings[0] = now
+        if now - timings[1] >= _STREAM_SCROLL_INTERVAL:
             call_from_thread(self, self._scroll_to_bottom)
+            timings[1] = now
+
+    def _finalize_stream(
+        self, widget: AssistantMessage, sources: list[str], response_parts: list[str]
+    ) -> None:
+        """Persist the assistant turn and update the widget. Always runs."""
+        self.streaming = False
+        full_response = "".join(response_parts)
+        if full_response:
+            with self._history_lock:
+                self._history.append({"role": "assistant", "content": full_response})
+                self._trim_history()
+        call_from_thread(self, widget.finish, sources)
+        call_from_thread(self, self._scroll_to_bottom)
 
     def _trim_history(self) -> None:
         """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""

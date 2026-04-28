@@ -11,6 +11,11 @@ from typing import Any
 from gguf import GGUFReader
 
 from lilbee.core.config.model import cfg
+from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model, read_gguf_metadata
+from lilbee.providers.llama_cpp.log_dispatch import (
+    install_llama_log_handler,
+    suppress_native_stderr,
+)
 
 log = logging.getLogger(__name__)
 
@@ -91,13 +96,7 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
 
 def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
-    from llama_cpp import Llama
-
-    from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
-    from lilbee.providers.llama_cpp.log_dispatch import (
-        install_llama_log_handler,
-        suppress_native_stderr,
-    )
+    from llama_cpp import Llama  # heavy native lib; keep import lazy
 
     install_llama_log_handler()
     if mmproj_path is None:
@@ -110,7 +109,7 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         "chat_handler": chat_handler,
         "verbose": False,
         "n_gpu_layers": -1,
-        "n_ctx": cfg.num_ctx if cfg.num_ctx is not None else 0,
+        "n_ctx": _resolve_vision_n_ctx(model_path),
     }
 
     llama = suppress_native_stderr(Llama, **kwargs)
@@ -125,3 +124,18 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         metadata.get("general.architecture", "?"),
     )
     return llama
+
+
+def _resolve_vision_n_ctx(model_path: Path) -> int:
+    """Pick n_ctx for a vision load, clamped to the model's training context."""
+    try:
+        meta = read_gguf_metadata(model_path)
+    except Exception:
+        log.debug("read_gguf_metadata failed for vision %s", model_path, exc_info=True)
+        meta = None
+    train_ctx = int((meta or {}).get("context_length", "0"))
+    if cfg.num_ctx is None:
+        return 0  # 0 -> llama.cpp uses the model's training context
+    if train_ctx <= 0:
+        return cfg.num_ctx
+    return min(cfg.num_ctx, train_ctx)

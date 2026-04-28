@@ -12,15 +12,16 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
+from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
-from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
 from lilbee.providers.llama_cpp.batching import (
     BATCH_WINDOW_S,
     EMBED_FUTURE_TIMEOUT_S,
@@ -44,10 +45,29 @@ from lilbee.providers.model_cache import (
     MODE_RERANK,
     LoaderMode,
     MemoryAwareModelCache,
+    compute_dynamic_ctx,
+    get_available_memory,
+    kv_bytes_per_token,
 )
 from lilbee.providers.worker import WorkerManager
 
 log = logging.getLogger(__name__)
+
+# Cap on tokens consumed during ``_LockedStreamIterator.close()``'s drain. A
+# runaway model (e.g. Qwen3-0.6B stuck in a never-closing ``<think>`` loop)
+# would otherwise block ``close()`` indefinitely.
+_LOCKED_STREAM_DRAIN_CAP = 1024
+
+# Chat-load OOM retry knobs. The OOM wrapper halves ``n_ctx`` (rounded down to
+# the next ``_CTX_QUANTUM`` multiple) up to ``_MAX_OOM_RETRIES`` times before
+# raising. ``_CTX_FLOOR`` is the smallest ``n_ctx`` we'll attempt.
+_MAX_OOM_RETRIES = 2
+_CTX_QUANTUM = 256
+_CTX_FLOOR = 512
+
+# Sentinel passed to ``llama-cpp-python`` for "offload all layers".
+_N_GPU_LAYERS_AUTO = -1
+
 
 # Settings baked into Llama() at load time, or whose change picks a
 # different model file. Sampling params are read per-call and excluded.
@@ -228,7 +248,7 @@ class LlamaCppProvider(LLMProvider):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | ClosableIterator[str]:
         """Chat completion: serialized via lock (Llama is not thread-safe)."""
         self._chat_lock.acquire()
         try:
@@ -352,17 +372,20 @@ class _LockedStreamIterator:
             self._lock.release()
 
     def close(self) -> None:
-        """Exhaust the underlying C iterator, then release the lock.
+        """Drain (capped) the underlying C iterator, then release the lock.
 
         Simply releasing the lock without finishing inference leaves the
-        llama-cpp model in an inconsistent state. The next streaming call
-        would hang because the C runtime is still processing the previous
-        request. Draining the iterator ensures inference completes cleanly.
+        llama-cpp model in an inconsistent state. Draining lets inference
+        complete cleanly. The cap (``_LOCKED_STREAM_DRAIN_CAP``) keeps a
+        runaway think loop from blocking close() indefinitely; once the
+        cap fires we accept the inconsistent state in exchange for not
+        hanging the UI.
         """
         if not self._released:
             try:
-                for _ in self._response:
-                    pass
+                for i, _ in enumerate(self._response):
+                    if i >= _LOCKED_STREAM_DRAIN_CAP:
+                        break
             except Exception:  # noqa: S110 -- best-effort drain during release; ignore partial-read errors
                 pass
             self._release()
@@ -407,11 +430,7 @@ def _llama_cpp_has_rank_pooling() -> bool:
 
 
 def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
-    """Load a llama_cpp.Llama instance in chat, embed, or rerank mode.
-
-    Rerank mode sets ``embedding=True`` and ``pooling_type=LLAMA_POOLING_TYPE_RANK``
-    so llama.cpp emits cross-encoder scores instead of token embeddings.
-    """
+    """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
     from llama_cpp import Llama
 
     install_llama_log_handler()
@@ -420,34 +439,36 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
         "model_path": str(model_path),
         "embedding": embedding,
         "verbose": False,
-        "n_gpu_layers": -1,  # Offload all layers to GPU (Metal/CUDA)
+        "n_gpu_layers": _resolve_n_gpu_layers(embedding=embedding),
     }
-    if cfg.num_ctx is not None:
+
+    if embedding:
+        # Embedding/rerank: clamp n_ctx to the model's training context.
+        # Passing a chat-sized cfg.num_ctx through here triggers
+        # ``n_ctx_seq > n_ctx_train`` warnings and wastes KV memory.
+        embed_meta = _safe_read_gguf_metadata(model_path)
+        embed_train_ctx = int((embed_meta or {}).get("context_length", "2048"))
+        if cfg.num_ctx is not None:
+            kwargs["n_ctx"] = min(cfg.num_ctx, embed_train_ctx)
+        else:
+            kwargs["n_ctx"] = 0  # 0 -> llama.cpp uses the model's training context
+    elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
-    elif embedding:
-        # n_ctx=0 -> llama.cpp uses the model's training context (else 512).
-        kwargs["n_ctx"] = 0
     else:
-        # Cap chat at DEFAULT_NUM_CTX so 128K+ training contexts don't OOM.
-        training_ctx = DEFAULT_NUM_CTX
-        try:
-            meta = read_gguf_metadata(model_path)
-        except Exception:
-            log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
-            meta = None
-        if meta:
-            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
-        kwargs["n_ctx"] = min(training_ctx, DEFAULT_NUM_CTX)
+        meta = _safe_read_gguf_metadata(model_path)
+        kwargs["n_ctx"] = _resolve_chat_ctx(model_path, meta)
+        log.info(
+            "Chat n_ctx=%d for %s (dynamic, training_ctx=%s)",
+            kwargs["n_ctx"],
+            model_path.name,
+            (meta or {}).get("context_length", "unknown"),
+        )
 
     if embedding:
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently
         # truncating embeddings to 512 tokens. Set n_batch = n_ctx so each
         # text can use the model's full context window.
-        if kwargs["n_ctx"] == 0:
-            meta = read_gguf_metadata(model_path)
-            ctx_len = int(meta.get("context_length", 2048)) if meta else 2048
-        else:
-            ctx_len = kwargs["n_ctx"]
+        ctx_len = embed_train_ctx if kwargs["n_ctx"] == 0 else kwargs["n_ctx"]
         kwargs["n_batch"] = ctx_len
         kwargs["n_ubatch"] = ctx_len
 
@@ -456,13 +477,166 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
 
+    if not embedding:
+        _apply_flash_attention(kwargs)
+        _apply_kv_cache_type(kwargs)
+
+    return _construct_llama(Llama, model_path, kwargs)
+
+
+def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
+    """Best-effort GGUF metadata read, returning None on any failure."""
     try:
-        return suppress_native_stderr(Llama, **kwargs)
-    except ValueError as exc:
-        wrapped = _wrap_llama_load_error(model_path, kwargs, exc)
-        if wrapped is None:
-            raise
-        raise wrapped from exc
+        return read_gguf_metadata(model_path)
+    except Exception:
+        log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
+        return None
+
+
+def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """Pick the largest 256-multiple n_ctx that fits in available memory."""
+    training_ctx = DEFAULT_NUM_CTX
+    if meta:
+        try:
+            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
+        except (TypeError, ValueError):
+            training_ctx = DEFAULT_NUM_CTX
+    ceiling = cfg.num_ctx_max
+
+    try:
+        model_bytes = model_path.stat().st_size
+        available = get_available_memory(cfg.gpu_memory_fraction)
+        kv_per_tok = kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg())
+        return compute_dynamic_ctx(
+            model_bytes=model_bytes,
+            available_bytes=available,
+            training_ctx=training_ctx,
+            kv_bytes_per_tok=kv_per_tok,
+            ceiling=ceiling,
+        )
+    except (OSError, ValueError):
+        log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
+        return min(training_ctx, DEFAULT_NUM_CTX)
+
+
+def _kv_elem_bytes_for_cfg() -> int:
+    """Bytes per KV element implied by the configured cache type."""
+    return KV_CACHE_TYPE_BYTES[cfg.kv_cache_type]
+
+
+def _resolve_n_gpu_layers(*, embedding: bool) -> int:
+    """Resolve ``cfg.n_gpu_layers`` (None=all) to llama-cpp's offload integer."""
+    if embedding or cfg.n_gpu_layers is None:
+        return _N_GPU_LAYERS_AUTO
+    return cfg.n_gpu_layers
+
+
+def _apply_flash_attention(kwargs: dict[str, Any]) -> None:
+    """Set ``flash_attn`` per ``cfg.flash_attention`` (None=auto, True/False=force)."""
+    if cfg.flash_attention is False:
+        return
+    # None (auto) and True both pass flash_attn=True; the construct loop
+    # drops it on TypeError if llama-cpp-python doesn't support it.
+    kwargs["flash_attn"] = True
+
+
+def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
+    """Map ``cfg.kv_cache_type`` to llama-cpp-python ``type_k`` / ``type_v``."""
+    if cfg.kv_cache_type is KvCacheType.F16:
+        return
+    type_map = _ggml_type_map()
+    if type_map is None:
+        log.debug("llama_cpp internal types unavailable; skipping KV quant")
+        return
+    ggml_type = type_map.get(cfg.kv_cache_type)
+    if ggml_type is None:  # pragma: no cover -- defensive against new enum values
+        return
+    kwargs["type_k"] = ggml_type
+    kwargs["type_v"] = ggml_type
+
+
+def _ggml_type_map() -> dict[KvCacheType, Any] | None:
+    """Resolve llama-cpp-python's GGML_TYPE_* constants, or None on older builds."""
+    try:
+        from llama_cpp import llama_cpp as _llc
+    except Exception:  # pragma: no cover -- only fires on llama-cpp-python without _llc
+        return None
+    return {
+        KvCacheType.F32: getattr(_llc, "GGML_TYPE_F32", None),
+        KvCacheType.F16: getattr(_llc, "GGML_TYPE_F16", None),
+        KvCacheType.Q8_0: getattr(_llc, "GGML_TYPE_Q8_0", None),
+        KvCacheType.Q4_0: getattr(_llc, "GGML_TYPE_Q4_0", None),
+    }
+
+
+def _construct_llama(llama_cls: Any, model_path: Path, kwargs: dict[str, Any]) -> Any:
+    """Call ``llama_cls(**kwargs)`` with FA fallback and OOM-retry-with-halved-ctx.
+
+    Each loop iteration either returns the loaded model, raises (failure
+    or unrelated TypeError), or continues with halved n_ctx; the loop is
+    therefore structurally exhaustive and never falls through.
+    """
+    fa_dropped = False
+    for attempt in range(_MAX_OOM_RETRIES + 1):
+        try:
+            return suppress_native_stderr(llama_cls, **kwargs)
+        except TypeError as exc:
+            if not _drop_flash_attn_if_unsupported(exc, kwargs, fa_dropped):
+                raise
+            fa_dropped = True
+            continue
+        except ValueError as exc:
+            if attempt == _MAX_OOM_RETRIES or not _is_load_oom(exc):
+                _raise_load_error(model_path, kwargs, exc)
+            if not _halve_ctx_for_retry(kwargs, exc):
+                _raise_load_error(model_path, kwargs, exc)
+    raise RuntimeError("unreachable: _construct_llama loop fell through")  # pragma: no cover
+
+
+def _drop_flash_attn_if_unsupported(
+    exc: TypeError, kwargs: dict[str, Any], already_dropped: bool
+) -> bool:
+    """If the TypeError is about an unsupported ``flash_attn`` kwarg, drop it."""
+    if already_dropped or "flash_attn" not in kwargs or "flash_attn" not in str(exc):
+        return False
+    log.info("llama-cpp-python rejected flash_attn=True; retrying without it")
+    kwargs.pop("flash_attn", None)
+    return True
+
+
+def _halve_ctx_for_retry(kwargs: dict[str, Any], exc: ValueError) -> bool:
+    """Halve n_ctx (and matching batch sizes) for an OOM retry. Returns False if no progress."""
+    current_ctx = int(kwargs.get("n_ctx", 0) or 0)
+    if current_ctx <= 0:
+        return False
+    new_ctx = max(_CTX_FLOOR, (current_ctx // 2 // _CTX_QUANTUM) * _CTX_QUANTUM)
+    if new_ctx >= current_ctx:
+        return False
+    log.warning(
+        "llama.cpp load failed at n_ctx=%d (%s); retrying at n_ctx=%d",
+        current_ctx,
+        str(exc).splitlines()[0],
+        new_ctx,
+    )
+    kwargs["n_ctx"] = new_ctx
+    for key in ("n_batch", "n_ubatch"):
+        if key in kwargs:
+            kwargs[key] = new_ctx
+    return True
+
+
+def _raise_load_error(model_path: Path, kwargs: dict[str, Any], exc: ValueError) -> None:
+    """Raise the wrapped diagnostic for a llama.cpp load failure, or re-raise as-is."""
+    wrapped = _wrap_llama_load_error(model_path, kwargs, exc)
+    if wrapped is None:
+        raise exc
+    raise wrapped from exc
+
+
+def _is_load_oom(exc: ValueError) -> bool:
+    """Does this ValueError look like a llama.cpp memory failure?"""
+    err = str(exc)
+    return "llama_context" in err or "load model from file" in err
 
 
 def _wrap_llama_load_error(
@@ -489,7 +663,8 @@ def _wrap_llama_load_error(
     except Exception as psu_exc:  # pragma: no cover
         log.debug("psutil unavailable: %s", psu_exc)
     parts.append(
-        "Try a smaller model, lower LILBEE_NUM_CTX, or close other processes to free RAM. "
+        "Try a smaller model, lower LILBEE_NUM_CTX, set LILBEE_KV_CACHE_TYPE=q8_0, "
+        "or close other processes to free RAM. "
         f"(llama.cpp: {err})"
     )
     return ValueError(" ".join(parts))

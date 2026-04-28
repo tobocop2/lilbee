@@ -22,3 +22,22 @@ class WikiEntityMode(StrEnum):
     NER_ENTITIES = "ner_entities"
     NER_CONCEPTS_PLUS_LLM_TYPES = "ner_concepts_plus_llm_types"
     LLM_TAGGED = "llm_tagged"
+
+
+class KvCacheType(StrEnum):
+    """KV cache element type. ``q8_0`` / ``q4_0`` require flash attention."""
+
+    F16 = "f16"
+    F32 = "f32"
+    Q8_0 = "q8_0"
+    Q4_0 = "q4_0"
+
+
+# Bytes per KV element for memory budgeting. The quantized variants are
+# ~1 byte of data plus shared scales, close enough for context-fit math.
+KV_CACHE_TYPE_BYTES: dict[KvCacheType, int] = {
+    KvCacheType.F16: 2,
+    KvCacheType.F32: 4,
+    KvCacheType.Q8_0: 1,
+    KvCacheType.Q4_0: 1,
+}

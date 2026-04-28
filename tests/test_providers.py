@@ -263,6 +263,11 @@ class TestLlamaCppProvider:
             "general.file_type": "15",
             "qwen3.context_length": "32768",
             "qwen3.embedding_length": "4096",
+            "qwen3.block_count": "32",
+            "qwen3.attention.head_count_kv": "8",
+            "qwen3.attention.head_count": "32",
+            "qwen3.attention.key_length": "128",
+            "qwen3.attention.value_length": "128",
             "tokenizer.chat_template": "{% if messages %}...",
         }
         with patch("llama_cpp.Llama", return_value=mock_llm):
@@ -272,6 +277,12 @@ class TestLlamaCppProvider:
         assert result["embedding_length"] == "4096"
         assert result["chat_template"] == "{% if messages %}..."
         assert result["name"] == "Qwen3 8B"
+        # KV-shape fields surfaced for the dynamic n_ctx picker.
+        assert result["block_count"] == "32"
+        assert result["head_count_kv"] == "8"
+        assert result["head_count"] == "32"
+        assert result["key_length"] == "128"
+        assert result["value_length"] == "128"
         mock_llm.close.assert_called_once()
 
     def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
@@ -351,6 +362,332 @@ class TestLlamaCppProvider:
             load_llama(models_dir / "test-model.gguf", mode="chat")
         # bare re-raise preserves the original chain; the exception isn't its own cause
         assert exc_info.value.__cause__ is None
+
+    def testload_llama_chat_passes_flash_attn_by_default(self, models_dir: Path) -> None:
+        """Chat mode enables flash attention to halve the KV cache padding waste."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "auto"
+        with patch("llama_cpp.Llama") as mock_llama_cls:
+            load_llama(models_dir / "test-model.gguf", mode="chat")
+            assert mock_llama_cls.call_args[1].get("flash_attn") is True
+
+    def testload_llama_chat_skips_flash_attn_when_disabled(self, models_dir: Path) -> None:
+        """LILBEE_FLASH_ATTENTION=0 leaves the kwarg unset (llama-cpp default)."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "0"
+        try:
+            with patch("llama_cpp.Llama") as mock_llama_cls:
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                assert "flash_attn" not in mock_llama_cls.call_args[1]
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_falls_back_when_flash_attn_unsupported(self, models_dir: Path) -> None:
+        """Older llama-cpp-python builds reject flash_attn=True; we drop it and retry."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "auto"
+        instance = MagicMock()
+        call_log: list[dict[str, object]] = []
+
+        def fake_llama(**kwargs: object) -> object:
+            call_log.append(kwargs)
+            if kwargs.get("flash_attn"):
+                raise TypeError("Llama.__init__() got an unexpected keyword argument 'flash_attn'")
+            return instance
+
+        with patch("llama_cpp.Llama", side_effect=fake_llama):
+            result = load_llama(models_dir / "test-model.gguf", mode="chat")
+        assert result is instance
+        assert len(call_log) == 2
+        assert call_log[0].get("flash_attn") is True
+        assert "flash_attn" not in call_log[1]
+
+    def testload_llama_retries_with_halved_ctx_on_oom(self, models_dir: Path) -> None:
+        """A llama_context load failure halves n_ctx and retries before wrapping the error."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "0"  # keep the call shape simple
+        instance = MagicMock()
+        ctx_seen: list[int] = []
+
+        def fake_llama(**kwargs: object) -> object:
+            ctx_seen.append(int(kwargs["n_ctx"]))
+            if int(kwargs["n_ctx"]) > 1024:
+                raise ValueError("Failed to create llama_context")
+            return instance
+
+        try:
+            with patch("llama_cpp.Llama", side_effect=fake_llama):
+                result = load_llama(models_dir / "test-model.gguf", mode="chat")
+            assert result is instance
+            assert ctx_seen[0] == 4096
+            assert ctx_seen[-1] <= 1024
+            assert len(ctx_seen) >= 2
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_resolves_n_gpu_layers_modes(self, models_dir: Path) -> None:
+        """LILBEE_N_GPU_LAYERS supports 'auto', 'cpu', explicit int, and falls back on garbage."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "0"
+        try:
+            cases = [
+                ("cpu", 0),
+                ("auto", -1),
+                ("12", 12),
+                ("not-an-int", -1),
+            ]
+            for raw, expected in cases:
+                cfg.n_gpu_layers = raw
+                with patch("llama_cpp.Llama") as mock_llama_cls:
+                    load_llama(models_dir / "test-model.gguf", mode="chat")
+                    assert mock_llama_cls.call_args[1]["n_gpu_layers"] == expected
+        finally:
+            cfg.n_gpu_layers = "auto"
+            cfg.flash_attention = "auto"
+
+    def testapply_kv_cache_type_skips_when_internal_module_missing(self) -> None:
+        """Older llama-cpp-python without ``llama_cpp.llama_cpp`` skips the KV-quant kwargs."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import _apply_kv_cache_type
+
+        kwargs: dict[str, object] = {}
+        with (
+            patch.object(cfg, "kv_cache_type", "q8_0"),
+            patch("lilbee.providers.llama_cpp.provider._ggml_type_map", return_value=None),
+        ):
+            _apply_kv_cache_type(kwargs)
+        assert "type_k" not in kwargs
+        assert "type_v" not in kwargs
+
+    def testload_llama_oom_retry_halves_embed_batch_sizes(self, models_dir: Path) -> None:
+        """OOM retry on embed loads halves n_batch and n_ubatch alongside n_ctx."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "0"
+        instance = MagicMock()
+        seen: list[dict[str, int]] = []
+
+        def fake_llama(**kwargs: object) -> object:
+            seen.append({k: int(kwargs[k]) for k in ("n_ctx", "n_batch", "n_ubatch")})
+            if int(kwargs["n_ctx"]) > 1024:
+                raise ValueError("Failed to create llama_context")
+            return instance
+
+        try:
+            mock_llama_cpp = MagicMock()
+            mock_llama_cpp.metadata = {
+                "general.architecture": "nomic-bert",
+                "nomic-bert.context_length": "8192",
+            }
+            with (
+                patch("llama_cpp.Llama", side_effect=fake_llama),
+                patch(
+                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                    return_value={"context_length": "8192"},
+                ),
+            ):
+                load_llama(models_dir / "test-model.gguf", mode="embed")
+            # First attempt at 4096 fails; retry halves all three.
+            assert seen[0]["n_ctx"] == 4096
+            assert seen[0]["n_batch"] == 4096
+            assert seen[0]["n_ubatch"] == 4096
+            assert seen[-1]["n_ctx"] <= 1024
+            assert seen[-1]["n_batch"] == seen[-1]["n_ctx"]
+            assert seen[-1]["n_ubatch"] == seen[-1]["n_ctx"]
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testhalve_ctx_for_retry_returns_false_with_no_n_ctx(self) -> None:
+        """``_halve_ctx_for_retry`` is a no-op when n_ctx is missing or zero."""
+        from lilbee.providers.llama_cpp.provider import _halve_ctx_for_retry
+
+        kwargs: dict[str, object] = {}
+        assert _halve_ctx_for_retry(kwargs, ValueError("oom")) is False
+
+    def testkv_cache_type_rejects_unknown_values_at_assignment(self) -> None:
+        """Pydantic enforces the KvCacheType enum; unknown labels raise at assignment."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="Input should be"):
+            cfg.kv_cache_type = "totally-not-a-real-type"  # type: ignore[assignment]
+
+    def testload_llama_kv_cache_type_q8_0_passes_ggml_type_to_llama(self, models_dir: Path) -> None:
+        """LILBEE_KV_CACHE_TYPE=q8_0 maps to llama-cpp-python's GGML_TYPE_Q8_0 constant."""
+        from unittest.mock import patch
+
+        import llama_cpp.llama_cpp as _llc
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "0"
+        cfg.kv_cache_type = "q8_0"
+        try:
+            with patch("llama_cpp.Llama") as mock_llama_cls:
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                kwargs = mock_llama_cls.call_args[1]
+                assert kwargs["type_k"] == _llc.GGML_TYPE_Q8_0
+                assert kwargs["type_v"] == _llc.GGML_TYPE_Q8_0
+        finally:
+            cfg.kv_cache_type = "f16"
+            cfg.flash_attention = "auto"
+
+    def testload_llama_unrelated_typeerror_propagates(self, models_dir: Path) -> None:
+        """A TypeError that isn't about flash_attn passes through unchanged."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        with (
+            patch("llama_cpp.Llama", side_effect=TypeError("totally unrelated")),
+            pytest.raises(TypeError, match="totally unrelated"),
+        ):
+            load_llama(models_dir / "test-model.gguf", mode="chat")
+
+    def testload_llama_oom_at_min_ctx_raises_diagnostic(self, models_dir: Path) -> None:
+        """When n_ctx is already at the floor, OOM retry gives up and wraps the error."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 512  # Already at the floor; halving can't progress.
+        cfg.flash_attention = "0"
+        try:
+            model = models_dir / "tiny.gguf"
+            model.write_bytes(b"x" * 1024)
+            with (
+                patch("llama_cpp.Llama", side_effect=ValueError("Failed to create llama_context")),
+                pytest.raises(ValueError, match=r"Failed to load tiny\.gguf"),
+            ):
+                load_llama(model, mode="chat")
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_dynamic_ctx_falls_back_to_static_cap_on_psutil_failure(
+        self, models_dir: Path
+    ) -> None:
+        """If memory accounting raises (psutil missing/broken), use min(training, default)."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+        cfg.flash_attention = "0"
+        try:
+            with (
+                patch("llama_cpp.Llama") as mock_llama_cls,
+                patch(
+                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                    return_value={"context_length": "4096"},
+                ),
+                patch(
+                    "lilbee.providers.model_cache.get_available_memory",
+                    side_effect=OSError("psutil broken"),
+                ),
+            ):
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                # Falls back to min(4096, DEFAULT_NUM_CTX=8192) -> 4096
+                assert mock_llama_cls.call_args[1]["n_ctx"] == 4096
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_dynamic_ctx_handles_bad_training_ctx_metadata(
+        self, models_dir: Path
+    ) -> None:
+        """A non-numeric context_length in metadata falls back to DEFAULT_NUM_CTX."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import (
+            DEFAULT_NUM_CTX,
+            load_llama,
+        )
+
+        cfg.num_ctx = None
+        cfg.flash_attention = "0"
+        try:
+            with (
+                patch("llama_cpp.Llama") as mock_llama_cls,
+                patch(
+                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                    return_value={"context_length": "not-a-number"},
+                ),
+                patch(
+                    "lilbee.providers.model_cache.get_available_memory",
+                    return_value=64 * 1024**3,
+                ),
+            ):
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                # With DEFAULT_NUM_CTX as the training fallback and 64 GB
+                # available memory, the picker is bounded by that fallback.
+                assert mock_llama_cls.call_args[1]["n_ctx"] <= DEFAULT_NUM_CTX
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_dynamic_ctx_picks_smaller_for_tight_memory(self, models_dir: Path) -> None:
+        """When LILBEE_NUM_CTX is unset, n_ctx is sized to the host's free memory."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+        cfg.flash_attention = "0"
+        meta = {
+            "context_length": "131072",
+            "block_count": "32",
+            "head_count_kv": "8",
+            "key_length": "128",
+            "value_length": "128",
+        }
+        try:
+            with (
+                patch("llama_cpp.Llama") as mock_llama_cls,
+                patch(
+                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                    return_value=meta,
+                ),
+                patch(
+                    "lilbee.providers.llama_cpp.provider.cfg.gpu_memory_fraction",
+                    0.75,
+                ),
+                patch(
+                    "lilbee.providers.model_cache.get_available_memory",
+                    return_value=(8 * 1024**3),
+                ),
+            ):
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                ctx_used = mock_llama_cls.call_args[1]["n_ctx"]
+            assert 512 <= ctx_used <= 16384
+            assert ctx_used % 256 == 0
+            # Should be much smaller than the 131072 training window on a tight host.
+            assert ctx_used < 131072
+        finally:
+            cfg.num_ctx = None
+            cfg.flash_attention = "auto"
 
     def testload_llama_routes_llama_logs_through_python_logger(
         self, models_dir: Path, caplog: pytest.LogCaptureFixture
@@ -452,6 +789,36 @@ class TestLlamaCppProvider:
             log_dispatch._llama_log_pending.update(prior_pending)
             log_dispatch._llama_log_pending_level = prior_pending_level
 
+    def testllama_log_demotes_known_advisory_errors_to_warning(self) -> None:
+        """Tokenizer / KV-cache advisories emit at GGML ERROR but aren't load failures."""
+        import logging
+
+        from lilbee.providers.llama_cpp import log_dispatch as prov
+
+        prior_pending = dict(prov._llama_log_pending)
+        prior_pending_level = prov._llama_log_pending_level
+        prov._llama_log_pending.clear()
+        logger = logging.getLogger("lilbee.llama_cpp")
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger.addHandler(handler)
+        try:
+            advisories = (
+                b"load: special_eos_id is not in special_eog_ids\n",
+                b"init: embeddings required but some input tokens were not marked as outputs\n",
+                b"llama_context: n_ctx_seq (3072) > n_ctx_train (2048)\n",
+            )
+            for line in advisories:
+                prov._llama_log_dispatch(3, line, None)
+            for r in records:
+                assert r.levelno == logging.WARNING, f"advisory '{r.message}' kept at ERROR"
+        finally:
+            logger.removeHandler(handler)
+            prov._llama_log_pending.clear()
+            prov._llama_log_pending.update(prior_pending)
+            prov._llama_log_pending_level = prior_pending_level
+
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
@@ -518,16 +885,20 @@ class TestLlamaCppProvider:
     def test_embed_caches_llm(self, mock_llama_cpp: mock.MagicMock) -> None:
         mock_llama_instance = mock.MagicMock()
         mock_llama_instance.create_embedding.return_value = {"data": [{"embedding": [0.1] * 3}]}
+        mock_llama_instance.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "8192",
+        }
         mock_llama_cpp.Llama.return_value = mock_llama_instance
 
-        cfg.num_ctx = 4096  # Explicit ctx skips metadata read
+        cfg.num_ctx = 4096
         provider = self._make_provider()
         provider.embed(["a"])
         provider.embed(["b"])
 
-        # With explicit num_ctx, no metadata read needed: only 1 Llama call.
-        # Second embed reuses the cached instance.
-        assert mock_llama_cpp.Llama.call_count == 1
+        # Embedding load reads metadata once (vocab_only) plus the actual
+        # load. Second embed reuses the cached instance, so we expect 2.
+        assert mock_llama_cpp.Llama.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1368,7 +1739,7 @@ class TestMtmdLoadVisionLlama:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
+                "lilbee.providers.mtmd_backend.find_mmproj_for_model",
                 return_value=Path("found_mmproj.gguf"),
             ),
             mock.patch(
@@ -2245,16 +2616,40 @@ class TestLoadLlama:
         assert call_kwargs["n_batch"] == 2048
 
     def test_embedding_with_explicit_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """load_llama with explicit num_ctx uses it for n_batch."""
+        """Explicit num_ctx <= training_ctx is honored verbatim for embeddings."""
         from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = 4096
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "8192",
+        }
 
         load_llama(Path("/test.gguf"), mode="embed")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 4096
         assert call_kwargs["n_batch"] == 4096
+
+    def test_embedding_clamps_explicit_ctx_to_training_ctx(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """num_ctx > training_ctx clamps to the model's training window for embeddings."""
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 3072
+        # Embedding model trains at 2048: clamp 3072 -> 2048 to avoid the
+        # 'n_ctx_seq (3072) > n_ctx_train (2048)' warning users see in the chat.
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "2048",
+        }
+
+        load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
 
     def test_chat_mode(self, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama for chat does not set n_batch."""
