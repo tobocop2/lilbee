@@ -33,7 +33,13 @@ jobs:
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
-            -DGGML_CPU_ALL_VARIANTS=ON
+            -DGGML_AVX=ON
+            -DGGML_AVX2=OFF
+            -DGGML_FMA=OFF
+            -DGGML_F16C=OFF
+            -DGGML_BMI2=OFF
+            -DGGML_AVX_VNNI=OFF
+            -DGGML_AVX512=OFF
 
       - name: Lint
         run: make lint
@@ -84,16 +90,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
         env:
-          # GGML_CPU_ALL_VARIANTS=ON compiles every x86_64 backend variant and
-          # picks the highest one the host CPU supports at runtime. Without it,
-          # ggml's default still bakes in AVX2/FMA/BMI2 and SIGILLs on runners
-          # whose CPU lacks them. arm64 has no equivalent flag (NEON is mandatory).
+          # Cap x86_64 builds at AVX baseline (Sandy Bridge 2011+). With
+          # GGML_NATIVE=OFF, ggml's CMake still auto-enables AVX2/FMA/BMI2
+          # when the build host supports them, so the resulting wheel SIGILLs
+          # on runners whose CPU lacks them. Explicit *=OFF flags pin the
+          # baseline; matches tools/wheel-build/cmake_args.sh. arm64 needs
+          # no equivalent: NEON is mandatory in ARMv8.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
             -DGGML_BLAS=OFF
             -DGGML_CUDA=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Run unit tests
         # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
@@ -174,8 +182,8 @@ jobs:
       # Native OFF: avoids i8mm compile errors on CI M1 runners.
       # BLAS ON (macOS): uses built-in Accelerate framework for faster matrix ops.
       # BLAS/CUDA OFF (Linux/Windows): no GPU or BLAS library available.
-      # CPU_ALL_VARIANTS (x86_64): runtime CPU dispatch covers every variant
-      # so a runner lacking AVX2/FMA/BMI2 doesn't SIGILL on llama-cpp init.
+      # AVX baseline (x86_64): explicit *=OFF for AVX2/FMA/BMI2/etc. so a
+      # runner lacking them doesn't SIGILL on llama-cpp init.
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
@@ -184,7 +192,7 @@ jobs:
             -DGGML_NATIVE=OFF
             -DGGML_CUDA=OFF
             ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
@@ -342,7 +350,7 @@ jobs:
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_CPU_ALL_VARIANTS=ON' || '' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Build dev portal (coverage + API docs)
         run: make docs-site
