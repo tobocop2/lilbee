@@ -395,7 +395,7 @@ class TestPullModelData:
                 self.pull_calls.append((model, source))
                 if on_progress is not None:
                     on_progress({"status": "pulling", "completed": 25, "total": 100})
-                return None
+                return
 
         manager = _Litellm()
         with patch("lilbee.model_manager.get_model_manager", return_value=manager):

@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.config import ClustererBackend, WikiEntityMode, cfg
+from lilbee.config import ClustererBackend, KvCacheType, WikiEntityMode, cfg
 
 
 class RenderStyle(StrEnum):
@@ -122,7 +122,48 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group="Generation",
-        help_text="Context window size in tokens. Leave empty for the safe chat default (8192).",
+        help_text=(
+            "Context window size in tokens. Leave empty to size automatically "
+            "to the host's available memory (capped at num_ctx_max)."
+        ),
+    ),
+    "num_ctx_max": SettingDef(
+        int,
+        nullable=False,
+        group="Generation",
+        help_text=(
+            "Upper bound for the dynamic context picker when num_ctx is unset. "
+            "Higher allows more retrieval context on hosts with spare memory."
+        ),
+    ),
+    "flash_attention": SettingDef(
+        bool,
+        nullable=True,
+        group="Generation",
+        help_text=(
+            "Flash attention. Empty (auto) tries it on with a fallback for older "
+            "llama-cpp-python builds; resolves the V-cache padding warning on "
+            "models with uneven per-layer V dims."
+        ),
+    ),
+    "kv_cache_type": SettingDef(
+        str,
+        nullable=False,
+        group="Generation",
+        help_text=(
+            "KV cache element type. q8_0 / q4_0 halve or quarter cache memory "
+            "but require flash attention to be enabled."
+        ),
+        choices=tuple(t.value for t in KvCacheType),
+    ),
+    "n_gpu_layers": SettingDef(
+        int,
+        nullable=True,
+        group="Generation",
+        help_text=(
+            "Layers to offload to GPU. Empty = all (recommended), 0 = CPU only, "
+            "positive int = partial offload for tight VRAM."
+        ),
     ),
     "seed": SettingDef(
         int,
