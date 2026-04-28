@@ -1,0 +1,111 @@
+name: Pages
+
+# Marketing site at https://tobocop2.github.io/lilbee/ plus the per-backend
+# PEP 503 wheel indexes under /<backend>/. Decoupled from package
+# distribution: the site rebuilds on every push to main and after a
+# successful Build Platform Wheels run, so wheel index subdirs stay
+# current without making site updates wait for a 3h release cycle.
+
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: ["Build Platform Wheels"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras
+        env:
+          CMAKE_ARGS: >-
+            -DGGML_METAL=OFF
+            -DGGML_NATIVE=OFF
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
+
+      - name: Build dev portal (marketing site + coverage + API docs)
+        run: make docs-site
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+
+      - name: Resolve wheel-source run id
+        id: wheels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            run_id="${{ github.event.workflow_run.id }}"
+          else
+            run_id=$(gh run list \
+              --workflow=build-wheels.yml \
+              --status=success \
+              --branch=main \
+              --limit=1 \
+              --json databaseId \
+              -q '.[0].databaseId // ""')
+          fi
+          echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
+          if [ -z "${run_id}" ]; then
+            echo "No prior successful Build Platform Wheels run found; deploying site without wheel indexes."
+          else
+            echo "Pulling wheel artifacts from build-wheels run ${run_id}."
+          fi
+
+      - name: Download wheel artifacts
+        if: steps.wheels.outputs.run-id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "wheel-*"
+          path: artifacts/
+          run-id: ${{ steps.wheels.outputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge PEP 503 wheel indexes into site
+        if: steps.wheels.outputs.run-id != ''
+        run: python tools/build_pep503_indexes.py artifacts site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/
+
+      - name: Deploy to Pages
+        id: deploy
+        uses: actions/deploy-pages@v5

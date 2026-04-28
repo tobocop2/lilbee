@@ -1,6 +1,6 @@
 # lilbee — terminal-first local RAG for files, code, and the web
 
-[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)
+[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/)
 
 A terminal-first local RAG and search engine for your own files, code, websites, and scanned documents. One install, no sidecar services, fully offline by default.
 
@@ -354,7 +354,7 @@ See [docs/agent-integration.md](docs/agent-integration.md) for MCP client config
 
 See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema and the [usage guide](docs/usage.md) for `serve` options.
 
-An [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document — useful when seeing the source matters more than just being told where it is. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for the four-step setup.
+An [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document — useful when seeing the source matters more than just being told where it is. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for the four-step setup.
 
 ## Interactive chat
 
