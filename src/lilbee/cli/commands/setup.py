@@ -80,6 +80,22 @@ def _self_check_emit_failure(error: str) -> None:
         console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {error}")
 
 
+def _resolved_provider_kwargs() -> dict[str, Any]:
+    """Snapshot of the provider-stack knobs self-check exercises.
+
+    Echoed back in the JSON payload + human readout so users can confirm
+    which dynamic ctx / FA / KV cache / GPU layers values their install
+    chose without grepping debug logs.
+    """
+    return {
+        "num_ctx": cfg.num_ctx,
+        "num_ctx_max": cfg.num_ctx_max,
+        "flash_attention": cfg.flash_attention,
+        "kv_cache_type": cfg.kv_cache_type.value,
+        "n_gpu_layers": cfg.n_gpu_layers,
+    }
+
+
 def self_check_cmd(
     chat_model_path: Path | None = _self_check_chat_path_option,
     embed_model_path: Path | None = _self_check_embed_path_option,
@@ -88,21 +104,33 @@ def self_check_cmd(
 ) -> None:
     """Verify the installation can load llama.cpp and run real inference.
 
+    Routes both legs through :func:`lilbee.providers.llama_cpp.provider.load_llama`
+    so the dynamic-``n_ctx`` picker, flash-attention default, KV cache type,
+    ``n_gpu_layers`` resolution, and OOM retry path all run -- i.e. the same
+    provider stack a real ``lilbee ask`` / ``lilbee chat`` exercises. Failure
+    here means either the vendored shared libraries don't load or one of the
+    cfg-driven provider knobs is misconfigured for the host.
+
     Two legs:
 
-    1. **Chat**: downloads ``SmolLM2-135M-Instruct-Q3_K_S.gguf`` (~90MB) and
-       runs a tiny ``create_completion`` so we know decoder-style models work
-       end-to-end and the vendored shared libraries load.
-    2. **Embedding**: downloads ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB)
-       and runs ``create_embedding``. This is the leg that catches the
-       "Memory is not initialized" assert from llama-cpp-python <0.3.19, where
-       BERT-style encoders trip ``kv_cache_clear`` on a context that never
-       allocated memory.
+    1. **Chat**: downloads ``SmolLM2-135M-Instruct-Q3_K_S.gguf`` (~90MB),
+       runs ``load_llama(..., mode=MODE_CHAT)`` so the dynamic-ctx picker /
+       flash-attention default / KV cache mapping fire, then issues a tiny
+       ``create_completion``.
+    2. **Embedding**: downloads ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB),
+       runs ``load_llama(..., mode=MODE_EMBED)`` so the embed-mode ctx clamp
+       fires, then issues ``create_embedding``. Catches the "Memory is not
+       initialized" assert from llama-cpp-python <0.3.19, where BERT-style
+       encoders trip ``kv_cache_clear`` on a context that never allocated
+       memory.
 
     Exits 0 on success, 1 on any failure. Intended for post-install
     verification and as the end-to-end gate in release CI.
     """
     from typing import cast
+
+    from lilbee.providers.llama_cpp.provider import load_llama
+    from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
 
     try:
         chat_path = chat_model_path or _download_self_check_model(
@@ -110,12 +138,7 @@ def self_check_cmd(
         )
         console.print(f"Loading chat model {chat_path}")
 
-        import llama_cpp
-
-        from lilbee.providers.llama_cpp.log_dispatch import install_llama_log_handler
-
-        install_llama_log_handler()
-        llm = llama_cpp.Llama(model_path=str(chat_path), n_ctx=256, verbose=False)
+        llm = load_llama(chat_path, mode=MODE_CHAT)
         # stream=False (default) returns a dict, not an iterator, but
         # create_completion's return type is a union; cast to Any so the
         # indexing below type-checks without forcing llama_cpp to be a
@@ -137,12 +160,7 @@ def self_check_cmd(
                 _SELF_CHECK_EMBED_REPO, _SELF_CHECK_EMBED_FILE
             )
             console.print(f"Loading embedding model {embed_path}")
-            enc = llama_cpp.Llama(
-                model_path=str(embed_path),
-                embedding=True,
-                n_ctx=512,
-                verbose=False,
-            )
+            enc = load_llama(embed_path, mode=MODE_EMBED)
             emb = cast(Any, enc.create_embedding(input=["test"]))
             vec = emb["data"][0]["embedding"]
         except Exception as exc:
@@ -154,11 +172,13 @@ def self_check_cmd(
             raise typer.Exit(1)
         embedding_dims = len(vec)
 
+    provider_kwargs = _resolved_provider_kwargs()
     if cfg.json_mode:
         payload: dict[str, Any] = {
             "ok": True,
             "chat_response": text,
             "chat_model": str(chat_path),
+            "provider": provider_kwargs,
         }
         if embedding_dims is not None:
             payload["embedding_dims"] = embedding_dims
@@ -167,6 +187,13 @@ def self_check_cmd(
         console.print(f"Chat response: {text!r}")
         if embedding_dims is not None:
             console.print(f"Embedding dims: {embedding_dims}")
+        console.print(
+            f"Provider: num_ctx={provider_kwargs['num_ctx']} "
+            f"num_ctx_max={provider_kwargs['num_ctx_max']} "
+            f"flash_attention={provider_kwargs['flash_attention']} "
+            f"kv_cache_type={provider_kwargs['kv_cache_type']} "
+            f"n_gpu_layers={provider_kwargs['n_gpu_layers']}"
+        )
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
 
 

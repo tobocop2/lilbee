@@ -3318,29 +3318,32 @@ class TestSetupCrawlerCommand:
 
 
 class TestSelfCheck:
-    """`lilbee self-check` exercises llama_cpp.Llama end-to-end on two legs.
+    """`lilbee self-check` runs both legs through ``load_llama`` so the dynamic
+    ``n_ctx`` picker, flash-attention default, KV cache mapping, ``n_gpu_layers``
+    resolution, and OOM retry path all run in addition to verifying the vendored
+    llama-cpp-python shared libraries load.
 
-    Leg 1: chat (`create_completion`): proves the vendored shared libraries
-    load and decoder-style inference works.
-    Leg 2: embedding (`create_embedding`): proves encoder-only models work,
-    which is what the "Memory is not initialized" assert in 0.3.18 broke.
+    Leg 1: chat (``create_completion``): exercises chat-mode ``load_llama`` and
+    a tiny decoder-style inference.
+    Leg 2: embedding (``create_embedding``): exercises embed-mode ``load_llama``
+    (with the n_ctx clamp) and a single embedding call. Catches the historical
+    "Memory is not initialized" assert from llama-cpp-python <0.3.19.
 
-    Tests stub both the urllib download and the llama_cpp module so they
-    don't hit HuggingFace or load a real GGUF. Every branch: chat-load,
-    chat-empty, embed-load, embed-empty, --skip-embedding, both human and
-    --json output: gets a case.
+    Tests stub the urllib download and ``load_llama`` so they don't hit
+    HuggingFace or load a real GGUF.
     """
 
     @staticmethod
-    def _fake_llama_module(*, chat_text: str = " 4", embed_dims: int = 768):
+    def _patch_load_llama(*, chat_text: str = " 4", embed_dims: int = 768):
+        """Patch ``load_llama`` to return chat-leg then embed-leg fakes."""
         chat_llm = MagicMock()
         chat_llm.create_completion.return_value = {"choices": [{"text": chat_text}]}
         embed_llm = MagicMock()
         embed_llm.create_embedding.return_value = {"data": [{"embedding": [0.1] * embed_dims}]}
-        module = MagicMock()
-        # First Llama() call constructs the chat instance, second the embed.
-        module.Llama.side_effect = [chat_llm, embed_llm]
-        return module
+        return mock.patch(
+            "lilbee.providers.llama_cpp.provider.load_llama",
+            side_effect=[chat_llm, embed_llm],
+        )
 
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
@@ -3352,7 +3355,7 @@ class TestSelfCheck:
                 "lilbee.cli.commands.setup._download_self_check_model",
                 side_effect=AssertionError("must not download when --model-path given"),
             ),
-            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
+            self._patch_load_llama(),
         ):
             result = runner.invoke(
                 app,
@@ -3367,11 +3370,16 @@ class TestSelfCheck:
             )
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout.strip().splitlines()[-1])
-        assert payload == {
-            "ok": True,
-            "chat_response": " 4",
-            "chat_model": str(chat),
-            "embedding_dims": 768,
+        assert payload["ok"] is True
+        assert payload["chat_response"] == " 4"
+        assert payload["chat_model"] == str(chat)
+        assert payload["embedding_dims"] == 768
+        assert set(payload["provider"]) == {
+            "num_ctx",
+            "num_ctx_max",
+            "flash_attention",
+            "kv_cache_type",
+            "n_gpu_layers",
         }
 
     def test_downloads_when_paths_missing(self, tmp_path: Path) -> None:
@@ -3379,13 +3387,12 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        # Two calls expected: chat first, embed second.
         with (
             mock.patch(
                 "lilbee.cli.commands.setup._download_self_check_model",
                 side_effect=[chat, emb],
             ),
-            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
+            self._patch_load_llama(),
         ):
             result = runner.invoke(app, ["--json", "self-check"])
         assert result.exit_code == 0, result.output
@@ -3397,7 +3404,7 @@ class TestSelfCheck:
         download = mock.Mock(return_value=chat)
         with (
             mock.patch("lilbee.cli.commands.setup._download_self_check_model", download),
-            mock.patch.dict("sys.modules", {"llama_cpp": self._fake_llama_module()}),
+            self._patch_load_llama(),
         ):
             result = runner.invoke(app, ["--json", "self-check", "--skip-embedding"])
         assert result.exit_code == 0, result.output
@@ -3406,6 +3413,43 @@ class TestSelfCheck:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is True
         assert "embedding_dims" not in payload
+
+    def test_self_check_invokes_load_llama_for_each_leg(self, tmp_path: Path) -> None:
+        """Both legs must route through load_llama with the right LoaderMode.
+
+        Pins the user-visible promise: self-check exercises the lilbee provider
+        stack (dynamic ctx + FA + KV cache + GPU layers + OOM retry), not just
+        a hand-rolled ``llama_cpp.Llama(...)`` call.
+        """
+        from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
+
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_llm = MagicMock()
+        chat_llm.create_completion.return_value = {"choices": [{"text": " ok"}]}
+        embed_llm = MagicMock()
+        embed_llm.create_embedding.return_value = {"data": [{"embedding": [0.0] * 4}]}
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.load_llama",
+            side_effect=[chat_llm, embed_llm],
+        ) as load_llama:
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert load_llama.call_count == 2
+        assert load_llama.call_args_list[0] == mock.call(chat, mode=MODE_CHAT)
+        assert load_llama.call_args_list[1] == mock.call(emb, mode=MODE_EMBED)
 
     def test_chat_download_failure_emits_json_error(self) -> None:
         with mock.patch(
@@ -3421,9 +3465,10 @@ class TestSelfCheck:
     def test_chat_llama_load_failure_emits_json_error(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
-        bad_module = MagicMock()
-        bad_module.Llama.side_effect = RuntimeError("Shared library not found")
-        with mock.patch.dict("sys.modules", {"llama_cpp": bad_module}):
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.load_llama",
+            side_effect=RuntimeError("Shared library not found"),
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3442,9 +3487,7 @@ class TestSelfCheck:
     def test_empty_chat_response_emits_json_error(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
-        with mock.patch.dict(
-            "sys.modules", {"llama_cpp": self._fake_llama_module(chat_text="   ")}
-        ):
+        with self._patch_load_llama(chat_text="   "):
             result = runner.invoke(
                 app,
                 [
@@ -3462,9 +3505,7 @@ class TestSelfCheck:
     def test_empty_chat_response_human_mode(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
-        with mock.patch.dict(
-            "sys.modules", {"llama_cpp": self._fake_llama_module(chat_text="   ")}
-        ):
+        with self._patch_load_llama(chat_text="   "):
             result = runner.invoke(
                 app,
                 [
@@ -3479,20 +3520,17 @@ class TestSelfCheck:
         assert "empty inference response" in result.output
 
     def test_embedding_load_failure_emits_json_error(self, tmp_path: Path) -> None:
-        """The Memory-is-not-initialized class of bug: embed-leg Llama() raises."""
+        """The Memory-is-not-initialized class of bug: embed-leg load_llama raises."""
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
         chat_llm = MagicMock()
         chat_llm.create_completion.return_value = {"choices": [{"text": " 4"}]}
-        module = MagicMock()
-        # Chat construct ok; embed construct raises (the historical bug).
-        module.Llama.side_effect = [
-            chat_llm,
-            AssertionError("Memory is not initialized"),
-        ]
-        with mock.patch.dict("sys.modules", {"llama_cpp": module}):
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.load_llama",
+            side_effect=[chat_llm, AssertionError("Memory is not initialized")],
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3518,9 +3556,10 @@ class TestSelfCheck:
         chat_llm.create_completion.return_value = {"choices": [{"text": " 4"}]}
         embed_llm = MagicMock()
         embed_llm.create_embedding.return_value = {"data": [{"embedding": []}]}
-        module = MagicMock()
-        module.Llama.side_effect = [chat_llm, embed_llm]
-        with mock.patch.dict("sys.modules", {"llama_cpp": module}):
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.load_llama",
+            side_effect=[chat_llm, embed_llm],
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3537,15 +3576,12 @@ class TestSelfCheck:
         assert payload == {"ok": False, "error": "empty embedding vector"}
 
     def test_human_mode_on_success_with_embedding(self, tmp_path: Path) -> None:
-        """Non-JSON mode prints chat response, embedding dims, and PASSED banner."""
+        """Non-JSON mode prints chat response, embedding dims, provider snapshot, and PASSED."""
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        with mock.patch.dict(
-            "sys.modules",
-            {"llama_cpp": self._fake_llama_module(chat_text=" hello", embed_dims=384)},
-        ):
+        with self._patch_load_llama(chat_text=" hello", embed_dims=384):
             result = runner.invoke(
                 app,
                 [
@@ -3560,13 +3596,19 @@ class TestSelfCheck:
         assert "SELF-CHECK PASSED" in result.output
         assert "hello" in result.output
         assert "384" in result.output
+        # The provider readout is the user-visible signal that the new
+        # cfg-driven knobs were resolved this run.
+        assert "Provider:" in result.output
+        assert "kv_cache_type=" in result.output
+        assert "flash_attention=" in result.output
 
     def test_human_mode_on_failure(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
-        bad_module = MagicMock()
-        bad_module.Llama.side_effect = OSError("boom")
-        with mock.patch.dict("sys.modules", {"llama_cpp": bad_module}):
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.load_llama",
+            side_effect=OSError("boom"),
+        ):
             result = runner.invoke(
                 app,
                 [
