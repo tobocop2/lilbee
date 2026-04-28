@@ -166,8 +166,15 @@ class TestAnswerGeneration:
         assert result.answer
         assert len(result.answer) > 0
 
+    @pytest.mark.timeout(360)
     def test_ask_includes_citations(self, rag_pipeline):
-        """ask_raw() returns source references from real search."""
+        """ask_raw() returns source references from real search.
+
+        Bumped to 360s: the citation block is appended after the full LLM
+        stream completes, so on macOS CPU CI runners (no Metal in the VM
+        pool) Qwen3-0.6B's reasoning + 512-token budget can exhaust the
+        default 180s integration cap before Sources is yielded.
+        """
         result = ask_raw("What engine does the Thunderbolt have?", top_k=5)
         assert len(result.sources) > 0
         source_names = [s.source for s in result.sources]
@@ -427,8 +434,13 @@ class TestAskStream:
         assert len(tokens) > 0
         assert all(isinstance(t, StreamToken) for t in tokens)
 
+    @pytest.mark.timeout(360)
     def test_stream_ends_with_citations(self, rag_pipeline):
-        """The last token from ask_stream() contains source citations."""
+        """The last token from ask_stream() contains source citations.
+
+        Bumped to 360s for the same reason as ``test_ask_includes_citations``:
+        the Sources token is only yielded after the full LLM stream completes.
+        """
         from lilbee.retrieval.reasoning import StreamToken
 
         svc = get_services()
