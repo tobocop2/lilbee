@@ -11,7 +11,8 @@ import contextlib
 import re
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass
-from typing import Any
+
+from lilbee.providers.base import ClosableIterator
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
@@ -148,12 +149,11 @@ def _drain_after_truncation(parser: _TagParser, tokens: Iterator[str]) -> Iterat
                 yield st
 
 
-def _close_iterator(tokens: Any) -> None:
-    """Close *tokens* if it exposes a close method (generator or stream wrapper)."""
-    close = getattr(tokens, "close", None)
-    if callable(close):
+def _close_iterator(tokens: Iterator[str]) -> None:
+    """Close *tokens* if it satisfies the ClosableIterator protocol."""
+    if isinstance(tokens, ClosableIterator):
         with contextlib.suppress(Exception):
-            close()
+            tokens.close()
 
 
 def strip_reasoning(text: str) -> str:

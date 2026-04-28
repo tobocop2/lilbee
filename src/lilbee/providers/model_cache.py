@@ -36,9 +36,6 @@ _DEFAULT_CTX_LEN = 2048
 # Floor for the dynamic n_ctx computation (smaller is unusable for chat)
 _DYNAMIC_CTX_FLOOR = 512
 
-# Default ceiling for dynamic n_ctx (overridable via cfg.num_ctx_max)
-_DYNAMIC_CTX_DEFAULT_CEILING = 16384
-
 # Round dynamic n_ctx down to a multiple of this (clean batch sizes)
 _DYNAMIC_CTX_QUANTUM = 256
 
@@ -110,7 +107,7 @@ def compute_dynamic_ctx(
     available_bytes: int,
     training_ctx: int,
     kv_bytes_per_tok: int,
-    ceiling: int = _DYNAMIC_CTX_DEFAULT_CEILING,
+    ceiling: int,
     floor: int = _DYNAMIC_CTX_FLOOR,
     quantum: int = _DYNAMIC_CTX_QUANTUM,
 ) -> int:

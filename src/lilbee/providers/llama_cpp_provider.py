@@ -13,7 +13,7 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +23,7 @@ from gguf import GGUFReader, GGUFValueType
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.config import DEFAULT_NUM_CTX, KV_CACHE_TYPE_BYTES, KvCacheType, cfg
-from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
 from lilbee.providers.model_cache import (
     MODE_CHAT,
     MODE_EMBED,
@@ -67,7 +67,7 @@ _GGML_ERROR_SOFT_DEMOTE = (
     "tokenizer config may be incorrect",
 )
 
-_BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+_BATCH_WINDOW_S = 0.01  # 10ms, collect concurrent requests before dispatching
 
 # Cap on tokens consumed during _LockedStreamIterator.close()'s drain.
 # A runaway model (e.g. Qwen3-0.6B in a never-closing <think> loop)
@@ -75,6 +75,14 @@ _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatchin
 _LOCKED_STREAM_DRAIN_CAP = 1024
 _EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 _RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
+
+# Chat-load OOM retry knobs.
+_MAX_OOM_RETRIES = 2
+_CTX_QUANTUM = 256
+_CTX_FLOOR = 512
+
+# Sentinel passed to llama-cpp-python for "offload all layers".
+_N_GPU_LAYERS_AUTO = -1
 
 # Settings baked into Llama() at load time, or whose change picks a
 # different model file. Sampling params are read per-call and excluded.
@@ -276,7 +284,7 @@ class LlamaCppProvider(LLMProvider):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | ClosableIterator[str]:
         """Chat completion — serialized via lock (Llama is not thread-safe)."""
         self._chat_lock.acquire()
         try:
@@ -637,11 +645,6 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     return _construct_llama(Llama, model_path, kwargs)
 
 
-_MAX_OOM_RETRIES = 2
-_CTX_QUANTUM = 256
-_CTX_FLOOR = 512
-
-
 def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Best-effort GGUF metadata read, returning None on any failure."""
     try:
@@ -659,7 +662,7 @@ def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
             training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
         except (TypeError, ValueError):
             training_ctx = DEFAULT_NUM_CTX
-    ceiling = cfg.num_ctx_max or 16384
+    ceiling = cfg.num_ctx_max
 
     try:
         model_bytes = model_path.stat().st_size
@@ -680,9 +683,6 @@ def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
 def _kv_elem_bytes_for_cfg() -> int:
     """Bytes per KV element implied by the configured cache type."""
     return KV_CACHE_TYPE_BYTES[cfg.kv_cache_type]
-
-
-_N_GPU_LAYERS_AUTO = -1
 
 
 def _resolve_n_gpu_layers(*, embedding: bool) -> int:

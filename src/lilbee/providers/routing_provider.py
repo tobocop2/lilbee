@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.config import cfg
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
@@ -65,7 +65,7 @@ class RoutingProvider(LLMProvider):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | ClosableIterator[str]:
         ref = parse_model_ref(model or cfg.chat_model)
         return self._pick_backend(ref).chat(messages, stream=stream, options=options, model=model)
 

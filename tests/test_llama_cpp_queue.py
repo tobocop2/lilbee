@@ -673,7 +673,7 @@ class TestLoadLlamaNCtx:
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         # Dynamic picker stays at or below the configured ceiling.
-        assert call_kwargs["n_ctx"] <= (cfg.num_ctx_max or 16384)
+        assert call_kwargs["n_ctx"] <= cfg.num_ctx_max
         assert call_kwargs["n_ctx"] < 131072
         assert call_kwargs["n_ctx"] % 256 == 0
 

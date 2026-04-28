@@ -42,6 +42,7 @@ from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.embedder import is_model_available
 from lilbee.progress import EventType, ProgressEvent
+from lilbee.providers.base import ClosableIterator
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
@@ -65,13 +66,10 @@ _STREAM_SCROLL_INTERVAL = 0.15
 
 
 def _close_stream(stream: Any) -> None:
-    """Best-effort close on a streaming iterator. Releases llama.cpp's chat lock."""
-    if stream is None:
-        return
-    close = getattr(stream, "close", None)
-    if callable(close):
+    """Close a streaming iterator if it satisfies the ClosableIterator protocol."""
+    if isinstance(stream, ClosableIterator):
         with contextlib.suppress(Exception):
-            close()
+            stream.close()
 
 
 def _remove_copied_files(names: list[str]) -> None:
