@@ -38,7 +38,13 @@ jobs:
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
+            -DGGML_AVX=ON
+            -DGGML_AVX2=OFF
+            -DGGML_FMA=OFF
+            -DGGML_F16C=OFF
+            -DGGML_BMI2=OFF
+            -DGGML_AVX_VNNI=OFF
+            -DGGML_AVX512=OFF
 
       - name: Lint
         run: make lint
@@ -89,13 +95,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
         env:
-          # x86_64 builds cap at AVX baseline (Sandy Bridge 2011+) so ggml
-          # doesn't bake AVX2/FMA/BMI2 into a wheel that crashes with
-          # "Illegal instruction" on weaker CPUs in the GitHub runner pool.
-          # CPU_ALL_VARIANTS + BACKEND_DL builds but llama-cpp-python's
-          # Python binding never registers the dynamic backends -- see
-          # tools/wheel-build/cmake_args.sh for the upstream-binding gap.
-          # arm64 has no equivalent: NEON is mandatory in ARMv8.
+          # Cap x86_64 builds at AVX baseline (Sandy Bridge 2011+). With
+          # GGML_NATIVE=OFF, ggml's CMake still auto-enables AVX2/FMA/BMI2
+          # when the build host supports them, so the resulting wheel SIGILLs
+          # on runners whose CPU lacks them. Explicit *=OFF flags pin the
+          # baseline; matches tools/wheel-build/cmake_args.sh. arm64 needs
+          # no equivalent: NEON is mandatory in ARMv8.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
@@ -182,8 +187,8 @@ jobs:
       # Native OFF: avoids i8mm compile errors on CI M1 runners.
       # BLAS ON (macOS): uses built-in Accelerate framework for faster matrix ops.
       # BLAS/CUDA OFF (Linux/Windows): no GPU or BLAS library available.
-      # CPU_ALL_VARIANTS (x86_64): runtime CPU dispatch covers every variant
-      # so a runner lacking AVX2/FMA/BMI2 doesn't SIGILL on llama-cpp init.
+      # AVX baseline (x86_64): explicit *=OFF for AVX2/FMA/BMI2/etc. so a
+      # runner lacking them doesn't SIGILL on llama-cpp init.
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
