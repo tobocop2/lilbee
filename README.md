@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/tobocop2-lilbee-badge.png)](https://mseep.ai/app/tobocop2-lilbee)
+
 # lilbee — terminal-first local RAG for files, code, and the web
 
 [Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)
