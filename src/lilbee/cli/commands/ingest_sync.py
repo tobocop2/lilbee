@@ -217,7 +217,15 @@ def _run_crawl_with_signal_cancel(
             quiet=cfg.json_mode,
             include_subdomains=include_subdomains,
         )
-        return loop.run_until_complete(coro)
+        result: list[Path] = loop.run_until_complete(coro)
+        # Wait for the periodic-sync fire-and-forget task before tearing the
+        # loop down, otherwise we get 'Task was destroyed but it is pending!'
+        # warnings on CLI exit. Long-lived callers (HTTP server, MCP) don't
+        # need this, their loops stay open.
+        from lilbee.crawler.runner import drain_background_tasks
+
+        loop.run_until_complete(drain_background_tasks())
+        return result
     finally:
         loop.close()
         asyncio.set_event_loop(None)

@@ -74,6 +74,18 @@ class CrawlerState:
 _state = CrawlerState()
 
 
+async def drain_background_tasks() -> None:
+    """Await any in-flight ``_maybe_periodic_sync`` tasks.
+
+    Short-lived callers (CLI) should call this right before closing their
+    event loop. Long-lived callers (HTTP server, MCP) skip it; their loops
+    stay open long enough for the fire-and-forget syncs to finish naturally.
+    """
+    if not _state.background_tasks:
+        return
+    await asyncio.gather(*_state.background_tasks, return_exceptions=True)
+
+
 def _get_crawl_semaphore() -> asyncio.Semaphore | None:
     """Return an asyncio semaphore for crawl concurrency, or None if unlimited (0)."""
     limit = cfg.crawl_max_concurrent
@@ -414,8 +426,3 @@ async def crawl_and_save(
     finally:
         if sem is not None:
             sem.release()
-        # Drain any periodic-sync background task before the caller closes
-        # the event loop. Without this, CLI invocations fire 'Task was
-        # destroyed but it is pending!' when the loop tears down mid-sync.
-        if _state.background_tasks:
-            await asyncio.gather(*_state.background_tasks, return_exceptions=True)

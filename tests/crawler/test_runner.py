@@ -354,14 +354,13 @@ class TestCrawlAndSaveOrchestration:
             await crawl_and_save("https://example.com", depth=1)
         mock_sync.assert_awaited_once()
 
-    async def test_drains_periodic_sync_background_task(self):
-        """The fire-and-forget periodic-sync task is drained before returning so
-        the CLI's event-loop teardown doesn't destroy a pending sync mid-flight.
+    async def test_drain_background_tasks_awaits_pending_sync(self):
+        """``drain_background_tasks`` awaits any in-flight ``_maybe_periodic_sync``
+        task so the CLI's event-loop teardown doesn't destroy a pending sync.
+        Long-lived HTTP/MCP loops don't call drain; their loops stay open long
+        enough for the fire-and-forget task to finish naturally.
         """
         import asyncio
-
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
 
         sync_completed = asyncio.Event()
 
@@ -374,12 +373,18 @@ class TestCrawlAndSaveOrchestration:
         runner_mod._state.background_tasks.add(task)
         task.add_done_callback(runner_mod._state.background_tasks.discard)
 
-        with (
-            patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
-            patch("lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock),
-        ):
-            await crawl_and_save("https://example.com", depth=1)
+        from lilbee.crawler.runner import drain_background_tasks
+
+        await drain_background_tasks()
         assert sync_completed.is_set()
+        assert not runner_mod._state.background_tasks
+
+    async def test_drain_background_tasks_no_op_when_empty(self):
+        """``drain_background_tasks`` is a fast no-op when no tasks are pending."""
+        runner_mod._state.reset()
+        from lilbee.crawler.runner import drain_background_tasks
+
+        await drain_background_tasks()
         assert not runner_mod._state.background_tasks
 
 
