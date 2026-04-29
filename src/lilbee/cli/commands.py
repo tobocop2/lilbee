@@ -736,10 +736,12 @@ def self_check_cmd(
         )
         console.print(f"Loading chat model {chat_path}")
 
-        import llama_cpp
+        from lilbee.providers.llama_cpp_provider import (
+            import_llama_cpp,
+            install_llama_log_handler,
+        )
 
-        from lilbee.providers.llama_cpp_provider import install_llama_log_handler
-
+        llama_cpp = import_llama_cpp()
         install_llama_log_handler()
         llm = llama_cpp.Llama(model_path=str(chat_path), n_ctx=256, verbose=False)
         # stream=False (default) returns a dict, not an iterator, but
