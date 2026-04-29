@@ -79,9 +79,15 @@ class TuiSession:
             dimensions=(rows, cols),
             env=dict(env) if env is not None else None,
         )
-        # POSIX read() is blocking by default; force non-blocking so a quiet
-        # TUI doesn't stall the harness. pywinpty's read returns "" on no data.
-        if sys.platform != "win32":
+        # PTY read() is blocking by default on both backends. POSIX exposes a
+        # raw fd; pywinpty exposes a socket via .fileobj (it uses ConPTY +
+        # an AF_INET loopback socket internally). Force both into non-blocking
+        # mode so a quiet TUI doesn't stall the harness; _drain_once swallows
+        # BlockingIOError.
+        if sys.platform == "win32":
+            with contextlib.suppress(AttributeError, OSError):
+                self._proc.fileobj.setblocking(False)
+        else:
             with contextlib.suppress(AttributeError, OSError):
                 os.set_blocking(self._proc.fd, False)
 
