@@ -165,6 +165,35 @@ async def _drain_stderr(stream: asyncio.StreamReader, tail: list[str]) -> None:
         tail.append(line_bytes.decode(errors="replace").rstrip())
 
 
+_FROZEN_MISSING_PYTHON_HINT = (
+    "Chromium bootstrap needs a Python 3.11+ interpreter on PATH to run "
+    "'playwright install chromium' (the bundled lilbee binary does not "
+    "expose Python's -m loader). Install python3 from your distro or "
+    "python.org and rerun 'lilbee setup crawler'."
+)
+
+
+def _resolve_playwright_runner() -> list[str]:
+    """Return the argv prefix that runs ``playwright install chromium``.
+
+    Under a wheel or ``uv tool install`` layout, ``sys.executable`` is the
+    Python interpreter and ``-m playwright`` works directly. Under a
+    PyInstaller frozen build, ``sys.executable`` is the lilbee binary,
+    which has no ``-m`` flag and no ``install`` subcommand: spawning it
+    that way exits 2 with ``No such command 'install'`` (bb-sxsz). Detect
+    the frozen case and fall back to a system ``python3`` / ``python`` on
+    PATH; raise :class:`CrawlerBrowserMissing` if neither is available.
+    """
+    import shutil
+
+    if not getattr(sys, "frozen", False):
+        return [sys.executable, "-m", "playwright"]
+    candidate = shutil.which("python3") or shutil.which("python")
+    if candidate is None:
+        raise CrawlerBrowserMissing(_FROZEN_MISSING_PYTHON_HINT)
+    return [candidate, "-m", "playwright"]
+
+
 async def bootstrap_chromium(
     on_progress: DetailedProgressCallback | None = None,
 ) -> None:
@@ -177,9 +206,10 @@ async def bootstrap_chromium(
     :class:`CrawlerBrowserMissing` with the tail so task workers route
     to FAILED cleanly.
 
-    Uses the current Python interpreter's ``playwright`` module so this
-    works under ``uv tool install`` and bundled installs alike without
-    relying on a globally-installed ``playwright`` CLI.
+    Wheel / uv-tool installs spawn ``sys.executable -m playwright``;
+    PyInstaller frozen builds (where ``sys.executable`` is the lilbee
+    binary, not a Python interpreter) fall back to a system ``python3``
+    on PATH. (bb-sxsz)
     """
     if chromium_installed():
         _emit_setup_done(on_progress, success=True, error=None)
@@ -187,10 +217,14 @@ async def bootstrap_chromium(
 
     _emit_setup_start(on_progress)
 
+    try:
+        runner = _resolve_playwright_runner()
+    except CrawlerBrowserMissing as exc:
+        _emit_setup_done(on_progress, success=False, error=str(exc))
+        raise
+
     proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "playwright",
+        *runner,
         "install",
         "chromium",
         stdout=asyncio.subprocess.PIPE,
