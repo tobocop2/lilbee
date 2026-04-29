@@ -157,7 +157,11 @@ def _resolve_registered_name(
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        # PyInstaller binary cold-start on Windows can run 30+ seconds while it
+        # unpacks itself into a temp dir on every invocation (tracked as
+        # bb-rjez). 30s was racy; 180s leaves headroom for the slowest cell
+        # without masking a real hang.
+        timeout=180,
         check=False,
     )
     if result.returncode != 0:
