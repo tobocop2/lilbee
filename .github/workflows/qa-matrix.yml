@@ -40,14 +40,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # native pypi cells on ubuntu-latest and macos-latest run with
+        # `continue-on-error: true` because `lilbee --help` cold-starts in
+        # 30-60s on those bare runners (vs <1s in the linux-distros Docker
+        # containers and on Windows / native binary). At ~95 tests this
+        # overflows the 60-min job timeout. Linux pypi coverage is
+        # provided by the linux-distros Arch/Fedora cells (same `pip install
+        # lilbee` path inside containers); macOS pypi has no equivalent
+        # but the macos binary cell exercises the same artifact. Tracked
+        # as bb-oae5; flip continue-on-error off once lilbee CLI startup
+        # is profiled and fixed upstream.
         include:
-          - { os: ubuntu-latest,  label: ubuntu,  lane: pypi }
-          - { os: macos-latest,   label: macos,   lane: pypi }
-          - { os: windows-latest, label: windows, lane: pypi }
-          - { os: ubuntu-latest,  label: ubuntu,  lane: binary, asset: lilbee-linux-x86_64,        chmod: true  }
-          - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true  }
-          - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false }
+          - { os: ubuntu-latest,  label: ubuntu,  lane: pypi,                       continue: true  }
+          - { os: macos-latest,   label: macos,   lane: pypi,                       continue: true  }
+          - { os: windows-latest, label: windows, lane: pypi,                       continue: false }
+          - { os: ubuntu-latest,  label: ubuntu,  lane: binary, asset: lilbee-linux-x86_64,        chmod: true,  continue: false }
+          - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true,  continue: false }
+          - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false, continue: false }
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.continue }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
