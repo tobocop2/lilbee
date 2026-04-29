@@ -146,7 +146,9 @@ def test_ask_stream_completes_with_token_events(
         client.stream(
             "POST",
             f"{base_url}/api/ask/stream",
-            json={"question": "What is lithium-ion battery technology?"},
+            json={
+                "question": "Answer in one short sentence: which document covers EV batteries?"
+            },
         ) as response,
     ):
         response.raise_for_status()
@@ -208,7 +210,7 @@ def test_tui_chat_advances_past_thinking_spinner(
         session.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
         # Type a question and submit. The TUI's input field needs Enter to
         # send; \r works on POSIX and Windows ConPTY.
-        session.send("What is lithium-ion battery technology?\r")
+        session.send("Answer in one short sentence: which document covers EV batteries?\r")
         # Wait for ANY of: a citation marker pointing to ev-notes, the
         # word 'battery' rendering as part of the response (citation hit),
         # or the 'lithium' from the source. This catches the case where
