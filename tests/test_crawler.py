@@ -463,6 +463,12 @@ class TestBootstrapChromium:
         from lilbee.progress import EventType, SetupProgressEvent, SetupStartEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
+        # Stub the runner so the test doesn't need a real playwright install
+        # (regular `test` job runs without crawler extras).
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap._resolve_playwright_runner",
+            lambda: (["/fake/node", "/fake/cli.js"], {}),
+        )
 
         _bar = "\xe2\x96\xa0".encode("latin-1")  # three-byte UTF-8 for ■
         stdout_lines = [
@@ -510,6 +516,10 @@ class TestBootstrapChromium:
         from lilbee.progress import EventType, SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap._resolve_playwright_runner",
+            lambda: (["/fake/node", "/fake/cli.js"], {}),
+        )
 
         class _Stream:
             def __init__(self, lines: list[bytes]) -> None:
@@ -552,7 +562,13 @@ class TestResolvePlaywrightRunner:
     failed under PyInstaller because ``sys.executable`` is the lilbee binary,
     not Python. Routing through ``compute_driver_executable`` invokes the
     bundled ``playwright/driver/node`` + ``cli.js`` directly.
+
+    Skipped on lanes where the playwright package isn't installed (the
+    regular `test` job runs without crawler extras; integration covers it).
     """
+
+    def setup_method(self) -> None:
+        pytest.importorskip("playwright._impl._driver")
 
     def test_uses_compute_driver_executable(self, monkeypatch):
         """Returns argv from playwright's bundled driver lookup, with driver env."""
