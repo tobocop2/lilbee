@@ -137,6 +137,27 @@ jobs:
           if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
           echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
 
+      - name: Install Ollama daemon + pull tiny model (Linux binary lane)
+        # The release binary bundles litellm so the ollama-backed test
+        # tier should run on Linux binary. ollama install is straightforward
+        # on ubuntu-latest; macOS/Windows ollama setup is gnarlier so those
+        # lanes still skip via 'daemon not reachable'. Tests are xfail-gated
+        # on bb-m234 (segfault in the b455 binary's ollama path) so a
+        # successful run (post-fix) becomes an xpass automatically.
+        if: matrix.lane == 'binary' && matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          ollama pull smollm:135m
+          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
+
       - name: Run QA matrix
         env:
           LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
@@ -238,6 +259,23 @@ jobs:
           gh release download "${{ steps.ver.outputs.tag }}" --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
           chmod +x _bin/lilbee-linux-x86_64
           echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/lilbee-linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Install Ollama daemon + pull tiny model (binary lane)
+        if: matrix.lane == 'binary'
+        # Bundled binary ships with litellm; this lane should exercise the
+        # ollama-backed tier. Tests are xfail-gated on bb-m234 (binary
+        # segfault) so a successful run becomes an xpass.
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          ollama pull smollm:135m
+          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:

@@ -48,12 +48,15 @@ the page's source URL.</p>
 
 @pytest.fixture(scope="session")
 def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
-    """Bootstrap Chromium and verify the crawler extras are usable.
+    """Bootstrap Chromium and verify the crawler stack is usable.
 
-    Three failure modes get skipped (not failed): the binary lacks the crawler
-    extras (`pip install lilbee` without `[crawler]`), Chromium can't be
-    downloaded (offline / Playwright mirror down), or the binary doesn't
-    expose `setup crawler` at all (very old build).
+    Behavior depends on the lane:
+      * pypi lane installs plain `lilbee` (no [crawler] extra) so the
+        crawler stack is genuinely absent. Skip — there's nothing to test.
+      * binary lane bundles crawler+playwright into the release artifact
+        (the user-facing contract). If the bundled binary can't load the
+        crawler stack that's a release defect we want surfaced, not
+        skipped. Raise so the test xfail decorator on binary captures it.
     """
     import os
 
@@ -63,10 +66,15 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
     env["LILBEE_NO_SPLASH"] = "1"
     env["LILBEE_LOG_LEVEL"] = "WARNING"
 
-    # Probe crawler-extras availability via `lilbee add --help`. If extras are
-    # missing, `lilbee add --crawl` later prints a 'Web crawling requires...'
-    # hint and exits 0 without doing anything. Catch that up front so the
-    # crawl test doesn't pretend to succeed.
+    def _gate(message: str) -> str:
+        # On pypi (no extras) skip is the right call. On binary, where
+        # the artifact bundles the crawler stack, raising surfaces the
+        # release defect so the xfail decorator on the test method gets
+        # to record it.
+        if lane.is_binary:
+            raise RuntimeError(message)
+        pytest.skip(message)
+
     probe = subprocess.run(
         [lane.lilbee_bin, "add", "--help"],
         env=env,
@@ -76,7 +84,7 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
         check=False,
     )
     if probe.returncode != 0 or "--crawl" not in (probe.stdout + probe.stderr):
-        pytest.skip("lilbee add --help missing --crawl flag; crawler extras not installed")
+        _gate("lilbee add --help missing --crawl flag; crawler not exposed in this artifact")
 
     result = subprocess.run(
         [lane.lilbee_bin, "setup", "crawler"],
@@ -87,14 +95,11 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
         check=False,
     )
     if result.returncode != 0:
-        pytest.skip(
+        _gate(
             f"Chromium bootstrap failed: rc={result.returncode}\n"
             f"stderr tail: {result.stderr[-500:]}"
         )
 
-    # Confirm extras are actually wired by running a no-op crawl probe. If the
-    # CLI prints 'Web crawling requires' the extras aren't loaded at runtime
-    # even though --help advertised the flag.
     runtime_probe = subprocess.run(
         [lane.lilbee_bin, "add", "http://127.0.0.1:1", "--crawl", "--max-pages", "0"],
         env=env,
@@ -105,7 +110,7 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
     )
     combined = runtime_probe.stdout + runtime_probe.stderr
     if "Web crawling requires" in combined or "crawl4ai" in combined.lower():
-        pytest.skip("crawl4ai extras not available at runtime; install lilbee[crawler]")
+        _gate("crawl4ai not available at runtime in this artifact")
     return "ok"
 
 
@@ -170,6 +175,15 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
 @pytest.mark.xfail(
     sys.platform == "win32" and os.environ.get("LILBEE_QA_LANE") == "l1-pypi",
     reason="bb-l7t4: Windows pypi lane crawl returns 0 pages from local http.server fixture",
+    strict=False,
+)
+@pytest.mark.xfail(
+    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    reason=(
+        "bb-sxsz: bundled binary's crawler stack is broken in b455 - "
+        "lilbee add --help omits --crawl and lilbee setup crawler exits 2. "
+        "PR #195 fixes the spawn path; xfail until a release ships with that fix."
+    ),
     strict=False,
 )
 def test_crawl_and_search_roundtrip(

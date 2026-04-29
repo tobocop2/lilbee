@@ -130,6 +130,11 @@ def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) 
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(120)
+@pytest.mark.xfail(
+    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
+    strict=False,
+)
 def test_status_with_ollama_backend_does_not_crash(
     lane: Lane, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
@@ -160,6 +165,11 @@ def test_status_with_ollama_backend_does_not_crash(
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(120)
+@pytest.mark.xfail(
+    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
+    strict=False,
+)
 def test_model_list_includes_ollama_model(
     lane: Lane, lilbee_env_with_ollama: dict[str, str], ollama_chat_model: str
 ) -> None:
@@ -191,6 +201,11 @@ def test_model_list_includes_ollama_model(
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(420)
+@pytest.mark.xfail(
+    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
+    strict=False,
+)
 def test_ask_via_ollama_backend_completes(
     lane: Lane, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
