@@ -58,21 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Render formula
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/tap-out
-          cp packaging/homebrew/lilbee.rb /tmp/tap-out/lilbee.rb
-          extra_args=()
-          if [ -n "${{ needs.resolve.outputs.sha_macos_x86_64 }}" ]; then
-            extra_args+=(--sha-macos-x86_64 "${{ needs.resolve.outputs.sha_macos_x86_64 }}")
-          fi
-          python3 packaging/tools/render_formula.py /tmp/tap-out/lilbee.rb \
-            --version "${{ needs.resolve.outputs.version }}" \
-            --sha-macos-arm64 "${{ needs.resolve.outputs.sha_macos_arm64 }}" \
-            --sha-linux-x86_64 "${{ needs.resolve.outputs.sha_linux }}" \
-            "${extra_args[@]}"
-      - name: Push to homebrew-lilbee tap
+      - name: Clone tap, render formula in place, push
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -80,8 +66,15 @@ jobs:
           git config --global user.name "lilbee-bot"
           git config --global user.email "lilbee-bot@users.noreply.github.com"
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
-          mkdir -p /tmp/tap/Formula
-          cp /tmp/tap-out/lilbee.rb /tmp/tap/Formula/lilbee.rb
+          extra_args=()
+          if [ -n "${{ needs.resolve.outputs.sha_macos_x86_64 }}" ]; then
+            extra_args+=(--sha-macos-x86_64 "${{ needs.resolve.outputs.sha_macos_x86_64 }}")
+          fi
+          python3 packaging/tools/render_formula.py /tmp/tap/Formula/lilbee.rb \
+            --version "${{ needs.resolve.outputs.version }}" \
+            --sha-macos-arm64 "${{ needs.resolve.outputs.sha_macos_arm64 }}" \
+            --sha-linux-x86_64 "${{ needs.resolve.outputs.sha_linux }}" \
+            "${extra_args[@]}"
           cd /tmp/tap
           git add Formula/lilbee.rb
           if git diff --cached --quiet; then
