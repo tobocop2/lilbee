@@ -1,9 +1,14 @@
 name: QA matrix
 
-# Runs the QA matrix against the published PyInstaller binary across the
-# native runners (ubuntu, macos, windows) and a curated set of Linux distros
-# (arch, fedora) that exercise the glibc / library-layout / package-manager
-# differences our Ubuntu runner doesn't.
+# Runs the QA matrix against the published lilbee artifact in two lanes:
+#
+#   pypi   - `pip install lilbee==<v>` from PyPI; same path real users take
+#   binary - download lilbee-<os>-<arch> from the GH release; the standalone
+#            executable for users who don't want a Python install
+#
+# Across the native runners (ubuntu, macos, windows) and a curated set of
+# Linux distros (arch, fedora) that exercise the glibc / library-layout /
+# package-manager differences our Ubuntu runner doesn't.
 #
 # Triggers on push to the qa-matrix branch so the foundation PR can demonstrate
 # the matrix in action; the production trigger (tag-driven release pipeline)
@@ -18,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       lilbee_version:
-        description: "GH release tag to pull binaries from (e.g. v0.6.66b455)"
+        description: "lilbee version to QA (defaults to latest published)"
         required: false
         default: "latest"
 
@@ -31,16 +36,19 @@ concurrency:
 
 jobs:
   native:
-    name: native (${{ matrix.label }})
+    name: native (${{ matrix.label }}, ${{ matrix.lane }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  label: ubuntu,  asset: lilbee-linux-x86_64,        chmod: true  }
-          - { os: macos-latest,   label: macos,   asset: lilbee-macos-arm64,         chmod: true  }
-          - { os: windows-latest, label: windows, asset: lilbee-windows-x86_64.exe,  chmod: false }
+          - { os: ubuntu-latest,  label: ubuntu,  lane: pypi }
+          - { os: macos-latest,   label: macos,   lane: pypi }
+          - { os: windows-latest, label: windows, lane: pypi }
+          - { os: ubuntu-latest,  label: ubuntu,  lane: binary, asset: lilbee-linux-x86_64,        chmod: true  }
+          - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true  }
+          - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -51,103 +59,138 @@ jobs:
       - name: Install QA harness deps
         run: python -m pip install -r tools/qa/requirements.txt
 
-      - name: Download lilbee binary from GH release
+      - name: Resolve target lilbee version
+        id: ver
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.lilbee_version || 'latest' }}
         shell: bash
         run: |
-          mkdir -p _bin
           if [ "$TAG" = "latest" ]; then
-            gh release download --repo ${{ github.repository }} --pattern "${{ matrix.asset }}" --dir _bin
-          else
-            gh release download "$TAG" --repo ${{ github.repository }} --pattern "${{ matrix.asset }}" --dir _bin
+            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
           fi
-          ls -la _bin
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Strip leading 'v' for PyPI version
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Make binary executable (POSIX)
-        if: matrix.chmod
-        run: chmod +x "_bin/${{ matrix.asset }}"
+      - name: Install lilbee from PyPI (lane=pypi)
+        if: matrix.lane == 'pypi'
+        shell: bash
+        run: |
+          python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(python -c 'import shutil; print(shutil.which(\"lilbee\"))')" >> "$GITHUB_ENV"
+
+      - name: Download lilbee binary from GH release (lane=binary)
+        if: matrix.lane == 'binary'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p _bin
+          gh release download "${{ steps.ver.outputs.tag }}" --repo ${{ github.repository }} --pattern "${{ matrix.asset }}" --dir _bin
+          ls -la _bin
+          if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
-          LILBEE_QA_LANE: l2-binary
-          LILBEE_QA_BIN: ${{ github.workspace }}/_bin/${{ matrix.asset }}
+          LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
           PYTHONUNBUFFERED: "1"
         shell: bash
         run: |
+          echo "Lane: $LILBEE_QA_LANE"
+          echo "Binary: $LILBEE_QA_BIN"
           python -m pytest tools/qa/ -v --tb=short \
-            --junitxml=qa-${{ matrix.label }}.xml
+            --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
 
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-${{ matrix.label }}
+          name: qa-${{ matrix.label }}-${{ matrix.lane }}
           path: |
             qa-*.xml
             _bin/
             tools/qa/.pytest_cache/
           retention-days: 7
 
-  # Linux distros that ship a different glibc / fontconfig / lib layout than
-  # ubuntu-latest. Same lilbee-linux-x86_64 binary; the runtime is the variable.
+  # Linux distros: same lanes, but the runtime is the distro container.
+  # pypi lane on Arch / Fedora is the high-value one — that's where most
+  # Linux users hit install failures; binary lane is the fallback path.
   linux-distros:
-    name: linux-distros (${{ matrix.label }})
+    name: linux-distros (${{ matrix.label }}, ${{ matrix.lane }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { label: arch,    container: archlinux:latest, install: arch    }
-          - { label: fedora,  container: fedora:latest,    install: fedora  }
+          - { label: arch,    container: archlinux:latest, install: arch,   lane: pypi   }
+          - { label: arch,    container: archlinux:latest, install: arch,   lane: binary }
+          - { label: fedora,  container: fedora:latest,    install: fedora, lane: pypi   }
+          - { label: fedora,  container: fedora:latest,    install: fedora, lane: binary }
     runs-on: ubuntu-latest
     container: ${{ matrix.container }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Install Arch base toolchain
         if: matrix.install == 'arch'
         run: |
           pacman -Sy --noconfirm
-          pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates
+          pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates base-devel
 
       - name: Install Fedora base toolchain
         if: matrix.install == 'fedora'
         run: |
           dnf -y update
-          dnf -y install python3 python3-pip git gh ca-certificates
+          dnf -y install python3 python3-pip git gh ca-certificates gcc gcc-c++ make
 
       - uses: actions/checkout@v6
 
       - name: Install QA harness deps
         run: python3 -m pip install --break-system-packages -r tools/qa/requirements.txt
 
-      - name: Download lilbee binary from GH release
+      - name: Resolve target lilbee version
+        id: ver
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.lilbee_version || 'latest' }}
         run: |
-          mkdir -p _bin
           if [ "$TAG" = "latest" ]; then
-            gh release download --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
-          else
-            gh release download "$TAG" --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
+            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install lilbee from PyPI (lane=pypi)
+        if: matrix.lane == 'pypi'
+        run: |
+          python3 -m pip install --break-system-packages "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(python3 -c 'import shutil; print(shutil.which(\"lilbee\"))')" >> "$GITHUB_ENV"
+
+      - name: Download lilbee binary from GH release (lane=binary)
+        if: matrix.lane == 'binary'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _bin
+          gh release download "${{ steps.ver.outputs.tag }}" --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
           chmod +x _bin/lilbee-linux-x86_64
-          ls -la _bin
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/lilbee-linux-x86_64" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
-          LILBEE_QA_LANE: l2-binary
-          LILBEE_QA_BIN: ${{ github.workspace }}/_bin/lilbee-linux-x86_64
+          LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
           PYTHONUNBUFFERED: "1"
         run: |
-          python3 -m pytest tools/qa/ -v --tb=short --junitxml=qa-${{ matrix.label }}.xml
+          echo "Lane: $LILBEE_QA_LANE"
+          echo "Binary: $LILBEE_QA_BIN"
+          python3 -m pytest tools/qa/ -v --tb=short \
+            --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
 
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-${{ matrix.label }}
+          name: qa-${{ matrix.label }}-${{ matrix.lane }}
           path: |
             qa-*.xml
             _bin/
