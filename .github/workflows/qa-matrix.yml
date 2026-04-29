@@ -80,22 +80,18 @@ jobs:
           path: ~/.lilbee-qa-models
           key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
 
-      - name: Install lilbee from PyPI with extras (lane=pypi)
+      - name: Install lilbee from PyPI with crawler extra (lane=pypi)
         if: matrix.lane == 'pypi'
         shell: bash
-        # [crawler] always (playwright + crawl4ai for the crawl tier).
-        # [litellm] only on Linux: the litellm SDK is a heavy import that
-        # adds ~30-60 s per `lilbee` invocation on macOS arm64 runners,
-        # blowing every CLI test's 60 s budget. Windows tolerates it but
-        # to keep the matrix consistent we only install [litellm] where
-        # ollama daemon is actually wired up (Linux-only).
+        # [crawler] gives the lane playwright + crawl4ai for the crawl tier.
+        # [litellm] is intentionally NOT included here: the SDK is a heavy
+        # import that adds 30-60 s per `lilbee` invocation on macOS arm64
+        # and Linux native runners, blowing every CLI test's per-test budget
+        # and pushing the suite past the 60-min job timeout. The dedicated
+        # `ollama-pypi` job below installs [litellm] and exercises the
+        # litellm-backed ollama tests in isolation.
         run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            EXTRAS="[crawler,litellm]"
-          else
-            EXTRAS="[crawler]"
-          fi
-          python -m pip install "lilbee${EXTRAS}==${{ steps.ver.outputs.version }}"
+          python -m pip install "lilbee[crawler]==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
           # Install a sitecustomize.py that monkey-patches lilbee's
           # blocked-networks list to allow loopback for the QA harness's
@@ -128,27 +124,6 @@ jobs:
           ls -la _bin
           if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
           echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
-
-      - name: Install Ollama daemon + pull tiny model (Linux only)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        # Adds a real Ollama backend to the test environment so test_e2e_litellm_ollama
-        # actually runs (without this it skips with 'daemon not reachable'). smollm:135m
-        # is ollama's tiniest model (~92 MB). Linux runners only because ollama install
-        # is fastest there; macOS/Windows ollama setup is slower and not yet wired.
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          # Start daemon in background, redirect logs to a file so the runner doesn't capture them.
-          OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
-          # Wait for the daemon to come up (max ~30s).
-          for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
-            sleep 0.5
-          done
-          ollama pull smollm:135m
-          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
@@ -272,5 +247,78 @@ jobs:
           path: |
             qa-*.xml
             _bin/
+            tools/qa/.pytest_cache/
+          retention-days: 7
+
+  # Dedicated Ollama lane: install [crawler,litellm], stand up an ollama
+  # daemon with smollm:135m, run only the litellm-backed ollama tests. We
+  # isolate this from the main matrix because the [litellm] SDK adds 30-60s
+  # per `lilbee` invocation on macOS arm64 and Linux native runners, which
+  # blows the 60-min budget when applied to the full suite. Scoped to one
+  # cell on ubuntu-latest where ollama install is straightforward.
+  ollama-pypi:
+    name: ollama-pypi (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install QA harness deps
+        run: python -m pip install --root-user-action=ignore -r tools/qa/requirements.txt
+
+      - name: Resolve target lilbee version
+        id: ver
+        run: |
+          TAG=$(curl -sf "https://api.github.com/repos/${{ github.repository }}/releases/latest" | python -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
+
+      - name: Install lilbee from PyPI with crawler + litellm extras
+        run: |
+          python -m pip install "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Install Ollama daemon + pull tiny model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          ollama pull smollm:135m
+          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
+
+      - name: Run ollama tests only
+        env:
+          LILBEE_QA_LANE: l1-pypi
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          PYTHONUNBUFFERED: "1"
+        run: |
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
+          python -m pytest tools/qa/test_e2e_litellm_ollama.py -v --tb=short \
+            --junitxml=qa-ollama-pypi.xml
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-ollama-pypi
+          path: |
+            qa-*.xml
             tools/qa/.pytest_cache/
           retention-days: 7
