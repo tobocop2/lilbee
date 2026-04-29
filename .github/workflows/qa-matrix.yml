@@ -149,15 +149,24 @@ jobs:
     steps:
       - name: Install Arch base toolchain
         if: matrix.install == 'arch'
+        # vulkan-icd-loader provides libvulkan.so.1, which the lilbee Linux
+        # wheel hard-depends on at module-import time. Without it the runtime
+        # fails with 'libvulkan.so.1: cannot open shared object file' on
+        # every model load. Tracked separately as a lilbee bug; install it
+        # here so the rest of the matrix can validate the surface that
+        # users-with-vulkan see. Users hitting this without vulkan installed
+        # is the bug the QA matrix exposed.
         run: |
           pacman -Sy --noconfirm
-          pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates base-devel
+          pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates base-devel vulkan-icd-loader
 
       - name: Install Fedora base toolchain
         if: matrix.install == 'fedora'
+        # vulkan-loader is the Fedora equivalent of vulkan-icd-loader; same
+        # rationale (see Arch step above).
         run: |
           dnf -y update
-          dnf -y install python3 python3-pip git gh ca-certificates gcc gcc-c++ make
+          dnf -y install python3 python3-pip git gh ca-certificates gcc gcc-c++ make vulkan-loader
 
       - uses: actions/checkout@v6
 
