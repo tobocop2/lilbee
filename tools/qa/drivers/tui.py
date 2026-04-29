@@ -86,8 +86,15 @@ class TuiSession:
                 os.set_blocking(self._proc.fd, False)
 
     def send(self, keys: str) -> None:
-        """Write keys to the PTY input. Use '\\r' to submit a line."""
-        self._proc.write(keys.encode())
+        """Write keys to the PTY input. Use '\\r' to submit a line.
+
+        pywinpty.PtyProcess.write expects str on Windows; ptyprocess.PtyProcess.write
+        expects bytes on POSIX. Pick the right type per backend.
+        """
+        if sys.platform == "win32":
+            self._proc.write(keys)
+        else:
+            self._proc.write(keys.encode())
 
     def _drain_once(self) -> None:
         try:

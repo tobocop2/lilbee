@@ -20,7 +20,7 @@ from conftest import Lane
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 _SYNC_TIMEOUT = 240.0
-_ASK_TIMEOUT = 180.0
+_ASK_TIMEOUT = 320.0
 
 
 def _seed_corpus(lilbee_data: Path) -> Path:

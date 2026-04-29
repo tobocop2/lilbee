@@ -62,11 +62,31 @@ def _wait_health(url: str, timeout: float = 60.0) -> None:
     raise TimeoutError(f"server at {url} not ready within {timeout}s")
 
 
+def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
+    """`lilbee token` prints the bearer for a running server. Empty string if
+    the binary doesn't expose the command (very old build) or it errors."""
+    result = subprocess.run(
+        [lane.lilbee_bin, "token"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    return lines[-1].strip() if lines else ""
+
+
 @pytest.fixture
 def served_lilbee(
     lane: Lane, lilbee_env_with_models: dict[str, str]
-) -> Iterator[tuple[str, dict[str, str]]]:
-    """Spawn `lilbee serve` against the model-equipped env; yield (url, env)."""
+) -> Iterator[tuple[str, dict[str, str], dict[str, str]]]:
+    """Spawn `lilbee serve` and yield (url, env, headers).
+
+    Headers carry the bearer token that protected POST endpoints require.
+    """
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(
@@ -78,7 +98,9 @@ def served_lilbee(
     )
     try:
         _wait_health(f"{base_url}/api/health", timeout=60.0)
-        yield base_url, lilbee_env_with_models
+        token = _fetch_token(lane, lilbee_env_with_models)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        yield base_url, lilbee_env_with_models, headers
     finally:
         proc.terminate()
         try:
@@ -94,7 +116,7 @@ def test_ask_stream_completes_with_token_events(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    served_lilbee: tuple[str, dict[str, str]],
+    served_lilbee: tuple[str, dict[str, str], dict[str, str]],
 ) -> None:
     """`POST /api/ask/stream` emits TOKEN events and a DONE event within timeout.
 
@@ -113,14 +135,14 @@ def test_ask_stream_completes_with_token_events(
     )
     assert sync.returncode == 0, sync.stderr
 
-    base_url, _env = served_lilbee
+    base_url, _env, headers = served_lilbee
     events: list[tuple[str, str]] = []
     saw_done = False
     saw_error = False
 
     deadline = time.monotonic() + _STREAM_TIMEOUT
     with (
-        httpx.Client(timeout=_STREAM_TIMEOUT) as client,
+        httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as client,
         client.stream(
             "POST",
             f"{base_url}/api/ask/stream",
