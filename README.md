@@ -257,10 +257,10 @@ The macOS binary is unsigned (Apple's developer certificate costs $99/year). The
 
 ### Arch Linux (AUR)
 
-Available as `lilbee-bin` for `paru` / `yay` / `pacaur` / any AUR helper:
+Available as `lilbee` for `paru` / `yay` / `pacaur` / any AUR helper:
 
 ```bash
-paru -S lilbee-bin
+paru -S lilbee
 ```
 
 Wraps the Linux x86_64 release binary, no compilation needed.

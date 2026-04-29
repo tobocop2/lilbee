@@ -92,21 +92,21 @@ jobs:
       - name: Render PKGBUILD
         run: |
           bash packaging/tools/render_pkgbuild.sh \
-            packaging/aur/lilbee-bin/PKGBUILD \
+            packaging/aur/lilbee/PKGBUILD \
             "${{ needs.resolve.outputs.version }}" \
             "${{ needs.resolve.outputs.sha_linux }}"
       - name: Regenerate .SRCINFO
         run: |
-          docker run --rm -v "$PWD/packaging/aur/lilbee-bin:/pkg" -w /pkg archlinux:latest \
+          docker run --rm -v "$PWD/packaging/aur/lilbee:/pkg" -w /pkg archlinux:latest \
             bash -c 'pacman -Sy --noconfirm pacman-contrib >/dev/null && \
                      useradd -m b && chown -R b /pkg && \
                      su b -c "makepkg --printsrcinfo" > .SRCINFO'
       - name: Deploy to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
-          pkgname: lilbee-bin
-          pkgbuild: packaging/aur/lilbee-bin/PKGBUILD
-          assets: packaging/aur/lilbee-bin/.SRCINFO
+          pkgname: lilbee
+          pkgbuild: packaging/aur/lilbee/PKGBUILD
+          assets: packaging/aur/lilbee/.SRCINFO
           commit_username: tobocop
           commit_email: tobias.perelstein@gmail.com
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
