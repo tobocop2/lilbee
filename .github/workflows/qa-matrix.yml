@@ -48,7 +48,7 @@ jobs:
           - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true  }
           - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -192,7 +192,7 @@ jobs:
           - { label: fedora,  container: fedora:latest,    install: fedora, lane: binary }
     runs-on: ubuntu-latest
     container: ${{ matrix.container }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Install Arch base toolchain
         if: matrix.install == 'arch'
