@@ -16,6 +16,7 @@ import contextlib
 import json
 import socket
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from threading import Thread
@@ -118,8 +119,12 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
 
+    # Use sys.executable rather than "python3": Windows ships python.exe
+    # (no python3 alias), so hardcoding "python3" silently fails to start
+    # the fixture server and lilbee reports "Crawled 0 page(s)" with no
+    # error of its own.
     proc = subprocess.Popen(
-        ["python3", "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
         cwd=docroot,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
