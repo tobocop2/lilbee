@@ -17,14 +17,11 @@ on Windows; pywinpty uses CreateProcess under the hood.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
-import pty
 import signal
 import struct
 import subprocess
 import sys
-import termios
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -32,6 +29,14 @@ from types import TracebackType
 from typing import Any, Self
 
 import pyte
+
+# Posix-only stdlib modules. Windows takes the pywinpty branch below and
+# never touches these; importing them at module top breaks `import drivers.tui`
+# on the Windows lane.
+if sys.platform != "win32":
+    import fcntl
+    import pty
+    import termios
 
 _DEFAULT_COLS = 120
 _DEFAULT_ROWS = 40

@@ -87,13 +87,22 @@ def ollama_chat_model(ollama_url: str) -> str:
 def lilbee_env_with_ollama(
     lilbee_data: Path, ollama_url: str, ollama_chat_model: str
 ) -> dict[str, str]:
-    """Env that points lilbee at ollama as the remote LLM provider."""
+    """Env that points lilbee at ollama as the remote LLM provider.
+
+    lilbee's config validator requires remote-provider models to carry an
+    `ollama/` (or `openai/`, `anthropic/`, `gemini/`) prefix; bare
+    `smollm:135m` is rejected as ambiguous. Prefix the ref before passing
+    it to LILBEE_CHAT_MODEL.
+    """
+    chat_ref = ollama_chat_model
+    if "/" not in chat_ref:
+        chat_ref = f"ollama/{chat_ref}"
     return lilbee_env(
         lilbee_data,
         extra={
             "LILBEE_LLM_PROVIDER": "remote",
             "LILBEE_REMOTE_BASE_URL": ollama_url,
-            "LILBEE_CHAT_MODEL": ollama_chat_model,
+            "LILBEE_CHAT_MODEL": chat_ref,
         },
     )
 
@@ -171,9 +180,12 @@ def test_model_list_includes_ollama_model(
     payload = json.loads(result.stdout)
     models = payload.get("models", [])
     remote_names = {m["name"] for m in models if m.get("source") == "remote"}
-    assert ollama_chat_model in remote_names or any(
-        ollama_chat_model in name for name in remote_names
-    ), f"expected {ollama_chat_model} in remote models; got {remote_names}"
+    # The model may show up as 'smollm:135m' or 'ollama/smollm:135m' depending
+    # on how lilbee normalises remote refs in its registry view.
+    bare = ollama_chat_model.removeprefix("ollama/")
+    assert bare in remote_names or any(bare in name for name in remote_names), (
+        f"expected {bare} in remote models; got {remote_names}"
+    )
 
 
 @pytest.mark.wiki
