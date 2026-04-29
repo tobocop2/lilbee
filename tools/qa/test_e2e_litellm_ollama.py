@@ -22,9 +22,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from drivers.tui import lilbee_env
 
 from conftest import Lane
-from drivers.tui import lilbee_env
 
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
