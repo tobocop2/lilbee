@@ -3,24 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee — terminal-first local RAG and search engine</title>
-<meta name="description" content="A terminal-first local RAG and search engine for your files, code, the web, and scanned documents. One install, no sidecar services, fully offline by default. Ships a TUI, MCP server, REST API, and Python library.">
+<title>lilbee: terminal-first local search engine</title>
+<meta name="description" content="A terminal-first local search engine for your files, code, the web, and scanned documents. One install, no sidecar services, fully offline by default. Ships a TUI, MCP server, REST API, and Python library.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>lilbee</h1>
+<h1 class="sr">lilbee</h1>
 <div class="layout">
-  <div class="main">
+  <main class="main">
 
-    <div class="topstrip reveal r1">
-      <div><span class="faint">lilbee v0.6.66b</span></div>
-      <div class="right">
-        <span class="faint">Elastic License 2.0 · 100% coverage · typed</span>
+    <div class="topstrip">
+      <div><span class="badge">lilbee</span> <span>v0.6.66b</span></div>
+      <div>
+        <span class="pill">Elastic License 2.0</span>
+        <span class="pill">100% coverage</span>
+        <span class="pill">typed</span>
       </div>
     </div>
 
-    <section class="reveal r2">
-      <pre class="wordmark" aria-hidden="true">888 d8b 888 888
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
 888 Y8P 888 888
 888     888 888
 888 888 888 88888b.  .d88b.  .d88b.
@@ -28,27 +30,29 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <p class="tagline">a <span>terminal-first local RAG and search engine</span> for your files, code, the web, and scanned documents. <span class="dim">one install, no sidecar services, fully offline by default.</span></p>
-      <pre class="hr-line" aria-hidden="true">════════════════════════════════════════════════════════════════</pre>
+      <p class="tagline">A <strong>terminal-first local search engine</strong> for your files, code, the web, and scanned documents.</p>
+      <p class="sub">One install, no sidecar services, fully offline by default. Ships a TUI, MCP server, REST API, and Python library.</p>
     </section>
 
-    <section class="reveal r3">
+    <section>
       <div class="label">preview</div>
-      <div class="demo">
-<pre class="frame-top">┌─ lilbee chat · owner's manuals ──────────────────── [qwen3:0.6b] ┐</pre>
-<div class="row"><pre class="bar">│ </pre><div class="content"><span class="prompt">&gt;</span> what does the oil pressure warning mean?</div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content">the oil pressure warning indicates low oil pressure.<sup>[¹]</sup></div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content">when the light stays on, stop the engine immediately.<sup>[²]</sup></div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content">&nbsp;</div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content"><span class="cite">─── sources ──────────────────────────────────────────────</span></div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content"><span class="cite">[¹ owners-manual.pdf:42]  [² owners-manual.pdf:43]</span></div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content">&nbsp;</div><pre class="bar"> │</pre></div>
-<div class="row"><pre class="bar">│ </pre><div class="content"><span class="prompt">&gt;</span> <span class="cursor"></span></div><pre class="bar"> │</pre></div>
-<pre class="frame-bot">└──────────────────────────────────────────────────────────────────┘</pre>
+      <div class="demo" role="figure" aria-label="terminal preview">
+        <div class="titlebar">
+          <span class="title">lilbee chat . owner's manuals</span>
+          <span>[qwen3:0.6b]</span>
+        </div>
+        <div class="body">
+          <div class="line"><span class="prompt">&gt;</span><span class="answer">what does the oil pressure warning mean?</span></div>
+          <div class="line"><span class="answer">the oil pressure warning indicates low oil pressure.<sup>[1]</sup></span></div>
+          <div class="line"><span class="answer">when the light stays on, stop the engine immediately.<sup>[2]</sup></span></div>
+          <div class="rule">─── sources ─────────────────────────────────</div>
+          <div class="cite">[1] owners-manual.pdf:42 &nbsp;&nbsp; [2] owners-manual.pdf:43</div>
+          <div class="line" style="margin-top:0.6rem"><span class="prompt">&gt;</span><span class="cursor"></span></div>
+        </div>
       </div>
     </section>
 
-    <section class="reveal r4">
+    <section>
       <div class="label">what it does</div>
       <div class="caps">
         <div class="cap">
@@ -70,58 +74,44 @@
       </div>
     </section>
 
-    <section class="reveal r5">
+    <section>
       <div class="label">install</div>
       <div class="install">
-<pre class="box-top">┌──────────────────────────────────────────────────────────────────┐</pre>
-<div class="box-mid">
-  <span class="bar">│</span>
-  <span class="cmd"><span class="dollar">$</span><span id="install-cmd">pip install --pre lilbee</span><span class="cursor"></span></span>
-  <button type="button" class="copy" id="copy-btn" aria-label="Copy install command">[ copy ]</button>
-  <span class="bar">│</span>
-</div>
-<pre class="box-bot">└──────────────────────────────────────────────────────────────────┘</pre>
+        <span class="prompt">$</span>
+        <span class="cmd" id="install-cmd">pip install --pre lilbee</span>
+        <button type="button" class="copy" id="copy-btn" aria-label="Copy install command">[ COPY ]</button>
       </div>
-      <p class="extras">extras: <span class="faint">[crawler]</span> websites · <span class="faint">[litellm]</span> frontier models · <span class="faint">[graph]</span> concept-graph search</p>
-      <p class="extras"><span class="faint">uv:</span> <code>uv tool install --prerelease=allow lilbee</code></p>
-      <p class="extras"><span class="faint">homebrew:</span> <code>brew tap tobocop2/lilbee &amp;&amp; brew install lilbee</code></p>
-      <p class="extras"><span class="faint">arch (AUR):</span> <code>paru -S lilbee</code></p>
-      <p class="extras"><span class="faint">docker:</span> <code>docker run --rm ghcr.io/tobocop2/lilbee:latest</code></p>
-      <p class="extras"><span class="faint">cuda (opt-in, NVIDIA-native):</span> <code>--extra-index-url https://tobocop2.github.io/lilbee/cu125/</code></p>
-      <p class="extras"><span class="faint">beta:</span> every release is a pre-release. <a href="https://pypi.org/project/lilbee/#history">latest on pypi →</a></p>
+      <p class="extras">extras: <span class="tag">[crawler]</span> websites &nbsp; <span class="tag">[litellm]</span> frontier models &nbsp; <span class="tag">[graph]</span> concept-graph search</p>
+      <p class="extras"><span class="k">uv:</span> <code>uv tool install --prerelease=allow lilbee</code></p>
+      <p class="extras"><span class="k">homebrew:</span> <code>brew tap tobocop2/lilbee &amp;&amp; brew install lilbee</code></p>
+      <p class="extras"><span class="k">arch (AUR):</span> <code>paru -S lilbee</code></p>
+      <p class="extras"><span class="k">docker:</span> <code>docker run --rm ghcr.io/tobocop2/lilbee:latest</code></p>
+      <p class="extras"><span class="k">cuda (opt-in, NVIDIA-native):</span> <code>--extra-index-url https://tobocop2.github.io/lilbee/cu125/</code></p>
+      <p class="extras"><span class="k">beta:</span> every release is a pre-release. <a href="https://pypi.org/project/lilbee/#history">latest on pypi →</a></p>
     </section>
 
-    <section class="reveal r6">
+    <section>
       <div class="label">go deeper</div>
       <div class="links">
-        <a href="https://github.com/tobocop2/lilbee"><span class="num">[1] GitHub</span><span class="dots">···················</span><span class="desc">source</span></a>
-        <a href="https://pypi.org/project/lilbee/"><span class="num">[2] PyPI</span><span class="dots">·····················</span><span class="desc">package</span></a>
-        <a href="api/"><span class="num">[3] API docs</span><span class="dots">·················</span><span class="desc">openapi</span></a>
-        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md"><span class="num">[4] Usage guide</span><span class="dots">··············</span><span class="desc">commands</span></a>
-        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/agent-integration.md"><span class="num">[5] Agents</span><span class="dots">···················</span><span class="desc">mcp / cli</span></a>
-        <a href="coverage/"><span class="num">[6] Coverage</span><span class="dots">·················</span><span class="desc">100%</span></a>
-        <a href="https://github.com/tobocop2/lilbee/releases"><span class="num">[7] Changelog</span><span class="dots">················</span><span class="desc">releases</span></a>
-        <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8] Benchmarks</span><span class="dots">···············</span><span class="desc">godot · ocr</span></a>
-        <a href="https://tobocop2.github.io/obsidian-lilbee/"><span class="num">[9] Obsidian plugin</span><span class="dots">··········</span><span class="desc">vault GUI</span></a>
+        <a href="https://github.com/tobocop2/lilbee"><span class="num">[1]</span><span>GitHub</span><span class="dots">·······································</span><span class="desc">source</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[2]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">package</span></a>
+        <a href="api/"><span class="num">[3]</span><span>API docs</span><span class="dots">·······································</span><span class="desc">openapi</span></a>
+        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md"><span class="num">[4]</span><span>Usage guide</span><span class="dots">·······································</span><span class="desc">commands</span></a>
+        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/agent-integration.md"><span class="num">[5]</span><span>Agents</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
+        <a href="coverage/"><span class="num">[6]</span><span>Coverage</span><span class="dots">·······································</span><span class="desc">100%</span></a>
+        <a href="https://github.com/tobocop2/lilbee/releases"><span class="num">[7]</span><span>Changelog</span><span class="dots">·······································</span><span class="desc">releases</span></a>
+        <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8]</span><span>Benchmarks</span><span class="dots">·······································</span><span class="desc">godot . ocr</span></a>
+        <a href="https://tobocop2.github.io/obsidian-lilbee/"><span class="num">[9]</span><span>Obsidian plugin</span><span class="dots">·······································</span><span class="desc">vault GUI</span></a>
       </div>
     </section>
 
-    <footer class="reveal r7">
-      <div>
-<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|t|o|b|i|a|s|.|p|e|r|e|l|s|t|e|i|n|
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-        +-+-+-+-+-+-+-+-+-+-+
-        |@|g|m|a|i|l|.|c|o|m|
-        +-+-+-+-+-+-+-+-+-+-+</pre>
-      </div>
-      <div class="meta">
-        <div><a href="https://github.com/tobocop2/lilbee">lilbee</a> · Elastic License 2.0</div>
-      </div>
+    <footer>
+      <div>tobias.perelstein@gmail.com</div>
+      <div><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; Elastic License 2.0</div>
     </footer>
-  </div>
+  </main>
 
-  <aside class="bee-art reveal r3" aria-hidden="true"><pre>     %           %
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
          %           %
             %           %
                %          %
@@ -169,7 +159,7 @@
     var text = cmd ? cmd.textContent : 'pip install --pre lilbee';
     var done = function () {
       var original = btn.textContent;
-      btn.textContent = '[ copied ]';
+      btn.textContent = '[ COPIED ]';
       setTimeout(function () { btn.textContent = original; }, 1200);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
