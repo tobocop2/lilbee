@@ -244,7 +244,18 @@ lilbee self-check
 
 This downloads a tiny model (~90 MB), runs an inference, and an embedding. Exits 0 with `SELF-CHECK PASSED` on success.
 
-### NVIDIA users wanting CUDA-native (5–15% faster than Vulkan)
+### Homebrew (macOS arm64, Linux x86_64)
+
+If you prefer not to install Python, the prebuilt binary is on a Homebrew tap. It bundles its own Python interpreter and llama-cpp backend, the same artifact that ships on the GitHub Release page.
+
+```bash
+brew tap tobocop2/lilbee
+brew install lilbee
+```
+
+The macOS binary is unsigned (Apple's developer certificate costs $99/year). The formula clears the `com.apple.quarantine` extended attribute automatically during install, so the first launch is not blocked by Gatekeeper. If macOS still blocks it, open **System Settings → Privacy & Security** and click **Allow Anyway**.
+
+### NVIDIA users wanting CUDA-native (5-15% faster than Vulkan)
 
 The default wheel already uses your NVIDIA GPU through Vulkan. **You only need a CUDA wheel if you want the absolute last bit of performance** out of CUDA-native kernels.
 
