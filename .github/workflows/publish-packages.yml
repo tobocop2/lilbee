@@ -36,7 +36,7 @@ jobs:
             --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
 
           get_sha() {
-            grep "^$1\t" /tmp/assets.tsv | cut -f2 || true
+            awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
           }
           sha_linux=$(get_sha lilbee-linux-x86_64)
           sha_macos_arm64=$(get_sha lilbee-macos-arm64)
