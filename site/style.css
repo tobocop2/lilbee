@@ -317,11 +317,18 @@ footer {
   color: var(--ink-3);
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-end;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 1.5rem;
 }
 footer a { color: var(--ink-2); }
+footer pre {
+  font-size: 10.5px;
+  line-height: 1.15;
+  color: var(--ink-2);
+  white-space: pre;
+}
+footer .meta { text-align: right; font-size: 12px; }
 
 /* bee aside ---------------------------------------------------------- */
 .bee-art {
