@@ -273,6 +273,23 @@ docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest 
 
 Image is published to GitHub Container Registry on every release; tagged with both the version (`0.6.66b456`) and `latest`. The `LILBEE_DATA_DIR` is `/home/lilbee/data` inside the container, so mount a volume there to persist models, embeddings, and config.
 
+<a id="linux-runtime-requirements"></a>
+
+### Linux runtime requirements
+
+The Linux x86_64 wheel links against the Vulkan loader at runtime so it can fall back from GPU to CPU on a single binary. Most desktop distros (Ubuntu 22.04+, Pop!_OS, Mint) ship `libvulkan1` by default. Bare Arch / Fedora / Alpine images do not, and `lilbee self-check` will fail with `cannot open shared object file: libvulkan.so.1`. Install the loader once.
+
+```bash
+# Arch / Manjaro
+sudo pacman -S vulkan-icd-loader
+
+# Fedora / RHEL
+sudo dnf install vulkan-loader
+
+# Debian / Ubuntu (only if missing)
+sudo apt-get install libvulkan1
+```
+
 ### NVIDIA users wanting CUDA-native (5-15% faster than Vulkan)
 
 The default wheel already uses your NVIDIA GPU through Vulkan. **You only need a CUDA wheel if you want the absolute last bit of performance** out of CUDA-native kernels.

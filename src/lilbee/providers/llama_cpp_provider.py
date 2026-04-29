@@ -472,12 +472,37 @@ def _resolve_ggml_level(ggml_level: int, text: str) -> int:
     return py_level
 
 
+_MISSING_VULKAN_HINT = (
+    "lilbee's Linux wheel currently links against libvulkan.so.1 at runtime. "
+    "Install your distro's Vulkan loader package (Arch: vulkan-icd-loader, "
+    "Fedora: vulkan-loader, Debian/Ubuntu: libvulkan1) and try again. See "
+    "https://github.com/tobocop2/lilbee#linux-runtime-requirements."
+)
+
+
+def _import_llama_cpp() -> Any:
+    """Import ``llama_cpp`` with an actionable error when libvulkan is missing.
+
+    Bare Arch / Fedora installs lack the Vulkan loader and the raw
+    ``OSError: libvulkan.so.1: cannot open shared object file`` is opaque.
+    Re-raise as :class:`ProviderError` with install guidance.
+    """
+    try:
+        import llama_cpp
+
+        return llama_cpp
+    except OSError as exc:
+        if "libvulkan" in str(exc):
+            raise ProviderError(_MISSING_VULKAN_HINT, provider="llama-cpp") from exc
+        raise
+
+
 def install_llama_log_handler() -> None:
     """Route llama.cpp logs through Python logging. Idempotent."""
     global _llama_log_callback, _llama_log_installed
     if _llama_log_installed:
         return
-    import llama_cpp
+    llama_cpp = _import_llama_cpp()
 
     _llama_log_callback = llama_cpp.llama_log_callback(_llama_log_dispatch)
     llama_cpp.llama_log_set(_llama_log_callback, None)
@@ -592,7 +617,7 @@ def _llama_cpp_has_rank_pooling() -> bool:
 
 def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
-    from llama_cpp import Llama
+    Llama = _import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
     embedding = mode in (MODE_EMBED, MODE_RERANK)
