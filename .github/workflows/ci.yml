@@ -195,7 +195,22 @@ jobs:
             ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Install spacy model
-        run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+        # Retry around the GitHub-releases download. The default `uv pip
+        # install` does 3 retries internally but a 502 from GH releases
+        # can outlast those; an outer 5-attempt loop with backoff turns a
+        # transient gateway error into a flaky-but-eventually-green job.
+        shell: bash
+        run: |
+          url="https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+          for attempt in 1 2 3 4 5; do
+            if uv pip install "$url"; then
+              exit 0
+            fi
+            echo "spacy model install attempt $attempt failed; sleeping before retry"
+            sleep $((attempt * 10))
+          done
+          echo "spacy model install failed after 5 attempts" >&2
+          exit 1
 
       - name: Restore Playwright cache
         id: pw-cache
