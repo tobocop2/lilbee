@@ -153,6 +153,7 @@ jobs:
           --collect-submodules litellm.llms
           --collect-all spacy
           --collect-all graspologic_native
+          --collect-all playwright
           src/lilbee/__main__.py
 
       - name: Smoke test

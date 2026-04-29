@@ -544,112 +544,75 @@ class TestBootstrapChromium:
 
 
 class TestResolvePlaywrightRunner:
-    """``_resolve_playwright_runner`` chooses the right argv prefix per layout.
+    """``_resolve_playwright_runner`` resolves Playwright's bundled Node driver
+    so chromium install works under both wheel and PyInstaller frozen layouts
+    without a system Python interpreter.
 
-    bb-sxsz: under PyInstaller, sys.executable is the lilbee binary not a
-    Python interpreter, so the wheel-style 'sys.executable -m playwright'
-    spawn exits 2 with 'No such command install'.
+    bb-sxsz: the previous wheel-style ``sys.executable -m playwright`` spawn
+    failed under PyInstaller because ``sys.executable`` is the lilbee binary,
+    not Python. Routing through ``compute_driver_executable`` invokes the
+    bundled ``playwright/driver/node`` + ``cli.js`` directly.
     """
 
-    def test_wheel_install_uses_sys_executable(self, monkeypatch):
-        """Non-frozen layout: argv prefix is [sys.executable, '-m', 'playwright']."""
-        from lilbee.crawler.bootstrap import _resolve_playwright_runner
+    def test_uses_compute_driver_executable(self, monkeypatch):
+        """Returns argv from playwright's bundled driver lookup, with driver env."""
+        from lilbee.crawler import bootstrap as boot_mod
 
-        monkeypatch.delattr(sys, "frozen", raising=False)
-        runner = _resolve_playwright_runner()
-        assert runner == [sys.executable, "-m", "playwright"]
-
-    def test_frozen_falls_back_to_python_on_path(self, monkeypatch):
-        """PyInstaller layout: pick up python3 / python from PATH."""
-        import shutil
-
-        from lilbee.crawler.bootstrap import _resolve_playwright_runner
-
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        monkeypatch.setattr(shutil, "which", lambda name: f"/fake/bin/{name}")
-        runner = _resolve_playwright_runner()
-        assert runner == ["/fake/bin/python3", "-m", "playwright"]
-
-    def test_frozen_prefers_python3_over_python(self, monkeypatch):
-        """``python3`` wins when both are on PATH (Linux/macOS convention)."""
-        import shutil
-
-        from lilbee.crawler.bootstrap import _resolve_playwright_runner
-
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        seen: list[str] = []
-
-        def _which(name):
-            seen.append(name)
-            # Both exist; helper should pick python3 first.
-            return f"/fake/bin/{name}"
-
-        monkeypatch.setattr(shutil, "which", _which)
-        runner = _resolve_playwright_runner()
-        assert runner[0] == "/fake/bin/python3"
-        assert seen[0] == "python3"
-
-    def test_frozen_falls_back_to_python_when_python3_missing(self, monkeypatch):
-        """``python`` is the Windows / minimal-Linux fallback."""
-        import shutil
-
-        from lilbee.crawler.bootstrap import _resolve_playwright_runner
-
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        fake_node = "/fake/site-packages/playwright/driver/node"
+        fake_cli = "/fake/site-packages/playwright/driver/package/cli.js"
         monkeypatch.setattr(
-            shutil, "which", lambda name: "/fake/bin/python" if name == "python" else None
+            "playwright._impl._driver.compute_driver_executable",
+            lambda: (fake_node, fake_cli),
         )
-        runner = _resolve_playwright_runner()
-        assert runner == ["/fake/bin/python", "-m", "playwright"]
+        monkeypatch.setattr(
+            "playwright._impl._driver.get_driver_env",
+            lambda: {"PW_LANG_NAME": "python", "PATH": "/usr/bin"},
+        )
 
-    def test_frozen_no_python_raises_actionable_error(self, monkeypatch):
-        """No interpreter on PATH: raise CrawlerBrowserMissing with install hint."""
-        import shutil
+        argv, env = boot_mod._resolve_playwright_runner()
+        assert argv == [fake_node, fake_cli]
+        assert env["PW_LANG_NAME"] == "python"
+        assert env["PATH"] == "/usr/bin"
+
+    def test_works_under_frozen_build(self, monkeypatch):
+        """PyInstaller layout: same code path, no system Python required."""
+        from lilbee.crawler import bootstrap as boot_mod
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        fake_node = "/_MEI/playwright/driver/node"
+        fake_cli = "/_MEI/playwright/driver/package/cli.js"
+        monkeypatch.setattr(
+            "playwright._impl._driver.compute_driver_executable",
+            lambda: (fake_node, fake_cli),
+        )
+        monkeypatch.setattr("playwright._impl._driver.get_driver_env", lambda: {})
+
+        argv, _env = boot_mod._resolve_playwright_runner()
+        assert argv == [fake_node, fake_cli]
+
+    def test_playwright_missing_raises_actionable_error(self, monkeypatch):
+        """``ImportError: playwright`` raises CrawlerBrowserMissing with install hint."""
+        # Pretend playwright isn't installed by injecting a failing module loader
+        # for the exact path _resolve_playwright_runner imports from.
+        import builtins
 
         from lilbee.crawler.bootstrap import CrawlerBrowserMissing, _resolve_playwright_runner
 
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        monkeypatch.setattr(shutil, "which", lambda _name: None)
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "playwright._impl._driver":
+                raise ImportError("No module named 'playwright'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
         with pytest.raises(CrawlerBrowserMissing) as ei:
             _resolve_playwright_runner()
-        # The error must name the install fix; bare 'not found' breaks the
-        # the user's recovery loop in the release executable.
         message = str(ei.value)
-        assert "Python 3.11" in message
-        assert "playwright install" in message
-
-
-class TestBootstrapChromiumFrozen:
-    """End-to-end: bootstrap_chromium routes through _resolve_playwright_runner.
-
-    Verifies the frozen-no-python path emits a setup_done(success=False)
-    event and raises CrawlerBrowserMissing so the task center routes the
-    user to the actionable error instead of silently failing.
-    """
-
-    async def test_frozen_no_python_emits_setup_done_failure(self, monkeypatch):
-        import shutil
-
-        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
-        from lilbee.progress import EventType, SetupDoneEvent
-
-        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        monkeypatch.setattr(shutil, "which", lambda _name: None)
-
-        events: list[tuple[EventType, object]] = []
-        with pytest.raises(CrawlerBrowserMissing):
-            await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
-
-        # setup_start must fire before the failure surfaces, then setup_done
-        # with success=False so the task bar transitions to FAILED.
-        types = [e for e, _ in events]
-        assert types[0] == EventType.SETUP_START
-        assert types[-1] == EventType.SETUP_DONE
-        last = events[-1][1]
-        assert isinstance(last, SetupDoneEvent)
-        assert last.success is False
-        assert last.error is not None and "Python 3.11" in last.error
+        # Must name the install fix; bare 'not found' breaks the user's
+        # recovery loop in the release executable.
+        assert "lilbee[crawler]" in message or "playwright" in message
 
 
 class TestPlaywrightBrowserCheck:
