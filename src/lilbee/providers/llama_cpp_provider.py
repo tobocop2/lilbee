@@ -544,7 +544,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     KV-cache-shape fields ('block_count', 'head_count_kv', 'key_length',
     'value_length') used to size n_ctx against host memory.
     """
-    from llama_cpp import Llama
+    Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
     llm = suppress_native_stderr(
