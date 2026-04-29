@@ -60,7 +60,7 @@ def test_cli_ask_cites_correct_source(
 
     ask = _run(
         lane,
-        ["--json", "ask", "What is lithium-ion battery technology?"],
+        ["--json", "ask", "Answer in one short sentence: which document covers EV batteries?"],
         lilbee_env_with_models,
         _ASK_TIMEOUT,
     )
