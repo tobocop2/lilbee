@@ -7,20 +7,16 @@ import os
 import sys
 
 from lilbee.cli.sync import shutdown_executor
+from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.services import reset_services
 
 
 def _silence_stderr_log_handlers() -> None:
     """Drop stderr/stdout-streaming log handlers before mounting the TUI. (bb-82ce)
 
-    TODO bb-pmyi: stripping handlers loses logs for the session. The proper
-    fix routes lilbee.* loggers through Textual's RichLog widget or a
-    rotating ~/.lilbee/tui.log so users debugging a TUI session still get
-    their logs.
-
-    FileHandler (a StreamHandler subclass whose .stream is the log file)
-    is skipped explicitly: only stderr/stdout handlers share an fd with
-    the TUI render target.
+    lilbee logs route to ``cfg.data_root/logs/tui.log`` for the duration of
+    the TUI session via :func:`setup_tui_log_file`. FileHandler instances
+    are skipped explicitly here so that file route survives.
     """
     root = logging.getLogger()
     for handler in list(root.handlers):
@@ -40,6 +36,7 @@ def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None
     """
     from lilbee.cli.tui.app import LilbeeApp
 
+    setup_tui_log_file()
     _silence_stderr_log_handlers()
 
     app = LilbeeApp(auto_sync=auto_sync, initial_view=initial_view)
