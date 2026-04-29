@@ -83,6 +83,12 @@ jobs:
       - name: Install lilbee from PyPI (lane=pypi)
         if: matrix.lane == 'pypi'
         shell: bash
+        # Bare `pip install lilbee` is the install command real users follow.
+        # Don't install [crawler] extras here — the matrix's job is to validate
+        # the user-default install path. If `lilbee add --crawl` doesn't work
+        # without extras, that's a UX issue for the lilbee project to address
+        # (run `lilbee setup crawler` to install missing deps, or just include
+        # them by default), not something the QA harness should paper over.
         run: |
           python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
@@ -98,6 +104,27 @@ jobs:
           ls -la _bin
           if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
           echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
+
+      - name: Install Ollama daemon + pull tiny model (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        # Adds a real Ollama backend to the test environment so test_e2e_litellm_ollama
+        # actually runs (without this it skips with 'daemon not reachable'). smollm:135m
+        # is ollama's tiniest model (~92 MB). Linux runners only because ollama install
+        # is fastest there; macOS/Windows ollama setup is slower and not yet wired.
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          # Start daemon in background, redirect logs to a file so the runner doesn't capture them.
+          OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
+          # Wait for the daemon to come up (max ~30s).
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          ollama pull smollm:135m
+          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
