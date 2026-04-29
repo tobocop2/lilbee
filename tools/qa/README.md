@@ -33,9 +33,9 @@ LILBEE_QA_LANE=l1-source LILBEE_QA_BIN="$(which lilbee)" \
 ```
 
 `LILBEE_QA_LANE` selects the lane:
-- `l1-source` — already-installed `lilbee` from the dev venv (local dev only)
-- `l1-wheel` — installed from a wheel artifact (CI L1 lane)
-- `l2-binary` — direct PyInstaller binary execution (CI L2 lane)
+- `l1-source`: already-installed `lilbee` from the dev venv (local dev only)
+- `l1-wheel`: installed from a wheel artifact (CI L1 lane)
+- `l2-binary`: direct PyInstaller binary execution (CI L2 lane)
 
 `LILBEE_QA_BIN` overrides the resolved binary path.
 

@@ -2,7 +2,7 @@
 
 Wraps `httpx` for sync HTTP and `httpx-sse` for parsing event streams emitted
 by `/api/ask/stream`, `/api/chat/stream`, `/api/sync`, `/api/wiki/build`, etc.
-Streaming-output assertions live here, not in the TUI driver — see plan.
+Streaming-output assertions live here, not in the TUI driver (see plan).
 """
 
 from __future__ import annotations

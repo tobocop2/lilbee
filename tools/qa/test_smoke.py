@@ -1,4 +1,4 @@
-"""T0 smoke — gates publish.
+"""T0 smoke. Gates publish.
 
 Minimal CLI checks against the artifact-under-test that don't require any LLM
 or embedding model to be installed. Sync / search / ask scenarios live in T1
@@ -61,7 +61,7 @@ def test_status_reports_zero_chunks_initially(lane: Lane, lilbee_data: Path) -> 
 
 @pytest.mark.smoke
 def test_unknown_subcommand_exits_nonzero(lane: Lane, lilbee_data: Path) -> None:
-    """Negative-path: unknown subcommands fail loudly, not silently."""
+    """Negative path. Unknown subcommands fail loudly, not silently."""
     result = run_lilbee(lane, ["this-command-does-not-exist"], data_dir=lilbee_data, timeout=15)
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()

@@ -5,7 +5,7 @@ shared across all MCP scenarios in a single test file (the conftest hook
 groups MCP tests by file under xdist's loadgroup).
 
 Protocol: JSON-RPC 2.0 line-delimited, with the standard MCP initialization
-handshake (initialize → response → notifications/initialized).
+handshake (initialize, response, notifications/initialized).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import contextlib
 import json
 import subprocess
 import threading
+import time
 from collections import deque
 from collections.abc import Mapping
 from queue import Empty, Queue
@@ -69,7 +70,7 @@ class MCPStdioClient:
                 self._inbox.put(json.loads(line))
             except json.JSONDecodeError:
                 # The MCP server occasionally emits non-JSON debug lines on
-                # stdout. Drop them rather than failing — let stderr show them.
+                # stdout. Drop them rather than failing; stderr surfaces them.
                 self._stderr_lines.append(f"[non-json stdout] {line[:200]}")
 
     def _read_stderr(self) -> None:
@@ -100,8 +101,6 @@ class MCPStdioClient:
         self._send_message({"jsonrpc": "2.0", "method": method, "params": dict(params or {})})
 
     def _await_response(self, request_id: int, *, timeout: float) -> dict[str, Any]:
-        import time
-
         deadline = time.monotonic() + timeout
         unmatched: list[dict[str, Any]] = []
         try:

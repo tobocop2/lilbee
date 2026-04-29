@@ -1,9 +1,9 @@
-name: QA Phase 0 — harness smoke
+name: QA Phase 0 harness smoke
 
 # Validates that pywinpty/ptyprocess + pyte can drive a real lilbee binary
 # on Linux/macOS/Windows. GO/NO-GO for the rest of the QA matrix.
-# Runs on workflow_dispatch only; deleted once Phase 0 lands green and the
-# harness is proven across all three OSes.
+# Deleted once Phase 0 lands green and the harness is proven across all
+# three OSes.
 
 on:
   push:
