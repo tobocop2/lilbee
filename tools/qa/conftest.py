@@ -7,6 +7,7 @@ are documented inline; load-bearing for cross-worker isolation under xdist.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
 import socket
@@ -22,8 +23,12 @@ from drivers.mcp import MCPStdioClient
 from drivers.tui import TuiSession, lilbee_env, worker_port_offset
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
-_DEFAULT_CHAT_MODEL = "smollm2:135m"
-_DEFAULT_EMBEDDING_MODEL = "nomic-embed-text:v1.5"
+# Pull by HuggingFace repo ID rather than friendly alias. Friendly aliases
+# (smollm2:135m, nomic-embed-text:v1.5) are only registered in lilbee builds
+# that include FEATURED_ALL — older releases (e.g. b455) reject them. Repo
+# IDs go straight to the catalog and work across every published version.
+_DEFAULT_CHAT_MODEL = "bartowski/SmolLM2-135M-Instruct-GGUF"
+_DEFAULT_EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _LANE_ENV_VAR = "LILBEE_QA_LANE"
 _BIN_ENV_VAR = "LILBEE_QA_BIN"
 _CHAT_MODEL_ENV_VAR = "LILBEE_QA_CHAT_MODEL"
@@ -106,9 +111,11 @@ def qa_models_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _pull_model(lilbee_bin: str, ref: str, env: dict[str, str]) -> None:
-    """Run `lilbee model pull <ref>` and raise if it fails.
+    """Run `lilbee model pull <ref>` and raise with a full diagnostic if it fails.
 
-    Wrapped in tenacity below so HF Hub flakes don't kill the whole session.
+    Captures BOTH stdout and stderr because the rich progress bar paints to
+    stderr first and the real error message ends up on stdout. Wrapped in
+    tenacity so a transient HF Hub 503 doesn't fail the cell on one hiccup.
     """
 
     @retry(
@@ -128,10 +135,43 @@ def _pull_model(lilbee_bin: str, ref: str, env: dict[str, str]) -> None:
         if result.returncode != 0:
             raise RuntimeError(
                 f"lilbee model pull {ref} failed: rc={result.returncode}\n"
-                f"stderr tail: {result.stderr[-500:]}"
+                f"--- stdout tail ---\n{result.stdout[-1500:]}\n"
+                f"--- stderr tail ---\n{result.stderr[-1500:]}"
             )
 
     _attempt()
+
+
+def _resolve_registered_name(
+    lilbee_bin: str, env: dict[str, str], task: str, repo_substring: str
+) -> str:
+    """Return the registry name (incl. `.gguf` filename) for a pulled model.
+
+    `lilbee model pull <hf_repo>` registers the model under a key like
+    `<owner>/<repo>/<filename>.gguf`. The chat / embedding role assignment
+    needs that full key, not the bare repo ID. This walks `model list`
+    output to find the entry matching `repo_substring` for the right task.
+    """
+    result = subprocess.run(
+        [lilbee_bin, "--json", "model", "list"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"model list failed: rc={result.returncode}\n{result.stderr}")
+    payload = json.loads(result.stdout)
+    models = payload.get("models", [])
+    matches = [
+        m["name"] for m in models if m.get("task") == task and repo_substring in m.get("name", "")
+    ]
+    if not matches:
+        raise RuntimeError(
+            f"no {task} model registered matching {repo_substring!r}; got {models!r}"
+        )
+    return matches[0]
 
 
 @pytest.fixture(scope="session")
@@ -141,10 +181,13 @@ def models_pulled(
     qa_chat_model: str,
     qa_embedding_model: str,
 ) -> dict[str, str]:
-    """Pull chat + embedding models once per session if not already cached.
+    """Pull chat + embedding models once per session and return their
+    registered names (full `<owner>/<repo>/<filename>.gguf` keys).
 
-    Tenacity retries (3 attempts, exponential backoff 5..60s) so transient
-    HuggingFace Hub 503s don't fail the whole CI cell.
+    Hard-fails on pull failure. If `lilbee model pull` doesn't work for the
+    artifact under test, that IS the regression this matrix is designed to
+    catch. Masquerading it as a skip lets a fundamental install bug ride
+    green CI.
     """
     env = os.environ.copy()
     env["LILBEE_DATA"] = str(qa_models_dir / "data")
@@ -155,24 +198,29 @@ def models_pulled(
         try:
             _pull_model(lane.lilbee_bin, ref, env)
         except (RetryError, RuntimeError) as exc:
-            pytest.skip(f"could not pull {ref} after retries: {exc}")
-    return {"chat": qa_chat_model, "embedding": qa_embedding_model}
+            pytest.fail(f"could not pull {ref} after retries: {exc}")
+    chat_name = _resolve_registered_name(lane.lilbee_bin, env, "chat", qa_chat_model)
+    embed_name = _resolve_registered_name(lane.lilbee_bin, env, "embedding", qa_embedding_model)
+    return {"chat": chat_name, "embedding": embed_name}
 
 
 @pytest.fixture
 def lilbee_env_with_models(
     lilbee_data: Path,
     qa_models_dir: Path,
-    qa_chat_model: str,
-    qa_embedding_model: str,
+    models_pulled: dict[str, str],
 ) -> dict[str, str]:
-    """Env that points lilbee at the QA models cache + chosen role models."""
+    """Env pointing lilbee at the QA models cache and the resolved role models.
+
+    Uses the registered names from `models_pulled` (full `<owner>/<repo>/<filename>.gguf`
+    keys) so role assignment resolves regardless of build-specific friendly aliases.
+    """
     return lilbee_env(
         lilbee_data,
         extra={
             "LILBEE_MODELS_DIR": str(qa_models_dir),
-            "LILBEE_CHAT_MODEL": qa_chat_model,
-            "LILBEE_EMBEDDING_MODEL": qa_embedding_model,
+            "LILBEE_CHAT_MODEL": models_pulled["chat"],
+            "LILBEE_EMBEDDING_MODEL": models_pulled["embedding"],
             "LILBEE_QUERY_EXPANSION_COUNT": "0",  # avoid loading chat model on search
         },
     )
