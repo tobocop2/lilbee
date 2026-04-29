@@ -11,6 +11,7 @@ from typing import Any
 from gguf import GGUFReader
 
 from lilbee.core.config.model import cfg
+from lilbee.providers.llama_cpp.abort_signal import abort_callback
 from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model, read_gguf_metadata
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
@@ -115,6 +116,7 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         "verbose": False,
         "n_gpu_layers": -1,
         "n_ctx": _resolve_vision_n_ctx(model_path),
+        "abort_callback": abort_callback,
     }
 
     llama = suppress_native_stderr(Llama, **kwargs)

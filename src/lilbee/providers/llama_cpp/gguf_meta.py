@@ -8,6 +8,7 @@ from pathlib import Path
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.providers.base import ProviderError
+from lilbee.providers.llama_cpp.abort_signal import abort_callback
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
@@ -34,7 +35,12 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 
     install_llama_log_handler()
     llm = suppress_native_stderr(
-        Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
+        Llama,
+        model_path=str(model_path),
+        vocab_only=True,
+        verbose=False,
+        n_gpu_layers=0,
+        abort_callback=abort_callback,
     )
     try:
         raw = llm.metadata or {}

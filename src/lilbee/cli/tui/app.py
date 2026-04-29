@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -20,14 +19,13 @@ from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services
+from lilbee.core.services import get_services
+from lilbee.providers.llama_cpp.abort_signal import request_abort
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
 _CHAT_SCREEN_NAME = "chat"
-# Two-press Ctrl+C window: a second press inside this many seconds force-quits.
-_FORCE_QUIT_WINDOW_SECONDS = 2.0
 DARK_THEMES = (
     "monokai",
     "dracula",
@@ -99,20 +97,6 @@ def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
         get_services().provider.invalidate_load_cache()
 
 
-def _restore_terminal_via_driver(app: App[None]) -> None:
-    """Run Textual's own ``Driver.stop_application_mode`` before ``os._exit``. (bb-6b86)
-
-    TODO bb-4ik2: this whole helper goes away once inference is interruptible
-    via llama_cpp's abort_callback. ``app.exit()`` will reach Textual's normal
-    teardown and ``_force_quit`` / ``os._exit`` are no longer needed.
-    """
-    driver = getattr(app, "_driver", None)
-    if driver is None:
-        return
-    with contextlib.suppress(Exception):
-        driver.stop_application_mode()
-
-
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -159,7 +143,6 @@ class LilbeeApp(App[None]):
         self.active_view = msg.DEFAULT_VIEW
         self._switching = False
         self._theme_index = 0
-        self.last_quit_time: float = 0.0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
@@ -219,17 +202,8 @@ class LilbeeApp(App[None]):
             self._theme_index = 0
 
     async def action_quit(self) -> None:
-        """Context-aware Ctrl+C: cancel active task > cancel stream > quit.
-        On second Ctrl+C (within 2s), force-exits via os._exit to handle
-        cases where the GIL is held by native code.
-        """
-        import time
-
-        now = time.monotonic()
-        if now - self.last_quit_time < _FORCE_QUIT_WINDOW_SECONDS:
-            self._force_quit()
-            return
-        self.last_quit_time = now
+        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        request_abort()
 
         if not self.task_bar.queue.is_empty:
             active = self.task_bar.queue.active_task
@@ -248,18 +222,6 @@ class LilbeeApp(App[None]):
             screen.action_cancel_stream()
             return
         self.exit()
-
-    def _force_quit(self) -> None:
-        """Force-exit when normal quit is blocked (e.g. GIL held by native code).
-
-        Run Textual's driver teardown first so the next shell command
-        isn't fed alt-screen / paste / focus / kitty-keyboard escape
-        bytes. (bb-6b86)
-        """
-        with contextlib.suppress(Exception):
-            reset_services()
-        _restore_terminal_via_driver(self)
-        os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view via lazy screen factories.

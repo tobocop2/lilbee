@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 
 from lilbee.cli.sync import shutdown_executor
@@ -48,9 +47,5 @@ def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            shutdown_executor()
-            reset_services()
-        except (KeyboardInterrupt, Exception):
-            # Rapid Ctrl+C during shutdown: force exit immediately
-            os._exit(1)
+        shutdown_executor()
+        reset_services()
