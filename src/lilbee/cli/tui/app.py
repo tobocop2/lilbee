@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -94,6 +95,20 @@ def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     key, _value = payload
     if key in LOAD_AFFECTING_KEYS:
         get_services().provider.invalidate_load_cache()
+
+
+def _restore_terminal_via_driver(app: App[None]) -> None:
+    """Run Textual's own ``Driver.stop_application_mode`` before ``os._exit``. (bb-6b86)
+
+    TODO bb-4ik2: this whole helper goes away once inference is interruptible
+    via llama_cpp's abort_callback. ``app.exit()`` will reach Textual's normal
+    teardown and ``_force_quit`` / ``os._exit`` are no longer needed.
+    """
+    driver = getattr(app, "_driver", None)
+    if driver is None:
+        return
+    with contextlib.suppress(Exception):
+        driver.stop_application_mode()
 
 
 class LilbeeApp(App[None]):
@@ -234,11 +249,15 @@ class LilbeeApp(App[None]):
         self.exit()
 
     def _force_quit(self) -> None:
-        """Force-exit when normal quit is blocked (e.g. GIL held by native code)."""
-        import os
+        """Force-exit when normal quit is blocked (e.g. GIL held by native code).
 
+        Run Textual's driver teardown first so the next shell command
+        isn't fed alt-screen / paste / focus / kitty-keyboard escape
+        bytes. (bb-6b86)
+        """
         with contextlib.suppress(Exception):
             reset_services()
+        _restore_terminal_via_driver(self)
         os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
