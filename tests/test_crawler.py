@@ -1510,6 +1510,56 @@ class TestDrainBackgroundTasks:
         await _drain_background_tasks()
         assert task.done()
 
+    async def test_skips_already_done_task(self, isolated_env):
+        """A task that already finished is left untouched by the drain."""
+        import asyncio
+
+        from lilbee.crawler.api import _drain_background_tasks, _state
+
+        async def _quick() -> str:
+            return "ok"
+
+        task = asyncio.create_task(_quick())
+        await task  # finish it before the drain sees it
+        # Re-add manually because add_done_callback already discarded it.
+        _state.background_tasks = {task}
+
+        await _drain_background_tasks()
+        # Drain saw the done task and skipped it (no cancel attempt).
+        assert task.done()
+        assert not task.cancelled()
+        assert task.result() == "ok"
+
+    async def test_drops_cross_loop_task_from_registry(self, isolated_env):
+        """A task whose loop has closed gets dropped instead of awaited.
+
+        Mirrors what happens when an earlier asyncio.run() call left a task
+        in _state.background_tasks: subsequent crawl_and_save() runs on a
+        new loop and must not try to cross-await it.
+        """
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from lilbee.crawler.api import _drain_background_tasks, _state
+
+        # Build a stand-in task whose get_loop() points at a different
+        # (not-running) loop. MagicMock(spec=Task) keeps isinstance checks
+        # happy without spawning a real cross-loop task.
+        other_loop = asyncio.new_event_loop()
+        try:
+            stale_task = MagicMock(spec=asyncio.Task)
+            stale_task.done.return_value = False
+            stale_task.get_loop.return_value = other_loop
+
+            _state.background_tasks = {stale_task}
+
+            await _drain_background_tasks()
+
+            assert stale_task not in _state.background_tasks
+            stale_task.cancel.assert_not_called()  # never touched mid-flight
+        finally:
+            other_loop.close()
+
 
 class TestCrawlerStateReset:
     def test_reset_clears_all_state(self, isolated_env):

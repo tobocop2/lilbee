@@ -8087,6 +8087,48 @@ class TestResetTerminalModes:
         app_mod._reset_terminal_modes()
 
 
+class TestSilenceStderrLogHandlers:
+    """``_silence_stderr_log_handlers`` strips stderr-streaming handlers
+    from the root logger before mounting Textual, so library log writes
+    can't corrupt the TUI's bottom-bar render. (bb-82ce)
+    """
+
+    def test_removes_stderr_streamhandler(self):
+        import logging
+        import sys
+
+        from lilbee.cli.tui import _silence_stderr_log_handlers
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            root.addHandler(stderr_handler)
+            _silence_stderr_log_handlers()
+            assert stderr_handler not in root.handlers
+        finally:
+            root.handlers[:] = before
+
+    def test_keeps_file_and_null_handlers(self, tmp_path):
+        import logging
+
+        from lilbee.cli.tui import _silence_stderr_log_handlers
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            file_handler = logging.FileHandler(tmp_path / "lilbee.log")
+            null_handler = logging.NullHandler()
+            root.addHandler(file_handler)
+            root.addHandler(null_handler)
+            _silence_stderr_log_handlers()
+            assert file_handler in root.handlers
+            assert null_handler in root.handlers
+        finally:
+            root.handlers[:] = before
+            file_handler.close()
+
+
 async def test_app_switch_view_unknown():
     """switch_view with unknown name does nothing."""
     from lilbee.cli.tui.app import LilbeeApp
