@@ -87,3 +87,55 @@ jobs:
             _bin/
             tools/qa/.pytest_cache/
           retention-days: 7
+
+  # Arch Linux runs the same Linux x86_64 binary inside an Arch container.
+  # Different glibc, fontconfig, and library layout vs ubuntu-latest. Catches
+  # the class of bug where the PyInstaller bundle imports an Ubuntu-shape lib
+  # that Arch resolves differently or doesn't ship at all.
+  arch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: archlinux:latest
+    steps:
+      - name: Install Arch base toolchain
+        run: |
+          pacman -Sy --noconfirm
+          pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates
+
+      - uses: actions/checkout@v6
+
+      - name: Install QA harness deps
+        run: python -m pip install --break-system-packages -r tools/qa/requirements.txt
+
+      - name: Download lilbee binary from GH release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.lilbee_version || 'latest' }}
+        run: |
+          mkdir -p _bin
+          if [ "$TAG" = "latest" ]; then
+            gh release download --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
+          else
+            gh release download "$TAG" --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
+          fi
+          chmod +x _bin/lilbee-linux-x86_64
+          ls -la _bin
+
+      - name: Run QA matrix
+        env:
+          LILBEE_QA_LANE: l2-binary
+          LILBEE_QA_BIN: ${{ github.workspace }}/_bin/lilbee-linux-x86_64
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -m pytest tools/qa/ -v --tb=short --junitxml=qa-arch.xml
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-arch
+          path: |
+            qa-*.xml
+            _bin/
+            tools/qa/.pytest_cache/
+          retention-days: 7
