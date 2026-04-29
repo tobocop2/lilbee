@@ -89,6 +89,7 @@ def served_lilbee(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_ask_stream_completes_with_token_events(
     lane: Lane,
     lilbee_data: Path,
@@ -153,6 +154,7 @@ def test_ask_stream_completes_with_token_events(
 
 @pytest.mark.tui
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_tui_chat_advances_past_thinking_spinner(
     lane: Lane,
     lilbee_data: Path,

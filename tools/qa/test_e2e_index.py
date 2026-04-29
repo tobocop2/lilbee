@@ -43,6 +43,7 @@ def _run(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_sync_indexes_fixture_corpus(
     lane: Lane,
     lilbee_data: Path,
@@ -68,6 +69,7 @@ def test_sync_indexes_fixture_corpus(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_search_finds_battery_query_in_ev_notes(
     lane: Lane,
     lilbee_data: Path,
@@ -95,6 +97,7 @@ def test_search_finds_battery_query_in_ev_notes(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_search_finds_coffee_query_in_coffee_notes(
     lane: Lane,
     lilbee_data: Path,
@@ -120,6 +123,7 @@ def test_search_finds_coffee_query_in_coffee_notes(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_remove_clears_indexed_source(
     lane: Lane,
     lilbee_data: Path,

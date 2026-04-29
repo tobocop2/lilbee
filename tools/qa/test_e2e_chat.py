@@ -46,6 +46,7 @@ def _run(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(360)
 def test_cli_ask_cites_correct_source(
     lane: Lane,
     lilbee_data: Path,
@@ -74,6 +75,7 @@ def test_cli_ask_cites_correct_source(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(360)
 def test_http_search_returns_battery_source(
     lane: Lane,
     lilbee_data: Path,
@@ -142,6 +144,7 @@ def test_http_search_returns_battery_source(
 
 @pytest.mark.wiki
 @pytest.mark.writer
+@pytest.mark.timeout(360)
 def test_mcp_search_routes_battery_to_ev_notes(
     lane: Lane,
     lilbee_data: Path,

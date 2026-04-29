@@ -160,6 +160,7 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
 
 @pytest.mark.crawl
 @pytest.mark.writer
+@pytest.mark.timeout(420)
 def test_crawl_and_search_roundtrip(
     lane: Lane,
     lilbee_data: Path,
