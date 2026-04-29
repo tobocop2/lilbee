@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -117,8 +119,6 @@ def _reset_terminal_modes() -> None:
     caller can still proceed to ``os._exit``. Skips the writes entirely on
     non-tty stdout (CI, pipes) since there's no terminal state to reset.
     """
-    import sys
-
     try:
         if not sys.stdout.isatty():
             return
@@ -276,8 +276,6 @@ class LilbeeApp(App[None]):
         terminal escape bytes as input and rejects them with
         ``No such command '4'`` and friends. (bb-6b86)
         """
-        import os
-
         with contextlib.suppress(Exception):
             reset_services()
         _reset_terminal_modes()

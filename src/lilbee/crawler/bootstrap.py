@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -184,8 +185,6 @@ def _resolve_playwright_runner() -> list[str]:
     the frozen case and fall back to a system ``python3`` / ``python`` on
     PATH; raise :class:`CrawlerBrowserMissing` if neither is available.
     """
-    import shutil
-
     if not getattr(sys, "frozen", False):
         return [sys.executable, "-m", "playwright"]
     candidate = shutil.which("python3") or shutil.which("python")

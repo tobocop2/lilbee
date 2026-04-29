@@ -850,23 +850,23 @@ class TestSuppressStderrThreadSafety:
 
 
 class TestImportLlamaCpp:
-    """``_import_llama_cpp`` converts a missing-libvulkan OSError into actionable text."""
+    """``import_llama_cpp`` converts a missing-libvulkan OSError into actionable text."""
 
     def test_returns_module_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Happy path: hands back the imported module."""
         sentinel = mock.MagicMock(name="llama_cpp_module")
         monkeypatch.setitem(sys.modules, "llama_cpp", sentinel)
 
-        from lilbee.providers.llama_cpp_provider import _import_llama_cpp
+        from lilbee.providers.llama_cpp_provider import import_llama_cpp
 
-        assert _import_llama_cpp() is sentinel
+        assert import_llama_cpp() is sentinel
 
     def test_libvulkan_oserror_raises_provider_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Bare Linux installs without libvulkan get install instructions, not a raw OSError."""
         import builtins
 
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _import_llama_cpp
+        from lilbee.providers.llama_cpp_provider import import_llama_cpp
 
         real_import = builtins.__import__
 
@@ -879,7 +879,7 @@ class TestImportLlamaCpp:
         monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
 
         with pytest.raises(ProviderError) as ei:
-            _import_llama_cpp()
+            import_llama_cpp()
         message = str(ei.value)
         assert "vulkan-icd-loader" in message
         assert "libvulkan1" in message
@@ -888,7 +888,7 @@ class TestImportLlamaCpp:
         """Non-vulkan OSErrors are not swallowed."""
         import builtins
 
-        from lilbee.providers.llama_cpp_provider import _import_llama_cpp
+        from lilbee.providers.llama_cpp_provider import import_llama_cpp
 
         real_import = builtins.__import__
 
@@ -901,4 +901,4 @@ class TestImportLlamaCpp:
         monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
 
         with pytest.raises(OSError, match="libsomethingelse"):
-            _import_llama_cpp()
+            import_llama_cpp()

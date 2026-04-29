@@ -480,12 +480,14 @@ _MISSING_VULKAN_HINT = (
 )
 
 
-def _import_llama_cpp() -> Any:
+def import_llama_cpp() -> Any:
     """Import ``llama_cpp`` with an actionable error when libvulkan is missing.
 
     Bare Arch / Fedora installs lack the Vulkan loader and the raw
     ``OSError: libvulkan.so.1: cannot open shared object file`` is opaque.
-    Re-raise as :class:`ProviderError` with install guidance.
+    Re-raise as :class:`ProviderError` with install guidance. Idempotent
+    after the first successful import (Python caches it in ``sys.modules``),
+    so callers can sprinkle it at every llama_cpp entry point cheaply.
     """
     try:
         import llama_cpp
@@ -502,7 +504,7 @@ def install_llama_log_handler() -> None:
     global _llama_log_callback, _llama_log_installed
     if _llama_log_installed:
         return
-    llama_cpp = _import_llama_cpp()
+    llama_cpp = import_llama_cpp()
 
     _llama_log_callback = llama_cpp.llama_log_callback(_llama_log_dispatch)
     llama_cpp.llama_log_set(_llama_log_callback, None)
@@ -608,6 +610,10 @@ def resolve_model_path(model: str) -> Path:
 
 def _llama_cpp_has_rank_pooling() -> bool:
     """Return True iff the installed llama-cpp-python exposes ``LLAMA_POOLING_TYPE_RANK``."""
+    # supports_rerank() can be called before any model load (feature detection
+    # for status / catalog UIs), so route through import_llama_cpp() to surface
+    # the libvulkan hint rather than a raw OSError on bare Linux installs.
+    import_llama_cpp()
     try:
         from llama_cpp import LLAMA_POOLING_TYPE_RANK  # noqa: F401
     except ImportError:
@@ -617,7 +623,7 @@ def _llama_cpp_has_rank_pooling() -> bool:
 
 def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
-    Llama = _import_llama_cpp().Llama  # noqa: N806
+    Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
     embedding = mode in (MODE_EMBED, MODE_RERANK)
