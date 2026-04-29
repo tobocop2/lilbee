@@ -51,6 +51,10 @@ jobs:
             asset_name: lilbee-macos-arm64
             pyinstaller: .venv/bin/pyinstaller
             backend: metal
+          - os: macos-13
+            asset_name: lilbee-macos-x86_64
+            pyinstaller: .venv/bin/pyinstaller
+            backend: metal
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             pyinstaller: .venv/Scripts/pyinstaller.exe
@@ -149,6 +153,7 @@ jobs:
           --collect-submodules litellm.llms
           --collect-all spacy
           --collect-all graspologic_native
+          --collect-all playwright
           src/lilbee/__main__.py
 
       - name: Smoke test

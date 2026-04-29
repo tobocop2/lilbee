@@ -1,5 +1,6 @@
 """Tests for the Litestar HTTP adapter."""
 
+import json
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -929,6 +930,140 @@ class TestLifespan:
         async with _lifespan(mock.MagicMock()):
             pass
         mock_get_svc.assert_called()
+
+
+class TestSessionManagerPersistence:
+    """Cover SessionManager.load_or_generate token-reuse semantics."""
+
+    @pytest.fixture()
+    def fresh_manager(self):
+        """Yield a new SessionManager + clean server.json path between tests."""
+        from lilbee.server.auth import SessionManager, server_json_path
+
+        path = server_json_path()
+        path.unlink(missing_ok=True)
+        yield SessionManager()
+        path.unlink(missing_ok=True)
+
+    def test_creates_new_token_when_file_missing(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+        assert fresh_manager.token == token
+        assert server_json_path().exists()
+
+    def test_reuses_existing_valid_token(self, fresh_manager):
+        first = fresh_manager.load_or_generate()
+        # Simulate a server restart: drop the in-memory token, keep file.
+        fresh_manager.token = None
+        second = fresh_manager.load_or_generate()
+        assert second == first
+        assert fresh_manager.token == first
+
+    def test_regenerates_when_file_is_empty(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+
+    def test_regenerates_when_json_invalid(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not-json")
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+
+    def test_regenerates_when_payload_not_dict(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(["array", "not", "dict"]))
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+
+    def test_regenerates_when_token_field_missing(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"other": "value"}))
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+
+    def test_regenerates_when_token_too_short(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"token": "short"}))
+        token = fresh_manager.load_or_generate()
+        assert token != "short"
+        assert len(token) >= 32
+
+    def test_regenerates_when_token_not_string(self, fresh_manager):
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"token": 12345}))
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+
+    def test_returns_none_when_path_unreadable(self, fresh_manager, tmp_path):
+        # _read_persisted_token swallows OSError and returns None — covered
+        # by passing a path that is a directory (read_text raises IsADirectoryError,
+        # an OSError subclass).
+        from lilbee.server.auth import SessionManager
+
+        unreadable = tmp_path / "as_dir"
+        unreadable.mkdir()
+        assert SessionManager._read_persisted_token(unreadable) is None
+
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_lifespan_reuses_token_across_consecutive_runs(self, mock_get_svc):
+        """Two _lifespan invocations against the same data_dir reuse the token.
+
+        Simulates ``lilbee serve`` restart: after the first lifespan exits,
+        ``cleanup()`` removes server.json — so by design a fresh token is
+        generated next time. This regression test pins the contract: if the
+        cleanup hook is suppressed (e.g. crash exit), the next startup
+        REUSES the persisted token rather than rotating.
+        """
+        from lilbee.server import auth as auth_mod
+        from lilbee.server.app import _lifespan
+
+        mock_svc = mock.MagicMock()
+        mock_get_svc.return_value = mock_svc
+
+        # First "serve" — generate fresh.
+        async with _lifespan(mock.MagicMock()):
+            first = auth_mod.session_manager.token
+        assert first is not None
+        # Simulate a crash exit: cleanup did run normally, but the token
+        # file remains on disk to prove reuse semantics under intact files.
+        # Manually rewrite the file to the same token (mimicking a clean
+        # write that survived the crash) and clear the in-memory state.
+        auth_mod.server_json_path().parent.mkdir(parents=True, exist_ok=True)
+        auth_mod.server_json_path().write_text(json.dumps({"token": first}))
+        auth_mod.session_manager.token = None
+
+        # Second "serve" — must reuse the same token.
+        async with _lifespan(mock.MagicMock()):
+            second = auth_mod.session_manager.token
+        assert second == first
 
 
 class TestAuthMiddleware:

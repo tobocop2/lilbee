@@ -5,6 +5,8 @@ name: Pages
 # distribution: the site rebuilds on every push to main and after a
 # successful Build Platform Wheels run, so wheel index subdirs stay
 # current without making site updates wait for a 3h release cycle.
+#
+# build-site and build-wheel-indexes run in parallel; deploy merges both.
 
 on:
   push:
@@ -25,12 +27,9 @@ permissions:
   id-token: write
 
 jobs:
-  deploy:
+  build-site:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
 
@@ -60,6 +59,19 @@ jobs:
         run: make docs-site
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-content
+          path: site/
+          retention-days: 1
+
+  build-wheel-indexes:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
 
       - name: Resolve wheel-source run id
         id: wheels
@@ -96,9 +108,52 @@ jobs:
           run-id: ${{ steps.wheels.outputs.run-id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Merge PEP 503 wheel indexes into site
-        if: steps.wheels.outputs.run-id != ''
-        run: python tools/build_pep503_indexes.py artifacts site
+      - name: Build PEP 503 wheel indexes
+        run: |
+          set -euo pipefail
+          mkdir -p wheel-indexes
+          if [ -d artifacts ] && [ -n "$(ls -A artifacts 2>/dev/null)" ]; then
+            python3 tools/build_pep503_indexes.py artifacts wheel-indexes
+          else
+            # Keep the dir non-empty so upload-artifact / download-artifact
+            # have a deterministic payload to round-trip.
+            touch wheel-indexes/.empty
+          fi
+
+      - name: Upload wheel-indexes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-indexes-content
+          path: wheel-indexes/
+          retention-days: 1
+          include-hidden-files: true
+
+  deploy:
+    needs: [build-site, build-wheel-indexes]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site-content
+          path: site/
+
+      - name: Download wheel-indexes artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-indexes-content
+          path: wheel-indexes/
+
+      - name: Merge wheel indexes into site
+        run: |
+          set -euo pipefail
+          rm -f wheel-indexes/.empty
+          if [ -n "$(ls -A wheel-indexes 2>/dev/null)" ]; then
+            cp -R wheel-indexes/. site/
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
