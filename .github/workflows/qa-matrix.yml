@@ -80,17 +80,18 @@ jobs:
           path: ~/.lilbee-qa-models
           key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
 
-      - name: Install lilbee from PyPI (lane=pypi)
+      - name: Install lilbee from PyPI with crawler + litellm extras (lane=pypi)
         if: matrix.lane == 'pypi'
         shell: bash
-        # Bare `pip install lilbee` is the install command real users follow.
-        # Don't install [crawler] extras here — the matrix's job is to validate
-        # the user-default install path. If `lilbee add --crawl` doesn't work
-        # without extras, that's a UX issue for the lilbee project to address
-        # (run `lilbee setup crawler` to install missing deps, or just include
-        # them by default), not something the QA harness should paper over.
+        # Install with [crawler,litellm] so every test the matrix has can
+        # actually run on the pypi lane: crawler extras give us playwright +
+        # crawl4ai for the crawl tier, litellm extras give us the SDK for
+        # the Ollama-backend tier. This is the install path a pypi user who
+        # wants crawl or remote-LLM features would also take.
+        # The release binary lane bundles these extras automatically so it
+        # doesn't need this step.
         run: |
-          python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
+          python -m pip install "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
       - name: Download lilbee binary from GH release (lane=binary)
