@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -8006,7 +8005,7 @@ async def test_app_action_quit_double_force_exits():
 
 
 async def test_app_force_quit_calls_os_exit():
-    """_force_quit resets services and calls os._exit."""
+    """_force_quit resets services, runs Textual driver teardown, then calls os._exit."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -8014,66 +8013,35 @@ async def test_app_force_quit_calls_os_exit():
         await _pilot.pause()
         with (
             patch("lilbee.cli.tui.app.reset_services") as mock_reset,
-            patch("lilbee.cli.tui.app._reset_terminal_modes") as mock_reset_term,
+            patch("lilbee.cli.tui.app._restore_terminal_via_driver") as mock_restore,
             patch("os._exit") as mock_exit,
         ):
             app._force_quit()
             mock_reset.assert_called_once()
-            mock_reset_term.assert_called_once()
+            mock_restore.assert_called_once_with(app)
             mock_exit.assert_called_once_with(1)
 
 
-class TestResetTerminalModes:
-    """``_reset_terminal_modes`` emits terminal-mode reset sequences on a TTY. (bb-6b86)"""
+class TestRestoreTerminalViaDriver:
+    """``_restore_terminal_via_driver`` runs Textual's driver teardown before os._exit (bb-6b86)."""
 
-    def test_writes_reset_sequence_when_tty(self, monkeypatch):
-        """Bracketed paste, mouse tracking, alt-screen off; cursor on."""
-        fake_stdout = StringIO()
-        monkeypatch.setattr(fake_stdout, "isatty", lambda: True, raising=False)
-        monkeypatch.setattr("sys.stdout", fake_stdout)
+    def test_calls_driver_stop_application_mode(self):
+        """Driver teardown is the path that emits Textual's full restore sequence."""
+        app = MagicMock()
+        tui_app._restore_terminal_via_driver(app)
+        app._driver.stop_application_mode.assert_called_once_with()
 
-        tui_app._reset_terminal_modes()
-        out = fake_stdout.getvalue()
+    def test_no_op_when_driver_unset(self):
+        """Early-startup or post-teardown: ``_driver`` is None; no AttributeError."""
+        app = MagicMock()
+        app._driver = None
+        tui_app._restore_terminal_via_driver(app)  # must not raise
 
-        assert "\x1b[?2004l" in out
-        assert "\x1b[?1003l" in out
-        assert "\x1b[?1049l" in out
-        assert "\x1b[?25h" in out
-
-    def test_skips_write_when_not_tty(self, monkeypatch):
-        """Non-TTY (CI, pipes): no terminal state to reset, no bytes written."""
-        fake_stdout = StringIO()
-        monkeypatch.setattr(fake_stdout, "isatty", lambda: False, raising=False)
-        monkeypatch.setattr("sys.stdout", fake_stdout)
-
-        tui_app._reset_terminal_modes()
-        assert fake_stdout.getvalue() == ""
-
-    def test_swallows_oserror_so_force_quit_can_still_exit(self, monkeypatch):
-        """Write failures must not raise: a propagating exception would mask os._exit."""
-
-        class _BrokenStdout:
-            def isatty(self) -> bool:
-                return True
-
-            def write(self, _data: str) -> int:
-                raise OSError("EBADF")
-
-            def flush(self) -> None:  # pragma: no cover - never reached
-                raise AssertionError("flush should not run after write fails")
-
-        monkeypatch.setattr("sys.stdout", _BrokenStdout())
-        tui_app._reset_terminal_modes()
-
-    def test_swallows_valueerror_on_closed_stdout(self, monkeypatch):
-        """A closed stdout raises ValueError on isatty(); the helper is a no-op."""
-
-        class _ClosedStdout:
-            def isatty(self) -> bool:
-                raise ValueError("I/O operation on closed file")
-
-        monkeypatch.setattr("sys.stdout", _ClosedStdout())
-        tui_app._reset_terminal_modes()
+    def test_swallows_driver_teardown_failure(self):
+        """A driver mid-teardown that raises must not block ``os._exit``."""
+        app = MagicMock()
+        app._driver.stop_application_mode.side_effect = RuntimeError("boom")
+        tui_app._restore_terminal_via_driver(app)  # must not raise
 
 
 class TestSilenceStderrLogHandlers:

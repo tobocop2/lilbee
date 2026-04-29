@@ -365,26 +365,12 @@ async def _maybe_periodic_sync() -> None:
 
 
 async def _drain_background_tasks() -> None:
-    """Cancel every periodic-sync task spawned during the current crawl.
+    """Cancel periodic-sync tasks owned by the running loop. (bb-zqws)
 
-    Without this drain, ``asyncio.run(crawl_and_save(...))`` closes the
-    loop while a periodic sync is mid-ingest, surfacing
-    ``Task was destroyed but it is pending`` and
-    ``coroutine ingest_batch._process_one was never awaited`` warnings on
-    stderr (and into the TUI).
-
-    Cancelling rather than awaiting because periodic sync is best-effort
-    by design ("periodic" implies "we'll try again next cycle"); awaiting
-    a slow or stuck sync would block the crawl from exiting and dead-lock
-    test subprocesses behind their per-test timeouts. Cancellation
-    satisfies asyncio's destruction-detection: gather absorbs the
-    resulting CancelledError so callers see clean teardown.
-
-    Filters to tasks owned by the running loop so stale entries from a
-    previous loop (test isolation between asyncio.run() calls, server
-    hot-reload) don't crash the drain with cross-loop errors. Such
-    stale tasks are dropped from the registry so subsequent drains don't
-    keep re-encountering them.
+    TODO bb-odr1: the cross-loop filter and stale-entry drop both exist
+    because ``_state.background_tasks`` is a module-level global. Once
+    task tracking is scoped per ``crawl_and_save`` invocation, this whole
+    helper collapses to a local ``await asyncio.gather(*tasks)``.
     """
     loop = asyncio.get_running_loop()
     pending: list[asyncio.Task[Any]] = []

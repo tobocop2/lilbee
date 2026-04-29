@@ -11,20 +11,16 @@ from lilbee.services import reset_services
 
 
 def _silence_stderr_log_handlers() -> None:
-    """Drop stderr/stdout-streaming log handlers before mounting the TUI.
+    """Drop stderr/stdout-streaming log handlers before mounting the TUI. (bb-82ce)
 
-    Textual writes its UI to stderr; any parallel writer to the same fd
-    corrupts the screen (bb-82ce: 'WARNING lilbee.concepts: Concept graph
-    disabled: spaCy model unavailable' bleeding into the bottom-bar
-    box-drawing characters). The CLI entrypoint installs a basicConfig
-    stderr StreamHandler at WARNING level; remove it for the duration of
-    the TUI session. Textual users can still see lilbee logs via
-    ``lilbee --log-level=DEBUG`` against a non-TUI subcommand.
+    TODO bb-pmyi: stripping handlers loses logs for the session. The proper
+    fix routes lilbee.* loggers through Textual's RichLog widget or a
+    rotating ~/.lilbee/tui.log so users debugging a TUI session still get
+    their logs.
 
-    Targets ``StreamHandler`` whose ``.stream`` is sys.stderr / sys.stdout.
-    ``FileHandler`` (a ``StreamHandler`` subclass whose ``.stream`` is the
-    open log file) is skipped: file writes don't share an fd with the
-    TUI render target.
+    FileHandler (a StreamHandler subclass whose .stream is the log file)
+    is skipped explicitly: only stderr/stdout handlers share an fd with
+    the TUI render target.
     """
     root = logging.getLogger()
     for handler in list(root.handlers):
