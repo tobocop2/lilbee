@@ -14,9 +14,11 @@ These tests assert:
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import closing
@@ -185,6 +187,11 @@ def test_ask_stream_completes_with_token_events(
 @pytest.mark.tui
 @pytest.mark.writer
 @pytest.mark.timeout(420)
+@pytest.mark.xfail(
+    sys.platform == "darwin" and os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    reason="bb-9c67: macOS PyInstaller binary's TUI chat softlocks on 'thinking...' indicator",
+    strict=False,
+)
 def test_tui_chat_advances_past_thinking_spinner(
     lane: Lane,
     lilbee_data: Path,
