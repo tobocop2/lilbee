@@ -76,7 +76,9 @@ def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        # PyInstaller binary cold-start on Windows can take 30s+ per invocation
+        # (bb-rjez); 90s leaves headroom without masking a real hang.
+        timeout=90,
         check=False,
     )
     if result.returncode != 0:
@@ -103,7 +105,9 @@ def served_lilbee(
         text=True,
     )
     try:
-        _wait_health(f"{base_url}/api/health", timeout=60.0)
+        # 180s health budget covers PyInstaller cold-start on Windows binary
+        # plus model load (chat + embed) on slow runners.
+        _wait_health(f"{base_url}/api/health", timeout=180.0)
         token = _fetch_token(lane, lilbee_env_with_models)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         yield base_url, lilbee_env_with_models, headers
@@ -183,7 +187,10 @@ def test_ask_stream_completes_with_token_events(
 
 @pytest.mark.tui
 @pytest.mark.writer
-@pytest.mark.timeout(420)
+# Test budget: corpus seed (~30s on slow runners) + sync (up to 240s) + TUI
+# boot (60s) + 360s response polling = 690s worst case; 720s gives 30s margin
+# so the AssertionError fires before pytest-timeout, letting xfail catch it.
+@pytest.mark.timeout(720)
 @pytest.mark.xfail(
     sys.platform in {"darwin", "win32"},
     reason=(
