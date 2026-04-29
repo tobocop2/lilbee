@@ -20,16 +20,21 @@ import httpx
 import pytest
 from drivers.mcp import MCPStdioClient
 from drivers.tui import TuiSession, lilbee_env, worker_port_offset
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 _DEFAULT_CHAT_MODEL = "smollm2:135m"
+_DEFAULT_EMBEDDING_MODEL = "nomic-embed-text:v1.5"
 _LANE_ENV_VAR = "LILBEE_QA_LANE"
 _BIN_ENV_VAR = "LILBEE_QA_BIN"
 _CHAT_MODEL_ENV_VAR = "LILBEE_QA_CHAT_MODEL"
+_EMBEDDING_MODEL_ENV_VAR = "LILBEE_QA_EMBEDDING_MODEL"
+_MODELS_DIR_ENV_VAR = "LILBEE_QA_MODELS_DIR"
 _SERVER_PORT_BASE = 5000
 _SERVER_BOOT_TIMEOUT = 60.0
 _SERVER_HEALTH_POLL = 0.25
 _SERVER_TEARDOWN_GRACE = 5.0
 _MCP_STARTUP_TIMEOUT = 60.0
+_MODEL_PULL_TIMEOUT = 240.0
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,107 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 @pytest.fixture(scope="session")
 def qa_chat_model() -> str:
     return os.environ.get(_CHAT_MODEL_ENV_VAR, _DEFAULT_CHAT_MODEL)
+
+
+@pytest.fixture(scope="session")
+def qa_embedding_model() -> str:
+    return os.environ.get(_EMBEDDING_MODEL_ENV_VAR, _DEFAULT_EMBEDDING_MODEL)
+
+
+@pytest.fixture(scope="session")
+def qa_models_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Shared, cacheable models directory for e2e tests.
+
+    Resolution order:
+      1. LILBEE_QA_MODELS_DIR (CI sets this to a path covered by actions/cache)
+      2. ~/.lilbee-qa-models (local dev default; persists across runs)
+      3. tmp_path_factory base (last-resort ephemeral; defeats caching)
+    """
+    explicit = os.environ.get(_MODELS_DIR_ENV_VAR)
+    if explicit:
+        path = Path(explicit)
+    else:
+        home = Path(os.path.expanduser("~"))
+        path = (
+            home / ".lilbee-qa-models"
+            if home.exists()
+            else tmp_path_factory.getbasetemp() / "models"
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _pull_model(lilbee_bin: str, ref: str, env: dict[str, str]) -> None:
+    """Run `lilbee model pull <ref>` and raise if it fails.
+
+    Wrapped in tenacity below so HF Hub flakes don't kill the whole session.
+    """
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=5, min=5, max=60),
+        reraise=True,
+    )
+    def _attempt() -> None:
+        result = subprocess.run(
+            [lilbee_bin, "model", "pull", ref],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_MODEL_PULL_TIMEOUT,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"lilbee model pull {ref} failed: rc={result.returncode}\n"
+                f"stderr tail: {result.stderr[-500:]}"
+            )
+
+    _attempt()
+
+
+@pytest.fixture(scope="session")
+def models_pulled(
+    lane: Lane,
+    qa_models_dir: Path,
+    qa_chat_model: str,
+    qa_embedding_model: str,
+) -> dict[str, str]:
+    """Pull chat + embedding models once per session if not already cached.
+
+    Tenacity retries (3 attempts, exponential backoff 5..60s) so transient
+    HuggingFace Hub 503s don't fail the whole CI cell.
+    """
+    env = os.environ.copy()
+    env["LILBEE_DATA"] = str(qa_models_dir / "data")
+    env["LILBEE_MODELS_DIR"] = str(qa_models_dir)
+    env["LILBEE_NO_SPLASH"] = "1"
+    env["LILBEE_LOG_LEVEL"] = "WARNING"
+    for ref in (qa_chat_model, qa_embedding_model):
+        try:
+            _pull_model(lane.lilbee_bin, ref, env)
+        except (RetryError, RuntimeError) as exc:
+            pytest.skip(f"could not pull {ref} after retries: {exc}")
+    return {"chat": qa_chat_model, "embedding": qa_embedding_model}
+
+
+@pytest.fixture
+def lilbee_env_with_models(
+    lilbee_data: Path,
+    qa_models_dir: Path,
+    qa_chat_model: str,
+    qa_embedding_model: str,
+) -> dict[str, str]:
+    """Env that points lilbee at the QA models cache + chosen role models."""
+    return lilbee_env(
+        lilbee_data,
+        extra={
+            "LILBEE_MODELS_DIR": str(qa_models_dir),
+            "LILBEE_CHAT_MODEL": qa_chat_model,
+            "LILBEE_EMBEDDING_MODEL": qa_embedding_model,
+            "LILBEE_QUERY_EXPANSION_COUNT": "0",  # avoid loading chat model on search
+        },
+    )
 
 
 @pytest.fixture(scope="session")

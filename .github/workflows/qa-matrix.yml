@@ -48,7 +48,7 @@ jobs:
           - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true  }
           - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
@@ -57,7 +57,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install QA harness deps
-        run: python -m pip install -r tools/qa/requirements.txt
+        run: python -m pip install --root-user-action=ignore -r tools/qa/requirements.txt
 
       - name: Resolve target lilbee version
         id: ver
@@ -73,12 +73,19 @@ jobs:
           # Strip leading 'v' for PyPI version
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Restore QA models cache
+        id: models-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
+
       - name: Install lilbee from PyPI (lane=pypi)
         if: matrix.lane == 'pypi'
         shell: bash
         run: |
           python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
-          echo "LILBEE_QA_BIN=$(python -c 'import shutil; print(shutil.which(\"lilbee\"))')" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
       - name: Download lilbee binary from GH release (lane=binary)
         if: matrix.lane == 'binary'
@@ -95,13 +102,22 @@ jobs:
       - name: Run QA matrix
         env:
           LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
           PYTHONUNBUFFERED: "1"
         shell: bash
         run: |
           echo "Lane: $LILBEE_QA_LANE"
           echo "Binary: $LILBEE_QA_BIN"
+          # Mirror the cached path into the workspace so per-test envs find it.
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
           python -m pytest tools/qa/ -v --tb=short \
             --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
+          # Persist any newly-pulled models back to the cache location.
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
 
       - name: Upload artifacts on failure
         if: failure()
@@ -129,7 +145,7 @@ jobs:
           - { label: fedora,  container: fedora:latest,    install: fedora, lane: binary }
     runs-on: ubuntu-latest
     container: ${{ matrix.container }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Install Arch base toolchain
         if: matrix.install == 'arch'
@@ -146,7 +162,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install QA harness deps
-        run: python3 -m pip install --break-system-packages -r tools/qa/requirements.txt
+        run: python3 -m pip install --break-system-packages --root-user-action=ignore -r tools/qa/requirements.txt
 
       - name: Resolve target lilbee version
         id: ver
@@ -163,8 +179,8 @@ jobs:
       - name: Install lilbee from PyPI (lane=pypi)
         if: matrix.lane == 'pypi'
         run: |
-          python3 -m pip install --break-system-packages "lilbee==${{ steps.ver.outputs.version }}"
-          echo "LILBEE_QA_BIN=$(python3 -c 'import shutil; print(shutil.which(\"lilbee\"))')" >> "$GITHUB_ENV"
+          python3 -m pip install --break-system-packages --root-user-action=ignore "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
       - name: Download lilbee binary from GH release (lane=binary)
         if: matrix.lane == 'binary'
@@ -179,10 +195,12 @@ jobs:
       - name: Run QA matrix
         env:
           LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
           PYTHONUNBUFFERED: "1"
         run: |
           echo "Lane: $LILBEE_QA_LANE"
           echo "Binary: $LILBEE_QA_BIN"
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
           python3 -m pytest tools/qa/ -v --tb=short \
             --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
 
