@@ -8009,11 +8009,82 @@ async def test_app_force_quit_calls_os_exit():
         await _pilot.pause()
         with (
             patch("lilbee.cli.tui.app.reset_services") as mock_reset,
+            patch("lilbee.cli.tui.app._reset_terminal_modes") as mock_reset_term,
             patch("os._exit") as mock_exit,
         ):
             app._force_quit()
             mock_reset.assert_called_once()
+            mock_reset_term.assert_called_once()
             mock_exit.assert_called_once_with(1)
+
+
+class TestResetTerminalModes:
+    """``_reset_terminal_modes`` writes the alt-screen / paste / mouse off
+    sequences when stdout is a TTY, so a force-quit doesn't leave the next
+    shell command interpreting paste-mode escape bytes as input. (bb-6b86)
+    """
+
+    def test_writes_reset_sequence_when_tty(self, monkeypatch):
+        from io import StringIO
+
+        from lilbee.cli.tui import app as app_mod
+
+        fake_stdout = StringIO()
+        monkeypatch.setattr(fake_stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr("sys.stdout", fake_stdout)
+
+        app_mod._reset_terminal_modes()
+        out = fake_stdout.getvalue()
+
+        # Bracketed paste off, mouse tracking off, alt-screen off, cursor on.
+        assert "\x1b[?2004l" in out
+        assert "\x1b[?1003l" in out
+        assert "\x1b[?1049l" in out
+        assert "\x1b[?25h" in out
+
+    def test_skips_write_when_not_tty(self, monkeypatch):
+        from io import StringIO
+
+        from lilbee.cli.tui import app as app_mod
+
+        fake_stdout = StringIO()
+        monkeypatch.setattr(fake_stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setattr("sys.stdout", fake_stdout)
+
+        app_mod._reset_terminal_modes()
+        # Non-TTY (CI, pipes): no terminal state to reset, no bytes written.
+        assert fake_stdout.getvalue() == ""
+
+    def test_swallows_oserror_so_force_quit_can_still_exit(self, monkeypatch):
+        """Write failures must not raise: _force_quit calls this on the way
+        to ``os._exit`` and a propagating exception would mask the exit.
+        """
+        from lilbee.cli.tui import app as app_mod
+
+        class _BrokenStdout:
+            def isatty(self) -> bool:
+                return True
+
+            def write(self, _data: str) -> int:
+                raise OSError("EBADF")
+
+            def flush(self) -> None:  # pragma: no cover - never reached
+                raise AssertionError("flush should not run after write fails")
+
+        monkeypatch.setattr("sys.stdout", _BrokenStdout())
+        # Must not raise.
+        app_mod._reset_terminal_modes()
+
+    def test_swallows_valueerror_on_closed_stdout(self, monkeypatch):
+        """A closed stdout raises ValueError on isatty(); the helper is a no-op."""
+        from lilbee.cli.tui import app as app_mod
+
+        class _ClosedStdout:
+            def isatty(self) -> bool:
+                raise ValueError("I/O operation on closed file")
+
+        monkeypatch.setattr("sys.stdout", _ClosedStdout())
+        app_mod._reset_terminal_modes()
 
 
 async def test_app_switch_view_unknown():

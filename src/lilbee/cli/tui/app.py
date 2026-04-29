@@ -96,6 +96,40 @@ def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
         get_services().provider.invalidate_load_cache()
 
 
+# Terminal-mode reset sequences emitted on a force-quit so the next shell
+# command isn't fed escape bytes from a still-armed mode. The targeted
+# modes (bracketed paste, mouse tracking, alt-screen) are the same ones
+# Textual's driver normally resets at app exit. (bb-6b86)
+_RESET_BRACKETED_PASTE = "\x1b[?2004l"
+_RESET_MOUSE_TRACKING = "\x1b[?1003l"
+_RESET_ALT_SCREEN = "\x1b[?1049l"
+_RESET_SHOW_CURSOR = "\x1b[?25h"
+
+_TERMINAL_RESET_SEQUENCE = (
+    _RESET_BRACKETED_PASTE + _RESET_MOUSE_TRACKING + _RESET_ALT_SCREEN + _RESET_SHOW_CURSOR
+)
+
+
+def _reset_terminal_modes() -> None:
+    """Emit terminal-mode resets so the shell after a force-quit isn't broken.
+
+    Best-effort: write to stdout if it's a TTY, swallow any error so the
+    caller can still proceed to ``os._exit``. Skips the writes entirely on
+    non-tty stdout (CI, pipes) since there's no terminal state to reset.
+    """
+    import sys
+
+    try:
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write(_TERMINAL_RESET_SEQUENCE)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        # ValueError fires when stdout is closed; OSError covers EBADF and
+        # write errors on a still-open but unwritable fd.
+        return
+
+
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -234,11 +268,19 @@ class LilbeeApp(App[None]):
         self.exit()
 
     def _force_quit(self) -> None:
-        """Force-exit when normal quit is blocked (e.g. GIL held by native code)."""
+        """Force-exit when normal quit is blocked (e.g. GIL held by native code).
+
+        ``os._exit`` skips Textual's driver teardown, which is the only path
+        that resets terminal modes (alt-screen, mouse tracking, bracketed
+        paste). Without an explicit reset, the next shell command receives
+        terminal escape bytes as input and rejects them with
+        ``No such command '4'`` and friends. (bb-6b86)
+        """
         import os
 
         with contextlib.suppress(Exception):
             reset_services()
+        _reset_terminal_modes()
         os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
