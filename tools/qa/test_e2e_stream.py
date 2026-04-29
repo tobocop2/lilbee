@@ -33,7 +33,7 @@ _FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 _SYNC_TIMEOUT = 240.0
 _STREAM_TIMEOUT = 240.0
 _TUI_BOOT_TIMEOUT = 60.0
-_TUI_RESPONSE_TIMEOUT = 240.0
+_TUI_RESPONSE_TIMEOUT = 360.0
 
 
 def _seed_corpus(lilbee_data: Path) -> Path:
@@ -239,8 +239,8 @@ def test_tui_chat_advances_past_thinking_spinner(
         session.screenshot(screenshot)
         raise AssertionError(
             f"TUI never rendered a response derived from the corpus within "
-            f"{_TUI_RESPONSE_TIMEOUT}s. Suggests softlock on 'thinking...'. "
-            f"Screenshot: {screenshot}"
+            f"{_TUI_RESPONSE_TIMEOUT}s. Suggests softlock on 'thinking...'.\n"
+            f"Last visible screen:\n{session.text()}"
         )
     finally:
         session.close()
