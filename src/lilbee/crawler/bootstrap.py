@@ -194,7 +194,7 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
         raise CrawlerBrowserMissing(_PLAYWRIGHT_MISSING_HINT) from exc
     try:
         driver_exe, driver_cli = compute_driver_executable()
-    except Exception:  # pragma: no cover - defensive against playwright API drift
+    except Exception:
         if not getattr(sys, "frozen", False):
             return [sys.executable, "-m", "playwright"], dict(os.environ)
         raise

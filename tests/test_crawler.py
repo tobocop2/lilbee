@@ -562,13 +562,33 @@ class TestResolvePlaywrightRunner:
     failed under PyInstaller because ``sys.executable`` is the lilbee binary,
     not Python. Routing through ``compute_driver_executable`` invokes the
     bundled ``playwright/driver/node`` + ``cli.js`` directly.
-
-    Skipped on lanes where the playwright package isn't installed (the
-    regular `test` job runs without crawler extras; integration covers it).
     """
 
-    def setup_method(self) -> None:
-        pytest.importorskip("playwright._impl._driver")
+    def _install_fake_driver_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        compute: object | None,
+        env: dict[str, str] | None,
+    ) -> None:
+        """Inject a fake ``playwright._impl._driver`` into sys.modules.
+
+        The regular ``test`` CI job runs without lilbee[crawler]; mocking
+        attributes on the real submodule with monkeypatch.setattr would
+        require the import to succeed first. Stubbing sys.modules instead
+        keeps the test importable on every lane.
+        """
+        import sys as _sys
+        import types
+
+        playwright = types.ModuleType("playwright")
+        playwright_impl = types.ModuleType("playwright._impl")
+        playwright_driver = types.ModuleType("playwright._impl._driver")
+        playwright_driver.compute_driver_executable = compute  # type: ignore[attr-defined]
+        playwright_driver.get_driver_env = (lambda: env) if env is not None else None  # type: ignore[attr-defined]
+        monkeypatch.setitem(_sys.modules, "playwright", playwright)
+        monkeypatch.setitem(_sys.modules, "playwright._impl", playwright_impl)
+        monkeypatch.setitem(_sys.modules, "playwright._impl._driver", playwright_driver)
 
     def test_uses_compute_driver_executable(self, monkeypatch):
         """Returns argv from playwright's bundled driver lookup, with driver env."""
@@ -576,13 +596,10 @@ class TestResolvePlaywrightRunner:
 
         fake_node = "/fake/site-packages/playwright/driver/node"
         fake_cli = "/fake/site-packages/playwright/driver/package/cli.js"
-        monkeypatch.setattr(
-            "playwright._impl._driver.compute_driver_executable",
-            lambda: (fake_node, fake_cli),
-        )
-        monkeypatch.setattr(
-            "playwright._impl._driver.get_driver_env",
-            lambda: {"PW_LANG_NAME": "python", "PATH": "/usr/bin"},
+        self._install_fake_driver_module(
+            monkeypatch,
+            compute=lambda: (fake_node, fake_cli),
+            env={"PW_LANG_NAME": "python", "PATH": "/usr/bin"},
         )
 
         argv, env = boot_mod._resolve_playwright_runner()
@@ -597,19 +614,45 @@ class TestResolvePlaywrightRunner:
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         fake_node = "/_MEI/playwright/driver/node"
         fake_cli = "/_MEI/playwright/driver/package/cli.js"
-        monkeypatch.setattr(
-            "playwright._impl._driver.compute_driver_executable",
-            lambda: (fake_node, fake_cli),
+        self._install_fake_driver_module(
+            monkeypatch,
+            compute=lambda: (fake_node, fake_cli),
+            env={},
         )
-        monkeypatch.setattr("playwright._impl._driver.get_driver_env", lambda: {})
 
         argv, _env = boot_mod._resolve_playwright_runner()
         assert argv == [fake_node, fake_cli]
 
+    def test_compute_driver_failure_falls_back_when_not_frozen(self, monkeypatch):
+        """compute_driver_executable raise on a wheel install falls back to sys.executable -m."""
+        from lilbee.crawler import bootstrap as boot_mod
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+
+        def _boom() -> tuple[str, str]:
+            raise RuntimeError("playwright API drift")
+
+        self._install_fake_driver_module(monkeypatch, compute=_boom, env={})
+
+        argv, _env = boot_mod._resolve_playwright_runner()
+        assert argv == [sys.executable, "-m", "playwright"]
+
+    def test_compute_driver_failure_under_frozen_propagates(self, monkeypatch):
+        """If compute_driver_executable raises on a frozen build, raise (no fallback)."""
+        from lilbee.crawler import bootstrap as boot_mod
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+        def _boom() -> tuple[str, str]:
+            raise RuntimeError("playwright API drift")
+
+        self._install_fake_driver_module(monkeypatch, compute=_boom, env={})
+
+        with pytest.raises(RuntimeError, match="API drift"):
+            boot_mod._resolve_playwright_runner()
+
     def test_playwright_missing_raises_actionable_error(self, monkeypatch):
         """``ImportError: playwright`` raises CrawlerBrowserMissing with install hint."""
-        # Pretend playwright isn't installed by injecting a failing module loader
-        # for the exact path _resolve_playwright_runner imports from.
         import builtins
 
         from lilbee.crawler.bootstrap import CrawlerBrowserMissing, _resolve_playwright_runner
@@ -629,6 +672,41 @@ class TestResolvePlaywrightRunner:
         # Must name the install fix; bare 'not found' breaks the user's
         # recovery loop in the release executable.
         assert "lilbee[crawler]" in message or "playwright" in message
+
+    async def test_bootstrap_chromium_emits_setup_done_when_playwright_missing(self, monkeypatch):
+        """bootstrap_chromium catches the CrawlerBrowserMissing the runner
+        resolution raises, fires setup_done(success=False), and re-raises
+        so the task center routes the user to the actionable error.
+        """
+        import builtins
+
+        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
+        from lilbee.progress import EventType, SetupDoneEvent
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "playwright._impl._driver":
+                raise ImportError("No module named 'playwright'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        events: list[tuple[EventType, object]] = []
+        with pytest.raises(CrawlerBrowserMissing):
+            await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+
+        # setup_start fires before the failure surfaces, then setup_done
+        # with success=False so the task bar transitions to FAILED.
+        types = [e for e, _ in events]
+        assert types[0] == EventType.SETUP_START
+        assert types[-1] == EventType.SETUP_DONE
+        last = events[-1][1]
+        assert isinstance(last, SetupDoneEvent)
+        assert last.success is False
+        assert last.error is not None and "playwright" in last.error.lower()
 
 
 class TestPlaywrightBrowserCheck:
