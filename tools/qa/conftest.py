@@ -10,10 +10,8 @@ import contextlib
 import json
 import os
 import shutil
-import signal
 import socket
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -262,45 +260,15 @@ def run_lilbee(
     timeout: float = 60.0,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a lilbee CLI command and capture stdout/stderr.
-
-    Spawns lilbee in its own process group / job object so a timeout can
-    kill the whole tree, not just the parent. lilbee can fork worker
-    processes (huggingface_hub progress, llama-cpp model loaders, etc.);
-    if those orphan after a timeout they pile up over a long pytest run
-    on a single VM and starve the runner of memory/PIDs (the symptom on
-    GHA's native ubuntu/macOS runners is the runner heartbeat dropping
-    after ~46 minutes of test execution).
-    """
-    popen_kwargs: dict[str, object] = {}
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    proc = subprocess.Popen(
+    """Run a lilbee CLI command and capture stdout/stderr."""
+    return subprocess.run(
         [lane.lilbee_bin, *args],
         env=lilbee_env(data_dir, extra=extra_env),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
-        **popen_kwargs,
+        timeout=timeout,
+        check=False,
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-        return subprocess.CompletedProcess(
-            args=proc.args, returncode=proc.returncode, stdout=stdout, stderr=stderr
-        )
-    except subprocess.TimeoutExpired:
-        if sys.platform == "win32":
-            proc.kill()
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        stdout, stderr = proc.communicate()
-        raise subprocess.TimeoutExpired(
-            cmd=proc.args, timeout=timeout, output=stdout, stderr=stderr
-        ) from None
 
 
 @pytest.fixture
