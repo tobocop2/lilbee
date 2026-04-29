@@ -16,6 +16,7 @@ from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,
     _resolve_generation_options,
+    classify_load_error,
     sse_done,
     sse_error,
     sse_event,
@@ -117,8 +118,10 @@ async def _stream_rag_response(
         yield event
 
     if error_holder:
-        log.warning("Stream error: %s", error_holder[0])
-        yield sse_error("Internal error")
+        raw = error_holder[0]
+        code, user_message = classify_load_error(raw)
+        log.warning("Stream error: %s", raw)
+        yield sse_error(user_message, code=code, detail=raw if code else None)
         sse.cancel.set()
         return
 

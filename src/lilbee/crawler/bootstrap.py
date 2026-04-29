@@ -165,6 +165,42 @@ async def _drain_stderr(stream: asyncio.StreamReader, tail: list[str]) -> None:
         tail.append(line_bytes.decode(errors="replace").rstrip())
 
 
+_PLAYWRIGHT_MISSING_HINT = (
+    "Chromium bootstrap requires the playwright Python package, which is "
+    "bundled with the release binary and the lilbee[crawler] extra. "
+    "Reinstall with 'pip install lilbee[crawler]' or download a fresh "
+    "release binary."
+)
+
+
+def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
+    """Return ``(argv_prefix, env)`` for invoking ``playwright install chromium``.
+
+    Playwright ships a Node.js driver (``playwright/driver/node`` +
+    ``playwright/driver/package/cli.js``) inside its Python package; that's
+    what ``python -m playwright`` ultimately spawns. We invoke it
+    directly so the call works identically under a pip install,
+    ``uv tool install``, and a PyInstaller frozen binary - no system
+    Python interpreter required.
+
+    Falls back to ``[sys.executable, '-m', 'playwright']`` if the driver
+    can't be resolved (defensive against unusual playwright builds);
+    raises :class:`CrawlerBrowserError` only if even that lookup
+    fails.
+    """
+    try:
+        from playwright._impl._driver import compute_driver_executable, get_driver_env
+    except ImportError as exc:
+        raise CrawlerBrowserError(_PLAYWRIGHT_MISSING_HINT) from exc
+    try:
+        driver_exe, driver_cli = compute_driver_executable()
+    except Exception:
+        if not getattr(sys, "frozen", False):
+            return [sys.executable, "-m", "playwright"], dict(os.environ)
+        raise
+    return [str(driver_exe), str(driver_cli)], dict(get_driver_env())
+
+
 async def bootstrap_chromium(
     on_progress: DetailedProgressCallback | None = None,
 ) -> None:
@@ -177,9 +213,9 @@ async def bootstrap_chromium(
     :class:`CrawlerBrowserError` with the tail so task workers route
     to FAILED cleanly.
 
-    Uses the current Python interpreter's ``playwright`` module so this
-    works under ``uv tool install`` and bundled installs alike without
-    relying on a globally-installed ``playwright`` CLI.
+    Invokes Playwright's bundled Node driver directly so the call works
+    identically under a pip install, ``uv tool install``, or a
+    PyInstaller frozen binary (no system Python needed). (bb-sxsz)
     """
     if chromium_installed():
         _emit_setup_done(on_progress, success=True, error=None)
@@ -187,14 +223,19 @@ async def bootstrap_chromium(
 
     _emit_setup_start(on_progress)
 
+    try:
+        runner, runner_env = _resolve_playwright_runner()
+    except CrawlerBrowserError as exc:
+        _emit_setup_done(on_progress, success=False, error=str(exc))
+        raise
+
     proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "playwright",
+        *runner,
         "install",
         "chromium",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=runner_env,
     )
     # mypy narrowing: asyncio.create_subprocess_exec with PIPE guarantees
     # non-None streams at runtime; the asserts only satisfy the type checker.

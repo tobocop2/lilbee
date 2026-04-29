@@ -1,6 +1,6 @@
 # lilbee — terminal-first local RAG for files, code, and the web
 
-[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)
+[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/)
 
 A terminal-first local RAG and search engine for your own files, code, websites, and scanned documents. One install, no sidecar services, fully offline by default.
 
@@ -20,7 +20,7 @@ A terminal-first local RAG and search engine for your own files, code, websites,
 >
 > lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome — that's the whole point of the beta.
 >
-> Latest pre-release (always): [lilbee on PyPI →](https://pypi.org/project/lilbee/#history)
+> Latest pre-release (always): [lilbee on PyPI →](https://pypi.org/project/lilbee/)
 
 ---
 
@@ -192,20 +192,20 @@ Standalone mode runs entirely on your machine. No cloud required.
 
 ### Supported platforms
 
-| Platform | Minimum | Recommended |
-|---|---|---|
-| **Linux x86_64** | A 64-bit Intel or AMD CPU from **2013 or newer** — Intel Core i3/i5/i7 4th-gen (Haswell), Intel Xeon E3-12xx v3 / E5-26xx v3, AMD FX-95xx (Steamroller) or any AMD Zen-based chip. Anything corresponding to the [`x86-64-v3` microarchitecture level](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels). | A modern Intel Core / Xeon / AMD Ryzen / EPYC + an NVIDIA, AMD, or Intel Arc GPU |
-| **macOS arm64** | Any Apple Silicon Mac (M1 or newer) running macOS 11+ | M-series Pro / Max / Ultra |
-| **Windows x86_64** | A 64-bit Intel or AMD CPU from **2013 or newer** (same generations as Linux above), Windows 10/11 | Modern desktop / workstation CPU + GPU |
-| **Linux ARM64** | ARMv8 (NEON-capable) — Raspberry Pi 4+, AWS Graviton, Ampere Altra, etc. | Modern ARM server with 16+ GB RAM |
+| Platform           | Minimum                                                                                                                                                                                                                                                                                                                | Recommended                                                                      |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **Linux x86_64**   | A 64-bit Intel or AMD CPU from **2013 or newer** — Intel Core i3/i5/i7 4th-gen (Haswell), Intel Xeon E3-12xx v3 / E5-26xx v3, AMD FX-95xx (Steamroller) or any AMD Zen-based chip. Anything corresponding to the [`x86-64-v3` microarchitecture level](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels). | A modern Intel Core / Xeon / AMD Ryzen / EPYC + an NVIDIA, AMD, or Intel Arc GPU |
+| **macOS arm64**    | Any Apple Silicon Mac (M1 or newer) running macOS 11+                                                                                                                                                                                                                                                                  | M-series Pro / Max / Ultra                                                       |
+| **Windows x86_64** | A 64-bit Intel or AMD CPU from **2013 or newer** (same generations as Linux above), Windows 10/11                                                                                                                                                                                                                      | Modern desktop / workstation CPU + GPU                                           |
+| **Linux ARM64**    | ARMv8 (NEON-capable) — Raspberry Pi 4+, AWS Graviton, Ampere Altra, etc.                                                                                                                                                                                                                                               | Modern ARM server with 16+ GB RAM                                                |
 
 ### Resources
 
-| Resource | Minimum | Recommended |
-|---|---|---|
-| **RAM** | 8 GB | 16 to 32 GB |
+| Resource              | Minimum                                  | Recommended                                                                                                                                                 |
+| --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **RAM**               | 8 GB                                     | 16 to 32 GB                                                                                                                                                 |
 | **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
-| **Disk** | 2 GB (models + data) | 10+ GB if you load multiple models |
+| **Disk**              | 2 GB (models + data)                     | 10+ GB if you load multiple models                                                                                                                          |
 
 Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
@@ -220,7 +220,7 @@ No external services needed. lilbee downloads and runs models locally via llama-
 
 ### Default install (recommended for almost everyone)
 
-The default wheel ships with **runtime CPU dispatch** (works on every x86_64 CPU from Sandy Bridge / 2011 forward) and **GPU acceleration via Vulkan on Linux/Windows** (covers NVIDIA / AMD / Intel Arc) or **Metal on macOS arm64**. If you have *any* modern GPU, this gets you GPU-accelerated inference with zero opt-in.
+The default wheel ships with **runtime CPU dispatch** (works on every x86_64 CPU from Sandy Bridge / 2011 forward) and **GPU acceleration via Vulkan on Linux/Windows** (covers NVIDIA / AMD / Intel Arc) or **Metal on macOS arm64**. If you have _any_ modern GPU, this gets you GPU-accelerated inference with zero opt-in.
 
 **pip:**
 
@@ -242,7 +242,53 @@ lilbee self-check
 
 This downloads a tiny model (~90 MB), runs an inference, and an embedding. Exits 0 with `SELF-CHECK PASSED` on success.
 
-### NVIDIA users wanting CUDA-native (5–15% faster than Vulkan)
+### Homebrew (macOS arm64, Linux x86_64)
+
+If you'd rather not install Python, the prebuilt binary is available on a Homebrew tap. It bundles its own Python interpreter and llama-cpp backend, the same artifact that ships on the GitHub Release page.
+
+```bash
+brew tap tobocop2/lilbee
+brew install lilbee
+```
+
+The macOS binary is unsigned (Apple's developer certificate costs $99/year). The formula clears the `com.apple.quarantine` extended attribute automatically during install, so the first launch is not blocked by Gatekeeper. If macOS still blocks it, open **System Settings → Privacy & Security** and click **Allow Anyway**.
+
+### Arch Linux (AUR)
+
+Available as `lilbee` for `paru` / `yay` / `pacaur` / any AUR helper:
+
+```bash
+paru -S lilbee
+```
+
+Wraps the Linux x86_64 release binary, no compilation needed.
+
+### Docker
+
+```bash
+docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help
+```
+
+Image is published to GitHub Container Registry on every release; tagged with both the version (`0.6.66b456`) and `latest`. The `LILBEE_DATA_DIR` is `/home/lilbee/data` inside the container, so mount a volume there to persist models, embeddings, and config.
+
+<a id="linux-runtime-requirements"></a>
+
+### Linux runtime requirements
+
+The Linux x86_64 wheel links against the Vulkan loader at runtime so it can fall back from GPU to CPU on a single binary. Most desktop distros (Ubuntu 22.04+, Pop!_OS, Mint) ship `libvulkan1` by default. Bare Arch / Fedora / Alpine images do not, and `lilbee self-check` will fail with `cannot open shared object file: libvulkan.so.1`. Install the loader once.
+
+```bash
+# Arch / Manjaro
+sudo pacman -S vulkan-icd-loader
+
+# Fedora / RHEL
+sudo dnf install vulkan-loader
+
+# Debian / Ubuntu (only if missing)
+sudo apt-get install libvulkan1
+```
+
+### NVIDIA users wanting CUDA-native (5-15% faster than Vulkan)
 
 The default wheel already uses your NVIDIA GPU through Vulkan. **You only need a CUDA wheel if you want the absolute last bit of performance** out of CUDA-native kernels.
 
@@ -280,10 +326,10 @@ If a wheel isn't available for your Python version, pip falls back to the sdist 
 
 Download a single binary that bundles its own Python runtime — no `pip` needed:
 
-| Platform | Download |
-|---|---|
-| **Linux x86_64** | [lilbee-linux-x86_64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64) |
-| **macOS arm64** | [lilbee-macos-arm64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-macos-arm64) |
+| Platform           | Download                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| **Linux x86_64**   | [lilbee-linux-x86_64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64)             |
+| **macOS arm64**    | [lilbee-macos-arm64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-macos-arm64)               |
 | **Windows x86_64** | [lilbee-windows-x86_64.exe](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64.exe) |
 
 Make executable and run:
@@ -299,11 +345,11 @@ Always points at the latest pre-release.
 
 lilbee works out of the box. Extras unlock additional capabilities. Both `pip` and `uv tool install` syntax shown:
 
-| Extra | What it adds |
-|---|---|
-| **Web crawling** — `pip install --pre 'lilbee[crawler]'` / `uv tool install --prerelease=allow 'lilbee[crawler]'` | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. |
+| Extra                                                                                                                           | What it adds                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Web crawling** — `pip install --pre 'lilbee[crawler]'` / `uv tool install --prerelease=allow 'lilbee[crawler]'`               | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits.                                                                                                                                                                       |
 | **Ollama and frontier models** — `pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
-| **Concept graph** — `pip install --pre 'lilbee[graph]'` / `uv tool install --prerelease=allow 'lilbee[graph]'` | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls. |
+| **Concept graph** — `pip install --pre 'lilbee[graph]'` / `uv tool install --prerelease=allow 'lilbee[graph]'`                  | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls.                                                                                                                                                         |
 
 Install multiple at once:
 
@@ -352,7 +398,7 @@ See [docs/agent-integration.md](docs/agent-integration.md) for MCP client config
 
 See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema and the [usage guide](docs/usage.md) for `serve` options.
 
-An [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document — useful when seeing the source matters more than just being told where it is. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for the four-step setup.
+An [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document — useful when seeing the source matters more than just being told where it is. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for the four-step setup.
 
 ## Interactive chat
 
@@ -362,16 +408,16 @@ Running `lilbee` or `lilbee chat` enters the TUI. Type `/` to see the full slash
 
 Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structured formats (XML, JSON, CSV) get embedding-friendly preprocessing. This list is not exhaustive; Kreuzberg supports additional formats beyond what's listed here.
 
-| Format | Extensions | Requires |
-|--------|-----------|----------|
-| PDF | `.pdf` | none |
-| Scanned PDF | `.pdf` (no extractable text) | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text), or a GGUF vision model via the native mtmd backend (recommended, preserves tables, headings, and layout as markdown) |
-| Office | `.docx`, `.xlsx`, `.pptx` | none |
-| eBook | `.epub` | none |
-| Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp` | [Tesseract](https://github.com/tesseract-ocr/tesseract) |
-| Data | `.csv`, `.tsv` | none |
-| Structured | `.xml`, `.json`, `.jsonl`, `.yaml`, `.yml` | none |
-| Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | none |
+| Format       | Extensions                                                                                                                                              | Requires                                                                                                                                                                                         |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PDF          | `.pdf`                                                                                                                                                  | none                                                                                                                                                                                             |
+| Scanned PDF  | `.pdf` (no extractable text)                                                                                                                            | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text), or a GGUF vision model via the native mtmd backend (recommended, preserves tables, headings, and layout as markdown) |
+| Office       | `.docx`, `.xlsx`, `.pptx`                                                                                                                               | none                                                                                                                                                                                             |
+| eBook        | `.epub`                                                                                                                                                 | none                                                                                                                                                                                             |
+| Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`                                                                                                       | [Tesseract](https://github.com/tesseract-ocr/tesseract)                                                                                                                                          |
+| Data         | `.csv`, `.tsv`                                                                                                                                          | none                                                                                                                                                                                             |
+| Structured   | `.xml`, `.json`, `.jsonl`, `.yaml`, `.yml`                                                                                                              | none                                                                                                                                                                                             |
+| Code         | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | none                                                                                                                                                                                             |
 
 See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
 

@@ -253,6 +253,24 @@ class TestAskStream:
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "code" not in parsed
+
+    async def test_oom_load_error_yields_structured_code(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.side_effect = ValueError(
+            "Failed to load Qwen3-4B (2.4 GB) with n_ctx=4096. "
+            "Host has 1.2 GB free RAM. Try a smaller model."
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        non_empty = [e for e in events if e]
+        error_events = [e for e in non_empty if e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert parsed["code"] == "model_too_large"
+        assert parsed["message"] == "Model too large for available RAM"
+        assert "Failed to load Qwen3-4B" in parsed["detail"]
 
     async def test_cancel_sets_cancel_event(self, mock_svc):
         """Closing the generator mid-stream signals the thread to stop."""
@@ -1860,9 +1878,49 @@ class TestSseHelpers:
         result = handlers.sse_error("oops")
         assert result == 'event: error\ndata: {"message": "oops"}\n\n'
 
+    def test_sse_error_with_code_and_detail(self):
+        result = handlers.sse_error(
+            "Internal error", code="model_too_large", detail="Failed to load X"
+        )
+        parsed = json.loads(result.split("data: ")[1].strip())
+        assert parsed == {
+            "message": "Internal error",
+            "code": "model_too_large",
+            "detail": "Failed to load X",
+        }
+
+    def test_sse_error_omits_unset_fields(self):
+        result = handlers.sse_error("oops", code=None, detail=None)
+        parsed = json.loads(result.split("data: ")[1].strip())
+        assert parsed == {"message": "oops"}
+
     def test_sse_done(self):
         result = handlers.sse_done({"count": 1})
         assert result == 'event: done\ndata: {"count": 1}\n\n'
+
+
+class TestClassifyLoadError:
+    def test_oom_diagnostic_is_classified_as_model_too_large(self):
+        msg = (
+            "Failed to load Qwen3-4B (2.4 GB) with n_ctx=4096. "
+            "Host has 1.2 GB free RAM. Try a smaller model."
+        )
+        code, user_message = handlers.classify_load_error(msg)
+        assert code == "model_too_large"
+        assert user_message == "Model too large for available RAM"
+
+    def test_llama_context_signature_is_classified(self):
+        code, _ = handlers.classify_load_error("llama_context: failed to allocate")
+        assert code == "model_too_large"
+
+    def test_unknown_message_falls_back_to_internal(self):
+        code, user_message = handlers.classify_load_error("Network unreachable")
+        assert code is None
+        assert user_message == "Internal error"
+
+    def test_classifier_is_case_insensitive(self):
+        code, _ = handlers.classify_load_error("FAILED TO LOAD model.gguf")
+        assert code == "model_too_large"
 
 
 class TestResolveGenerationOptions:

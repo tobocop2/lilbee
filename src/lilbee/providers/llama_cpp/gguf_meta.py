@@ -9,6 +9,7 @@ from gguf import GGUFReader, GGUFValueType
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.llama_cpp.log_dispatch import (
+    import_llama_cpp,
     install_llama_log_handler,
     suppress_native_stderr,
 )
@@ -29,7 +30,7 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
     against host memory.
     """
-    from llama_cpp import Llama
+    Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
     llm = suppress_native_stderr(

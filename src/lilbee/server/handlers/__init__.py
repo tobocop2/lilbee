@@ -55,6 +55,7 @@ from lilbee.server.handlers.rag import (
 )
 from lilbee.server.handlers.sse import (
     SseStream,
+    classify_load_error,
     sse_done,
     sse_error,
     sse_event,
@@ -84,6 +85,7 @@ __all__ = [
     "ask_stream",
     "chat",
     "chat_stream",
+    "classify_load_error",
     "crawl_stream",
     "delete_documents",
     "format_task_mismatch",

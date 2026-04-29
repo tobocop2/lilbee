@@ -18,6 +18,8 @@ from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
+_TOKEN_BYTES = 32
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -41,15 +43,37 @@ class SessionManager:
     def __init__(self) -> None:
         self.token: str | None = None
 
-    def generate(self) -> str:
-        """Generate a random session token and persist to server.json."""
-        self.token = secrets.token_urlsafe(32)
+    def load_or_generate(self) -> str:
+        """Return the persisted token if shape-valid; generate a new one otherwise."""
         path = server_json_path()
+        existing = self._read_persisted_token(path)
+        if existing is not None:
+            self.token = existing
+            return existing
+        self.token = secrets.token_urlsafe(_TOKEN_BYTES)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": self.token}))
         if sys.platform != "win32":
             path.chmod(0o600)
         return self.token
+
+    @staticmethod
+    def _read_persisted_token(path: Path) -> str | None:
+        """Return a previously-persisted token if shape-valid, else None."""
+        try:
+            raw = path.read_text()
+        except (FileNotFoundError, OSError):
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        token = data.get("token")
+        if not isinstance(token, str) or len(token) < _TOKEN_BYTES:
+            return None
+        return token
 
     def cleanup(self) -> None:
         """Remove server.json on shutdown and clear the in-memory token."""

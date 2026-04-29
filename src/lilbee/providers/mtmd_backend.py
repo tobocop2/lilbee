@@ -13,6 +13,7 @@ from gguf import GGUFReader
 from lilbee.core.config.model import cfg
 from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model, read_gguf_metadata
 from lilbee.providers.llama_cpp.log_dispatch import (
+    import_llama_cpp,
     install_llama_log_handler,
     suppress_native_stderr,
 )
@@ -66,6 +67,10 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
     is injected. Falls back to the upstream default template when the
     GGUF has no ``tokenizer.chat_template``.
     """
+    # Surface the libvulkan-missing hint before submodule import, since
+    # importing llama_cpp.llama_chat_format triggers the parent package's
+    # native loader as a side effect.
+    import_llama_cpp()
     from llama_cpp.llama_chat_format import Llava15ChatHandler
 
     # Defined per call so each loaded model binds its own ``CHAT_FORMAT``
@@ -96,7 +101,7 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
 
 def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
-    from llama_cpp import Llama  # heavy native lib; keep import lazy
+    Llama = import_llama_cpp().Llama  # noqa: N806 # heavy native lib; keep import lazy
 
     install_llama_log_handler()
     if mmproj_path is None:

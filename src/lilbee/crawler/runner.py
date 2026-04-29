@@ -264,6 +264,32 @@ async def _maybe_periodic_sync() -> None:
     task.add_done_callback(_state.background_tasks.discard)
 
 
+async def _drain_background_tasks() -> None:
+    """Cancel periodic-sync tasks owned by the running loop. (bb-zqws)
+
+    TODO bb-odr1: the cross-loop filter and stale-entry drop both exist
+    because ``_state.background_tasks`` is a module-level global. Once
+    task tracking is scoped per ``crawl_and_save`` invocation, this whole
+    helper collapses to a local ``await asyncio.gather(*tasks)``.
+    """
+    loop = asyncio.get_running_loop()
+    pending: list[asyncio.Task[Any]] = []
+    stale: set[asyncio.Task[Any]] = set()
+    for task in list(_state.background_tasks):
+        if task.done():
+            continue
+        if task.get_loop() is loop:
+            pending.append(task)
+        else:
+            stale.add(task)
+    _state.background_tasks -= stale
+    if not pending:
+        return
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _make_flush_page(
     meta: dict[str, CrawlMeta],
     written_paths: list[Path],
@@ -424,5 +450,8 @@ async def crawl_and_save(
 
         return written_paths
     finally:
+        # Drain the periodic-sync task BEFORE releasing the crawl semaphore so
+        # asyncio.run() doesn't close the loop with the sync mid-ingest.
+        await _drain_background_tasks()
         if sem is not None:
             sem.release()

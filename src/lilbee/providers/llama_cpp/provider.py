@@ -36,6 +36,7 @@ from lilbee.providers.llama_cpp.gguf_meta import (
     read_gguf_metadata,
 )
 from lilbee.providers.llama_cpp.log_dispatch import (
+    import_llama_cpp,
     install_llama_log_handler,
     suppress_native_stderr,
 )
@@ -422,7 +423,14 @@ def resolve_model_path(model: str) -> Path:
 
 def _llama_cpp_has_rank_pooling() -> bool:
     """Return True iff the installed llama-cpp-python exposes ``LLAMA_POOLING_TYPE_RANK``."""
+    # supports_rerank() can be called before any model load (feature detection
+    # for status / catalog UIs), so route through import_llama_cpp() first to
+    # surface the libvulkan hint rather than a raw OSError on bare Linux. A
+    # genuinely-missing llama_cpp package surfaces as ImportError and means
+    # "no rerank support"; a libvulkan-flavored OSError is a real install
+    # error and must propagate as ProviderError to the caller.
     try:
+        import_llama_cpp()
         from llama_cpp import LLAMA_POOLING_TYPE_RANK  # noqa: F401
     except ImportError:
         return False
@@ -431,7 +439,7 @@ def _llama_cpp_has_rank_pooling() -> bool:
 
 def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
-    from llama_cpp import Llama
+    Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
     embedding = mode in (MODE_EMBED, MODE_RERANK)

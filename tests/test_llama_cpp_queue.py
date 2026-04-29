@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import sys
 import threading
 import time
@@ -13,6 +14,8 @@ import pytest
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
+from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
 
 
 @pytest.fixture(autouse=True)
@@ -847,3 +850,47 @@ class TestSuppressStderrThreadSafety:
         result = suppress_native_stderr(check_lock)
         assert result == 42
         assert lock_was_held == [True]
+
+
+class TestImportLlamaCpp:
+    """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError. (bb-387n)"""
+
+    def test_returns_module_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Happy path: hands back the imported module."""
+        sentinel = mock.MagicMock(name="llama_cpp_module")
+        monkeypatch.setitem(sys.modules, "llama_cpp", sentinel)
+
+        assert import_llama_cpp() is sentinel
+
+    def test_libvulkan_oserror_raises_provider_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bare Linux installs without libvulkan get install instructions, not a raw OSError."""
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "llama_cpp":
+                raise OSError("libvulkan.so.1: cannot open shared object file")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
+
+        with pytest.raises(ProviderError) as ei:
+            import_llama_cpp()
+        message = str(ei.value)
+        assert "vulkan-icd-loader" in message
+        assert "libvulkan1" in message
+
+    def test_unrelated_oserror_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-vulkan OSErrors are not swallowed."""
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "llama_cpp":
+                raise OSError("libsomethingelse.so: not found")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
+
+        with pytest.raises(OSError, match="libsomethingelse"):
+            import_llama_cpp()

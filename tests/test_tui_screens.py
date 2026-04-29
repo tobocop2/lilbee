@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,8 @@ from lilbee.catalog import (
     CatalogModel,
     CatalogResult,
 )
+from lilbee.cli.tui import _silence_stderr_log_handlers
+from lilbee.cli.tui import app as tui_app
 from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_HF,
     _WORKER_FETCH_MORE_HF,
@@ -8023,7 +8027,7 @@ async def test_app_action_quit_double_force_exits():
 
 
 async def test_app_force_quit_calls_os_exit():
-    """_force_quit resets services and calls os._exit."""
+    """_force_quit resets services, runs Textual driver teardown, then calls os._exit."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -8031,11 +8035,67 @@ async def test_app_force_quit_calls_os_exit():
         await _pilot.pause()
         with (
             patch("lilbee.cli.tui.app.reset_services") as mock_reset,
+            patch("lilbee.cli.tui.app._restore_terminal_via_driver") as mock_restore,
             patch("os._exit") as mock_exit,
         ):
             app._force_quit()
             mock_reset.assert_called_once()
+            mock_restore.assert_called_once_with(app)
             mock_exit.assert_called_once_with(1)
+
+
+class TestRestoreTerminalViaDriver:
+    """``_restore_terminal_via_driver`` runs Textual's driver teardown before os._exit (bb-6b86)."""
+
+    def test_calls_driver_stop_application_mode(self):
+        """Driver teardown is the path that emits Textual's full restore sequence."""
+        app = MagicMock()
+        tui_app._restore_terminal_via_driver(app)
+        app._driver.stop_application_mode.assert_called_once_with()
+
+    def test_no_op_when_driver_unset(self):
+        """Early-startup or post-teardown: ``_driver`` is None; no AttributeError."""
+        app = MagicMock()
+        app._driver = None
+        tui_app._restore_terminal_via_driver(app)  # must not raise
+
+    def test_swallows_driver_teardown_failure(self):
+        """A driver mid-teardown that raises must not block ``os._exit``."""
+        app = MagicMock()
+        app._driver.stop_application_mode.side_effect = RuntimeError("boom")
+        tui_app._restore_terminal_via_driver(app)  # must not raise
+
+
+class TestSilenceStderrLogHandlers:
+    """``_silence_stderr_log_handlers`` drops stderr/stdout root handlers (bb-82ce)."""
+
+    def test_removes_stderr_streamhandler(self):
+        """A StreamHandler bound to sys.stderr is removed from the root logger."""
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            root.addHandler(stderr_handler)
+            _silence_stderr_log_handlers()
+            assert stderr_handler not in root.handlers
+        finally:
+            root.handlers[:] = before
+
+    def test_keeps_file_and_null_handlers(self, tmp_path):
+        """FileHandler (stream is the log file, not stderr) and NullHandler stay attached."""
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            file_handler = logging.FileHandler(tmp_path / "lilbee.log")
+            null_handler = logging.NullHandler()
+            root.addHandler(file_handler)
+            root.addHandler(null_handler)
+            _silence_stderr_log_handlers()
+            assert file_handler in root.handlers
+            assert null_handler in root.handlers
+        finally:
+            root.handlers[:] = before
+            file_handler.close()
 
 
 async def test_app_switch_view_unknown():
