@@ -59,7 +59,12 @@ jobs:
           - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false, continue: false }
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.continue }}
-    timeout-minutes: 60
+    # 90 minutes accommodates the Windows binary lane: PyInstaller --onefile
+    # cold-starts add ~30s per subprocess invocation (bb-rjez / superseded by
+    # bb-a9a1 Nuitka switch), and ~95 tests * many subprocess calls each
+    # cumulates past the previous 60-min cap. Faster lanes (linux-distros,
+    # ubuntu-binary, macos-binary) finish in 10-30 min and don't notice.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
