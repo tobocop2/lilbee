@@ -80,18 +80,19 @@ jobs:
           path: ~/.lilbee-qa-models
           key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
 
-      - name: Install lilbee from PyPI with crawler extra (lane=pypi)
+      - name: Install lilbee from PyPI (lane=pypi)
         if: matrix.lane == 'pypi'
         shell: bash
-        # [crawler] gives the lane playwright + crawl4ai for the crawl tier.
-        # [litellm] is intentionally NOT included here: the SDK is a heavy
-        # import that adds 30-60 s per `lilbee` invocation on macOS arm64
-        # and Linux native runners, blowing every CLI test's per-test budget
-        # and pushing the suite past the 60-min job timeout. The dedicated
-        # `ollama-pypi` job below installs [litellm] and exercises the
-        # litellm-backed ollama tests in isolation.
+        # Plain `lilbee` (no extras). Both [crawler] and [litellm] extras
+        # add 30-60 s per `lilbee` invocation on macOS arm64 (crawl4ai +
+        # playwright in [crawler]; the litellm SDK in [litellm]), which
+        # blows every CLI test's per-test budget and overflows the 60-min
+        # job timeout. Crawler-on-pypi coverage comes from the bundled
+        # binary lanes; ollama coverage comes from the dedicated
+        # `ollama-pypi` cell which has full extras and runs only the 3
+        # ollama tests (small enough scope to absorb the slow imports).
         run: |
-          python -m pip install "lilbee[crawler]==${{ steps.ver.outputs.version }}"
+          python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
           # Install a sitecustomize.py that monkey-patches lilbee's
           # blocked-networks list to allow loopback for the QA harness's
