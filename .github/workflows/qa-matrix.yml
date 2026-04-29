@@ -1,8 +1,9 @@
 name: QA matrix
 
-# Runs the QA matrix against the published PyInstaller binary. Currently
-# exercises Phase 0 (PTY harness composition) and T0 (CLI smoke) across
-# Linux/macOS/Windows. Subsequent PRs add T1 CLI walk, T2 HTTP, T3 MCP, T4 TUI.
+# Runs the QA matrix against the published PyInstaller binary across the
+# native runners (ubuntu, macos, windows) and a curated set of Linux distros
+# (arch, fedora) that exercise the glibc / library-layout / package-manager
+# differences our Ubuntu runner doesn't.
 #
 # Triggers on push to the qa-matrix branch so the foundation PR can demonstrate
 # the matrix in action; the production trigger (tag-driven release pipeline)
@@ -29,14 +30,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  matrix:
+  native:
+    name: native (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  asset: lilbee-linux-x86_64,        chmod: true  }
-          - { os: macos-latest,   asset: lilbee-macos-arm64,         chmod: true  }
-          - { os: windows-latest, asset: lilbee-windows-x86_64.exe,  chmod: false }
+          - { os: ubuntu-latest,  label: ubuntu,  asset: lilbee-linux-x86_64,        chmod: true  }
+          - { os: macos-latest,   label: macos,   asset: lilbee-macos-arm64,         chmod: true  }
+          - { os: windows-latest, label: windows, asset: lilbee-windows-x86_64.exe,  chmod: false }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -75,37 +77,49 @@ jobs:
         shell: bash
         run: |
           python -m pytest tools/qa/ -v --tb=short \
-            --junitxml=qa-${{ matrix.os }}.xml
+            --junitxml=qa-${{ matrix.label }}.xml
 
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-${{ matrix.os }}
+          name: qa-${{ matrix.label }}
           path: |
             qa-*.xml
             _bin/
             tools/qa/.pytest_cache/
           retention-days: 7
 
-  # Arch Linux runs the same Linux x86_64 binary inside an Arch container.
-  # Different glibc, fontconfig, and library layout vs ubuntu-latest. Catches
-  # the class of bug where the PyInstaller bundle imports an Ubuntu-shape lib
-  # that Arch resolves differently or doesn't ship at all.
-  arch:
+  # Linux distros that ship a different glibc / fontconfig / lib layout than
+  # ubuntu-latest. Same lilbee-linux-x86_64 binary; the runtime is the variable.
+  linux-distros:
+    name: linux-distros (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: arch,    container: archlinux:latest, install: arch    }
+          - { label: fedora,  container: fedora:latest,    install: fedora  }
     runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
     timeout-minutes: 20
-    container: archlinux:latest
     steps:
       - name: Install Arch base toolchain
+        if: matrix.install == 'arch'
         run: |
           pacman -Sy --noconfirm
           pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates
 
+      - name: Install Fedora base toolchain
+        if: matrix.install == 'fedora'
+        run: |
+          dnf -y update
+          dnf -y install python3 python3-pip git gh ca-certificates
+
       - uses: actions/checkout@v6
 
       - name: Install QA harness deps
-        run: python -m pip install --break-system-packages -r tools/qa/requirements.txt
+        run: python3 -m pip install --break-system-packages -r tools/qa/requirements.txt
 
       - name: Download lilbee binary from GH release
         env:
@@ -127,13 +141,13 @@ jobs:
           LILBEE_QA_BIN: ${{ github.workspace }}/_bin/lilbee-linux-x86_64
           PYTHONUNBUFFERED: "1"
         run: |
-          python -m pytest tools/qa/ -v --tb=short --junitxml=qa-arch.xml
+          python3 -m pytest tools/qa/ -v --tb=short --junitxml=qa-${{ matrix.label }}.xml
 
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-arch
+          name: qa-${{ matrix.label }}
           path: |
             qa-*.xml
             _bin/
