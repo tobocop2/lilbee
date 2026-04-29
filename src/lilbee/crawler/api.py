@@ -373,8 +373,24 @@ async def _drain_background_tasks() -> None:
     ``coroutine ingest_batch._process_one was never awaited`` warnings to
     stderr (and into the TUI). gather(...return_exceptions=True) swallows
     sync failures; the task itself already logs them via _run_sync.
+
+    Filters to tasks owned by the running loop so stale entries from a
+    previous loop (test isolation between asyncio.run() calls, server
+    hot-reload that starts a fresh loop) don't crash the drain with
+    cross-loop await errors. Such stale tasks are dropped from the
+    registry so subsequent drains don't keep re-encountering them.
     """
-    pending = list(_state.background_tasks)
+    loop = asyncio.get_running_loop()
+    pending: list[asyncio.Task[Any]] = []
+    stale: set[asyncio.Task[Any]] = set()
+    for task in list(_state.background_tasks):
+        if task.done():
+            continue
+        if task.get_loop() is loop:
+            pending.append(task)
+        else:
+            stale.add(task)
+    _state.background_tasks -= stale
     if not pending:
         return
     await asyncio.gather(*pending, return_exceptions=True)

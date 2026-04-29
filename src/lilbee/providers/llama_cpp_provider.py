@@ -611,10 +611,13 @@ def resolve_model_path(model: str) -> Path:
 def _llama_cpp_has_rank_pooling() -> bool:
     """Return True iff the installed llama-cpp-python exposes ``LLAMA_POOLING_TYPE_RANK``."""
     # supports_rerank() can be called before any model load (feature detection
-    # for status / catalog UIs), so route through import_llama_cpp() to surface
-    # the libvulkan hint rather than a raw OSError on bare Linux installs.
-    import_llama_cpp()
+    # for status / catalog UIs), so route through import_llama_cpp() first to
+    # surface the libvulkan hint rather than a raw OSError on bare Linux. A
+    # genuinely-missing llama_cpp package surfaces as ImportError and means
+    # "no rerank support"; a libvulkan-flavored OSError is a real install
+    # error and must propagate as ProviderError to the caller.
     try:
+        import_llama_cpp()
         from llama_cpp import LLAMA_POOLING_TYPE_RANK  # noqa: F401
     except ImportError:
         return False
