@@ -153,11 +153,12 @@ def test_ask_stream_completes_with_token_events(
     ):
         response.raise_for_status()
         for sse in EventSource(response).iter_sse():
-            events.append((sse.event, sse.data[:120]))
-            if sse.event == "DONE":
+            evt = sse.event.lower()
+            events.append((evt, sse.data[:120]))
+            if evt == "done":
                 saw_done = True
                 break
-            if sse.event == "ERROR":
+            if evt == "error":
                 saw_error = True
                 break
             if time.monotonic() > deadline:
@@ -172,8 +173,8 @@ def test_ask_stream_completes_with_token_events(
     }
     assert saw_done, f"stream never reached DONE within {_STREAM_TIMEOUT}s; {summary}"
     assert not saw_error, f"stream ended with ERROR; {summary}"
-    token_events = [e for e, _ in events if e == "TOKEN"]
-    assert token_events, f"no TOKEN events emitted; {summary}"
+    token_events = [e for e, _ in events if e == "token"]
+    assert token_events, f"no token events emitted; {summary}"
 
 
 @pytest.mark.tui
