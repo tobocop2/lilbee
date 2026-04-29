@@ -1,0 +1,146 @@
+name: Publish Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)publish (e.g. v0.6.66b456)"
+        required: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.info.outputs.tag }}
+      version: ${{ steps.info.outputs.version }}
+      sha_linux: ${{ steps.info.outputs.sha_linux }}
+      sha_macos_arm64: ${{ steps.info.outputs.sha_macos_arm64 }}
+      sha_macos_x86_64: ${{ steps.info.outputs.sha_macos_x86_64 }}
+    steps:
+      - name: Resolve tag and asset digests
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          version="${tag#v}"
+          gh api "/repos/${REPO}/releases/tags/${tag}" \
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
+
+          get_sha() {
+            grep "^$1\t" /tmp/assets.tsv | cut -f2 || true
+          }
+          sha_linux=$(get_sha lilbee-linux-x86_64)
+          sha_macos_arm64=$(get_sha lilbee-macos-arm64)
+          sha_macos_x86_64=$(get_sha lilbee-macos-x86_64)
+
+          [ -n "$sha_linux" ] || { echo "lilbee-linux-x86_64 missing from release ${tag}"; exit 1; }
+          [ -n "$sha_macos_arm64" ] || { echo "lilbee-macos-arm64 missing from release ${tag}"; exit 1; }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha_linux=$sha_linux"
+            echo "sha_macos_arm64=$sha_macos_arm64"
+            echo "sha_macos_x86_64=$sha_macos_x86_64"
+          } >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render formula
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tap-out
+          cp packaging/homebrew/lilbee.rb /tmp/tap-out/lilbee.rb
+          extra_args=()
+          if [ -n "${{ needs.resolve.outputs.sha_macos_x86_64 }}" ]; then
+            extra_args+=(--sha-macos-x86_64 "${{ needs.resolve.outputs.sha_macos_x86_64 }}")
+          fi
+          python3 packaging/tools/render_formula.py /tmp/tap-out/lilbee.rb \
+            --version "${{ needs.resolve.outputs.version }}" \
+            --sha-macos-arm64 "${{ needs.resolve.outputs.sha_macos_arm64 }}" \
+            --sha-linux-x86_64 "${{ needs.resolve.outputs.sha_linux }}" \
+            "${extra_args[@]}"
+      - name: Push to homebrew-lilbee tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "lilbee-bot"
+          git config --global user.email "lilbee-bot@users.noreply.github.com"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp /tmp/tap-out/lilbee.rb /tmp/tap/Formula/lilbee.rb
+          cd /tmp/tap
+          git add Formula/lilbee.rb
+          if git diff --cached --quiet; then
+            echo "no formula changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee ${{ needs.resolve.outputs.version }}"
+          git push
+
+  aur:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render PKGBUILD
+        run: |
+          bash packaging/tools/render_pkgbuild.sh \
+            packaging/aur/lilbee-bin/PKGBUILD \
+            "${{ needs.resolve.outputs.version }}" \
+            "${{ needs.resolve.outputs.sha_linux }}"
+      - name: Regenerate .SRCINFO
+        run: |
+          docker run --rm -v "$PWD/packaging/aur/lilbee-bin:/pkg" -w /pkg archlinux:latest \
+            bash -c 'pacman -Sy --noconfirm pacman-contrib >/dev/null && \
+                     useradd -m b && chown -R b /pkg && \
+                     su b -c "makepkg --printsrcinfo" > .SRCINFO'
+      - name: Deploy to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        with:
+          pkgname: lilbee-bin
+          pkgbuild: packaging/aur/lilbee-bin/PKGBUILD
+          assets: packaging/aur/lilbee-bin/.SRCINFO
+          commit_username: tobocop
+          commit_email: tobias.perelstein@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "lilbee ${{ needs.resolve.outputs.version }}"
+          force_push: false
+
+  docker:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: packaging/docker
+          file: packaging/docker/Dockerfile
+          build-args: |
+            LILBEE_VERSION=${{ needs.resolve.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lilbee:${{ needs.resolve.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/lilbee:latest
+          push: true
