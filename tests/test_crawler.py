@@ -1366,6 +1366,61 @@ class TestPeriodicSync:
         lock.release()
 
 
+class TestDrainBackgroundTasks:
+    """``_drain_background_tasks`` waits for spawned periodic-sync tasks
+    so the crawl runner doesn't close the loop with work mid-flight.
+    """
+
+    async def test_no_pending_tasks_returns_immediately(self, isolated_env):
+        """With no spawned tasks, the helper is a fast no-op."""
+        from lilbee.crawler.api import _drain_background_tasks, _state
+
+        _state.background_tasks = set()
+        await _drain_background_tasks()
+        assert _state.background_tasks == set()
+
+    async def test_awaits_pending_periodic_sync(self, isolated_env):
+        """A pending periodic-sync task must finish before the drain returns."""
+        import asyncio
+
+        from lilbee.crawler.api import _drain_background_tasks, _state
+
+        sync_finished = False
+
+        async def _slow_sync() -> None:
+            nonlocal sync_finished
+            await asyncio.sleep(0.01)
+            sync_finished = True
+
+        task = asyncio.create_task(_slow_sync())
+        _state.background_tasks = {task}
+        task.add_done_callback(_state.background_tasks.discard)
+
+        await _drain_background_tasks()
+
+        assert sync_finished is True
+        assert task.done()
+
+    async def test_swallows_task_exception(self, isolated_env):
+        """A failing periodic-sync task must not bubble out of the drain."""
+        import asyncio
+
+        from lilbee.crawler.api import _drain_background_tasks, _state
+
+        async def _boom() -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("sync exploded")
+
+        task = asyncio.create_task(_boom())
+        _state.background_tasks = {task}
+        task.add_done_callback(_state.background_tasks.discard)
+
+        # Must not raise: gather(..., return_exceptions=True) absorbs failures
+        # so the crawl finally-block stays robust.
+        await _drain_background_tasks()
+        assert task.done()
+
+
 class TestCrawlerStateReset:
     def test_reset_clears_all_state(self, isolated_env):
         """CrawlerState.reset() restores all fields to initial values."""
@@ -2083,6 +2138,51 @@ class TestStreamingFlush:
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
         mock_sync.assert_awaited_once()
+
+    async def test_crawl_and_save_drains_background_tasks(self, isolated_env):
+        """bb-zqws: crawl_and_save awaits any spawned periodic-sync task before returning.
+
+        Without the drain, the asyncio runner closed the loop mid-ingest and
+        emitted ``Task was destroyed but it is pending`` for the periodic
+        sync's ``ingest_batch`` worker. The drain happens in the finally
+        block so the cancel-path also gets the cleanup.
+        """
+        import asyncio as _asyncio
+        import threading
+
+        from lilbee.crawler import api as crawler_mod
+
+        async def _gen():
+            await _asyncio.sleep(0)
+            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_gen())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        sync_completed = _asyncio.Event()
+
+        async def _slow_sync(*_args, **_kwargs):
+            # Mimic the real ingest_batch: yield, then mark done. Without
+            # the drain, the loop would close before this runs.
+            await _asyncio.sleep(0.01)
+            sync_completed.set()
+
+        cfg.crawl_sync_interval = 1
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
+
+        with (
+            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            patch("lilbee.ingest.sync", _slow_sync),
+        ):
+            await crawl_and_save("https://example.com", depth=0)
+
+        # crawl_and_save should not return until the periodic-sync task has
+        # finished, so the Event is already set on the next line.
+        assert sync_completed.is_set()
+        assert all(t.done() for t in crawler_mod._state.background_tasks)
 
     async def test_metadata_flush_is_batched(self, isolated_env):
         """_flush_metadata fires every METADATA_FLUSH_INTERVAL pages, not every page."""

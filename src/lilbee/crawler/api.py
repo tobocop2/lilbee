@@ -364,6 +364,22 @@ async def _maybe_periodic_sync() -> None:
     task.add_done_callback(_state.background_tasks.discard)
 
 
+async def _drain_background_tasks() -> None:
+    """Await every periodic-sync task spawned during the current crawl.
+
+    Without this drain, ``asyncio.run(crawl_and_save(...))`` closes the
+    loop while a periodic sync is mid-ingest, surfacing
+    ``Task was destroyed but it is pending`` and
+    ``coroutine ingest_batch._process_one was never awaited`` warnings to
+    stderr (and into the TUI). gather(...return_exceptions=True) swallows
+    sync failures; the task itself already logs them via _run_sync.
+    """
+    pending = list(_state.background_tasks)
+    if not pending:
+        return
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _make_flush_page(
     meta: dict[str, CrawlMeta],
     written_paths: list[Path],
@@ -497,5 +513,8 @@ async def crawl_and_save(
 
         return written_paths
     finally:
+        # Drain the periodic-sync task BEFORE releasing the crawl semaphore so
+        # asyncio.run() doesn't close the loop with the sync mid-ingest.
+        await _drain_background_tasks()
         if sem is not None:
             sem.release()
