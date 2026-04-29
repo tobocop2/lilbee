@@ -102,7 +102,7 @@ jobs:
                      useradd -m b && chown -R b /pkg && \
                      su b -c "makepkg --printsrcinfo" > .SRCINFO'
       - name: Deploy to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: lilbee-bin
           pkgbuild: packaging/aur/lilbee-bin/PKGBUILD
