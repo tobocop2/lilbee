@@ -8,8 +8,10 @@ between runs.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +26,14 @@ if TYPE_CHECKING:
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+
+@dataclass
+class CrawlerSyncState:
+    """Process-wide sync coordination state (lock + last-run timestamp)."""
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    last_run: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,8 @@ class Services:
     hf_client: HfClient
     ingest_lock_registry: IngestLockRegistry
     model_manager: ModelManager
+    crawler_semaphore: asyncio.Semaphore | None
+    crawler_sync_state: CrawlerSyncState
 
 
 _svc: Services | None = None
@@ -84,6 +96,10 @@ def get_services() -> Services:
     hf_client = HfClient()
     ingest_lock_registry = IngestLockRegistry()
     model_manager = ModelManager(cfg.models_dir, cfg.remote_base_url)
+    crawler_semaphore = (
+        asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
+    )
+    crawler_sync_state = CrawlerSyncState()
     _svc = Services(
         provider=provider,
         store=store,
@@ -96,6 +112,8 @@ def get_services() -> Services:
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
         model_manager=model_manager,
+        crawler_semaphore=crawler_semaphore,
+        crawler_sync_state=crawler_sync_state,
     )
     return _svc
 

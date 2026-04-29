@@ -354,38 +354,12 @@ class TestCrawlAndSaveOrchestration:
             await crawl_and_save("https://example.com", depth=1)
         mock_sync.assert_awaited_once()
 
-    async def test_drain_background_tasks_awaits_pending_sync(self):
-        """``drain_background_tasks`` awaits any in-flight ``_maybe_periodic_sync``
-        task so the CLI's event-loop teardown doesn't destroy a pending sync.
-        Long-lived HTTP/MCP loops don't call drain; their loops stay open long
-        enough for the fire-and-forget task to finish naturally.
-        """
-        import asyncio
-
-        sync_completed = asyncio.Event()
-
-        async def _slow_sync() -> None:
-            await asyncio.sleep(0.05)
-            sync_completed.set()
-
-        runner_mod._state.reset()
-        task = asyncio.create_task(_slow_sync())
-        runner_mod._state.background_tasks.add(task)
-        task.add_done_callback(runner_mod._state.background_tasks.discard)
-
+    async def test_drain_background_tasks_deprecated_noop(self):
+        """``drain_background_tasks`` is a documented deprecated no-op."""
         from lilbee.crawler.runner import drain_background_tasks
 
-        await drain_background_tasks()
-        assert sync_completed.is_set()
-        assert not runner_mod._state.background_tasks
-
-    async def test_drain_background_tasks_no_op_when_empty(self):
-        """``drain_background_tasks`` is a fast no-op when no tasks are pending."""
-        runner_mod._state.reset()
-        from lilbee.crawler.runner import drain_background_tasks
-
-        await drain_background_tasks()
-        assert not runner_mod._state.background_tasks
+        assert await drain_background_tasks() is None
+        assert "Deprecated" in (drain_background_tasks.__doc__ or "")
 
 
 class TestConcurrencySemaphore:
@@ -393,23 +367,31 @@ class TestConcurrencySemaphore:
 
     async def test_no_semaphore_when_unlimited(self, monkeypatch):
         """``crawl_max_concurrent <= 0`` means no semaphore construction."""
+        from lilbee.core.services import reset_services
+
         cfg.crawl_max_concurrent = 0
-        # Force fresh state so prior tests don't hide the branch.
-        runner_mod._state.reset()
+        reset_services()
         assert runner_mod._get_crawl_semaphore() is None
 
-    async def test_semaphore_reused_at_same_limit(self):
+    async def test_semaphore_reused_within_services_lifetime(self):
+        """Repeated ``_get_crawl_semaphore`` calls return the same Services-owned semaphore."""
+        from lilbee.core.services import reset_services
+
         cfg.crawl_max_concurrent = 2
-        runner_mod._state.reset()
+        reset_services()
         sem1 = runner_mod._get_crawl_semaphore()
         sem2 = runner_mod._get_crawl_semaphore()
         assert sem1 is sem2
 
-    async def test_semaphore_rebuilt_on_limit_change(self):
+    async def test_semaphore_rebuilt_on_reset_services(self):
+        """``reset_services`` rebuilds the semaphore on next access."""
+        from lilbee.core.services import reset_services
+
         cfg.crawl_max_concurrent = 2
-        runner_mod._state.reset()
+        reset_services()
         first = runner_mod._get_crawl_semaphore()
         cfg.crawl_max_concurrent = 4
+        reset_services()
         second = runner_mod._get_crawl_semaphore()
         assert first is not second
 
