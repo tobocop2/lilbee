@@ -153,9 +153,7 @@ def test_ask_stream_completes_with_token_events(
         client.stream(
             "POST",
             f"{base_url}/api/ask/stream",
-            json={
-                "question": "Answer in one short sentence: which document covers EV batteries?"
-            },
+            json={"question": "Answer in one short sentence: which document covers EV batteries?"},
         ) as response,
     ):
         response.raise_for_status()
