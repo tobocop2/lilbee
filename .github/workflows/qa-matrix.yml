@@ -1,18 +1,19 @@
-name: QA Phase 0 harness smoke
+name: QA matrix
 
-# Validates that pywinpty/ptyprocess + pyte can drive a real lilbee binary
-# on Linux/macOS/Windows. GO/NO-GO for the rest of the QA matrix.
-# Deleted once Phase 0 lands green and the harness is proven across all
-# three OSes.
+# Runs the QA matrix against the published PyInstaller binary. Currently
+# exercises Phase 0 (PTY harness composition) and T0 (CLI smoke) across
+# Linux/macOS/Windows. Subsequent PRs add T1 CLI walk, T2 HTTP, T3 MCP, T4 TUI.
+#
+# Triggers on push to the qa-matrix branch so the foundation PR can demonstrate
+# the matrix in action; the production trigger (tag-driven release pipeline)
+# arrives in a follow-up PR.
 
 on:
   push:
     branches: [qa-matrix]
     paths:
-      - 'tools/qa/_phase0_harness_smoke.py'
-      - 'tools/qa/drivers/tui.py'
-      - 'tools/qa/requirements.txt'
-      - '.github/workflows/qa-phase0.yml'
+      - 'tools/qa/**'
+      - '.github/workflows/qa-matrix.yml'
   workflow_dispatch:
     inputs:
       lilbee_version:
@@ -24,11 +25,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: qa-phase0-${{ github.ref }}
+  group: qa-matrix-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  phase0:
+  matrix:
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +38,7 @@ jobs:
           - { os: macos-latest,   asset: lilbee-macos-arm64,         chmod: true  }
           - { os: windows-latest, asset: lilbee-windows-x86_64.exe,  chmod: false }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -66,20 +67,23 @@ jobs:
         if: matrix.chmod
         run: chmod +x "_bin/${{ matrix.asset }}"
 
-      - name: Run Phase 0 harness smoke
+      - name: Run QA matrix
         env:
+          LILBEE_QA_LANE: l2-binary
           LILBEE_QA_BIN: ${{ github.workspace }}/_bin/${{ matrix.asset }}
           PYTHONUNBUFFERED: "1"
         shell: bash
         run: |
-          python -m pytest tools/qa/_phase0_harness_smoke.py -v --tb=short
+          python -m pytest tools/qa/ -v --tb=short \
+            --junitxml=qa-${{ matrix.os }}.xml
 
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: phase0-${{ matrix.os }}
+          name: qa-${{ matrix.os }}
           path: |
+            qa-*.xml
             _bin/
             tools/qa/.pytest_cache/
           retention-days: 7
