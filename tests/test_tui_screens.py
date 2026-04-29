@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import sys
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +19,8 @@ from lilbee.catalog import (
     CatalogModel,
     CatalogResult,
 )
+from lilbee.cli.tui import _silence_stderr_log_handlers
+from lilbee.cli.tui import app as tui_app
 from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_HF,
     _WORKER_FETCH_MORE_HF,
@@ -8019,47 +8024,33 @@ async def test_app_force_quit_calls_os_exit():
 
 
 class TestResetTerminalModes:
-    """``_reset_terminal_modes`` writes the alt-screen / paste / mouse off
-    sequences when stdout is a TTY, so a force-quit doesn't leave the next
-    shell command interpreting paste-mode escape bytes as input. (bb-6b86)
-    """
+    """``_reset_terminal_modes`` emits terminal-mode reset sequences on a TTY. (bb-6b86)"""
 
     def test_writes_reset_sequence_when_tty(self, monkeypatch):
-        from io import StringIO
-
-        from lilbee.cli.tui import app as app_mod
-
+        """Bracketed paste, mouse tracking, alt-screen off; cursor on."""
         fake_stdout = StringIO()
         monkeypatch.setattr(fake_stdout, "isatty", lambda: True, raising=False)
         monkeypatch.setattr("sys.stdout", fake_stdout)
 
-        app_mod._reset_terminal_modes()
+        tui_app._reset_terminal_modes()
         out = fake_stdout.getvalue()
 
-        # Bracketed paste off, mouse tracking off, alt-screen off, cursor on.
         assert "\x1b[?2004l" in out
         assert "\x1b[?1003l" in out
         assert "\x1b[?1049l" in out
         assert "\x1b[?25h" in out
 
     def test_skips_write_when_not_tty(self, monkeypatch):
-        from io import StringIO
-
-        from lilbee.cli.tui import app as app_mod
-
+        """Non-TTY (CI, pipes): no terminal state to reset, no bytes written."""
         fake_stdout = StringIO()
         monkeypatch.setattr(fake_stdout, "isatty", lambda: False, raising=False)
         monkeypatch.setattr("sys.stdout", fake_stdout)
 
-        app_mod._reset_terminal_modes()
-        # Non-TTY (CI, pipes): no terminal state to reset, no bytes written.
+        tui_app._reset_terminal_modes()
         assert fake_stdout.getvalue() == ""
 
     def test_swallows_oserror_so_force_quit_can_still_exit(self, monkeypatch):
-        """Write failures must not raise: _force_quit calls this on the way
-        to ``os._exit`` and a propagating exception would mask the exit.
-        """
-        from lilbee.cli.tui import app as app_mod
+        """Write failures must not raise: a propagating exception would mask os._exit."""
 
         class _BrokenStdout:
             def isatty(self) -> bool:
@@ -8072,33 +8063,24 @@ class TestResetTerminalModes:
                 raise AssertionError("flush should not run after write fails")
 
         monkeypatch.setattr("sys.stdout", _BrokenStdout())
-        # Must not raise.
-        app_mod._reset_terminal_modes()
+        tui_app._reset_terminal_modes()
 
     def test_swallows_valueerror_on_closed_stdout(self, monkeypatch):
         """A closed stdout raises ValueError on isatty(); the helper is a no-op."""
-        from lilbee.cli.tui import app as app_mod
 
         class _ClosedStdout:
             def isatty(self) -> bool:
                 raise ValueError("I/O operation on closed file")
 
         monkeypatch.setattr("sys.stdout", _ClosedStdout())
-        app_mod._reset_terminal_modes()
+        tui_app._reset_terminal_modes()
 
 
 class TestSilenceStderrLogHandlers:
-    """``_silence_stderr_log_handlers`` strips stderr-streaming handlers
-    from the root logger before mounting Textual, so library log writes
-    can't corrupt the TUI's bottom-bar render. (bb-82ce)
-    """
+    """``_silence_stderr_log_handlers`` drops stderr/stdout root handlers (bb-82ce)."""
 
     def test_removes_stderr_streamhandler(self):
-        import logging
-        import sys
-
-        from lilbee.cli.tui import _silence_stderr_log_handlers
-
+        """A StreamHandler bound to sys.stderr is removed from the root logger."""
         root = logging.getLogger()
         before = list(root.handlers)
         try:
@@ -8110,10 +8092,7 @@ class TestSilenceStderrLogHandlers:
             root.handlers[:] = before
 
     def test_keeps_file_and_null_handlers(self, tmp_path):
-        import logging
-
-        from lilbee.cli.tui import _silence_stderr_log_handlers
-
+        """FileHandler (stream is the log file, not stderr) and NullHandler stay attached."""
         root = logging.getLogger()
         before = list(root.handlers)
         try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import sys
 import threading
 import time
@@ -13,6 +14,8 @@ import pytest
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.config import cfg
+from lilbee.providers.base import ProviderError
+from lilbee.providers.llama_cpp_provider import import_llama_cpp
 
 
 @pytest.fixture(autouse=True)
@@ -850,24 +853,17 @@ class TestSuppressStderrThreadSafety:
 
 
 class TestImportLlamaCpp:
-    """``import_llama_cpp`` converts a missing-libvulkan OSError into actionable text."""
+    """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError. (bb-387n)"""
 
     def test_returns_module_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Happy path: hands back the imported module."""
         sentinel = mock.MagicMock(name="llama_cpp_module")
         monkeypatch.setitem(sys.modules, "llama_cpp", sentinel)
 
-        from lilbee.providers.llama_cpp_provider import import_llama_cpp
-
         assert import_llama_cpp() is sentinel
 
     def test_libvulkan_oserror_raises_provider_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Bare Linux installs without libvulkan get install instructions, not a raw OSError."""
-        import builtins
-
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import import_llama_cpp
-
         real_import = builtins.__import__
 
         def fake_import(name: str, *args: object, **kwargs: object) -> object:
@@ -886,10 +882,6 @@ class TestImportLlamaCpp:
 
     def test_unrelated_oserror_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-vulkan OSErrors are not swallowed."""
-        import builtins
-
-        from lilbee.providers.llama_cpp_provider import import_llama_cpp
-
         real_import = builtins.__import__
 
         def fake_import(name: str, *args: object, **kwargs: object) -> object:

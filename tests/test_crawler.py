@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,7 +23,16 @@ from lilbee.crawler import (
     url_to_filename,
     validate_crawl_url,
 )
-from lilbee.crawler.api import _get_crawl_semaphore, _maybe_periodic_sync
+from lilbee.crawler import bootstrap as bootstrap_mod
+from lilbee.crawler.api import (
+    _drain_background_tasks,
+    _get_crawl_semaphore,
+    _maybe_periodic_sync,
+)
+from lilbee.crawler.api import (
+    _state as crawler_state,
+)
+from lilbee.crawler.bootstrap import CrawlerBrowserMissing
 from lilbee.crawler.save import _save_single_result, _update_single_metadata
 from lilbee.progress import EventType
 
@@ -554,15 +564,7 @@ class TestBootstrapChromium:
 
 
 class TestResolvePlaywrightRunner:
-    """``_resolve_playwright_runner`` resolves Playwright's bundled Node driver
-    so chromium install works under both wheel and PyInstaller frozen layouts
-    without a system Python interpreter.
-
-    bb-sxsz: the previous wheel-style ``sys.executable -m playwright`` spawn
-    failed under PyInstaller because ``sys.executable`` is the lilbee binary,
-    not Python. Routing through ``compute_driver_executable`` invokes the
-    bundled ``playwright/driver/node`` + ``cli.js`` directly.
-    """
+    """``_resolve_playwright_runner`` returns argv + env for the bundled driver (bb-sxsz)."""
 
     def _install_fake_driver_module(
         self,
@@ -573,27 +575,20 @@ class TestResolvePlaywrightRunner:
     ) -> None:
         """Inject a fake ``playwright._impl._driver`` into sys.modules.
 
-        The regular ``test`` CI job runs without lilbee[crawler]; mocking
-        attributes on the real submodule with monkeypatch.setattr would
-        require the import to succeed first. Stubbing sys.modules instead
-        keeps the test importable on every lane.
+        The regular ``test`` CI job runs without lilbee[crawler]; stubbing
+        sys.modules keeps the test importable on every lane.
         """
-        import sys as _sys
-        import types
-
         playwright = types.ModuleType("playwright")
         playwright_impl = types.ModuleType("playwright._impl")
         playwright_driver = types.ModuleType("playwright._impl._driver")
         playwright_driver.compute_driver_executable = compute  # type: ignore[attr-defined]
         playwright_driver.get_driver_env = (lambda: env) if env is not None else None  # type: ignore[attr-defined]
-        monkeypatch.setitem(_sys.modules, "playwright", playwright)
-        monkeypatch.setitem(_sys.modules, "playwright._impl", playwright_impl)
-        monkeypatch.setitem(_sys.modules, "playwright._impl._driver", playwright_driver)
+        monkeypatch.setitem(sys.modules, "playwright", playwright)
+        monkeypatch.setitem(sys.modules, "playwright._impl", playwright_impl)
+        monkeypatch.setitem(sys.modules, "playwright._impl._driver", playwright_driver)
 
     def test_uses_compute_driver_executable(self, monkeypatch):
         """Returns argv from playwright's bundled driver lookup, with driver env."""
-        from lilbee.crawler import bootstrap as boot_mod
-
         fake_node = "/fake/site-packages/playwright/driver/node"
         fake_cli = "/fake/site-packages/playwright/driver/package/cli.js"
         self._install_fake_driver_module(
@@ -602,15 +597,13 @@ class TestResolvePlaywrightRunner:
             env={"PW_LANG_NAME": "python", "PATH": "/usr/bin"},
         )
 
-        argv, env = boot_mod._resolve_playwright_runner()
+        argv, env = bootstrap_mod._resolve_playwright_runner()
         assert argv == [fake_node, fake_cli]
         assert env["PW_LANG_NAME"] == "python"
         assert env["PATH"] == "/usr/bin"
 
     def test_works_under_frozen_build(self, monkeypatch):
         """PyInstaller layout: same code path, no system Python required."""
-        from lilbee.crawler import bootstrap as boot_mod
-
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         fake_node = "/_MEI/playwright/driver/node"
         fake_cli = "/_MEI/playwright/driver/package/cli.js"
@@ -620,13 +613,11 @@ class TestResolvePlaywrightRunner:
             env={},
         )
 
-        argv, _env = boot_mod._resolve_playwright_runner()
+        argv, _env = bootstrap_mod._resolve_playwright_runner()
         assert argv == [fake_node, fake_cli]
 
     def test_compute_driver_failure_falls_back_when_not_frozen(self, monkeypatch):
         """compute_driver_executable raise on a wheel install falls back to sys.executable -m."""
-        from lilbee.crawler import bootstrap as boot_mod
-
         monkeypatch.delattr(sys, "frozen", raising=False)
 
         def _boom() -> tuple[str, str]:
@@ -634,13 +625,11 @@ class TestResolvePlaywrightRunner:
 
         self._install_fake_driver_module(monkeypatch, compute=_boom, env={})
 
-        argv, _env = boot_mod._resolve_playwright_runner()
+        argv, _env = bootstrap_mod._resolve_playwright_runner()
         assert argv == [sys.executable, "-m", "playwright"]
 
     def test_compute_driver_failure_under_frozen_propagates(self, monkeypatch):
-        """If compute_driver_executable raises on a frozen build, raise (no fallback)."""
-        from lilbee.crawler import bootstrap as boot_mod
-
+        """compute_driver_executable raise under PyInstaller propagates (no fallback)."""
         monkeypatch.setattr(sys, "frozen", True, raising=False)
 
         def _boom() -> tuple[str, str]:
@@ -649,13 +638,11 @@ class TestResolvePlaywrightRunner:
         self._install_fake_driver_module(monkeypatch, compute=_boom, env={})
 
         with pytest.raises(RuntimeError, match="API drift"):
-            boot_mod._resolve_playwright_runner()
+            bootstrap_mod._resolve_playwright_runner()
 
     def test_playwright_missing_raises_actionable_error(self, monkeypatch):
-        """``ImportError: playwright`` raises CrawlerBrowserMissing with install hint."""
+        """ImportError on playwright raises CrawlerBrowserMissing with install hint."""
         import builtins
-
-        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, _resolve_playwright_runner
 
         real_import = builtins.__import__
 
@@ -667,21 +654,17 @@ class TestResolvePlaywrightRunner:
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
         with pytest.raises(CrawlerBrowserMissing) as ei:
-            _resolve_playwright_runner()
+            bootstrap_mod._resolve_playwright_runner()
         message = str(ei.value)
-        # Must name the install fix; bare 'not found' breaks the user's
-        # recovery loop in the release executable.
+        # The error must name the install fix; bare 'not found' breaks the
+        # user's recovery loop in the release executable.
         assert "lilbee[crawler]" in message or "playwright" in message
 
     async def test_bootstrap_chromium_emits_setup_done_when_playwright_missing(self, monkeypatch):
-        """bootstrap_chromium catches the CrawlerBrowserMissing the runner
-        resolution raises, fires setup_done(success=False), and re-raises
-        so the task center routes the user to the actionable error.
-        """
+        """bootstrap_chromium fires setup_done(success=False) before re-raising."""
         import builtins
 
-        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
-        from lilbee.progress import EventType, SetupDoneEvent
+        from lilbee.progress import SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
 
@@ -696,10 +679,8 @@ class TestResolvePlaywrightRunner:
 
         events: list[tuple[EventType, object]] = []
         with pytest.raises(CrawlerBrowserMissing):
-            await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
+            await bootstrap_mod.bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
 
-        # setup_start fires before the failure surfaces, then setup_done
-        # with success=False so the task bar transitions to FAILED.
         types = [e for e, _ in events]
         assert types[0] == EventType.SETUP_START
         assert types[-1] == EventType.SETUP_DONE
@@ -1533,36 +1514,24 @@ class TestPeriodicSync:
 
 
 class TestDrainBackgroundTasks:
-    """``_drain_background_tasks`` waits for spawned periodic-sync tasks
-    so the crawl runner doesn't close the loop with work mid-flight.
-    """
+    """``_drain_background_tasks`` cancels periodic-sync tasks so crawl_and_save
+    can exit cleanly without 'destroyed but pending' warnings. (bb-zqws)"""
 
     async def test_no_pending_tasks_returns_immediately(self, isolated_env):
         """With no spawned tasks, the helper is a fast no-op."""
-        from lilbee.crawler.api import _drain_background_tasks, _state
-
-        _state.background_tasks = set()
+        crawler_state.background_tasks = set()
         await _drain_background_tasks()
-        assert _state.background_tasks == set()
+        assert crawler_state.background_tasks == set()
 
     async def test_cancels_pending_periodic_sync(self, isolated_env):
-        """A pending periodic-sync task must be cancelled by the drain.
-
-        The drain cancels rather than awaits so a slow or stuck sync can't
-        block crawl_and_save's exit. The task ends as Cancelled rather
-        than completed, but the asyncio runner sees a clean teardown
-        (no "Task was destroyed but it is pending" warning).
-        """
-        import asyncio
-
-        from lilbee.crawler.api import _drain_background_tasks, _state
+        """The drain cancels (not awaits) so a slow sync can't block crawl_and_save's exit."""
 
         async def _slow_sync() -> None:
             await asyncio.sleep(60.0)  # would deadlock the test if awaited
 
         task = asyncio.create_task(_slow_sync())
-        _state.background_tasks = {task}
-        task.add_done_callback(_state.background_tasks.discard)
+        crawler_state.background_tasks = {task}
+        task.add_done_callback(crawler_state.background_tasks.discard)
 
         await _drain_background_tasks()
 
@@ -1571,28 +1540,20 @@ class TestDrainBackgroundTasks:
 
     async def test_swallows_task_exception(self, isolated_env):
         """A failing periodic-sync task must not bubble out of the drain."""
-        import asyncio
-
-        from lilbee.crawler.api import _drain_background_tasks, _state
 
         async def _boom() -> None:
             await asyncio.sleep(0)
             raise RuntimeError("sync exploded")
 
         task = asyncio.create_task(_boom())
-        _state.background_tasks = {task}
-        task.add_done_callback(_state.background_tasks.discard)
+        crawler_state.background_tasks = {task}
+        task.add_done_callback(crawler_state.background_tasks.discard)
 
-        # Must not raise: gather(..., return_exceptions=True) absorbs failures
-        # so the crawl finally-block stays robust.
         await _drain_background_tasks()
         assert task.done()
 
     async def test_skips_already_done_task(self, isolated_env):
         """A task that already finished is left untouched by the drain."""
-        import asyncio
-
-        from lilbee.crawler.api import _drain_background_tasks, _state
 
         async def _quick() -> str:
             return "ok"
@@ -1600,10 +1561,9 @@ class TestDrainBackgroundTasks:
         task = asyncio.create_task(_quick())
         await task  # finish it before the drain sees it
         # Re-add manually because add_done_callback already discarded it.
-        _state.background_tasks = {task}
+        crawler_state.background_tasks = {task}
 
         await _drain_background_tasks()
-        # Drain saw the done task and skipped it (no cancel attempt).
         assert task.done()
         assert not task.cancelled()
         assert task.result() == "ok"
@@ -1612,28 +1572,22 @@ class TestDrainBackgroundTasks:
         """A task whose loop has closed gets dropped instead of awaited.
 
         Mirrors what happens when an earlier asyncio.run() call left a task
-        in _state.background_tasks: subsequent crawl_and_save() runs on a
-        new loop and must not try to cross-await it.
+        in background_tasks: subsequent crawl_and_save() runs on a new loop
+        and must not try to cross-await it.
         """
-        import asyncio
-        from unittest.mock import MagicMock
-
-        from lilbee.crawler.api import _drain_background_tasks, _state
-
-        # Build a stand-in task whose get_loop() points at a different
-        # (not-running) loop. MagicMock(spec=Task) keeps isinstance checks
-        # happy without spawning a real cross-loop task.
+        # MagicMock(spec=Task) lets us simulate a cross-loop entry without
+        # spawning a real task on a separate loop (which would be cleanup-heavy).
         other_loop = asyncio.new_event_loop()
         try:
             stale_task = MagicMock(spec=asyncio.Task)
             stale_task.done.return_value = False
             stale_task.get_loop.return_value = other_loop
 
-            _state.background_tasks = {stale_task}
+            crawler_state.background_tasks = {stale_task}
 
             await _drain_background_tasks()
 
-            assert stale_task not in _state.background_tasks
+            assert stale_task not in crawler_state.background_tasks
             stale_task.cancel.assert_not_called()  # never touched mid-flight
         finally:
             other_loop.close()
@@ -2358,21 +2312,11 @@ class TestStreamingFlush:
         mock_sync.assert_awaited_once()
 
     async def test_crawl_and_save_drains_background_tasks(self, isolated_env):
-        """bb-zqws: crawl_and_save cancels any spawned periodic-sync task before returning.
-
-        Without the drain, the asyncio runner closed the loop mid-ingest and
-        emitted ``Task was destroyed but it is pending`` for the periodic
-        sync's ``ingest_batch`` worker. The drain cancels in the finally
-        block - cancellation is enough to satisfy asyncio's destruction
-        check, and avoids the deadlock risk of awaiting a slow sync.
-        """
-        import asyncio as _asyncio
+        """crawl_and_save cancels any spawned periodic-sync task before returning. (bb-zqws)"""
         import threading
 
-        from lilbee.crawler import api as crawler_mod
-
         async def _gen():
-            await _asyncio.sleep(0)
+            await asyncio.sleep(0)
             yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
 
         mock_instance = AsyncMock()
@@ -2381,13 +2325,12 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         async def _slow_sync(*_args, **_kwargs):
-            # Sync that would deadlock the test if awaited; the drain
-            # must cancel it instead.
-            await _asyncio.sleep(60.0)
+            # Would deadlock the test if the drain awaited instead of cancelling.
+            await asyncio.sleep(60.0)
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        crawler_mod._state.sync_running = threading.Lock()
+        crawler_state.last_sync_time = 0.0
+        crawler_state.sync_running = threading.Lock()
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
@@ -2395,9 +2338,9 @@ class TestStreamingFlush:
         ):
             await crawl_and_save("https://example.com", depth=0)
 
-        # All spawned periodic-sync tasks finished as Cancelled. The set
-        # is empty because the done callback removes them.
-        assert all(t.done() for t in crawler_mod._state.background_tasks)
+        # The done callback cleared the registry; any task that survived would
+        # mean the drain didn't await its cancellation.
+        assert all(t.done() for t in crawler_state.background_tasks)
 
     async def test_metadata_flush_is_batched(self, isolated_env):
         """_flush_metadata fires every METADATA_FLUSH_INTERVAL pages, not every page."""
