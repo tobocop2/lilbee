@@ -209,27 +209,38 @@ def test_tui_chat_advances_past_thinking_spinner(
     session = TuiSession([lane.lilbee_bin], env=lilbee_env_with_models)
     try:
         session.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
-        # Type a question and submit. The TUI's input field needs Enter to
-        # send; \r works on POSIX and Windows ConPTY.
         session.send("Answer in one short sentence: which document covers EV batteries?\r")
-        # Wait for ANY of: a citation marker pointing to ev-notes, the
-        # word 'battery' rendering as part of the response (citation hit),
-        # or the 'lithium' from the source. This catches the case where
-        # the model produces tokens but the TUI doesn't render them, AND
-        # the case where the model never produces tokens at all (timeout).
-        try:
-            session.wait_for("ev-notes", timeout=_TUI_RESPONSE_TIMEOUT)
-        except AssertionError:
-            # Fallback: even if the citation footer isn't rendered, the
-            # streamed answer text typically contains 'battery' or 'lithium'.
-            try:
-                session.wait_for("battery", timeout=10.0)
-            except AssertionError as exc:
-                screenshot = lilbee_data / "tui-softlock.txt"
-                session.screenshot(screenshot)
-                raise AssertionError(
-                    f"TUI never produced a response within {_TUI_RESPONSE_TIMEOUT}s. "
-                    f"Suggests softlock on 'thinking...'. Screenshot: {screenshot}"
-                ) from exc
+        # The contract this test checks is "the TUI streams a response and
+        # doesn't softlock on 'thinking...'", not "the model answers the
+        # question correctly" (covered separately by CLI/HTTP cite-the-source
+        # assertions against the structured sources array). A 135M model
+        # routinely picks the wrong chunk and dumps it verbatim — that's a
+        # model-quality issue, not a TUI bug. Assert the response section
+        # rendered SOMETHING from either source: any phrase that appears in
+        # one of the seed corpus files. If none appear within the timeout,
+        # the spinner softlocked.
+        corpus_markers = (
+            # ev-notes phrases
+            "lithium",
+            "battery",
+            "Wh/kg",
+            # coffee-notes phrases
+            "French press",
+            "extraction",
+            "grind",
+        )
+        deadline = time.monotonic() + _TUI_RESPONSE_TIMEOUT
+        while time.monotonic() < deadline:
+            visible = session.text().lower()
+            if any(marker.lower() in visible for marker in corpus_markers):
+                return
+            time.sleep(1.0)
+        screenshot = lilbee_data / "tui-softlock.txt"
+        session.screenshot(screenshot)
+        raise AssertionError(
+            f"TUI never rendered a response derived from the corpus within "
+            f"{_TUI_RESPONSE_TIMEOUT}s. Suggests softlock on 'thinking...'. "
+            f"Screenshot: {screenshot}"
+        )
     finally:
         session.close()
