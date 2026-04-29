@@ -1467,18 +1467,20 @@ class TestDrainBackgroundTasks:
         await _drain_background_tasks()
         assert _state.background_tasks == set()
 
-    async def test_awaits_pending_periodic_sync(self, isolated_env):
-        """A pending periodic-sync task must finish before the drain returns."""
+    async def test_cancels_pending_periodic_sync(self, isolated_env):
+        """A pending periodic-sync task must be cancelled by the drain.
+
+        The drain cancels rather than awaits so a slow or stuck sync can't
+        block crawl_and_save's exit. The task ends as Cancelled rather
+        than completed, but the asyncio runner sees a clean teardown
+        (no "Task was destroyed but it is pending" warning).
+        """
         import asyncio
 
         from lilbee.crawler.api import _drain_background_tasks, _state
 
-        sync_finished = False
-
         async def _slow_sync() -> None:
-            nonlocal sync_finished
-            await asyncio.sleep(0.01)
-            sync_finished = True
+            await asyncio.sleep(60.0)  # would deadlock the test if awaited
 
         task = asyncio.create_task(_slow_sync())
         _state.background_tasks = {task}
@@ -1486,8 +1488,8 @@ class TestDrainBackgroundTasks:
 
         await _drain_background_tasks()
 
-        assert sync_finished is True
         assert task.done()
+        assert task.cancelled()
 
     async def test_swallows_task_exception(self, isolated_env):
         """A failing periodic-sync task must not bubble out of the drain."""
@@ -2228,12 +2230,13 @@ class TestStreamingFlush:
         mock_sync.assert_awaited_once()
 
     async def test_crawl_and_save_drains_background_tasks(self, isolated_env):
-        """bb-zqws: crawl_and_save awaits any spawned periodic-sync task before returning.
+        """bb-zqws: crawl_and_save cancels any spawned periodic-sync task before returning.
 
         Without the drain, the asyncio runner closed the loop mid-ingest and
         emitted ``Task was destroyed but it is pending`` for the periodic
-        sync's ``ingest_batch`` worker. The drain happens in the finally
-        block so the cancel-path also gets the cleanup.
+        sync's ``ingest_batch`` worker. The drain cancels in the finally
+        block - cancellation is enough to satisfy asyncio's destruction
+        check, and avoids the deadlock risk of awaiting a slow sync.
         """
         import asyncio as _asyncio
         import threading
@@ -2249,13 +2252,10 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        sync_completed = _asyncio.Event()
-
         async def _slow_sync(*_args, **_kwargs):
-            # Mimic the real ingest_batch: yield, then mark done. Without
-            # the drain, the loop would close before this runs.
-            await _asyncio.sleep(0.01)
-            sync_completed.set()
+            # Sync that would deadlock the test if awaited; the drain
+            # must cancel it instead.
+            await _asyncio.sleep(60.0)
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -2267,9 +2267,8 @@ class TestStreamingFlush:
         ):
             await crawl_and_save("https://example.com", depth=0)
 
-        # crawl_and_save should not return until the periodic-sync task has
-        # finished, so the Event is already set on the next line.
-        assert sync_completed.is_set()
+        # All spawned periodic-sync tasks finished as Cancelled. The set
+        # is empty because the done callback removes them.
         assert all(t.done() for t in crawler_mod._state.background_tasks)
 
     async def test_metadata_flush_is_batched(self, isolated_env):

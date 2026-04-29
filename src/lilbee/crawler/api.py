@@ -365,20 +365,26 @@ async def _maybe_periodic_sync() -> None:
 
 
 async def _drain_background_tasks() -> None:
-    """Await every periodic-sync task spawned during the current crawl.
+    """Cancel every periodic-sync task spawned during the current crawl.
 
     Without this drain, ``asyncio.run(crawl_and_save(...))`` closes the
     loop while a periodic sync is mid-ingest, surfacing
     ``Task was destroyed but it is pending`` and
-    ``coroutine ingest_batch._process_one was never awaited`` warnings to
-    stderr (and into the TUI). gather(...return_exceptions=True) swallows
-    sync failures; the task itself already logs them via _run_sync.
+    ``coroutine ingest_batch._process_one was never awaited`` warnings on
+    stderr (and into the TUI).
+
+    Cancelling rather than awaiting because periodic sync is best-effort
+    by design ("periodic" implies "we'll try again next cycle"); awaiting
+    a slow or stuck sync would block the crawl from exiting and dead-lock
+    test subprocesses behind their per-test timeouts. Cancellation
+    satisfies asyncio's destruction-detection: gather absorbs the
+    resulting CancelledError so callers see clean teardown.
 
     Filters to tasks owned by the running loop so stale entries from a
     previous loop (test isolation between asyncio.run() calls, server
-    hot-reload that starts a fresh loop) don't crash the drain with
-    cross-loop await errors. Such stale tasks are dropped from the
-    registry so subsequent drains don't keep re-encountering them.
+    hot-reload) don't crash the drain with cross-loop errors. Such
+    stale tasks are dropped from the registry so subsequent drains don't
+    keep re-encountering them.
     """
     loop = asyncio.get_running_loop()
     pending: list[asyncio.Task[Any]] = []
@@ -393,6 +399,8 @@ async def _drain_background_tasks() -> None:
     _state.background_tasks -= stale
     if not pending:
         return
+    for task in pending:
+        task.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
 
 
