@@ -22,6 +22,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
+from lilbee.providers.llama_cpp.abort_signal import abort_callback
 from lilbee.providers.llama_cpp.batching import (
     BATCH_WINDOW_S,
     EMBED_FUTURE_TIMEOUT_S,
@@ -584,6 +585,7 @@ def _construct_llama(llama_cls: Any, model_path: Path, kwargs: dict[str, Any]) -
     or unrelated TypeError), or continues with halved n_ctx; the loop is
     therefore structurally exhaustive and never falls through.
     """
+    kwargs.setdefault("abort_callback", abort_callback)
     fa_dropped = False
     for attempt in range(_MAX_OOM_RETRIES + 1):
         try:

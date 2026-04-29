@@ -894,3 +894,99 @@ class TestImportLlamaCpp:
 
         with pytest.raises(OSError, match="libsomethingelse"):
             import_llama_cpp()
+
+
+class TestAbortCallbackWiring:
+    """Every Llama construction site wires the abort_callback so Ctrl+C can interrupt ggml."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_abort_flag(self) -> None:
+        from lilbee.providers.llama_cpp.abort_signal import clear_abort
+
+        clear_abort()
+        yield
+        clear_abort()
+
+    def test_construct_llama_passes_abort_callback(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``_construct_llama`` injects ``abort_callback`` into every Llama() call."""
+        from lilbee.providers.llama_cpp.abort_signal import abort_callback as expected_cb
+        from lilbee.providers.llama_cpp.provider import load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = 2048
+        mock_llama_cpp.Llama.return_value.metadata = {}
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is expected_cb
+
+    def test_read_gguf_metadata_passes_abort_callback(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``read_gguf_metadata`` wires the abort flag into its vocab-only Llama load."""
+        from lilbee.providers.llama_cpp.abort_signal import abort_callback as expected_cb
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        read_gguf_metadata(models_dir / "test-model.gguf")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is expected_cb
+        assert call_kwargs["vocab_only"] is True
+
+    def test_load_vision_llama_passes_abort_callback(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``load_vision_llama`` wires the abort flag into the vision Llama load."""
+        from lilbee.providers.llama_cpp.abort_signal import abort_callback as expected_cb
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        with mock.patch(
+            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+            return_value=mock.MagicMock(),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is expected_cb
+
+    def test_chat_when_abort_set_breaks_stream_cleanly(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Abort flag set mid-stream: a polling stream stops cleanly and releases the lock."""
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.abort_signal import (
+            abort_callback as cb,
+        )
+        from lilbee.providers.llama_cpp.abort_signal import (
+            request_abort,
+        )
+
+        def streaming_response() -> Any:
+            yield {"choices": [{"delta": {"content": "first"}}]}
+            # Simulate ggml polling abort_callback every chunk; flip the flag
+            # mid-stream and verify the next iteration honors it.
+            request_abort()
+            if cb():
+                return
+            yield {"choices": [{"delta": {"content": "should-not-emit"}}]}  # pragma: no cover
+
+        instance = mock.MagicMock()
+        instance.create_chat_completion.return_value = streaming_response()
+        mock_llama_cpp.Llama.return_value = instance
+
+        provider = LlamaCppProvider()
+        try:
+            result = provider.chat([{"role": "user", "content": "hi"}], stream=True)
+            tokens = list(result)
+            assert tokens == ["first"]
+            # Lock must be released after a clean stream stop.
+            assert provider._chat_lock.acquire(blocking=False)
+            provider._chat_lock.release()
+        finally:
+            provider.shutdown()
