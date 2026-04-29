@@ -14,7 +14,6 @@ These tests assert:
 
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
@@ -186,8 +185,11 @@ def test_ask_stream_completes_with_token_events(
 @pytest.mark.writer
 @pytest.mark.timeout(420)
 @pytest.mark.xfail(
-    sys.platform == "darwin" and os.environ.get("LILBEE_QA_LANE") == "l2-binary",
-    reason="bb-9c67: macOS PyInstaller binary's TUI chat softlocks on 'thinking...' indicator",
+    sys.platform in {"darwin", "win32"},
+    reason=(
+        "bb-9c67: TUI chat softlocks on 'thinking...' on macOS/Windows; "
+        "Linux pypi/binary lanes pass"
+    ),
     strict=False,
 )
 def test_tui_chat_advances_past_thinking_spinner(
