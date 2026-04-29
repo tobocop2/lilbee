@@ -220,6 +220,26 @@ def test_crawl_and_search_roundtrip(
     )
     assert sync.returncode == 0, sync.stderr
 
+    # Diagnostic: confirm the crawled page actually landed in the store
+    # before we try to search for it. A zero-chunk store means the crawl
+    # call returned ok but ingest didn't write anything (silent failure
+    # mode worth surfacing distinctly from a search miss).
+    status = subprocess.run(
+        [lane.lilbee_bin, "--json", "status"],
+        env=lilbee_env_with_models,
+        capture_output=True,
+        text=True,
+        timeout=60.0,
+        check=False,
+    )
+    assert status.returncode == 0, status.stderr
+    status_payload = json.loads(status.stdout)
+    assert status_payload.get("total_chunks", 0) > 0, (
+        f"crawl + sync produced zero chunks. crawl stdout tail:\n"
+        f"{crawl.stdout[-1000:]}\nsync stdout:\n{sync.stdout}\n"
+        f"status: {status_payload}"
+    )
+
     # Search for the unique phrase. The crawled page should be the only source.
     search = subprocess.run(
         [
@@ -240,6 +260,5 @@ def test_crawl_and_search_roundtrip(
     payload = json.loads(search.stdout)
     results = payload.get("results", [])
     assert results, payload
-    # The chunk content should contain the unique phrase
     chunk_blob = json.dumps(results)
     assert "quokka-rendezvous-protocol" in chunk_blob, payload

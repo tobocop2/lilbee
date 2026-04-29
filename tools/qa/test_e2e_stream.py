@@ -56,7 +56,12 @@ def _wait_health(url: str, timeout: float = 60.0) -> None:
         try:
             if httpx.get(url, timeout=2.0).status_code == httpx.codes.OK:
                 return
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError):
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+        ):
             pass
         time.sleep(0.3)
     raise TimeoutError(f"server at {url} not ready within {timeout}s")

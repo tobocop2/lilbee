@@ -304,7 +304,12 @@ def _wait_for_server(url: str, timeout: float) -> None:
     while time.monotonic() < deadline:
         try:
             response = httpx.get(url, timeout=2.0)
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
             last_err = exc
         else:
             if response.status_code == httpx.codes.OK:
