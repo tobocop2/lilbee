@@ -3578,6 +3578,67 @@ class TestSelfCheck:
         assert "SELF-CHECK FAILED" in result.output
 
 
+class TestSelfCheckExtras:
+    """`lilbee self-check-extras` probes the optional extras for the frozen-binary smoke test.
+
+    Replaces the byte-grep over the binary that PyInstaller-era smoke used.
+    Each extra is imported via importlib; the test mocks importlib to make the
+    probe deterministic regardless of which extras the dev's venv has installed.
+    """
+
+    @staticmethod
+    def _import_module_stub(missing: set[str]):
+        """Return a side_effect that raises ImportError for names in *missing*."""
+
+        def _stub(name: str):
+            if name in missing:
+                raise ImportError(f"No module named {name!r}")
+            return MagicMock(__name__=name)
+
+        return _stub
+
+    def test_all_extras_present_json(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.importlib.import_module",
+            side_effect=self._import_module_stub(missing=set()),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {
+            "ok": True,
+            "litellm": True,
+            "crawl4ai": True,
+            "spacy": True,
+            "graspologic_native": True,
+        }
+
+    def test_one_extra_missing_exits_nonzero_json(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.importlib.import_module",
+            side_effect=self._import_module_stub(missing={"crawl4ai"}),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert payload["litellm"] is True
+        assert payload["crawl4ai"] is False
+        assert "crawl4ai_error" in payload
+        assert payload["spacy"] is True
+        assert payload["graspologic_native"] is True
+
+    def test_one_extra_missing_human_mode_reports_failure(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.importlib.import_module",
+            side_effect=self._import_module_stub(missing={"spacy"}),
+        ):
+            result = runner.invoke(app, ["self-check-extras"])
+        assert result.exit_code == 1, result.output
+        assert "spacy" in result.output
+        assert "MISSING" in result.output
+
+
 class TestDownloadSelfCheckModel:
     """`_download_self_check_model` retries URLError up to 3 times."""
 

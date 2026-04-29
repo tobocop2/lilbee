@@ -1,0 +1,4 @@
+- module-name: 'llama_cpp'
+  data-files:
+    dirs:
+      - 'lib'
