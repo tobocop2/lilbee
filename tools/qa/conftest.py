@@ -6,20 +6,30 @@ are documented inline; load-bearing for cross-worker isolation under xdist.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import socket
 import subprocess
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import pytest
-from drivers.tui import TuiSession, lilbee_env
+from drivers.mcp import MCPStdioClient
+from drivers.tui import TuiSession, lilbee_env, worker_port_offset
 
 _DEFAULT_CHAT_MODEL = "smollm2:135m"
 _LANE_ENV_VAR = "LILBEE_QA_LANE"
 _BIN_ENV_VAR = "LILBEE_QA_BIN"
 _CHAT_MODEL_ENV_VAR = "LILBEE_QA_CHAT_MODEL"
+_SERVER_PORT_BASE = 5000
+_SERVER_BOOT_TIMEOUT = 60.0
+_SERVER_HEALTH_POLL = 0.25
+_SERVER_TEARDOWN_GRACE = 5.0
+_MCP_STARTUP_TIMEOUT = 60.0
 
 
 @dataclass(frozen=True)
@@ -111,3 +121,88 @@ def tui(lane: Lane, lilbee_data: Path) -> Iterator[TuiSession]:
         yield session
     finally:
         session.close()
+
+
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _allocate_server_port() -> int:
+    """Pick a free port deterministically per xdist worker, falling back to ephemeral."""
+    candidate = _SERVER_PORT_BASE + worker_port_offset()
+    if _port_is_free(candidate):
+        return candidate
+    # Fallback if the deterministic slot collides (e.g. with another runner job).
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _wait_for_server(url: str, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    last_err: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(url, timeout=2.0)
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+            last_err = exc
+        else:
+            if response.status_code == httpx.codes.OK:
+                return
+            last_err = httpx.HTTPStatusError(
+                f"unexpected status {response.status_code}",
+                request=response.request,
+                response=response,
+            )
+        time.sleep(_SERVER_HEALTH_POLL)
+    raise TimeoutError(
+        f"lilbee serve at {url} not ready within {timeout:.0f}s; last error: {last_err}"
+    )
+
+
+@pytest.fixture
+def server_url(lane: Lane, lilbee_data: Path) -> Iterator[str]:
+    """Spawn `lilbee serve` on a per-worker port; yield base URL.
+
+    Function-scoped so each test gets a clean data dir + cold-start server.
+    Cheap enough at the smoke/walk tier that file-scoped reuse isn't worth
+    the cross-test state coupling.
+    """
+    port = _allocate_server_port()
+    base_url = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
+        env=lilbee_env(lilbee_data),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_server(f"{base_url}/api/health", timeout=_SERVER_BOOT_TIMEOUT)
+        yield base_url
+    finally:
+        with contextlib.suppress(Exception):
+            proc.terminate()
+            proc.wait(timeout=_SERVER_TEARDOWN_GRACE)
+        with contextlib.suppress(Exception):
+            proc.kill()
+
+
+@pytest.fixture
+def mcp_client(lane: Lane, lilbee_data: Path) -> Iterator[MCPStdioClient]:
+    """Spawn `lilbee mcp` and yield a JSON-RPC client over its stdio."""
+    client = MCPStdioClient(
+        [lane.lilbee_bin, "mcp"],
+        env=lilbee_env(lilbee_data),
+        startup_timeout=_MCP_STARTUP_TIMEOUT,
+    )
+    try:
+        yield client
+    finally:
+        client.close()

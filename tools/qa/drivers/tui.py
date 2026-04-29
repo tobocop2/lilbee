@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import sys
 import time
 from collections.abc import Mapping
@@ -35,6 +36,28 @@ def worker_port_offset() -> int:
     if raw == "master" or not raw.startswith("gw"):
         return 0
     return int(raw.removeprefix("gw"))
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Non-blocking POSIX liveness via WNOHANG waitpid + kill(0)."""
+    try:
+        wpid, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return False
+    if wpid == pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OSError):
+        return False
+    return True
+
+
+def _safe_isalive_winpty(proc: PtyProcess) -> bool:
+    try:
+        return bool(proc.isalive())
+    except (OSError, ValueError):
+        return False
 
 
 class TuiSession:
@@ -115,14 +138,45 @@ class TuiSession:
         path.write_text(self.text(), encoding="utf-8")
 
     def is_alive(self) -> bool:
-        try:
-            return bool(self._proc.isalive())
-        except (OSError, ValueError):
+        """Non-blocking liveness check. Bypasses ptyprocess.isalive on POSIX
+        because that blocks on os.waitpid once self.terminated flips True."""
+        if sys.platform == "win32":
+            return _safe_isalive_winpty(self._proc)
+        pid = getattr(self._proc, "pid", None)
+        if pid is None:
             return False
+        return _is_pid_alive(pid)
 
     def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self._proc.terminate(force=True)
+        """Terminate without hanging on a stubborn TUI.
+
+        ptyprocess.terminate gates on isalive(), which can block on os.waitpid
+        when the TUI's worker tree is still tearing down. We bypass that by
+        signalling the pid directly via os.kill on POSIX and letting pywinpty
+        do its TerminateProcess on Windows.
+        """
+        if sys.platform == "win32":
+            with contextlib.suppress(Exception):
+                self._proc.terminate(force=True)
+            return
+        pid = getattr(self._proc, "pid", None)
+        if pid is None:
+            return
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            try:
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if wpid == pid:
+                return
+            time.sleep(0.1)
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(pid, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError, OSError):
+            os.waitpid(pid, 0)
 
     def __enter__(self) -> Self:
         return self
