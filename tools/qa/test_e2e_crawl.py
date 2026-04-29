@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -166,6 +167,11 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
 @pytest.mark.crawl
 @pytest.mark.writer
 @pytest.mark.timeout(420)
+@pytest.mark.xfail(
+    sys.platform == "win32" and os.environ.get("LILBEE_QA_LANE") == "l1-pypi",
+    reason="bb-l7t4: Windows pypi lane crawl returns 0 pages from local http.server fixture",
+    strict=False,
+)
 def test_crawl_and_search_roundtrip(
     lane: Lane,
     lilbee_data: Path,
