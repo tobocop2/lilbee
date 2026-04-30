@@ -53,7 +53,7 @@ uv run --no-sync python -m nuitka \
     --nofollow-import-to=*.tests.* \
     --nofollow-import-to=tkinter --nofollow-import-to=_tkinter \
     --include-package=lancedb            --include-package-data=lancedb \
-    --include-package=llama_cpp          --include-package-data=llama_cpp \
+    --include-package=llama_cpp \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
     --include-package=tiktoken           --include-package-data=tiktoken \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \
