@@ -170,23 +170,36 @@ class CatalogScreen(Screen[None]):
                 self._installed_names.add(m.hf_repo)
 
     def action_toggle_view(self) -> None:
-        """Toggle between grid and list view."""
-        if self._grid_view:
-            self._grid_view = False
-            self.remove_class("-grid-view")
-            self.add_class("-list-view")
-            if not self._hf_fetched:
-                self._hf_fetched = True
-                self._fetch_all_hf_models()
-            self._refresh_list()
-            self._focus_list_item(0)
-        else:
-            self._grid_view = True
-            self.remove_class("-list-view")
-            self.add_class("-grid-view")
-            self._refresh_grid()
-            with contextlib.suppress(Exception):
-                self.query_one("#catalog-grid GridSelect", GridSelect).focus()
+        """Toggle between grid and list view.
+
+        Mid-toggle re-entry would tear the DOM (one toggle's mount_all
+        running while the previous toggle's remove_children is still in
+        flight). The _view_switching gate makes the toggle atomic.
+        """
+        if getattr(self, "_view_switching", False):
+            return
+        self._view_switching = True
+        try:
+            if self._grid_view:
+                self._grid_view = False
+                self.remove_class("-grid-view")
+                self.add_class("-list-view")
+                if not self._hf_fetched:
+                    self._hf_fetched = True
+                    self._fetch_all_hf_models()
+                with self.app.batch_update():
+                    self._refresh_list()
+                self._focus_list_item(0)
+            else:
+                self._grid_view = True
+                self.remove_class("-list-view")
+                self.add_class("-grid-view")
+                with self.app.batch_update():
+                    self._refresh_grid()
+                with contextlib.suppress(Exception):
+                    self.query_one("#catalog-grid GridSelect", GridSelect).focus()
+        finally:
+            self._view_switching = False
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -408,11 +421,17 @@ class CatalogScreen(Screen[None]):
         )
 
     def _refresh_view(self) -> None:
-        """Refresh the active view (grid or list)."""
-        if self._grid_view:
-            self._refresh_grid()
-        else:
-            self._refresh_list()
+        """Refresh the active view (grid or list).
+
+        Mount/remove of dozens of widgets is wrapped in batch_update so
+        Textual coalesces layout passes; without it, the worker callback
+        path can land inside an in-flight grid-list toggle and tear the
+        DOM."""
+        with self.app.batch_update():
+            if self._grid_view:
+                self._refresh_grid()
+            else:
+                self._refresh_list()
 
     def _refresh_grid(self) -> None:
         """Rebuild the grid view with all cards (called when data changes)."""
