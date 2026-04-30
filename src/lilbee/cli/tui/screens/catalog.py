@@ -135,6 +135,10 @@ class CatalogScreen(Screen[None]):
         # checks block the UI thread for hundreds of ms). Empty until the
         # first successful fetch lands.
         self._frontier_rows: list[FrontierCatalogRow] = []
+        # Bumped by every worker callback that lands new data, so the
+        # row caches in _all_*_rows know to rebuild even when collection
+        # lengths happen to coincide.
+        self._data_version: int = 0
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -197,6 +201,7 @@ class CatalogScreen(Screen[None]):
         """
         with contextlib.suppress(Exception):
             self._installed_names = set(get_services().model_manager.list_native_identities())
+            self._data_version += 1
 
     def action_toggle_view(self) -> None:
         """Toggle between grid and list view.
@@ -439,6 +444,9 @@ class CatalogScreen(Screen[None]):
             self._grid_cache_key = ()
         else:
             return False
+        # Bump version so the local-row caches see the new data even
+        # when collection length coincides with the prior state.
+        self._data_version += 1
         return True
 
     def _get_search_text(self) -> str:
@@ -446,8 +454,61 @@ class CatalogScreen(Screen[None]):
         # callers normalize via _normalize_for_search.
         return self.query_one("#catalog-search", Input).value.strip()
 
+    def _local_rows_data_key(self) -> tuple:
+        """Cache key for the constructed (un-filtered) local row sets.
+
+        Pulls in only the data shape that affects row construction.
+        ``_data_version`` is bumped whenever a worker callback replaces
+        or extends a backing collection, which covers both wholesale
+        replacement (``_remote_models = result``) and in-place mutation
+        (``_hf_models.extend(result)``). Searching does not invalidate
+        the cache because we filter the cached rows at call time.
+        """
+        return (
+            len(self._families),
+            len(self._hf_models),
+            len(self._remote_models),
+            self._hf_fetched,
+            len(self._installed_names),
+            self._data_version,
+        )
+
+    def _all_family_rows(self) -> list[LocalCatalogRow]:
+        key = self._local_rows_data_key()
+        cached = getattr(self, "_family_rows_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        rows: list[LocalCatalogRow] = []
+        for fam in self._families:
+            for v in fam.variants:
+                installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
+                rows.append(variant_to_row(v, fam, installed))
+        self._family_rows_cache = (key, rows)
+        return rows
+
+    def _all_hf_rows(self) -> list[LocalCatalogRow]:
+        key = self._local_rows_data_key()
+        cached = getattr(self, "_hf_rows_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        rows: list[LocalCatalogRow] = []
+        for m in self._hf_models:
+            installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
+            rows.append(catalog_to_row(m, installed))
+        self._hf_rows_cache = (key, rows)
+        return rows
+
+    def _all_remote_rows(self) -> list[LocalCatalogRow]:
+        key = self._local_rows_data_key()
+        cached = getattr(self, "_remote_rows_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        rows = [remote_to_row(rm) for rm in self._remote_models]
+        self._remote_rows_cache = (key, rows)
+        return rows
+
     def _build_rows(self) -> list[LocalCatalogRow]:
-        """Build all table rows from current data sources."""
+        """Build filtered table rows from current data sources."""
         search = self._get_search_text()
         rows: list[LocalCatalogRow] = []
         rows.extend(self._build_family_rows(search))
@@ -456,34 +517,22 @@ class CatalogScreen(Screen[None]):
         return rows
 
     def _build_family_rows(self, search: str) -> list[LocalCatalogRow]:
-        """Build rows from featured model families."""
-        rows: list[LocalCatalogRow] = []
-        for fam in self._families:
-            for v in fam.variants:
-                installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
-                row = variant_to_row(v, fam, installed)
-                if matches_search(row, search):
-                    rows.append(row)
-        return rows
+        """Filter the cached family rows against the active search."""
+        if not search:
+            return self._all_family_rows()
+        return [r for r in self._all_family_rows() if matches_search(r, search)]
 
     def _build_hf_rows(self, search: str) -> list[LocalCatalogRow]:
-        """Build rows from HuggingFace models."""
-        rows: list[LocalCatalogRow] = []
-        for m in self._hf_models:
-            installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
-            row = catalog_to_row(m, installed)
-            if matches_search(row, search):
-                rows.append(row)
-        return rows
+        """Filter the cached HF rows against the active search."""
+        if not search:
+            return self._all_hf_rows()
+        return [r for r in self._all_hf_rows() if matches_search(r, search)]
 
     def _build_remote_rows(self, search: str) -> list[LocalCatalogRow]:
-        """Build rows from remote (inference-only) models."""
-        rows: list[LocalCatalogRow] = []
-        for rm in self._remote_models:
-            row = remote_to_row(rm)
-            if matches_search(row, search):
-                rows.append(row)
-        return rows
+        """Filter the cached remote rows against the active search."""
+        if not search:
+            return self._all_remote_rows()
+        return [r for r in self._all_remote_rows() if matches_search(r, search)]
 
     def _build_frontier_rows(self, search: str) -> list[FrontierCatalogRow]:
         """Filter the cached frontier rows against the active search.
