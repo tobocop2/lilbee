@@ -29,7 +29,6 @@ from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
-    drain_background_tasks,
 )
 from lilbee.crawler.save import _save_single_result, _update_single_metadata
 from lilbee.runtime.progress import EventType
@@ -1494,28 +1493,18 @@ class TestPeriodicSync:
         sync_state.lock.release()
 
 
-class TestDrainBackgroundTasksDeprecated:
-    """``drain_background_tasks`` survives as a deprecated no-op for one release."""
-
-    async def test_drain_background_tasks_deprecated_noop(self, isolated_env):
-        """The public helper returns ``None`` and does no work."""
-        assert await drain_background_tasks() is None
-
-    async def test_deprecation_documented(self):
-        """The public helper's docstring marks it as deprecated."""
-        assert "Deprecated" in (drain_background_tasks.__doc__ or "")
-
-
 class TestServicesCrawlerSemaphore:
     def test_services_crawler_semaphore_rebuilds_on_reset(self, isolated_env):
-        """``reset_services`` produces a fresh semaphore on next ``get_services``."""
+        """``reset_services`` produces a fresh semaphore matching the cfg limit."""
         cfg.crawl_max_concurrent = 3
         reset_services()
         first = get_services().crawler_semaphore
         assert first is not None
+        assert first._value == 3
         reset_services()
         second = get_services().crawler_semaphore
         assert second is not None
+        assert second._value == 3
         assert first is not second
 
     def test_services_crawler_semaphore_none_when_unlimited(self, isolated_env):

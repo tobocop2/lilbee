@@ -955,10 +955,10 @@ class TestAbortCallbackWiring:
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["abort_callback"] is expected_cb
 
-    def test_chat_when_abort_set_breaks_stream_cleanly(
+    def test_chat_iterator_releases_lock_when_stream_returns_early(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """Abort flag set mid-stream: a polling stream stops cleanly and releases the lock."""
+        """A stream that polls ``abort_callback`` and returns early frees the chat lock."""
         from lilbee.providers.llama_cpp import LlamaCppProvider
         from lilbee.providers.llama_cpp.abort_signal import (
             abort_callback as cb,

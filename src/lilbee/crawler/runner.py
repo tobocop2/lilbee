@@ -45,16 +45,6 @@ from lilbee.runtime.progress import (
 log = logging.getLogger(__name__)
 
 
-async def drain_background_tasks() -> None:
-    """Deprecated: no-op kept for one release while CLI callers migrate.
-
-    ``crawl_and_save`` now drains its own periodic-sync tasks before
-    returning, so external callers no longer need to invoke this. Will
-    be removed once :mod:`lilbee.cli.commands.ingest_sync` drops its call.
-    """
-    return
-
-
 def _get_crawl_semaphore() -> asyncio.Semaphore | None:
     """Return the process-wide crawl semaphore, or None when unlimited."""
     return get_services().crawler_semaphore
@@ -389,8 +379,8 @@ async def crawl_and_save(
 
         return written_paths
     finally:
-        # Drain this call's periodic-sync tasks BEFORE releasing the crawl
-        # semaphore so asyncio.run() doesn't close the loop mid-ingest.
+        # Drain this call's periodic-sync tasks before returning so
+        # asyncio.run() doesn't close the loop with a pending sync.
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         if sem is not None:

@@ -8010,17 +8010,24 @@ async def test_app_action_quit_routes_to_wizard_cancel():
             assert not isinstance(app.screen, SetupWizard)
 
 
-async def test_action_quit_calls_request_abort():
-    """Ctrl+C calls ``request_abort()`` first thing so ggml's poll loop wakes."""
+async def test_action_quit_calls_request_abort_before_exit():
+    """Ctrl+C calls ``request_abort()`` before ``exit`` so ggml unblocks first."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        with patch("lilbee.cli.tui.app.request_abort") as mock_abort:
+        parent = MagicMock()
+        with (
+            patch("lilbee.cli.tui.app.request_abort", parent.request_abort),
+            patch.object(app, "exit", parent.exit),
+        ):
             await pilot.press("ctrl+c")
             await pilot.pause()
-            mock_abort.assert_called()
+            call_names = [c[0] for c in parent.mock_calls]
+            assert "request_abort" in call_names
+            # ``request_abort`` must come no later than ``exit`` in the call order.
+            assert call_names.index("request_abort") <= call_names.index("exit")
 
 
 async def test_no_force_quit_attribute():

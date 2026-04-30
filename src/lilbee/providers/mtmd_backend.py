@@ -116,8 +116,8 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         "verbose": False,
         "n_gpu_layers": -1,
         "n_ctx": _resolve_vision_n_ctx(model_path),
-        "abort_callback": abort_callback,
     }
+    kwargs.setdefault("abort_callback", abort_callback)
 
     llama = suppress_native_stderr(Llama, **kwargs)
     metadata = getattr(llama, "metadata", {}) or {}

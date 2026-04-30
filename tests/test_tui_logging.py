@@ -81,12 +81,14 @@ def test_log_records_reach_file(tmp_path):
 
 def test_silencer_preserves_file_handler():
     root = logging.getLogger()
+    snapshot = set(root.handlers)
     setup_tui_log_file()
-    file_handlers_before = [h for h in root.handlers if isinstance(h, RotatingFileHandler)]
-    assert len(file_handlers_before) == 1
+    added_file_handlers = [
+        h for h in root.handlers if h not in snapshot and isinstance(h, RotatingFileHandler)
+    ]
+    assert len(added_file_handlers) == 1
     _silence_stderr_log_handlers()
-    file_handlers_after = [h for h in root.handlers if isinstance(h, RotatingFileHandler)]
-    assert file_handlers_after == file_handlers_before
+    assert all(h in root.handlers for h in added_file_handlers)
 
 
 def test_rotation_caps_file_size(tmp_path, monkeypatch):

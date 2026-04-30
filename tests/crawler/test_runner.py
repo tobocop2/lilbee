@@ -354,13 +354,6 @@ class TestCrawlAndSaveOrchestration:
             await crawl_and_save("https://example.com", depth=1)
         mock_sync.assert_awaited_once()
 
-    async def test_drain_background_tasks_deprecated_noop(self):
-        """``drain_background_tasks`` is a documented deprecated no-op."""
-        from lilbee.crawler.runner import drain_background_tasks
-
-        assert await drain_background_tasks() is None
-        assert "Deprecated" in (drain_background_tasks.__doc__ or "")
-
 
 class TestConcurrencySemaphore:
     """The process-wide crawl semaphore gates concurrent crawl_and_save calls."""
@@ -384,15 +377,19 @@ class TestConcurrencySemaphore:
         assert sem1 is sem2
 
     async def test_semaphore_rebuilt_on_reset_services(self):
-        """``reset_services`` rebuilds the semaphore on next access."""
+        """``reset_services`` rebuilds the semaphore reflecting the new cfg value."""
         from lilbee.core.services import reset_services
 
         cfg.crawl_max_concurrent = 2
         reset_services()
         first = runner_mod._get_crawl_semaphore()
+        assert first is not None
+        assert first._value == 2
         cfg.crawl_max_concurrent = 4
         reset_services()
         second = runner_mod._get_crawl_semaphore()
+        assert second is not None
+        assert second._value == 4
         assert first is not second
 
 
