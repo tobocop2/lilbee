@@ -21,6 +21,10 @@ CMD_CRAWL_USAGE = "Usage: /crawl <url> [--depth N] [--max-pages N]"
 CMD_CRAWL_STARTED = "Crawling {url}..."
 CMD_CRAWL_PAGE = "Crawling [{current}/{total}]: {url}"
 CMD_CRAWL_PAGE_INDETERMINATE = "Crawling... ({current} pages so far): {url}"
+MODEL_FALLBACK_NOTICE = (
+    "{label} model {original!r} is unavailable; using {effective!r} for this session. "
+    "Pick a different model or restore the original to clear this notice."
+)
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."

@@ -143,6 +143,7 @@ class LilbeeApp(App[None]):
         yield from ()  # screens compose their own ViewTabs + Footer
 
     def on_mount(self) -> None:
+        self._canonicalize_persisted_models()
         self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the gruvbox default.
@@ -160,6 +161,39 @@ class LilbeeApp(App[None]):
         self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
+
+    def _canonicalize_persisted_models(self) -> None:
+        """Swap stale persisted refs to a working fallback for this session.
+
+        Persisted ``cfg.chat_model`` / ``cfg.embedding_model`` may point at
+        a GGUF the user removed, an API ref whose key was rotated out, or
+        a provider lilbee no longer recognizes. Without canonicalization
+        the very first chat turn errors with 'model not found' until the
+        user manually picks something. Swap to the first available
+        fallback (API first, then local for chat; local-only for embed)
+        and surface a notification. The persisted file stays untouched so
+        the user's intent comes back if they reinstall the original.
+        """
+        from lilbee.modelhub.model_manager import (
+            ValidationResult,
+            canonicalize_chat_model,
+            canonicalize_embedding_model,
+        )
+
+        for canon, field, label in (
+            (canonicalize_chat_model(), "chat_model", "Chat"),
+            (canonicalize_embedding_model(), "embedding_model", "Embedding"),
+        ):
+            if canon.status == ValidationResult.OK or canon.original == canon.effective:
+                continue
+            setattr(cfg, field, canon.effective)
+            self.notify(
+                msg.MODEL_FALLBACK_NOTICE.format(
+                    label=label, original=canon.original, effective=canon.effective
+                ),
+                severity="warning",
+                timeout=8,
+            )
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
         """Republish on provider_availability_changed_signal when an API key

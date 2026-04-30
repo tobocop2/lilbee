@@ -134,11 +134,18 @@ async def test_view_tabs_no_stale_pill_after_navigation() -> None:
 
         # Back on chat: ModelBar shows the model, ViewTabs pill must be hidden,
         # and no stale ref should leak into the tab strip from a prior screen.
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
-        text = str(tabs.query_one("#view-tabs-content").render())
-        assert TEST_LOCAL_REF not in text
-        assert "Chat" in text  # active-view highlight present
+        # Combine each ViewTab Label and the trailing Static into a single
+        # rendered string so the test stays oblivious to the layout split.
+        from textual.widgets import Static
+
+        rendered = " ".join(str(t.render()) for t in tabs.query(ViewTab))
+        rendered += " " + str(tabs.query_one("#view-tabs-trailing", Static).render())
+        assert TEST_LOCAL_REF not in rendered
+        assert "Chat" in rendered  # active-view highlight present
 
 
 async def test_view_tabs_active_view_tracks_screen_changes() -> None:
