@@ -528,12 +528,22 @@ class CatalogScreen(Screen[None]):
             else:
                 self._refresh_list()
 
+    # Hard cap on HF browse rows shown in grid view. ItemGrid layout
+    # cost grows linearly with children, and ModelCard mounts five
+    # subwidgets each, so a large HF page (~100 rows) can lock the UI
+    # thread for seconds. The list view renders lighter ModelListItem
+    # widgets without the cap; the grid surfaces a CTA pointing users
+    # there once the cap is hit.
+    _GRID_HF_BUDGET = 24
+
     def _refresh_grid(self) -> None:
         """Rebuild the grid view with all cards (called when data changes)."""
         family_rows = self._build_family_rows("")
         remote_rows = self._build_remote_rows("")
-        hf_rows = self._build_hf_rows("") if self._hf_fetched else []
+        hf_rows_full = self._build_hf_rows("") if self._hf_fetched else []
         frontier_rows = self._build_frontier_rows("")
+        hf_overflow = max(0, len(hf_rows_full) - self._GRID_HF_BUDGET)
+        hf_rows = hf_rows_full[: self._GRID_HF_BUDGET]
         all_rows = family_rows + remote_rows + hf_rows
         # Include the full search text so toggle-back + value-change combinations
         # rebuild the grid (and therefore the CTA) with the current query.
@@ -565,6 +575,13 @@ class CatalogScreen(Screen[None]):
                 Static(
                     msg.CATALOG_BROWSE_MORE,
                     classes="grid-cta browse-more-hf",
+                )
+            )
+        elif hf_overflow:
+            widgets_to_mount.append(
+                Static(
+                    msg.CATALOG_GRID_OVERFLOW.format(count=hf_overflow),
+                    classes="grid-cta",
                 )
             )
         search = self._get_search_text()
