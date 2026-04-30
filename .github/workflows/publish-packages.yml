@@ -1,8 +1,9 @@
 name: Publish Packages
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release Executables"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -11,6 +12,10 @@ on:
 
 jobs:
   resolve:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.info.outputs.tag }}
@@ -26,8 +31,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "release" ]; then
-            tag="${{ github.event.release.tag_name }}"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            tag="${{ github.event.workflow_run.head_branch }}"
           else
             tag="${{ inputs.tag }}"
           fi
@@ -155,28 +160,3 @@ jobs:
           fi
           git commit -m "lilbee ${{ needs.resolve.outputs.version }} (flake)"
           git push origin main
-
-  docker:
-    needs: resolve
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v5
-        with:
-          context: packaging/docker
-          file: packaging/docker/Dockerfile
-          build-args: |
-            LILBEE_VERSION=${{ needs.resolve.outputs.version }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/lilbee:${{ needs.resolve.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/lilbee:latest
-          push: true
