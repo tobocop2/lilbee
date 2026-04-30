@@ -132,7 +132,10 @@ jobs:
           max-size: '2G'
 
       - name: Install dependencies
-        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5'
+        # `pip` is added explicitly: uv-managed Python ships without it,
+        # but build_llama_cpp.sh shells out to `pip wheel` to build
+        # llama-cpp-python from source.
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
 
       # Build llama-cpp-python from source via the same script the wheel
       # job uses. uv pip install --reinstall hit uv's package cache by
@@ -146,7 +149,6 @@ jobs:
           BACKEND: ${{ matrix.backend }}
           LLAMA_BUILD_DIR: "/tmp/llama-build"
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-          PIP_CMD: "uv pip"
         run: bash tools/wheel-build/build_llama_cpp.sh
 
       - name: Install the freshly-built llama-cpp-python into the venv
