@@ -79,13 +79,11 @@ jobs:
 
       - name: Compute version
         # NUITKA_VERSION strips PEP 440 modifiers (b, rc, .dev) to a plain
-        # int-tuple. Nuitka --product-version rejects '0.6.66b456' but
-        # accepts '0.6.66.456'; using only digits keeps the {VERSION} token
-        # in --onefile-tempdir-spec unique per release without losing info.
+        # int-tuple Nuitka --product-version accepts (0.6.66.456 vs 0.6.66b456).
         shell: bash
         run: |
-          VERSION=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          NUITKA_VERSION=$(python3 -c "import re, sys; parts=re.findall(r'\d+', sys.argv[1]); print('.'.join(parts[:4]))" "$VERSION")
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          NUITKA_VERSION=$(echo "$VERSION" | tr -cs '0-9' ' ' | awk '{ printf "%s.%s.%s.%s", $1, $2, $3, $4 }')
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
@@ -181,7 +179,7 @@ jobs:
         run: |
           set -euxo pipefail
           EXE="./dist/${{ matrix.asset_name }}"
-          EXPECTED=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
 
           # --version matches pyproject.toml. Capture stderr too: a flood
           # of "No such option: -B" means the frozen binary is looping on
