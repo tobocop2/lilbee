@@ -146,6 +146,7 @@ jobs:
           BACKEND: ${{ matrix.backend }}
           LLAMA_BUILD_DIR: "/tmp/llama-build"
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+          PIP_CMD: "uv pip"
         run: bash tools/wheel-build/build_llama_cpp.sh
 
       - name: Install the freshly-built llama-cpp-python into the venv
@@ -237,7 +238,7 @@ jobs:
 
           HEALTH=$(curl -sf http://127.0.0.1:9123/api/health)
           echo "Health payload: ${HEALTH}"
-          SERVER_VERSION=$(python -c "import json, sys; print(json.loads(sys.argv[1])['version'])" "${HEALTH}")
+          SERVER_VERSION=$(uv run --no-sync python -c "import json, sys; print(json.loads(sys.argv[1])['version'])" "${HEALTH}")
           test "${SERVER_VERSION}" = "${EXPECTED}"
 
           if grep -qE "No such option|Type not yet supported" "$SERVER_LOG"; then
@@ -262,7 +263,7 @@ jobs:
             echo "FAIL: self-check exited ${SELF_CHECK_RC}"
             exit 1
           fi
-          python tools/wheel-build/parse_self_check.py "$SELF_CHECK_LOG"
+          uv run --no-sync python tools/wheel-build/parse_self_check.py "$SELF_CHECK_LOG"
 
           # Confirm the optional extras were bundled. Their runtime guards
           # keep them off the cold-start import path, so self-check above

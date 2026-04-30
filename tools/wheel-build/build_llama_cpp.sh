@@ -34,7 +34,8 @@ export CMAKE_ARGS
 
 echo "Building llama-cpp-python==${version} (${backend}) with CMAKE_ARGS=${CMAKE_ARGS}"
 
-pip wheel "llama-cpp-python==${version}" \
+PIP_CMD="${PIP_CMD:-pip}"
+${PIP_CMD} wheel "llama-cpp-python==${version}" \
   --no-deps \
   --no-binary=llama-cpp-python \
   -w "${build_dir}"
