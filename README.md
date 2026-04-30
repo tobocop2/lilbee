@@ -343,6 +343,8 @@ chmod +x lilbee-linux-x86_64
 
 Always points at the latest pre-release.
 
+The Linux binary is built on `manylinux_2_28` and requires **glibc 2.28 or newer**, which covers every currently-supported distribution: Fedora 28+, RHEL/AlmaLinux/Rocky 8+, Debian 10+, Ubuntu 18.10+, Amazon Linux 2023, and current Arch. For older systems (CentOS 7, Amazon Linux 2, RHEL 7), use `uv tool install lilbee` or the [Docker image](#docker).
+
 ### Optional extras
 
 lilbee works out of the box. Extras unlock additional capabilities. Both `pip` and `uv tool install` syntax shown:
