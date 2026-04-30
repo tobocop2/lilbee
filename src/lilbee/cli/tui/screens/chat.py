@@ -34,7 +34,6 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
@@ -182,7 +181,7 @@ class ChatScreen(Screen[None]):
         yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
-                yield NavAwareInput(
+                yield Input(
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER,
                     id="chat-input",
                     suggester=SlashSuggester(use_cache=False),

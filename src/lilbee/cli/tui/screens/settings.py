@@ -21,7 +21,6 @@ from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, get_d
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
@@ -202,10 +201,10 @@ def _make_checkbox(key: str, value: str) -> Checkbox:
     )
 
 
-def _make_input(key: str, value: str) -> NavAwareInput:
+def _make_input(key: str, value: str) -> Input:
     """Create an Input widget for string/number settings."""
     display = "" if value == "None" else value.replace(" (model default)", "")
-    return NavAwareInput(
+    return Input(
         value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}"
     )
 
@@ -244,7 +243,7 @@ class SettingsScreen(Screen[None]):
         with TopBars():
             yield ViewTabs()
             with Horizontal(id="settings-top-row"):
-                yield NavAwareInput(
+                yield Input(
                     placeholder="Filter settings...",
                     id="settings-search",
                 )

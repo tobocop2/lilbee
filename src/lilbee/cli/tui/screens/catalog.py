@@ -39,7 +39,6 @@ from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -134,7 +133,7 @@ class CatalogScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-            yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
+            yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield VerticalScroll(id="catalog-list")

@@ -113,26 +113,12 @@ class LilbeeApp(App[None]):
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
-        # priority=True is required: even though NavAwareInput lets [ and ]
-        # bubble past Input.check_consume_key, Textual's focused Input still
-        # handles printable keys in _on_key before a non-priority ancestor
-        # binding can fire. Both NavAwareInput and priority=True are needed.
-        Binding(
-            "left_square_bracket",
-            "nav_prev",
-            "Prev",
-            show=True,
-            group=_NAV_GROUP,
-            priority=True,
-        ),
-        Binding(
-            "right_square_bracket",
-            "nav_next",
-            "Next",
-            show=True,
-            group=_NAV_GROUP,
-            priority=True,
-        ),
+        # Non-priority: a focused Input or TextArea consumes the printable
+        # before this binding fires, so brackets type literally inside any
+        # input. With no input focused, the bindings reach the app and
+        # navigate. This mirrors vim-style insert vs. normal modes.
+        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
+        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 

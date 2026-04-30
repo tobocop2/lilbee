@@ -94,8 +94,8 @@ async def test_bracket_keys_cycle_all_screens():
             )
 
 
-async def test_bracket_keys_work_with_chat_input_focused():
-    """Pressing ] with the chat input focused must switch screens, not insert text."""
+async def test_bracket_keys_typed_literally_when_chat_input_focused():
+    """Pressing [ or ] with the chat input focused must insert text, not switch screens."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -105,16 +105,18 @@ async def test_bracket_keys_work_with_chat_input_focused():
         assert chat_input.has_focus, "Chat input should auto-focus on mount"
         assert chat_input.value == ""
 
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
         await pilot.press("right_square_bracket")
         await pilot.pause()
 
-        assert isinstance(app.screen, CatalogScreen), (
-            f"Expected CatalogScreen after ], got {type(app.screen).__name__}"
+        assert isinstance(app.screen, ChatScreen), (
+            f"Brackets must not navigate while chat input has focus, "
+            f"got {type(app.screen).__name__}"
         )
-        # The original chat_input reference must still be unchanged: the ]
-        # keypress must not have been typed into it before the screen switched.
-        assert chat_input.value == "", (
-            f"] was typed into chat input instead of navigating (value={chat_input.value!r})"
+        assert chat_input.value == "[]", (
+            f"Brackets must type literally with input focused, "
+            f"got value={chat_input.value!r}"
         )
 
 
@@ -148,6 +150,31 @@ async def test_bracket_keys_work_from_settings():
         await pilot.press("right_square_bracket")
         await pilot.pause()
         assert isinstance(app.screen, TaskCenter)
+
+
+async def test_bracket_keys_typed_literally_when_catalog_search_focused():
+    """Brackets in catalog search input must insert text, not switch screens."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await pilot.pause()
+
+        search = app.screen.query_one("#catalog-search", Input)
+        search.focus()
+        await pilot.pause()
+        assert search.has_focus
+
+        await pilot.press("left_square_bracket")
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CatalogScreen), (
+            "Brackets must not navigate while catalog search has focus"
+        )
+        assert search.value == "[]", (
+            f"Brackets must type literally; got {search.value!r}"
+        )
 
 
 async def test_settings_filter_not_focused_on_mount():
