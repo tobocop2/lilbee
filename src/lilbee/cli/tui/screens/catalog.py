@@ -7,12 +7,13 @@ import logging
 from dataclasses import dataclass
 from typing import ClassVar
 
-from textual import on, work
+from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Input, Static
 from textual.worker import Worker, WorkerState
 
@@ -114,6 +115,11 @@ class CatalogScreen(Screen[None]):
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
     ]
 
+    # Hot-path widget refs via Textual's typed descriptor.
+    _search_input = getters.query_one("#catalog-search", Input)
+    _grid_container = getters.query_one("#catalog-grid", VerticalScroll)
+    _list_container = getters.query_one("#catalog-list", VerticalScroll)
+
     def __init__(self) -> None:
         super().__init__()
         self._families: list[ModelFamily] = get_families()
@@ -139,6 +145,18 @@ class CatalogScreen(Screen[None]):
         # row caches in _all_*_rows know to rebuild even when collection
         # lengths happen to coincide.
         self._data_version: int = 0
+        # Row build caches keyed off ``_local_rows_data_key`` so worker
+        # callbacks that grow / replace the backing collections invalidate
+        # the construction step. Widget refs use ``getters.query_one``
+        # at the class level instead of instance caches.
+        self._family_rows_cache: tuple[tuple, list[LocalCatalogRow]] | None = None
+        self._hf_rows_cache: tuple[tuple, list[LocalCatalogRow]] | None = None
+        self._remote_rows_cache: tuple[tuple, list[LocalCatalogRow]] | None = None
+        # Atomicity gate for action_toggle_view (B1).
+        self._view_switching: bool = False
+        # Frontier-fetch debounce timer (B-Rank 8). None when no fetch
+        # is queued.
+        self._frontier_refresh_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -172,14 +190,25 @@ class CatalogScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 signal.unsubscribe(self)
 
+    # Coalesce a burst of provider_availability_changed payloads (e.g. a
+    # user typing into a Settings api_key field on every keystroke) into
+    # one frontier-fetch worker per ``_FRONTIER_REFRESH_DEBOUNCE`` window.
+    _FRONTIER_REFRESH_DEBOUNCE = 1.0
+
     def _on_provider_availability_changed(self, _payload: tuple[str, object]) -> None:
         """Re-fetch frontier rows when an API key is saved or cleared.
 
         The fetch hits ``discover_api_models`` which imports litellm and
         probes provider keys (~hundreds of ms). Run it in a worker; the
         worker callback reseats _frontier_rows and triggers a refresh.
+        Per-stroke key edits in Settings would otherwise spawn a worker
+        per character, so we debounce the fetch.
         """
-        self._fetch_frontier_models()
+        if self._frontier_refresh_timer is not None:
+            self._frontier_refresh_timer.stop()
+        self._frontier_refresh_timer = self.set_timer(
+            self._FRONTIER_REFRESH_DEBOUNCE, self._fetch_frontier_models
+        )
 
     def _focus_first_grid(self) -> None:
         """Focus the first GridSelect widget if available."""
@@ -210,7 +239,7 @@ class CatalogScreen(Screen[None]):
         running while the previous toggle's remove_children is still in
         flight). The _view_switching gate makes the toggle atomic.
         """
-        if getattr(self, "_view_switching", False):
+        if self._view_switching:
             return
         self._view_switching = True
         try:
@@ -448,33 +477,6 @@ class CatalogScreen(Screen[None]):
         # when collection length coincides with the prior state.
         self._data_version += 1
         return True
-
-    @property
-    def _search_input(self) -> Input:
-        """Cached reference to the catalog filter input."""
-        cached = getattr(self, "_search_input_cache", None)
-        if cached is None or cached.app is None:
-            cached = self.query_one("#catalog-search", Input)
-            self._search_input_cache = cached
-        return cached
-
-    @property
-    def _grid_container(self) -> VerticalScroll:
-        """Cached reference to the grid scroll container."""
-        cached = getattr(self, "_grid_container_cache", None)
-        if cached is None or cached.app is None:
-            cached = self.query_one("#catalog-grid", VerticalScroll)
-            self._grid_container_cache = cached
-        return cached
-
-    @property
-    def _list_container(self) -> VerticalScroll:
-        """Cached reference to the list scroll container."""
-        cached = getattr(self, "_list_container_cache", None)
-        if cached is None or cached.app is None:
-            cached = self.query_one("#catalog-list", VerticalScroll)
-            self._list_container_cache = cached
-        return cached
 
     def _get_search_text(self) -> str:
         # Preserve the user's casing for display (e.g. the CTA label); matching

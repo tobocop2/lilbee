@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from textual import on, work
+from textual import getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -129,6 +129,13 @@ class ChatScreen(Screen[None]):
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
 
+    # Hot-path widget refs. ``getters.query_one`` is a typed class-level
+    # descriptor that resolves via Textual's indexed DOM lookup on every
+    # access. It is O(1) for id selectors, so no cache is needed.
+    _chat_input = getters.query_one("#chat-input", ChatInput)
+    _chat_log = getters.query_one("#chat-log", VerticalScroll)
+    _completion_overlay = getters.query_one("#completion-overlay", CompletionOverlay)
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
         Binding("tab", "complete", "Tab models / complete", show=True, priority=True),
@@ -169,33 +176,6 @@ class ChatScreen(Screen[None]):
     def _task_bar(self) -> TaskBarController:
         """The app-level TaskBarController (always set by LilbeeApp)."""
         return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
-
-    @property
-    def _chat_input(self) -> ChatInput:
-        """Cached reference to the chat prompt widget."""
-        cached = getattr(self, "_chat_input_cache", None)
-        if cached is None or cached.app is None:
-            cached = self.query_one("#chat-input", ChatInput)
-            self._chat_input_cache = cached
-        return cached
-
-    @property
-    def _chat_log(self) -> VerticalScroll:
-        """Cached reference to the scrollable chat log."""
-        cached = getattr(self, "_chat_log_cache", None)
-        if cached is None or cached.app is None:
-            cached = self.query_one("#chat-log", VerticalScroll)
-            self._chat_log_cache = cached
-        return cached
-
-    @property
-    def _completion_overlay(self) -> CompletionOverlay:
-        """Cached reference to the slash-command completion overlay."""
-        cached = getattr(self, "_completion_overlay_cache", None)
-        if cached is None or cached.app is None:
-            cached = self.query_one("#completion-overlay", CompletionOverlay)
-            self._completion_overlay_cache = cached
-        return cached
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
