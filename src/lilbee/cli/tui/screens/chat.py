@@ -585,9 +585,7 @@ class ChatScreen(Screen[None]):
                 else:
                     reporter.update(
                         0,
-                        msg.CMD_CRAWL_PAGE_INDETERMINATE.format(
-                            current=data.current, url=data.url
-                        ),
+                        msg.CMD_CRAWL_PAGE_INDETERMINATE.format(current=data.current, url=data.url),
                         indeterminate=True,
                     )
 
@@ -1065,16 +1063,22 @@ class ChatScreen(Screen[None]):
             self.query_one("#chat-model-select", Select).focus()
 
     def action_complete(self) -> None:
-        """Tab: cycle autocomplete in input, else focus the next model dropdown."""
+        """Tab: cycle autocomplete, insert a literal tab, or advance focus.
+
+        - Insert mode + chat input focused + completion overlay open:
+          cycle the next completion candidate.
+        - Insert mode + chat input focused + no completion: insert
+          ``\\t`` so users can type tab characters directly.
+        - Normal mode or focus elsewhere: advance through the focus
+          chain so Tab still walks every focusable widget.
+        """
         inp = self._chat_input
-        if not inp.has_focus:
-            if isinstance(self.focused, Select):
-                self.screen.focus_next()
-            else:
-                self.query_one("#chat-model-select", Select).focus()
-            return
-        if not self._cycle_completion_forward(inp):
+        if not self._insert_mode or not inp.has_focus:
             self.screen.focus_next()
+            return
+        if self._cycle_completion_forward(inp):
+            return
+        inp.insert("\t")
 
     def action_complete_next(self) -> None:
         """Ctrl+N: show completions or cycle forward."""

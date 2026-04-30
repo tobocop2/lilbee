@@ -272,9 +272,7 @@ class LitellmSdkBackend:
             return self._list_ollama_models(clean_base)
         return self._list_openai_models(clean_base, api_key)
 
-    def list_chat_models(
-        self, provider: str, *, mode: str = "curated"
-    ) -> list[str]:
+    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
         """Return chat-mode model ids from litellm's static catalog.
 
         ``mode="curated"`` returns the curated short list per

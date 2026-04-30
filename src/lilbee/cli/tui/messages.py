@@ -90,9 +90,7 @@ HEADING_FRONTIER_ALL = "Frontier (cloud)"
 HEADING_LOCAL_ALL = "Local"
 CATALOG_GRID_OVERFLOW = "+{count} more on HF. Press v for the full list view"
 CATALOG_USING_FRONTIER = "Using {name} via the {provider} API"
-CATALOG_NEEDS_KEY = (
-    "{provider} needs an API key. Set {key_field} in Settings to enable this model."
-)
+CATALOG_NEEDS_KEY = "{provider} needs an API key. Set {key_field} in Settings to enable this model."
 CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_NO_TASK_BAR = "Cannot download: task bar not found"

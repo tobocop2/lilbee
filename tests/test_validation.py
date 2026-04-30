@@ -47,9 +47,7 @@ def test_local_ref_installed_classifies_ok():
     fake_entry = mock.MagicMock()
     fake_entry.ref = "test/local-model"
     fake_entry.hf_repo = "test/local-model"
-    with mock.patch(
-        "lilbee.modelhub.model_manager.validation.ModelRegistry"
-    ) as registry_cls:
+    with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
         registry_cls.return_value.list_installed.return_value = [fake_entry]
         assert validate_persisted_model("test/local-model") == ValidationResult.OK
 
@@ -60,9 +58,7 @@ def test_canonicalize_chat_model_ok_passthrough():
     fake_entry = mock.MagicMock()
     fake_entry.ref = "test/installed-model"
     fake_entry.hf_repo = "test/installed-model"
-    with mock.patch(
-        "lilbee.modelhub.model_manager.validation.ModelRegistry"
-    ) as registry_cls:
+    with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
         registry_cls.return_value.list_installed.return_value = [fake_entry]
         canon = canonicalize_chat_model()
     assert isinstance(canon, CanonicalRef)
@@ -79,9 +75,7 @@ def test_canonicalize_chat_model_falls_back_to_local():
     fake_entry.ref = "test/fallback-local"
     fake_entry.hf_repo = "test/fallback-local"
     with (
-        mock.patch(
-            "lilbee.modelhub.model_manager.validation.ModelRegistry"
-        ) as registry_cls,
+        mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
         mock.patch(
             "lilbee.modelhub.model_manager.validation.discover_api_models",
             return_value={},
@@ -98,9 +92,7 @@ def test_canonicalize_chat_model_returns_original_when_no_fallback():
     original ref so the caller can surface a hard error if needed."""
     cfg.chat_model = "missing/model"
     with (
-        mock.patch(
-            "lilbee.modelhub.model_manager.validation.ModelRegistry"
-        ) as registry_cls,
+        mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
         mock.patch(
             "lilbee.modelhub.model_manager.validation.discover_api_models",
             return_value={},
@@ -119,9 +111,7 @@ def test_canonicalize_embedding_model_local_only():
     fake_entry = mock.MagicMock()
     fake_entry.ref = "test/fallback-embed"
     fake_entry.hf_repo = "test/fallback-embed"
-    with mock.patch(
-        "lilbee.modelhub.model_manager.validation.ModelRegistry"
-    ) as registry_cls:
+    with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
         registry_cls.return_value.list_installed.return_value = [fake_entry]
         canon = canonicalize_embedding_model()
     assert canon.effective == "test/fallback-embed"

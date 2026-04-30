@@ -2031,7 +2031,6 @@ class ChatTestApp(App[None]):
 async def test_chat_screen_renders():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         assert inp is not None
 
@@ -2448,7 +2447,6 @@ async def test_chat_slash_set_dispatch():
 async def test_chat_empty_input_ignored():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = ""
         with patch.object(app.screen, "_send_message") as mock_send:
@@ -2571,7 +2569,6 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.pause()
@@ -2604,7 +2601,6 @@ async def test_chat_refresh_model_bar():
 async def test_chat_input_changed_hides_overlay():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -2678,20 +2674,20 @@ async def test_chat_slash_delete_dispatch():
             mock_notify.assert_called_once()
 
 
-async def test_chat_action_complete_no_options():
+async def test_chat_action_complete_no_options_inserts_tab():
+    """Tab in chat input with no completion candidates inserts ``\\t``."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
+        inp.focus()
         inp.value = "hello"
         app.screen.action_complete()
-        assert inp.value == "hello"
+        assert inp.value == "hello\t"
 
 
 async def test_chat_action_complete_with_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
@@ -2705,7 +2701,6 @@ async def test_chat_action_complete_with_options():
 async def test_chat_action_complete_with_space():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/model q"
         with patch(
@@ -2719,7 +2714,6 @@ async def test_chat_action_complete_with_space():
 async def test_chat_action_complete_cycle():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -2743,7 +2737,6 @@ async def test_chat_tab_completes_alias_prefix():
     """Pressing Tab on '/cat' expands to the /catalog alias."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         for key in ("slash", "c", "a", "t"):
@@ -2774,7 +2767,6 @@ async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "_stream_response"):
-
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "What is RAG?"
             await _pilot.press("enter")
@@ -3948,7 +3940,6 @@ async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/version"
         with patch("lilbee.app.version.get_version", return_value="1.0.0"):
@@ -3961,7 +3952,6 @@ async def test_chat_on_input_changed_visible_overlay():
     """Cover the overlay.hide() branch (line 408)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
@@ -4770,7 +4760,6 @@ async def test_chat_normal_mode_dims_input():
     """Input widget gets normal-mode class when in normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         assert "normal-mode" not in inp.classes
         app.screen.action_enter_normal_mode()
@@ -4831,7 +4820,6 @@ async def test_chat_enter_key_returns_to_insert_mode():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         assert app.screen._insert_mode is False
@@ -5064,7 +5052,6 @@ async def test_chat_action_complete_next():
     """Ctrl+N (action_complete_next) delegates to action_complete."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
@@ -5097,7 +5084,6 @@ async def test_chat_action_complete_prev_opens_overlay():
     """Ctrl+P (action_complete_prev) opens overlay when not visible."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -5116,7 +5102,6 @@ async def test_chat_action_complete_prev_cycles_backward():
     """Ctrl+P cycles backward through existing completions."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -5140,7 +5125,6 @@ async def test_chat_action_complete_prev_with_space():
     """Ctrl+P with argument completions sets cmd + selection."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/model q"
         with patch(
@@ -5230,7 +5214,6 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.pause()
@@ -5325,21 +5308,25 @@ async def test_chat_send_message_tolerates_missing_welcome():
             app.screen.query_one("#chat-welcome", ChatWelcome)
 
 
-async def test_chat_tab_from_input_jumps_to_model_select():
-    """With an empty input and no completions, Tab moves focus to the chat dropdown."""
-    from textual.widgets import Select
+async def test_chat_tab_in_input_inserts_literal_tab():
+    """Tab in a focused chat input inserts ``\\t`` and keeps focus.
 
+    The chat prompt is a TextArea-style widget where Tab is a literal
+    character (matching code editor / IDE conventions). To leave the
+    input via keyboard, users press Escape (normal mode) or click out.
+    """
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#chat-input", ChatInput).focus()
+        inp = screen.query_one("#chat-input", ChatInput)
+        inp.focus()
         await pilot.press("tab")
         await pilot.pause()
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        assert chat_sel.has_focus
+        assert inp.value == "\t"
+        assert inp.has_focus
 
 
 async def test_chat_tab_cycles_between_model_selects():
@@ -5359,22 +5346,24 @@ async def test_chat_tab_cycles_between_model_selects():
         assert embed_sel.has_focus
 
 
-async def test_chat_tab_in_normal_mode_jumps_to_model_select():
-    """Tab from the chat log (normal mode) jumps straight to the chat dropdown."""
-    from textual.widgets import Select
+async def test_chat_tab_in_normal_mode_advances_focus():
+    """Tab in chat normal mode steps through the focus chain.
 
+    With insert mode off, Tab no longer inserts a literal character; it
+    advances focus to the next widget so keyboard users can reach every
+    focusable on the screen.
+    """
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        screen = app.screen
         await pilot.press("escape")
         await pilot.pause()
+        before = app.focused
         await pilot.press("tab")
         await pilot.pause()
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        assert chat_sel.has_focus
+        assert app.focused is not before, "Tab did not move focus in normal mode"
 
 
 async def test_chat_enter_on_focused_select_does_not_enter_insert_mode():
@@ -7556,7 +7545,6 @@ async def test_chat_on_key_insert_mode_unfocused_input():
     """on_key in insert mode with unfocused input redirects printable chars."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-
         app.screen.query_one("#chat-input", ChatInput)
         # Focus the chat log instead
         app.screen.query_one("#chat-log").focus()

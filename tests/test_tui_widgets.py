@@ -1967,6 +1967,7 @@ class TestViewTabs:
             tabs = list(app.screen.query(ViewTab))
             assert len(tabs) >= 2
             target = tabs[1]
+
             def _record(_self, name: str) -> None:
                 switch_calls.append(name)
 

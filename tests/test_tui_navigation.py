@@ -116,8 +116,7 @@ async def test_bracket_keys_typed_literally_when_chat_input_focused():
             f"got {type(app.screen).__name__}"
         )
         assert chat_input.value == "[]", (
-            f"Brackets must type literally with input focused, "
-            f"got value={chat_input.value!r}"
+            f"Brackets must type literally with input focused, got value={chat_input.value!r}"
         )
 
 
@@ -173,9 +172,7 @@ async def test_bracket_keys_typed_literally_when_catalog_search_focused():
         assert isinstance(app.screen, CatalogScreen), (
             "Brackets must not navigate while catalog search has focus"
         )
-        assert search.value == "[]", (
-            f"Brackets must type literally; got {search.value!r}"
-        )
+        assert search.value == "[]", f"Brackets must type literally; got {search.value!r}"
 
 
 async def test_settings_filter_not_focused_on_mount():

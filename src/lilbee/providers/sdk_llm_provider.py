@@ -165,9 +165,7 @@ class SdkLLMProvider(LLMProvider):
                 f"Listing models failed: {exc}", provider=self._backend.provider_name
             ) from exc
 
-    def list_chat_models(
-        self, provider: str, *, mode: str = "curated"
-    ) -> list[str]:
+    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
         """List frontier chat models known to the backend for *provider*.
 
         Initializes the backend first so ``cfg.json_mode`` suppression is

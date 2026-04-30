@@ -201,9 +201,7 @@ class LlmSdkBackend(Protocol):
         """List model identifiers visible to the backend. Return [] if unsupported."""
         ...
 
-    def list_chat_models(
-        self, provider: str, *, mode: str = "curated"
-    ) -> list[str]:
+    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
         """List chat-mode models from the SDK's catalog for *provider*.
 
         ``mode="curated"`` returns the per-provider curated short list;

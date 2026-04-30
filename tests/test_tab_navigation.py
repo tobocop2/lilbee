@@ -1,12 +1,17 @@
 """Tab walks every focusable widget on every TUI screen.
 
-Universal Tab navigation contract: pressing Tab on any screen advances
-focus through every selectable widget, then wraps. This test drives a
-real LilbeeApp through each top-level screen, captures the focus chain
-by repeatedly pressing Tab, and asserts the chain visits the expected
-widgets. The expected widgets per screen are the minimum set we want
-keyboard-only users to reach; new focusable widgets should grow this
-fixture.
+Universal Tab navigation contract: pressing Tab on any non-input widget
+advances focus through every selectable widget, then wraps. Text inputs
+are a documented carve-out: in chat input, search inputs, and editor
+fields, Tab inserts a literal tab character so users can type tabs in
+messages or settings. To leave a focused input, press Escape (chat) or
+click out (search/editor).
+
+These tests drive a real ``LilbeeApp`` through each top-level screen,
+walk the chain by pressing Tab from a non-input start widget, and
+assert the chain visits the expected widgets. They also assert the
+text-input carve-out: Tab pressed inside chat input inserts ``\\t``
+without advancing focus.
 """
 
 from __future__ import annotations
@@ -74,37 +79,65 @@ def _patch_chat_setup() -> Any:
 async def _walk_tab_chain(app: LilbeeApp, pilot: Any, max_presses: int = 60) -> list[str]:
     """Press Tab up to ``max_presses`` times; return the focused widget id chain.
 
-    Stops early once the chain repeats (i.e. a full cycle). Returns the
-    sequence of focused widget ids (or the widget class name when id is
-    ``None``)."""
+    Stops early when the same widget instance is focused twice (a full
+    cycle). Each entry in the returned list is the focused widget's id
+    or class name; multiple unnamed widgets of the same class produce
+    duplicate entries, which is intentional.
+    """
     chain: list[str] = []
-    seen_at_index: dict[str, int] = {}
+    seen_ids: set[int] = set()
     for _ in range(max_presses):
         focused = app.focused
-        marker = focused.id if focused is not None and focused.id else type(focused).__name__
-        if marker in seen_at_index:
+        if focused is None:
             break
-        seen_at_index[marker] = len(chain)
+        if id(focused) in seen_ids:
+            break
+        seen_ids.add(id(focused))
+        marker = focused.id if focused.id else type(focused).__name__
         chain.append(marker)
         await pilot.press("tab")
         await pilot.pause()
     return chain
 
 
-@pytest.mark.xfail(
-    reason="ChatScreen's priority=True Tab→complete binding intercepts focus_next "
-    "even when no completion overlay is open. Tracked in beads.",
-    strict=False,
-)
 async def test_chat_tab_chain_includes_view_tabs() -> None:
-    """Tab from ChatScreen should visit the ViewTabs and chat input."""
+    """Tab walk from a view tab on ChatScreen visits every focusable widget.
+
+    Starts the walk from the chat view tab so chat input's literal-tab
+    carve-out doesn't terminate the chain early.
+    """
+    from lilbee.cli.tui.widgets.status_bar import ViewTabs
+
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause(0.2)
+        view_tabs = app.screen.query_one(ViewTabs)
+        view_tabs.query_one("#view-tab-chat").focus()
         await pilot.pause()
         chain = await _walk_tab_chain(app, pilot, max_presses=40)
         for view in ("view-tab-chat", "view-tab-catalog", "view-tab-settings"):
             assert view in chain, f"Tab walk missed {view}: {chain}"
-        assert "chat-input" in chain, f"chat-input missing from {chain}"
+
+
+async def test_chat_input_tab_inserts_literal_tab() -> None:
+    """Tab pressed while chat input has focus inserts ``\\t``, not focus_next.
+
+    Mirrors a typical text-editor contract: Tab is a literal character
+    inside the prompt so users can paste indented code or type tabs.
+    """
+    from lilbee.cli.tui.widgets.chat_input import ChatInput
+
+    app = LilbeeApp()
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause(0.2)
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        inp.focus()
+        inp.value = "hello"
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert inp.value == "hello\t", f"Tab did not insert: {inp.value!r}"
+        assert app.focused is inp, "Focus moved away from chat input on Tab"
 
 
 async def test_settings_tab_chain_visits_tabs_widget_and_search() -> None:
@@ -125,12 +158,6 @@ async def test_settings_tab_chain_visits_tabs_widget_and_search() -> None:
         )
 
 
-@pytest.mark.xfail(
-    reason="GridSelect's Tab→LeaveDown handler routes through self.focus_next() "
-    "which loops back to catalog-grid instead of advancing to catalog-search. "
-    "Tracked in beads.",
-    strict=False,
-)
 async def test_catalog_tab_chain_visits_search() -> None:
     """Tab from CatalogScreen should visit the search input."""
     app = LilbeeApp()

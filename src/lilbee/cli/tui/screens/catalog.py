@@ -754,9 +754,7 @@ class CatalogScreen(Screen[None]):
                 )
             )
             widgets_to_mount.extend(ModelListItem(row) for row in frontier_rows)
-            widgets_to_mount.append(
-                Static(msg.HEADING_LOCAL_ALL, classes="section-heading")
-            )
+            widgets_to_mount.append(Static(msg.HEADING_LOCAL_ALL, classes="section-heading"))
         widgets_to_mount.extend(ModelListItem(row) for row in self._rows)
         search = self._get_search_text()
         if search:

@@ -177,9 +177,7 @@ class StatusScreen(Screen[None]):
         table.add_columns("Document", "Chunks")
         table.cursor_type = "row"
         table.add_row("Loading...", "")
-        self.query_one("#storage-info", Static).update(
-            Content.styled("Loading...", "$text-muted")
-        )
+        self.query_one("#storage-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
     @work(thread=True, name="status_fetch_sources", exit_on_error=False)
     def _fetch_sources_worker(self) -> list[SourceRecord]:

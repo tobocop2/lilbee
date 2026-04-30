@@ -97,8 +97,6 @@ def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
         get_services().provider.invalidate_load_cache()
 
 
-
-
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 

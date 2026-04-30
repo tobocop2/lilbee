@@ -81,9 +81,7 @@ class LLMProvider(Protocol):
         """List available model identifiers."""
         ...
 
-    def list_chat_models(
-        self, provider: str, *, mode: str = "curated"
-    ) -> list[str]:
+    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
         """List frontier chat models the provider is aware of for *provider*.
 
         ``mode="curated"`` (default) returns the per-provider curated short

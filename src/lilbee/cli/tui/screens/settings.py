@@ -6,9 +6,9 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from textual import on
+from textual import lazy, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
@@ -215,9 +215,7 @@ def _make_checkbox(key: str, value: str) -> Checkbox:
 def _make_input(key: str, value: str) -> Input:
     """Create an Input widget for string/number settings."""
     display = "" if value == "None" else value.replace(" (model default)", "")
-    return Input(
-        value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}"
-    )
+    return Input(value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}")
 
 
 class SettingsScreen(Screen[None]):
@@ -248,10 +246,6 @@ class SettingsScreen(Screen[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        # Cache of (TabPane, [setting-row]) pairs built once and reused
-        # across keystrokes for the search filter. Reset whenever the
-        # screen is re-mounted.
-        self._settings_filter_index: list[tuple[Any, list[Any]]] | None = None
         self._filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
@@ -281,15 +275,19 @@ class SettingsScreen(Screen[None]):
             yield Footer()
 
     def _compose_group_tabs(self) -> ComposeResult:
-        """Yield one TabPane per setting group.
+        """Yield one TabPane per setting group with a lazy body.
 
-        TabbedContent only mounts the active TabPane's children, so the
-        screen surfaces with ~1 group's worth of editors instead of the
-        full ~500-widget tree. Switching tabs swaps in the next group.
+        TabbedContent constructs every TabPane up front. Wrapping each
+        body in ``lazy.Lazy`` defers the body mount until after the
+        screen's first refresh, so the tab strip surfaces immediately
+        while the ~500 setting editors slot in on the next frame.
         """
         for group_name, items in _group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
-            with TabPane(group_name, id=pane_id):
+            with (
+                TabPane(group_name, id=pane_id),
+                lazy.Lazy(VerticalGroup(classes="settings-group-body")),
+            ):
                 yield from self._compose_group_body(group_name, items)
 
     def _compose_group_body(
@@ -348,31 +346,20 @@ class SettingsScreen(Screen[None]):
         )
 
     def _apply_filter(self, term: str) -> None:
-        """Apply the filter term to all rows in a single batched update."""
+        """Apply the filter term to all rows in a single batched update.
+
+        Walks the DOM each pass since ``lazy.Reveal`` may still be
+        streaming rows in. Debounce keeps this at most ~10 walks/sec.
+        """
         with self.app.batch_update():
-            for group, rows in self._filter_index():
+            for pane in self.query(TabPane):
                 visible_count = 0
-                for row in rows:
+                for row in pane.query(".setting-row"):
                     matches = not term or term in (row.name or "")
                     row.display = matches
                     if matches:
                         visible_count += 1
-                group.display = visible_count > 0
-
-    def _filter_index(self) -> list[tuple[Any, list[Any]]]:
-        """Lazy cache of (group, rows) for the filter handler.
-
-        Each TabPane is the group container; the rows are its
-        ``.setting-row`` descendants. One DOM walk at first keystroke,
-        O(1) lookups after.
-        """
-        if self._settings_filter_index is not None:
-            return self._settings_filter_index
-        index: list[tuple[Any, list[Any]]] = [
-            (pane, list(pane.query(".setting-row"))) for pane in self.query(TabPane)
-        ]
-        self._settings_filter_index = index
-        return index
+                pane.display = visible_count > 0
 
     @on(Input.Submitted, ".setting-editor")
     @on(Input.Blurred, ".setting-editor")

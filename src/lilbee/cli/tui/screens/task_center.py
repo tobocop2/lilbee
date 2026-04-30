@@ -48,6 +48,7 @@ class TaskQueueChanged(Message):
     screen's main-thread message pump.
     """
 
+
 # Quarter-circle rotation cycles every 4 ticks (~0.4 s). Visible motion
 # in the counts strip confirms background work is live when rows are
 # running (bb-18y3).
