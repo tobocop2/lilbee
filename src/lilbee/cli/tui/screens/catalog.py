@@ -70,6 +70,7 @@ _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 _WORKER_FETCH_SEARCH = "fetch_hf_search"
+_WORKER_FETCH_FRONTIER = "fetch_frontier_models"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -131,6 +132,10 @@ class CatalogScreen(Screen[None]):
         self._loading_more: bool = False
         self._grid_cache_key: tuple = ()
         self._search_in_flight: bool = False
+        # Frontier rows are populated by a worker (litellm import + key
+        # checks block the UI thread for hundreds of ms). Empty until the
+        # first successful fetch lands.
+        self._frontier_rows: list[FrontierCatalogRow] = []
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -152,6 +157,7 @@ class CatalogScreen(Screen[None]):
         self._refresh_grid()
         self._focus_first_grid()
         self._fetch_remote_models()
+        self._fetch_frontier_models()
         # Live-refresh frontier rows when an API key is added/changed.
         signal = getattr(self.app, "provider_availability_changed_signal", None)
         if signal is not None:
@@ -164,8 +170,13 @@ class CatalogScreen(Screen[None]):
                 signal.unsubscribe(self)
 
     def _on_provider_availability_changed(self, _payload: tuple[str, object]) -> None:
-        """Rebuild the active view when an API key is saved or cleared."""
-        self._refresh_view()
+        """Re-fetch frontier rows when an API key is saved or cleared.
+
+        The fetch hits ``discover_api_models`` which imports litellm and
+        probes provider keys (~hundreds of ms). Run it in a worker; the
+        worker callback reseats _frontier_rows and triggers a refresh.
+        """
+        self._fetch_frontier_models()
 
     def _focus_first_grid(self) -> None:
         """Focus the first GridSelect widget if available."""
@@ -321,6 +332,43 @@ class CatalogScreen(Screen[None]):
     def _fetch_remote_models(self) -> list[RemoteModel]:
         return classify_remote_models(cfg.remote_base_url)
 
+    @work(thread=True, name=_WORKER_FETCH_FRONTIER, exit_on_error=False)
+    def _fetch_frontier_models(self) -> list[FrontierCatalogRow]:
+        """Discover cloud chat models off the UI thread.
+
+        ``discover_api_models`` imports litellm (heavy, >50ms) and probes
+        every provider key, totaling several hundred ms even when no
+        keys are set. Running it on the main thread froze the catalog
+        on mount and on every signal-driven refresh; the worker keeps
+        the screen responsive."""
+        from lilbee.modelhub.model_manager import discover_api_models
+        from lilbee.providers.curated_models import curated_ids
+
+        try:
+            groups = discover_api_models(mode="all")
+        except Exception:
+            log.debug("discover_api_models failed in worker", exc_info=True)
+            return []
+
+        rows: list[FrontierCatalogRow] = []
+        for display_name, models in groups.items():
+            provider_id = display_name.lower()
+            curated = set(curated_ids(provider_id))
+            key_field = f"{provider_id}_api_key"
+            has_key = bool(getattr(cfg, key_field, ""))
+            status = KeyStatus.READY if has_key else KeyStatus.MISSING_KEY
+            for rm in models:
+                rows.append(
+                    frontier_row_from_remote(
+                        rm,
+                        provider_id=provider_id,
+                        key_status=status,
+                        is_curated=rm.name in curated,
+                    )
+                )
+        rows.sort(key=lambda r: (not r.is_curated, r.provider, r.name.lower()))
+        return rows
+
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:
         """Fetch next page of HF models for all task types (extends current list)."""
@@ -348,18 +396,30 @@ class CatalogScreen(Screen[None]):
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # PENDING/RUNNING fire here too; only ERROR/CANCELLED should release latches.
         if event.state in (WorkerState.ERROR, WorkerState.CANCELLED):
-            if event.worker.name == _WORKER_FETCH_MORE_HF:
-                self._loading_more = False
-            if event.worker.name == _WORKER_FETCH_SEARCH:
-                self._search_in_flight = False
-                self._update_sort_label()
+            self._handle_worker_error_or_cancel(event.worker.name)
             return
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
         if not isinstance(result, list):
             return
-        name = event.worker.name
+        if not self._apply_worker_result(event.worker.name, result):
+            return
+        self._refresh_view()
+
+    def _handle_worker_error_or_cancel(self, name: str) -> None:
+        if name == _WORKER_FETCH_MORE_HF:
+            self._loading_more = False
+        if name == _WORKER_FETCH_SEARCH:
+            self._search_in_flight = False
+            self._update_sort_label()
+
+    def _apply_worker_result(self, name: str, result: list) -> bool:
+        """Land worker results into the screen's caches.
+
+        Returns True when the screen should refresh its view, False when
+        the worker name is unrecognized (defensive: a future @work
+        decorator name won't silently rebuild the grid)."""
         if name == _WORKER_FETCH_HF:
             self._hf_models = result
         elif name == _WORKER_FETCH_MORE_HF:
@@ -372,9 +432,14 @@ class CatalogScreen(Screen[None]):
             self._update_sort_label()
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
+        elif name == _WORKER_FETCH_FRONTIER:
+            # Reset the cached grid key so a previously-rendered grid
+            # without frontier rows actually rebuilds with them.
+            self._frontier_rows = result
+            self._grid_cache_key = ()
         else:
-            return
-        self._refresh_view()
+            return False
+        return True
 
     def _get_search_text(self) -> str:
         # Preserve the user's casing for display (e.g. the CTA label); matching
@@ -421,41 +486,16 @@ class CatalogScreen(Screen[None]):
         return rows
 
     def _build_frontier_rows(self, search: str) -> list[FrontierCatalogRow]:
-        """Discover cloud chat models and surface them as catalog rows.
+        """Filter the cached frontier rows against the active search.
 
-        The catalog uses the un-curated set so users can browse every
-        model the provider exposes; the model picker / dropdown layer
-        does the curation. Matching configured API keys flips each row
-        to KeyStatus.READY; everything else renders as MISSING_KEY so
-        users can discover availability before they commit.
+        The discovery itself runs in :meth:`_fetch_frontier_models` (a
+        worker) because litellm import + key probing blocks the UI
+        thread. Renderers call this synchronously to read the
+        already-discovered rows, so no I/O happens here.
         """
-        from lilbee.modelhub.model_manager import discover_api_models
-        from lilbee.providers.curated_models import curated_ids
-
-        try:
-            groups = discover_api_models(mode="all")
-        except Exception:
-            log.debug("discover_api_models failed; skipping frontier rows", exc_info=True)
+        if not self._frontier_rows:
             return []
-
-        rows: list[FrontierCatalogRow] = []
-        for display_name, models in groups.items():
-            provider_id = display_name.lower()
-            curated = set(curated_ids(provider_id))
-            key_field = f"{provider_id}_api_key"
-            has_key = bool(getattr(cfg, key_field, ""))
-            status = KeyStatus.READY if has_key else KeyStatus.MISSING_KEY
-            for rm in models:
-                row = frontier_row_from_remote(
-                    rm,
-                    provider_id=provider_id,
-                    key_status=status,
-                    is_curated=rm.name in curated,
-                )
-                if matches_search(row, search):
-                    rows.append(row)
-        rows.sort(key=lambda r: (not r.is_curated, r.provider, r.name.lower()))
-        return rows
+        return [row for row in self._frontier_rows if matches_search(row, search)]
 
     def _is_installed(self, name: str, repo: str = "", filename: str = "") -> bool:
         """Check if a model is installed by name or source repo/filename."""

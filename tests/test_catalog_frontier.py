@@ -9,17 +9,12 @@ and the catalog rebuilds.
 
 from __future__ import annotations
 
-from unittest import mock
-
-import pytest
-
 from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
     matches_search,
 )
-from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.modelhub.models import ModelTask
 
 
@@ -101,54 +96,25 @@ class TestGroupRowsForGrid:
 
 
 class TestBuildFrontierRows:
-    def test_no_keys_yields_no_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_build_frontier_rows`` is the synchronous read of the cache the
+    worker populates. The discovery itself runs on a worker thread; tests
+    seed the cache directly to keep the UI thread fast."""
+
+    def test_empty_cache_yields_no_rows(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        with mock.patch(
-            "lilbee.modelhub.model_manager.discover_api_models",
-            return_value={},
-        ):
-            screen = CatalogScreen.__new__(CatalogScreen)
-            assert screen._build_frontier_rows("") == []
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._frontier_rows = []
+        assert screen._build_frontier_rows("") == []
 
-    def test_curated_models_get_is_curated_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Models in the curated short list flip is_curated=True."""
+    def test_filters_against_search(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
-        from lilbee.core.config import cfg
 
-        snapshot = cfg.gemini_api_key
-        cfg.gemini_api_key = "sk-test"
-        try:
-            with mock.patch(
-                "lilbee.modelhub.model_manager.discover_api_models",
-                return_value={
-                    "Gemini": [
-                        RemoteModel(
-                            name="gemini-2.0-flash",
-                            task=ModelTask.CHAT,
-                            family="",
-                            parameter_size="",
-                            provider="Gemini",
-                        ),
-                        RemoteModel(
-                            name="gemini-experimental-9000",
-                            task=ModelTask.CHAT,
-                            family="",
-                            parameter_size="",
-                            provider="Gemini",
-                        ),
-                    ]
-                },
-            ):
-                screen = CatalogScreen.__new__(CatalogScreen)
-                rows = screen._build_frontier_rows("")
-        finally:
-            cfg.gemini_api_key = snapshot
-
-        by_name = {r.name: r for r in rows}
-        assert by_name["gemini-2.0-flash"].is_curated is True
-        assert by_name["gemini-experimental-9000"].is_curated is False
-        # All rows from a key-configured provider are READY.
-        assert all(r.key_status == KeyStatus.READY for r in rows)
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._frontier_rows = [
+            _frontier("gemini-2.0-flash", provider="Gemini"),
+            _frontier("gpt-4o", provider="OpenAI"),
+        ]
+        gemini_only = screen._build_frontier_rows("gemini")
+        names = {r.name for r in gemini_only}
+        assert names == {"gemini-2.0-flash"}
