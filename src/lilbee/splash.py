@@ -39,10 +39,7 @@ def _should_skip() -> bool:
     """Return True when the splash animation should be suppressed."""
     if not os.isatty(2):
         return True
-    if os.environ.get("LILBEE_NO_SPLASH", ""):
-        return True
-    # Frozen builds: sys.executable is the lilbee binary, not a Python interp.
-    return bool(getattr(sys, "frozen", False))
+    return bool(os.environ.get("LILBEE_NO_SPLASH", ""))
 
 
 def start() -> SplashHandle | None:
