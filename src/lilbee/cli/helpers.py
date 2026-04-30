@@ -19,9 +19,9 @@ from rich.table import Table
 
 from lilbee.cli import theme
 from lilbee.config import cfg
-from lilbee.platform import is_ignored_dir
 from lilbee.security import validate_path_within
 from lilbee.services import get_services
+from lilbee.system import is_ignored_dir
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
