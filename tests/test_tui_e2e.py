@@ -1997,19 +1997,26 @@ class TestStatusInteractions:
             {"filename": "doc1.md", "chunk_count": 5},
             {"filename": "doc2.pdf", "chunk_count": 12},
         ]
+        services = mock.MagicMock()
+        services.store.get_sources.return_value = mock_sources
         with (
             _mock_status_deps(),
             mock.patch(
-                "lilbee.cli.tui.screens.status.StatusScreen._fetch_sources",
-                return_value=mock_sources,
+                "lilbee.cli.tui.screens.status.get_services",
+                return_value=services,
             ),
         ):
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
-                await pilot.pause()
-                table = app.screen.query_one("#docs-table", DataTable)
+                # Worker runs on a thread; wait for it to land + the
+                # callback to fill the table.
+                for _ in range(20):
+                    await pilot.pause(0.05)
+                    table = app.screen.query_one("#docs-table", DataTable)
+                    if table.row_count == 2:
+                        break
                 assert table.row_count == 2
 
 

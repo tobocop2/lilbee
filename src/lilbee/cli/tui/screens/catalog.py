@@ -51,7 +51,6 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
-from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import OLLAMA_PREFIX
 from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
@@ -184,19 +183,20 @@ class CatalogScreen(Screen[None]):
             self.query_one(GridSelect).focus()
 
     def _fetch_installed_names(self) -> None:
-        """Populate installed identities from registry manifests.
+        """Populate installed identities from the shared ModelManager cache.
 
-        Stored set contains both the canonical ref (``hf_repo/filename``)
+        Reads through ``services.model_manager.list_native_identities``
+        which memoizes the registry walk for 30 seconds; previously
+        every Catalog mount built a fresh ``ModelRegistry`` and walked
+        it synchronously (~150-300 ms on cold caches).
+
+        The set contains both the canonical ref (``hf_repo/filename``)
         and the bare ``hf_repo`` so catalog rows whose ref is the repo
         alone still light up as installed when at least one quant of
         that repo has a manifest.
         """
         with contextlib.suppress(Exception):
-            registry = ModelRegistry(cfg.models_dir)
-            self._installed_names = set()
-            for m in registry.list_installed():
-                self._installed_names.add(m.ref)
-                self._installed_names.add(m.hf_repo)
+            self._installed_names = set(get_services().model_manager.list_native_identities())
 
     def action_toggle_view(self) -> None:
         """Toggle between grid and list view.

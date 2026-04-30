@@ -7162,8 +7162,11 @@ async def test_fetch_installed_names_exception():
             app.push_screen(screen)
             await _pilot.pause()
             screen._installed_names = set()
+            services = MagicMock()
+            services.model_manager.list_native_identities.side_effect = Exception("fail")
             with patch(
-                "lilbee.cli.tui.screens.catalog.ModelRegistry", side_effect=Exception("fail")
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=services,
             ):
                 screen._fetch_installed_names()
             assert screen._installed_names == set()
@@ -8588,7 +8591,7 @@ def test_make_editor_with_choices():
 
 
 async def test_catalog_fetch_installed_names():
-    """_fetch_installed_names populates _installed_names from registry.
+    """_fetch_installed_names populates _installed_names via ModelManager.
 
     The set carries both the canonical ``hf_repo/filename`` ref and the
     bare ``hf_repo`` so catalog rows whose ref is the repo alone still
@@ -8603,14 +8606,14 @@ async def test_catalog_fetch_installed_names():
             app.push_screen(screen)
             await _pilot.pause()
 
-            mock_manifest = MagicMock()
-            mock_manifest.hf_repo = "org/test-model-GGUF"
-            mock_manifest.gguf_filename = "test.gguf"
-            mock_manifest.ref = "org/test-model-GGUF/test.gguf"
-            mock_registry = MagicMock()
-            mock_registry.list_installed.return_value = [mock_manifest]
-
-            with patch("lilbee.cli.tui.screens.catalog.ModelRegistry", return_value=mock_registry):
+            services = MagicMock()
+            services.model_manager.list_native_identities.return_value = frozenset(
+                {"org/test-model-GGUF/test.gguf", "org/test-model-GGUF"}
+            )
+            with patch(
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=services,
+            ):
                 screen._fetch_installed_names()
             assert "org/test-model-GGUF/test.gguf" in screen._installed_names
             assert "org/test-model-GGUF" in screen._installed_names
