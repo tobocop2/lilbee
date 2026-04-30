@@ -142,6 +142,15 @@ jobs:
           # multipart.py in frozen builds. Remove it so litestar gets the
           # real module. (Same shim issue exists under Nuitka as PyInstaller.)
           uv pip uninstall python-multipart
+          # Bundle en_core_web_sm so concept extraction works out of the box.
+          SPACY_VER=$(uv run --no-sync python -c "import spacy; print(spacy.__version__)")
+          case "$SPACY_VER" in
+            3.7.*) MODEL_VER="3.7.1" ;;
+            3.8.*) MODEL_VER="3.8.0" ;;
+            *)     MODEL_VER="3.8.0" ;;
+          esac
+          uv pip install \
+            "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-${MODEL_VER}/en_core_web_sm-${MODEL_VER}-py3-none-any.whl"
 
       # Build llama-cpp-python from source via the same script the wheel
       # job uses. uv pip install --reinstall hit uv's package cache by
@@ -214,8 +223,10 @@ jobs:
             --include-package=kreuzberg         --include-package-data=kreuzberg \
             --include-package=litellm           --include-package=litellm.llms       --include-package-data=litellm \
             --include-package=crawl4ai          --include-package-data=crawl4ai \
+            --include-package=fake_useragent    --include-package-data=fake_useragent \
             --include-package=playwright \
             --include-package=spacy             --include-package-data=spacy \
+            --spacy-language-model=en_core_web_sm \
             --include-package=graspologic_native --include-package-data=graspologic_native \
             --include-package=textual           --include-package-data=textual \
             --include-package=rich              --include-package-data=rich \
