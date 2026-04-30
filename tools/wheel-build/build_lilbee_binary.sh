@@ -51,6 +51,7 @@ uv run --no-sync python -m nuitka \
     --output-dir=dist \
     --assume-yes-for-downloads \
     --nofollow-import-to=*.tests.* \
+    --nofollow-import-to=tkinter --nofollow-import-to=_tkinter \
     --include-package=lancedb            --include-package-data=lancedb \
     --include-package=llama_cpp          --include-package-data=llama_cpp \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
