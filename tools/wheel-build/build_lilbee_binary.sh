@@ -50,7 +50,6 @@ uv run --no-sync python -m nuitka \
     --output-filename="$ASSET_NAME" \
     --output-dir=dist \
     --assume-yes-for-downloads \
-    --nofollow-import-to=*.tests \
     --nofollow-import-to=*.tests.* \
     --include-package=lancedb            --include-package-data=lancedb \
     --include-package=llama_cpp          --include-package-data=llama_cpp \
