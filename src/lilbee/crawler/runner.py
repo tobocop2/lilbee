@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
@@ -56,8 +57,6 @@ async def drain_background_tasks() -> None:
 
 def _get_crawl_semaphore() -> asyncio.Semaphore | None:
     """Return the process-wide crawl semaphore, or None when unlimited."""
-    from lilbee.core.services import get_services
-
     return get_services().crawler_semaphore
 
 
@@ -202,8 +201,6 @@ async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]]) -> None:
     is already running. The spawned task is added to ``tasks`` so the
     caller can drain it before returning.
     """
-    from lilbee.core.services import get_services
-
     interval = cfg.crawl_sync_interval
     sync_state = get_services().crawler_sync_state
     if interval <= 0 or not sync_state.lock.acquire(blocking=False):
