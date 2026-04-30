@@ -78,10 +78,16 @@ jobs:
         run: uv python install 3.12
 
       - name: Compute version
+        # NUITKA_VERSION strips PEP 440 modifiers (b, rc, .dev) to a plain
+        # int-tuple. Nuitka --product-version rejects '0.6.66b456' but
+        # accepts '0.6.66.456'; using only digits keeps the {VERSION} token
+        # in --onefile-tempdir-spec unique per release without losing info.
         shell: bash
         run: |
           VERSION=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          NUITKA_VERSION=$(python3 -c "import re, sys; parts=re.findall(r'\d+', sys.argv[1]); print('.'.join(parts[:4]))" "$VERSION")
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
       # Linux build runs inside the manylinux_2_28 container (AlmaLinux 8,
       # glibc 2.28 baseline) so the produced binary runs on every currently-
@@ -131,7 +137,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --extra release && uv pip install 'nuitka>=4.0,<5'
+          uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5'
           # python-multipart ships a multipart/ shim that shadows the real
           # multipart.py in frozen builds. Remove it so litestar gets the
           # real module. (Same shim issue exists under Nuitka as PyInstaller.)
@@ -179,25 +185,24 @@ jobs:
         run: |
           uv run --no-sync python -m nuitka \
             --mode=onefile \
+            --no-deployment-flag=self-execution \
             --onefile-cache-mode=cached \
             --onefile-tempdir-spec='{CACHE_DIR}/lilbee/{VERSION}' \
             --product-name=lilbee \
-            --product-version="${LILBEE_VERSION}" \
+            --product-version="${LILBEE_NUITKA_VERSION}" \
             --output-filename="${{ matrix.asset_name }}" \
             --output-dir=dist \
             --assume-yes-for-downloads \
-            --user-package-configuration-file=nuitka-package-overrides/llama_cpp.yml \
             --include-package=lancedb           --include-package-data=lancedb \
             --include-package=llama_cpp         --include-package-data=llama_cpp \
             --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
             --include-package=tiktoken          --include-package-data=tiktoken \
             --include-package=tiktoken_ext      --include-package-data=tiktoken_ext \
-            --include-package=pypdfium2         --include-package-data=pypdfium2 \
             --include-package=numpy             --include-package-data=numpy \
             --include-package=kreuzberg         --include-package-data=kreuzberg \
             --include-package=litellm           --include-package=litellm.llms       --include-package-data=litellm \
             --include-package=crawl4ai          --include-package-data=crawl4ai \
-            --include-package=playwright        --include-package-data=playwright \
+            --include-package=playwright \
             --include-package=spacy             --include-package-data=spacy \
             --include-package=graspologic_native --include-package-data=graspologic_native \
             --include-package=textual           --include-package-data=textual \
@@ -205,7 +210,7 @@ jobs:
             --include-package=catalogue \
             --include-distribution-metadata=lilbee \
             --include-distribution-metadata=litellm \
-            --include-distribution-metadata=crawl4ai \
+            --include-distribution-metadata=Crawl4AI \
             --include-distribution-metadata=spacy \
             --include-distribution-metadata=catalogue \
             --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \

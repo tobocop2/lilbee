@@ -1003,7 +1003,7 @@ class TestConfigProvider:
         """models_dir always uses the canonical shared location, not data_root."""
         import os
 
-        from lilbee.platform import canonical_models_dir
+        from lilbee.system import canonical_models_dir
 
         with mock.patch.dict(os.environ, {"LILBEE_DATA": str(tmp_path / "test-lilbee")}):
             from lilbee.config import Config
