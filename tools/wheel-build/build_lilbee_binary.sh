@@ -50,12 +50,14 @@ uv run --no-sync python -m nuitka \
     --output-filename="$ASSET_NAME" \
     --output-dir=dist \
     --assume-yes-for-downloads \
+    --nofollow-import-to=*.tests \
+    --nofollow-import-to=*.tests.* \
     --include-package=lancedb            --include-package-data=lancedb \
     --include-package=llama_cpp          --include-package-data=llama_cpp \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
     --include-package=tiktoken           --include-package-data=tiktoken \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \
-    --include-package=numpy              --include-package-data=numpy \
+    --include-package-data=numpy \
     --include-package=kreuzberg          --include-package-data=kreuzberg \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
     --include-package=crawl4ai           --include-package-data=crawl4ai \
@@ -66,7 +68,6 @@ uv run --no-sync python -m nuitka \
     --include-package=graspologic_native --include-package-data=graspologic_native \
     --include-package=textual            --include-package-data=textual \
     --include-package=rich               --include-package-data=rich \
-    --include-package=catalogue \
     --include-package=litestar           --include-package-data=litestar \
     --include-package=mcp                --include-package-data=mcp \
     --include-distribution-metadata=lilbee \
