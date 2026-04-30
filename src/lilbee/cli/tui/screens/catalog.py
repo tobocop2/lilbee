@@ -28,8 +28,12 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
-    TableRow,
+    CatalogRow,
+    FrontierCatalogRow,
+    KeyStatus,
+    LocalCatalogRow,
     catalog_to_row,
+    frontier_row_from_remote,
     matches_search,
     remote_to_row,
     variant_to_row,
@@ -117,7 +121,7 @@ class CatalogScreen(Screen[None]):
         self._remote_models: list[RemoteModel] = []
         self._hf_offset = 0
         self._hf_has_more = True
-        self._rows: list[TableRow] = []
+        self._rows: list[LocalCatalogRow] = []
         self._sort_column: str = "Name"
         self._sort_ascending: bool = True
         self._pending_delete: str | None = None
@@ -125,7 +129,7 @@ class CatalogScreen(Screen[None]):
         self._grid_view: bool = True
         self._hf_fetched: bool = False
         self._loading_more: bool = False
-        self._grid_cache_key: tuple[tuple[tuple[str, bool], ...], str] | tuple = ()
+        self._grid_cache_key: tuple = ()
         self._search_in_flight: bool = False
 
     def compose(self) -> ComposeResult:
@@ -148,6 +152,20 @@ class CatalogScreen(Screen[None]):
         self._refresh_grid()
         self._focus_first_grid()
         self._fetch_remote_models()
+        # Live-refresh frontier rows when an API key is added/changed.
+        signal = getattr(self.app, "provider_availability_changed_signal", None)
+        if signal is not None:
+            signal.subscribe(self, self._on_provider_availability_changed)
+
+    def on_unmount(self) -> None:
+        signal = getattr(self.app, "provider_availability_changed_signal", None)
+        if signal is not None:
+            with contextlib.suppress(Exception):
+                signal.unsubscribe(self)
+
+    def _on_provider_availability_changed(self, _payload: tuple[str, object]) -> None:
+        """Rebuild the active view when an API key is saved or cleared."""
+        self._refresh_view()
 
     def _focus_first_grid(self) -> None:
         """Focus the first GridSelect widget if available."""
@@ -363,18 +381,18 @@ class CatalogScreen(Screen[None]):
         # callers normalize via _normalize_for_search.
         return self.query_one("#catalog-search", Input).value.strip()
 
-    def _build_rows(self) -> list[TableRow]:
+    def _build_rows(self) -> list[LocalCatalogRow]:
         """Build all table rows from current data sources."""
         search = self._get_search_text()
-        rows: list[TableRow] = []
+        rows: list[LocalCatalogRow] = []
         rows.extend(self._build_family_rows(search))
         rows.extend(self._build_hf_rows(search))
         rows.extend(self._build_remote_rows(search))
         return rows
 
-    def _build_family_rows(self, search: str) -> list[TableRow]:
+    def _build_family_rows(self, search: str) -> list[LocalCatalogRow]:
         """Build rows from featured model families."""
-        rows: list[TableRow] = []
+        rows: list[LocalCatalogRow] = []
         for fam in self._families:
             for v in fam.variants:
                 installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
@@ -383,9 +401,9 @@ class CatalogScreen(Screen[None]):
                     rows.append(row)
         return rows
 
-    def _build_hf_rows(self, search: str) -> list[TableRow]:
+    def _build_hf_rows(self, search: str) -> list[LocalCatalogRow]:
         """Build rows from HuggingFace models."""
-        rows: list[TableRow] = []
+        rows: list[LocalCatalogRow] = []
         for m in self._hf_models:
             installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
             row = catalog_to_row(m, installed)
@@ -393,13 +411,50 @@ class CatalogScreen(Screen[None]):
                 rows.append(row)
         return rows
 
-    def _build_remote_rows(self, search: str) -> list[TableRow]:
+    def _build_remote_rows(self, search: str) -> list[LocalCatalogRow]:
         """Build rows from remote (inference-only) models."""
-        rows: list[TableRow] = []
+        rows: list[LocalCatalogRow] = []
         for rm in self._remote_models:
             row = remote_to_row(rm)
             if matches_search(row, search):
                 rows.append(row)
+        return rows
+
+    def _build_frontier_rows(self, search: str) -> list[FrontierCatalogRow]:
+        """Discover cloud chat models and surface them as catalog rows.
+
+        The catalog uses the un-curated set so users can browse every
+        model the provider exposes; the model picker / dropdown layer
+        does the curation. Matching configured API keys flips each row
+        to KeyStatus.READY; everything else renders as MISSING_KEY so
+        users can discover availability before they commit.
+        """
+        from lilbee.modelhub.model_manager import discover_api_models
+        from lilbee.providers.curated_models import curated_ids
+
+        try:
+            groups = discover_api_models(mode="all")
+        except Exception:
+            log.debug("discover_api_models failed; skipping frontier rows", exc_info=True)
+            return []
+
+        rows: list[FrontierCatalogRow] = []
+        for display_name, models in groups.items():
+            provider_id = display_name.lower()
+            curated = set(curated_ids(provider_id))
+            key_field = f"{provider_id}_api_key"
+            has_key = bool(getattr(cfg, key_field, ""))
+            status = KeyStatus.READY if has_key else KeyStatus.MISSING_KEY
+            for rm in models:
+                row = frontier_row_from_remote(
+                    rm,
+                    provider_id=provider_id,
+                    key_status=status,
+                    is_curated=rm.name in curated,
+                )
+                if matches_search(row, search):
+                    rows.append(row)
+        rows.sort(key=lambda r: (not r.is_curated, r.provider, r.name.lower()))
         return rows
 
     def _is_installed(self, name: str, repo: str = "", filename: str = "") -> bool:
@@ -410,7 +465,7 @@ class CatalogScreen(Screen[None]):
             return f"{repo}/{filename}" in self._installed_names
         return False
 
-    def _sort_rows(self, rows: list[TableRow]) -> list[TableRow]:
+    def _sort_rows(self, rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
         """Sort rows: featured first, then by current sort column."""
         key_fn = SORT_KEYS.get(self._sort_column, SORT_KEYS["Name"])
         # Stable sort: featured always first, then by column
@@ -438,11 +493,13 @@ class CatalogScreen(Screen[None]):
         family_rows = self._build_family_rows("")
         remote_rows = self._build_remote_rows("")
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
+        frontier_rows = self._build_frontier_rows("")
         all_rows = family_rows + remote_rows + hf_rows
         # Include the full search text so toggle-back + value-change combinations
         # rebuild the grid (and therefore the CTA) with the current query.
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
+            tuple((r.name, r.key_status.value) for r in frontier_rows),
             self._get_search_text(),
         )
         if self._grid_cache_key == row_key:
@@ -451,10 +508,15 @@ class CatalogScreen(Screen[None]):
         container = self.query_one("#catalog-grid", VerticalScroll)
         container.remove_children()
         widgets_to_mount: list[Static | GridSelect] = []
-        for section in _group_rows_for_grid(all_rows):
+        for section in _group_rows_for_grid(all_rows, frontier_rows):
             if not section.rows:
                 continue
-            widgets_to_mount.append(Static(section.heading, classes="section-heading"))
+            heading_class = (
+                "section-heading frontier-section-heading"
+                if section.is_frontier
+                else "section-heading"
+            )
+            widgets_to_mount.append(Static(section.heading, classes=heading_class))
             cards = [ModelCard(row) for row in section.rows]
             grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
             widgets_to_mount.append(grid)
@@ -543,13 +605,24 @@ class CatalogScreen(Screen[None]):
         self._select_row(event.item.row)
 
     def _refresh_list(self) -> None:
-        """Rebuild the list view from current data; append HF search CTA when filtering."""
+        """Rebuild the list view; frontier rows lead, then local rows."""
         self._rows = self._sort_rows(self._build_rows())
+        frontier_rows = self._build_frontier_rows("")
         container = self.query_one("#catalog-list", VerticalScroll)
         container.remove_children()
-        widgets_to_mount: list[ModelListItem | SearchHFCtaItem] = [
-            ModelListItem(row) for row in self._rows
-        ]
+        widgets_to_mount: list[ModelListItem | SearchHFCtaItem | Static] = []
+        if frontier_rows:
+            widgets_to_mount.append(
+                Static(
+                    msg.HEADING_FRONTIER_ALL,
+                    classes="section-heading frontier-section-heading",
+                )
+            )
+            widgets_to_mount.extend(ModelListItem(row) for row in frontier_rows)
+            widgets_to_mount.append(
+                Static(msg.HEADING_LOCAL_ALL, classes="section-heading")
+            )
+        widgets_to_mount.extend(ModelListItem(row) for row in self._rows)
         search = self._get_search_text()
         if search:
             widgets_to_mount.append(SearchHFCtaItem(search))
@@ -615,8 +688,11 @@ class CatalogScreen(Screen[None]):
         # so _list_items() actually returns the new rows.
         self.call_after_refresh(self._focus_list_item, 0)
 
-    def _select_row(self, row: TableRow) -> None:
-        """Handle row selection: install or use the model."""
+    def _select_row(self, row: CatalogRow) -> None:
+        """Handle row selection: install, switch model, or open settings."""
+        if isinstance(row, FrontierCatalogRow):  # sealed-union dispatch
+            self._select_frontier_row(row)
+            return
         if row.variant and row.family:
             self._install_variant(row.variant, row.family)
         elif row.catalog_model:
@@ -629,6 +705,24 @@ class CatalogScreen(Screen[None]):
             )
             apply_active_model(self.app, "chat_model", ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
+
+    def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
+        """Activate a cloud model, or jump to settings when the key is missing."""
+        if row.key_status == KeyStatus.READY:
+            apply_active_model(self.app, "chat_model", row.ref)
+            self.notify(msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider))
+            return
+        # Missing key: tell the user where to set it. The settings screen
+        # already exposes per-provider key fields; nudging the user there
+        # avoids a silent failure on the first chat turn.
+        key_field = f"{row.provider_id}_api_key"
+        self.notify(
+            msg.CATALOG_NEEDS_KEY.format(provider=row.provider, key_field=key_field),
+            severity="warning",
+            timeout=10,
+        )
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Settings")
 
     def _load_more(self) -> None:
         """Load next page of HF models, if any remain and no fetch is in flight."""
@@ -874,25 +968,50 @@ class CatalogScreen(Screen[None]):
 
 @dataclass
 class GridSection:
-    """A named group of rows for the grid view."""
+    """A named group of rows for the grid view.
+
+    ``is_frontier`` flags the cloud super-section so the renderer can
+    apply a distinct heading style (the user's "must be distinctly
+    grouped from local" rule).
+    """
 
     heading: str
-    rows: list[TableRow]
+    rows: list[CatalogRow]
+    is_frontier: bool = False
 
 
 _TASK_BUCKET_ORDER = (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
 
 
-def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
-    """Group rows into sections for the grid view."""
-    recommended: list[TableRow] = []
-    installed: list[TableRow] = []
-    by_task: dict[str, list[TableRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
-    # Display order is fixed by _TASK_BUCKET_ORDER, but any ModelTask value
-    # not in that tuple still renders in its own section after the known
-    # ones, so adding a new task variant never silently drops rows.
-    extras: dict[str, list[TableRow]] = {}
-    for row in rows:
+def _group_rows_for_grid(
+    local_rows: list[LocalCatalogRow],
+    frontier_rows: list[FrontierCatalogRow] | None = None,
+) -> list[GridSection]:
+    """Group rows into sections for the grid view.
+
+    Frontier (cloud) rows render in their own super-section above all
+    local sections, sub-grouped per provider so a user reading top to
+    bottom sees Gemini / OpenAI / Anthropic before Featured / Installed.
+    """
+    sections: list[GridSection] = []
+    if frontier_rows:
+        per_provider: dict[str, list[CatalogRow]] = {}
+        for row in frontier_rows:
+            per_provider.setdefault(row.provider, []).append(row)
+        for provider in sorted(per_provider):
+            sections.append(
+                GridSection(
+                    msg.HEADING_FRONTIER.format(provider=provider),
+                    per_provider[provider],
+                    is_frontier=True,
+                )
+            )
+
+    recommended: list[CatalogRow] = []
+    installed: list[CatalogRow] = []
+    by_task: dict[str, list[CatalogRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
+    extras: dict[str, list[CatalogRow]] = {}
+    for row in local_rows:
         if row.featured:
             recommended.append(row)
             continue
@@ -904,9 +1023,12 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
             bucket.append(row)
         else:
             extras.setdefault(row.task, []).append(row)
-    return [
-        GridSection(msg.HEADING_OUR_PICKS, recommended),
-        GridSection(msg.HEADING_INSTALLED, installed),
-        *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
-        *[GridSection(task.capitalize(), extras[task]) for task in extras],
-    ]
+    sections.extend(
+        [
+            GridSection(msg.HEADING_OUR_PICKS, recommended),
+            GridSection(msg.HEADING_INSTALLED, installed),
+            *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
+            *[GridSection(task.capitalize(), extras[task]) for task in extras],
+        ]
+    )
+    return sections

@@ -16,7 +16,7 @@ from conftest import (
 from conftest import (
     make_test_catalog_model as _make_model,
 )
-from lilbee.cli.tui.screens.catalog_utils import TableRow
+from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
 
@@ -2456,7 +2456,7 @@ class TestModelCardSelected:
         card.selected = True
         assert card.selected is True
 
-    def _make_row(self, **overrides: Any) -> TableRow:
+    def _make_row(self, **overrides: Any) -> LocalCatalogRow:
         defaults: dict[str, Any] = {
             "name": "test",
             "task": "chat",
@@ -2470,29 +2470,29 @@ class TestModelCardSelected:
             "sort_size": 4.0,
         }
         defaults.update(overrides)
-        return TableRow(**defaults)
+        return LocalCatalogRow(**defaults)
 
     def test_build_status_with_downloads(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_status
+        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
 
         row = self._make_row(downloads="1K", sort_downloads=1000)
         assert _build_status(row) is not None
 
     def test_build_status_installed(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_status
+        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
 
         result = _build_status(self._make_row(installed=True))
         assert result is not None
         assert "installed" in str(result).lower()
 
     def test_build_status_downloads_positive(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_status
+        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
 
         row = self._make_row(downloads="5K", sort_downloads=5000)
         assert _build_status(row) is not None
 
     def test_build_status_none(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _build_status
+        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
 
         assert _build_status(self._make_row()) is None
 
@@ -3016,7 +3016,7 @@ class TestModelCardBuildHelpers:
     def test_build_status_not_installed_zero_downloads(self) -> None:
         from dataclasses import dataclass
 
-        from lilbee.cli.tui.widgets.model_card import _build_status
+        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
 
         @dataclass
         class FakeRow:
@@ -3465,7 +3465,7 @@ class TestModelCardBuildStatusDownloads:
     def test_build_status_with_downloads(self) -> None:
         from dataclasses import dataclass
 
-        from lilbee.cli.tui.widgets.model_card import _build_status
+        from lilbee.cli.tui.widgets.model_card import _build_local_status as _build_status
 
         @dataclass
         class FakeRow:
@@ -4240,8 +4240,8 @@ def _make_list_row(
     installed: bool = False,
     sort_downloads: int = 1000,
     backend: str = "native",
-) -> TableRow:
-    return TableRow(
+) -> LocalCatalogRow:
+    return LocalCatalogRow(
         name=name,
         task=task,
         params=params,

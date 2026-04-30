@@ -26,7 +26,7 @@ from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_REMOTE,
 )
 from lilbee.cli.tui.screens.catalog_utils import (
-    TableRow,
+    LocalCatalogRow,
     _format_downloads,
     _is_param_count,
     catalog_to_row,
@@ -317,7 +317,7 @@ class TestMatchesSearch:
         assert matches_search(row, "qwen") is False
 
     def test_search_by_quant(self):
-        row = TableRow(
+        row = LocalCatalogRow(
             name="test",
             task="chat",
             params="8B",
@@ -6739,7 +6739,7 @@ def test_scan_installed_models_exception_returns_empty():
 
 
 def test_installed_name_to_row_creates_row():
-    """_installed_name_to_row creates a TableRow with correct fields."""
+    """_installed_name_to_row creates a LocalCatalogRow with correct fields."""
     from lilbee.cli.tui.screens.setup import _installed_name_to_row
 
     row = _installed_name_to_row("qwen3:8b", "chat")
@@ -8520,10 +8520,10 @@ def test_chat_embedding_ready_real_code_false():
 def test_on_list_item_selected_calls_select_row():
     """_on_list_item_selected calls _select_row with the item's row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
     screen = MagicMock()
-    row = TableRow(
+    row = LocalCatalogRow(
         name="test",
         task="chat",
         params="7B",
@@ -8702,7 +8702,7 @@ async def test_catalog_delete_when_input_focused():
 async def test_catalog_get_highlighted_model_name_catalog():
     """_get_highlighted_model_name returns catalog model name."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -8712,7 +8712,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             await _pilot.pause()
 
             cm = _make_catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
-            row = TableRow(
+            row = LocalCatalogRow(
                 name="Qwen3 8B",
                 task="chat",
                 params="8B",
@@ -8743,7 +8743,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
 async def test_catalog_get_highlighted_model_name_fallback_none():
     """_get_highlighted_model_name returns None when row has no model ref."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -8752,7 +8752,7 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             app.push_screen(screen)
             await _pilot.pause()
 
-            row = TableRow(
+            row = LocalCatalogRow(
                 name="orphan",
                 task="chat",
                 params="?",
@@ -8798,7 +8798,7 @@ async def test_catalog_browse_more_clicked():
 async def test_catalog_grid_selected_with_model_card():
     """Grid selection with ModelCard delegates to _select_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
     from lilbee.cli.tui.widgets.grid_select import GridSelect
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
@@ -8809,7 +8809,7 @@ async def test_catalog_grid_selected_with_model_card():
             app.push_screen(screen)
             await _pilot.pause()
 
-            row = TableRow(
+            row = LocalCatalogRow(
                 name="card-model",
                 task="chat",
                 params="7B",
@@ -9231,7 +9231,7 @@ async def test_catalog_focused_list_index_value_error_path():
             screen._grid_view = False
             # Focus a fabricated ModelListItem that is not mounted in the screen.
             dangling = ModelListItem(
-                TableRow(
+                LocalCatalogRow(
                     name="dangling",
                     task="chat",
                     params="1B",

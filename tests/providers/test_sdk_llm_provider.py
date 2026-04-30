@@ -96,7 +96,9 @@ class FakeBackend:
             raise NotImplementedError
         return self.list_models_result
 
-    def list_chat_models(self, provider: str) -> list[str]:
+    def list_chat_models(
+        self, provider: str, *, mode: str = "curated"
+    ) -> list[str]:
         self.list_chat_models_calls.append(provider)
         if self.list_chat_models_not_supported:
             raise NotImplementedError
@@ -405,7 +407,9 @@ class TestListChatModels:
 
     def test_wraps_unexpected_errors(self) -> None:
         class _FailingBackend(FakeBackend):
-            def list_chat_models(self, provider: str) -> list[str]:
+            def list_chat_models(
+                self, provider: str, *, mode: str = "curated"
+            ) -> list[str]:
                 raise RuntimeError("catalog boom")
 
         provider = SdkLLMProvider(_FailingBackend())
@@ -414,7 +418,9 @@ class TestListChatModels:
 
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
-            def list_chat_models(self, provider: str) -> list[str]:
+            def list_chat_models(
+                self, provider: str, *, mode: str = "curated"
+            ) -> list[str]:
                 raise ProviderError("already-typed", provider="fake")
 
         provider = SdkLLMProvider(_WrappedError())

@@ -35,6 +35,14 @@
     border-bottom: solid $surface-lighten-2;
 }
 
+/* Frontier (cloud) sections render with an accent rule so the
+ * boundary against local sections is unmistakable. */
+.frontier-section-heading {
+    color: $accent;
+    border-top: heavy $accent;
+    border-bottom: solid $accent;
+}
+
 /* View toggle: hide inactive view */
 CatalogScreen.-grid-view #catalog-list { display: none; }
 CatalogScreen.-grid-view #sort-label { display: none; }

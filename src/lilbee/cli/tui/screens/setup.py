@@ -29,7 +29,7 @@ from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
-    TableRow,
+    LocalCatalogRow,
     catalog_to_row,
     parse_param_label,
 )
@@ -62,9 +62,9 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         return [], []
 
 
-def _installed_name_to_row(name: str, task: str) -> TableRow:
-    """Create a minimal TableRow for an already-installed model."""
-    return TableRow(
+def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
+    """Create a minimal LocalCatalogRow for an already-installed model."""
+    return LocalCatalogRow(
         name=name,
         task=task,
         params=parse_param_label(name),

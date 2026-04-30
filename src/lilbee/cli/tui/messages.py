@@ -85,6 +85,13 @@ EMBEDDING_MISSING = (
 THEME_SET = "Theme: {name}"
 HEADING_OUR_PICKS = "Our picks"
 HEADING_INSTALLED = "Installed"
+HEADING_FRONTIER = "Frontier · {provider}"
+HEADING_FRONTIER_ALL = "Frontier (cloud)"
+HEADING_LOCAL_ALL = "Local"
+CATALOG_USING_FRONTIER = "Using {name} via the {provider} API"
+CATALOG_NEEDS_KEY = (
+    "{provider} needs an API key. Set {key_field} in Settings to enable this model."
+)
 CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_NO_TASK_BAR = "Cannot download: task bar not found"

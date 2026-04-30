@@ -75,11 +75,14 @@ def _patch_chat_setup():
 
 
 def _rendered_tab_text(tabs: ViewTabs) -> str:
-    """Pull the rendered text out of the inner Static, regardless of styling."""
+    """Render the visible tab strip text: per-tab Labels + trailing Static."""
     from textual.widgets import Static
 
-    inner = tabs.query_one("#view-tabs-content", Static)
-    return str(inner.render())
+    from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+    parts = [str(tab.render()) for tab in tabs.query(ViewTab)]
+    parts.append(str(tabs.query_one("#view-tabs-trailing", Static).render()))
+    return " ".join(parts)
 
 
 async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
