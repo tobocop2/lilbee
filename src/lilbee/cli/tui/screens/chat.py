@@ -562,8 +562,27 @@ class ChatScreen(Screen[None]):
                     )
                 reporter.update(pct, detail)
             elif event_type == EventType.CRAWL_PAGE and isinstance(data, CrawlPageEvent):
-                pct = int(data.current * 100 / data.total) if data.total > 0 else 50
-                reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
+                # Discovery hasn't resolved a sitemap yet (data.total <= 0):
+                # show the indeterminate spinner with a count, not a parked
+                # 50% bar that looks frozen. Switch to a determinate bar as
+                # soon as the total is known.
+                if data.total > 0:
+                    pct = int(data.current * 100 / data.total)
+                    reporter.update(
+                        pct,
+                        msg.CMD_CRAWL_PAGE.format(
+                            current=data.current, total=data.total, url=data.url
+                        ),
+                        indeterminate=False,
+                    )
+                else:
+                    reporter.update(
+                        0,
+                        msg.CMD_CRAWL_PAGE_INDETERMINATE.format(
+                            current=data.current, url=data.url
+                        ),
+                        indeterminate=True,
+                    )
 
         paths = asyncio_loop.run(
             crawl_and_save(
