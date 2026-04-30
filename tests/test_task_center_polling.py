@@ -158,7 +158,7 @@ async def test_clear_history_action_drops_finished_rows() -> None:
         done_id = app.task_bar.queue.enqueue(lambda: None, "done", TaskType.SYNC.value)
         app.task_bar.queue.advance(TaskType.SYNC.value)
         app.task_bar.queue.complete_task(done_id)
-        screen._poll()
+        screen._refresh_rows()
         await pilot.pause()
         assert done_id in screen._rows
         screen.action_clear_history()
@@ -386,7 +386,7 @@ async def test_poll_swallows_row_remove_exception() -> None:
         with patch.object(row, "remove", side_effect=RuntimeError("boom")):
             app.task_bar.queue.remove_task(tid)
             # Poll should catch the exception and still drop the row from _rows.
-            screen._poll()
+            screen._refresh_rows()
         assert tid not in screen._rows
 
 

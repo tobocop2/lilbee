@@ -1,15 +1,15 @@
-"""Task Center screen -- flight-deck-style background task monitor.
+"""Task Center screen: flight-deck-style background task monitor.
 
 Each task renders as a ``TaskRow`` with a three-line body (title +
 type, detail + percent, block-char bar) and a thick left rail in the
 state's color. On the active row the rail pulses at ~1 Hz, which is
 the only motion in the screen beyond the bar filling.
 
-The render path is poll-based: ``_poll`` runs on the main thread at
-4 Hz, reads the shared ``TaskQueue``, and reconciles rows in place by
-task_id. There's no subscriber chain; tasks owned by the controller
-write into the lock-protected queue from worker threads and the poll
-picks them up next tick.
+State refresh is event-driven: the screen subscribes to ``TaskQueue``
+and ``_refresh_rows`` runs whenever a task is enqueued, advanced,
+updated, completed, or cancelled. A separate slow timer advances the
+spinner frame and the rail pulse so the visual heartbeat stays alive
+while the queue is idle.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Footer, Label
 
@@ -32,7 +33,20 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_POLL_INTERVAL_SECONDS = 0.25
+# Spinner advance cadence. Decoupled from queue-state refresh: queue
+# events drive _refresh_rows directly, this timer only advances the
+# rotating glyph and the active-row pulse so they keep moving while
+# the queue itself is idle.
+_TICK_INTERVAL_SECONDS = 0.25
+
+
+class TaskQueueChanged(Message):
+    """Posted by TaskCenter._on_queue_change when the queue notifies.
+
+    Posting a Textual Message is thread-safe, so the queue can call the
+    subscriber from any thread; the message is processed on the
+    screen's main-thread message pump.
+    """
 
 # Quarter-circle rotation cycles every 4 ticks (~0.4 s). Visible motion
 # in the counts strip confirms background work is live when rows are
@@ -91,9 +105,21 @@ class TaskCenter(Screen[None]):
     def on_mount(self) -> None:
         self._tick: int = 0
         self._rows: dict[str, TaskRow] = {}
-        self._poll()
+        self._refresh_rows()
         self._focus_initial_row()
-        self.set_interval(_POLL_INTERVAL_SECONDS, self._poll)
+        self.app.task_bar.queue.subscribe(self._on_queue_change)
+        self.set_interval(_TICK_INTERVAL_SECONDS, self._advance_tick)
+
+    def on_unmount(self) -> None:
+        self.app.task_bar.queue.unsubscribe(self._on_queue_change)
+
+    def _on_queue_change(self) -> None:
+        """Queue notification: post a thread-safe message to the screen."""
+        self.post_message(TaskQueueChanged())
+
+    def on_task_queue_changed(self, _event: TaskQueueChanged) -> None:
+        """Reconcile rows when the queue posts a change."""
+        self._refresh_rows()
 
     def _focus_initial_row(self) -> None:
         """Land initial focus on the topmost active/queued row.
@@ -116,13 +142,16 @@ class TaskCenter(Screen[None]):
         # picked (the scroll container, or the first row if one exists).
 
     def action_refresh_tasks(self) -> None:
-        """Manual refresh (r). No-op beyond forcing an immediate poll."""
-        self._poll()
+        """Manual refresh (r). The subscription drives most updates; this
+        gives the user a way to force a reconcile if anything ever drifts."""
+        self._refresh_rows()
 
     def action_clear_history(self) -> None:
-        """Drop all DONE/FAILED/CANCELLED rows (bound to capital ``C``)."""
+        """Drop all DONE/FAILED/CANCELLED rows (bound to capital ``C``).
+
+        ``clear_history`` itself emits a notification so the subscription
+        triggers the row reconcile; no manual refresh needed here."""
         self.app.task_bar.queue.clear_history()
-        self._poll()
 
     def action_cancel_task(self) -> None:
         """Cancel the task whose row currently has focus.
@@ -148,9 +177,18 @@ class TaskCenter(Screen[None]):
         queue = self.app.task_bar.queue
         return queue.active_tasks + queue.queued_tasks + list(reversed(queue.history))
 
-    def _poll(self) -> None:
-        """4 Hz reconciliation: add new rows, update existing, remove stale."""
+    def _advance_tick(self) -> None:
+        """Bump the spinner frame and re-render counts + active row pulse."""
         self._tick += 1
+        tasks = self._all_tasks()
+        for task in tasks:
+            row = self._rows.get(task.task_id)
+            if row is not None:
+                row.update(task, self._tick)
+        self._update_counts(tasks)
+
+    def _refresh_rows(self) -> None:
+        """Reconcile rows against the queue: add new, update existing, remove stale."""
         container = self.query_one("#task-rows", VerticalScroll)
         tasks = self._all_tasks()
         seen: set[str] = set()
