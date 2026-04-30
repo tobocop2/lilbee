@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import runpy
 import sys
 
 
@@ -65,8 +66,6 @@ def _dispatch_module_invocation() -> bool:
     if not module_name.startswith("lilbee."):
         return False
     sys.argv = [module_name, *sys.argv[3:]]
-    import runpy
-
     runpy.run_module(module_name, run_name="__main__", alter_sys=True)
     return True
 
