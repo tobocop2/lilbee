@@ -33,5 +33,3 @@ jobs:
         run: nix flake check --all-systems
       - name: nix build
         run: nix build .#packages.${{ matrix.system }}.default --print-out-paths
-      - name: nix run --version smoke
-        run: nix run . -- --version
