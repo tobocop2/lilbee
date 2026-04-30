@@ -258,9 +258,10 @@ class LlamaCppProvider(LLMProvider):
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
         """Chat completion: serialized via lock (Llama is not thread-safe)."""
-        # Fresh abort flag per chat: prior cancels must not latch into this one.
-        clear_abort()
         self._chat_lock.acquire()
+        # Clear AFTER the lock acquires so a concurrent chat can't clobber a
+        # mid-stream cancel still being honored by the prior holder.
+        clear_abort()
         try:
             llm = self._get_chat_llm(model)
             kwargs: dict[str, Any] = {}
