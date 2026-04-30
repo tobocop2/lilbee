@@ -19,6 +19,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
+from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 
 
@@ -101,7 +102,7 @@ async def test_bracket_keys_typed_literally_when_chat_input_focused():
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
-        chat_input = app.screen.query_one("#chat-input", Input)
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
         assert chat_input.has_focus, "Chat input should auto-focus on mount"
         assert chat_input.value == ""
 

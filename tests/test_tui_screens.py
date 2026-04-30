@@ -37,6 +37,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
+from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.core.config import cfg
 from lilbee.core.services import set_services
@@ -2022,9 +2023,8 @@ class ChatTestApp(App[None]):
 async def test_chat_screen_renders():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         assert inp is not None
 
 
@@ -2440,9 +2440,8 @@ async def test_chat_slash_set_dispatch():
 async def test_chat_empty_input_ignored():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = ""
         with patch.object(app.screen, "_send_message") as mock_send:
             await _pilot.press("enter")
@@ -2564,9 +2563,8 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.pause()
         assert app.screen._insert_mode is True
@@ -2598,9 +2596,8 @@ async def test_chat_refresh_model_bar():
 async def test_chat_input_changed_hides_overlay():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
@@ -2676,9 +2673,8 @@ async def test_chat_slash_delete_dispatch():
 async def test_chat_action_complete_no_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "hello"
         app.screen.action_complete()
         assert inp.value == "hello"
@@ -2687,9 +2683,8 @@ async def test_chat_action_complete_no_options():
 async def test_chat_action_complete_with_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -2702,9 +2697,8 @@ async def test_chat_action_complete_with_options():
 async def test_chat_action_complete_with_space():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/model q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -2717,11 +2711,10 @@ async def test_chat_action_complete_with_space():
 async def test_chat_action_complete_cycle():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
 
         inp.value = "/he"
@@ -2742,9 +2735,8 @@ async def test_chat_tab_completes_alias_prefix():
     """Pressing Tab on '/cat' expands to the /catalog alias."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         for key in ("slash", "c", "a", "t"):
             await pilot.press(key)
@@ -2762,9 +2754,8 @@ async def test_chat_action_complete_cycle_no_selection():
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["a", "b"])
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         original = inp.value
         with patch.object(overlay, "cycle_next", return_value=None):
             app.screen.action_complete()
@@ -2775,9 +2766,8 @@ async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "_stream_response"):
-            from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "What is RAG?"
             await _pilot.press("enter")
             assert len(app.screen._history) == 1
@@ -3686,9 +3676,8 @@ async def test_chat_stream_response_worker(mock_svc):
     async with app.run_test(size=(120, 40)) as _pilot:
         tokens = [FakeToken("Hello"), FakeToken(" world")]
         mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test question"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3703,9 +3692,8 @@ async def test_chat_stream_response_error_worker(mock_svc):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         mock_svc.searcher.ask_stream = MagicMock(side_effect=Exception("LLM error"))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3728,9 +3716,8 @@ async def test_chat_stream_response_reasoning_worker(mock_svc):
         set_services(mock_svc)
         tokens = [FakeToken("thinking", is_reasoning=True), FakeToken("answer")]
         mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3754,9 +3741,8 @@ async def test_chat_stream_response_inner_exception(mock_svc):
         set_services(mock_svc)
         tokens = [ExplodingToken()]
         mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3894,9 +3880,8 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
             yield FakeToken("end")
 
         mock_svc.searcher.ask_stream = MagicMock(side_effect=slow_stream)
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3955,9 +3940,8 @@ async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/version"
         with patch("lilbee.app.version.get_version", return_value="1.0.0"):
             await _pilot.press("enter")
@@ -3969,12 +3953,11 @@ async def test_chat_on_input_changed_visible_overlay():
     """Cover the overlay.hide() branch (line 408)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
 
         # Show the overlay first
         overlay.show_completions(["/help", "/models"])
@@ -4063,9 +4046,8 @@ async def test_chat_cancel_with_active_worker(mock_svc):
             yield FakeToken("end")
 
         mock_svc.searcher.ask_stream = MagicMock(side_effect=slow_stream)
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -4780,9 +4762,8 @@ async def test_chat_normal_mode_dims_input():
     """Input widget gets normal-mode class when in normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         assert "normal-mode" not in inp.classes
         app.screen.action_enter_normal_mode()
         await pilot.pause()
@@ -4796,9 +4777,8 @@ async def test_chat_escape_key_enters_normal_mode():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.containers import VerticalScroll
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         log = app.screen.query_one("#chat-log", VerticalScroll)
         assert app.screen._insert_mode is True
         assert inp.has_focus
@@ -4843,13 +4823,12 @@ async def test_chat_enter_key_returns_to_insert_mode():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
 
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         assert app.screen._insert_mode is False
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.press("enter")
         await pilot.pause()
@@ -5077,9 +5056,8 @@ async def test_chat_action_complete_next():
     """Ctrl+N (action_complete_next) delegates to action_complete."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -5111,11 +5089,10 @@ async def test_chat_action_complete_prev_opens_overlay():
     """Ctrl+P (action_complete_prev) opens overlay when not visible."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
         with patch(
@@ -5131,11 +5108,10 @@ async def test_chat_action_complete_prev_cycles_backward():
     """Ctrl+P cycles backward through existing completions."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
 
@@ -5156,9 +5132,8 @@ async def test_chat_action_complete_prev_with_space():
     """Ctrl+P with argument completions sets cmd + selection."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/model q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -5247,9 +5222,8 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.pause()
         app.screen._input_history = ["hello", "world"]
@@ -5345,7 +5319,7 @@ async def test_chat_send_message_tolerates_missing_welcome():
 
 async def test_chat_tab_from_input_jumps_to_model_select():
     """With an empty input and no completions, Tab moves focus to the chat dropdown."""
-    from textual.widgets import Input, Select
+    from textual.widgets import Select
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5353,7 +5327,7 @@ async def test_chat_tab_from_input_jumps_to_model_select():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#chat-input", Input).focus()
+        screen.query_one("#chat-input", ChatInput).focus()
         await pilot.press("tab")
         await pilot.pause()
         chat_sel = screen.query_one("#chat-model-select", Select)
@@ -7571,9 +7545,8 @@ async def test_chat_on_key_insert_mode_unfocused_input():
     """on_key in insert mode with unfocused input redirects printable chars."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
 
-        app.screen.query_one("#chat-input", Input)
+        app.screen.query_one("#chat-input", ChatInput)
         # Focus the chat log instead
         app.screen.query_one("#chat-log").focus()
         await pilot.pause()
@@ -7659,9 +7632,8 @@ async def test_chat_on_chat_input_changed_completing():
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["/help"])
         app.screen._completing = True
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/test"
         await pilot.pause()
         # Overlay should still be visible since _completing skips hide

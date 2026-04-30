@@ -19,7 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Select, Static
+from textual.widgets import Footer, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
@@ -32,6 +32,7 @@ from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
+from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -141,8 +142,11 @@ class ChatScreen(Screen[None]):
         Binding("k", "vim_scroll_up", "k up", show=False, group=_SCROLL_GROUP),
         Binding("g", "vim_scroll_home", "g top", show=False, group=_SCROLL_GROUP),
         Binding("G", "vim_scroll_end", "G bottom", show=False, group=_SCROLL_GROUP),
-        Binding("up", "history_prev", "Up", show=False),
-        Binding("down", "history_next", "Down", show=False),
+        # priority=True keeps history navigation fast-path winning over the
+        # ChatInput's TextArea cursor_up/_down. Multi-line cursor movement
+        # inside the prompt still works via PgUp/PgDn/Home/End.
+        Binding("up", "history_prev", "Up", show=False, priority=True),
+        Binding("down", "history_next", "Down", show=False, priority=True),
         Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
@@ -168,7 +172,6 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
         from lilbee.cli.tui.widgets.top_bars import TopBars
 
         with TopBars():
@@ -181,10 +184,9 @@ class ChatScreen(Screen[None]):
         yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
-                yield Input(
+                yield ChatInput(
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER,
                     id="chat-input",
-                    suggester=SlashSuggester(use_cache=False),
                 )
                 yield ModelBar(id="model-bar")
             yield TaskBar()
@@ -211,7 +213,7 @@ class ChatScreen(Screen[None]):
         # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
         # via [/] navigation needs an explicit focus restore.
         with contextlib.suppress(Exception):
-            self.set_focus(self.query_one("#chat-input", Input))
+            self.set_focus(self.query_one("#chat-input", ChatInput))
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
@@ -264,12 +266,12 @@ class ChatScreen(Screen[None]):
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", ChatInput).focus()
         self._update_input_style()
 
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if self._insert_mode:
             inp.remove_class("normal-mode")
         else:
@@ -290,11 +292,11 @@ class ChatScreen(Screen[None]):
 
         if not isinstance(event, Key):
             return
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if self._insert_mode:
             if not inp.has_focus and event.is_printable and event.character:
                 inp.focus()
-                inp.insert_text_at_cursor(event.character)
+                inp.insert(event.character)
                 event.prevent_default()
                 event.stop()
             return
@@ -307,12 +309,17 @@ class ChatScreen(Screen[None]):
             event.stop()
             return
 
-    @on(Input.Submitted, "#chat-input")
-    def _on_chat_submitted(self, event: Input.Submitted) -> None:
+    @on(ChatInput.Submitted, "#chat-input")
+    def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
+        if not self._insert_mode:
+            # Vim-style: Enter in normal mode flips back to insert without
+            # submitting whatever empty / stale text the input still holds.
+            self._enter_insert_mode()
+            return
         text = event.value.strip()
         if not text:
             return
-        event.input.value = ""
+        event.chat_input.value = ""
         self._input_history.append(text)
         self._history_index = -1
 
@@ -913,7 +920,7 @@ class ChatScreen(Screen[None]):
             self.streaming = False
             return
         if isinstance(self.focused, Select):
-            self.query_one("#chat-input", Input).focus()
+            self.query_one("#chat-input", ChatInput).focus()
             return
         self._insert_mode = False
         self.query_one("#chat-log", VerticalScroll).focus()
@@ -926,7 +933,7 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self.streaming = False
             return
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if inp.has_focus:
             self.query_one("#chat-log", VerticalScroll).focus()
 
@@ -1016,7 +1023,7 @@ class ChatScreen(Screen[None]):
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/"
@@ -1033,7 +1040,7 @@ class ChatScreen(Screen[None]):
 
     def action_complete(self) -> None:
         """Tab: cycle autocomplete in input, else focus the next model dropdown."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if not inp.has_focus:
             if isinstance(self.focused, Select):
                 self.screen.focus_next()
@@ -1045,12 +1052,12 @@ class ChatScreen(Screen[None]):
 
     def action_complete_next(self) -> None:
         """Ctrl+N: show completions or cycle forward."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if not inp.has_focus:
             return
         self._cycle_completion_forward(inp)
 
-    def _cycle_completion_forward(self, inp: Input) -> bool:
+    def _cycle_completion_forward(self, inp: ChatInput) -> bool:
         """Show or cycle forward through autocomplete; returns True if it acted."""
         overlay = self.query_one("#completion-overlay", CompletionOverlay)
 
@@ -1084,7 +1091,7 @@ class ChatScreen(Screen[None]):
     def action_complete_prev(self) -> None:
         """Ctrl+P: cycle backward through completions."""
         overlay = self.query_one("#completion-overlay", CompletionOverlay)
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
 
         if overlay.is_visible:
             selection = overlay.cycle_prev()
@@ -1114,7 +1121,7 @@ class ChatScreen(Screen[None]):
         """Up arrow: recall previous input history entry."""
         if not self._insert_mode:
             raise SkipAction()
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if not inp.has_focus or not self._input_history:
             raise SkipAction()
         if self._history_index == -1:
@@ -1130,7 +1137,7 @@ class ChatScreen(Screen[None]):
         """Down arrow: recall next input history entry."""
         if not self._insert_mode:
             raise SkipAction()
-        inp = self.query_one("#chat-input", Input)
+        inp = self.query_one("#chat-input", ChatInput)
         if not inp.has_focus or self._history_index == -1:
             raise SkipAction()
         if self._history_index < len(self._input_history) - 1:
@@ -1141,8 +1148,8 @@ class ChatScreen(Screen[None]):
             self._history_index = -1
             inp.value = ""
 
-    @on(Input.Changed, "#chat-input")
-    def _on_chat_input_changed(self, event: Input.Changed) -> None:
+    @on(ChatInput.Changed, "#chat-input")
+    def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Hide completion overlay when input changes manually."""
         if self._completing:
             return

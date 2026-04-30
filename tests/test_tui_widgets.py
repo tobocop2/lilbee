@@ -2015,7 +2015,7 @@ class TestLilbeeAppViewTabs:
         cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -2023,11 +2023,13 @@ class TestLilbeeAppViewTabs:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            app.screen.query_one(ViewTabs)  # verify ViewTabs is mounted
-            static = app.screen.query_one("#view-tabs-content")
-            rendered = str(static._Static__content)  # type: ignore[attr-defined]
-            assert "\u258c" in rendered  # left half-block from pill
-            assert "\u2590" in rendered  # right half-block from pill
+            tabs = list(app.screen.query(ViewTab))
+            assert tabs, "ViewTabs should mount per-view ViewTab labels"
+            active = [t for t in tabs if t.has_class("-active")]
+            assert len(active) == 1, (
+                f"exactly one tab should carry the active marker, got {len(active)}"
+            )
+            assert active[0].view_name == app.active_view
 
     async def test_view_tabs_dot_separators(self) -> None:
         """Inactive tabs should be separated by dot characters."""
@@ -2035,6 +2037,7 @@ class TestLilbeeAppViewTabs:
         cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -2042,9 +2045,12 @@ class TestLilbeeAppViewTabs:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            static = app.screen.query_one("#view-tabs-content")
-            rendered = str(static._Static__content)  # type: ignore[attr-defined]
-            assert "\u00b7" in rendered  # middle dot separator
+            seps = list(app.screen.query(".view-tab-sep"))
+            tabs = list(app.screen.query(ViewTab))
+            assert tabs, "ViewTabs should mount per-view ViewTab labels"
+            assert len(seps) == len(tabs) - 1, (
+                f"separator count must be tabs-1; got {len(seps)} for {len(tabs)} tabs"
+            )
 
 
 class TestPill:

@@ -14,6 +14,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 
 
@@ -715,9 +716,8 @@ class TestChatInteractions:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             assert app.screen._insert_mode is True
-            from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             assert inp.has_focus
 
     async def test_escape_enters_normal_mode(self, _mock_resolve):
@@ -802,7 +802,6 @@ class TestChatInteractions:
 
     async def test_slash_focuses_input_with_prefix(self, _mock_resolve):
         """/ key focuses input and prefills with /."""
-        from textual.widgets import Input
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -814,7 +813,7 @@ class TestChatInteractions:
             await pilot.pause()
             await pilot.press("slash")
             await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             assert inp.has_focus
             assert inp.value.startswith("/")
 
@@ -881,28 +880,25 @@ class TestChatInteractions:
 
     async def test_submit_empty_does_nothing(self, _mock_resolve):
         """Submitting empty input is a no-op."""
-        from textual.widgets import Input
-
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = ""
-            event = Input.Submitted(inp, "")
+            event = ChatInput.Submitted(inp, "")
             app.screen._on_chat_submitted(event)
             assert app.screen.streaming is False
             await pilot.pause()
 
     async def test_submit_message_mocked_llm(self, _mock_resolve, _mock_services):
         """Submitting a message calls _send_message and creates user bubble."""
-        from textual.widgets import Input
 
         from lilbee.cli.tui.widgets.message import UserMessage
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "Hello test"
             await pilot.press("enter")
             await pilot.pause()
@@ -911,12 +907,11 @@ class TestChatInteractions:
 
     async def test_input_history_navigation(self, _mock_resolve, _mock_services):
         """Up/Down arrows recall input history."""
-        from textual.widgets import Input
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
 
             # Submit two messages
             inp.value = "first message"
@@ -2365,9 +2360,8 @@ class TestChatCompletions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "/"
             await pilot.press("tab")
             await pilot.pause()
@@ -2378,9 +2372,8 @@ class TestChatCompletions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "/"
             await pilot.press("ctrl+n")
             await pilot.pause()
@@ -2391,9 +2384,8 @@ class TestChatCompletions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "/"
             await pilot.press("ctrl+p")
             await pilot.pause()
@@ -2404,11 +2396,10 @@ class TestChatCompletions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            from textual.widgets import Input
 
             from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "/"
             await pilot.press("tab")
             await pilot.pause()
