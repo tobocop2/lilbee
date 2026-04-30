@@ -4,6 +4,25 @@ ViewTabs {
     background: $surface;
 }
 
-ViewTabs > Static {
+ViewTabs > Horizontal {
+    height: 1;
+    width: 100%;
+}
+
+ViewTabs Static {
     width: auto;
+}
+
+.view-tab {
+    width: auto;
+    padding: 0;
+}
+
+.view-tab:hover {
+    text-style: bold;
+}
+
+.view-tab-sep {
+    width: auto;
+    color: $text-muted;
 }

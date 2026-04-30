@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.content import Content
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Label, Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import DOT_SEP, pill
@@ -28,6 +29,30 @@ _DEFAULT_MODE_COLOR = "$error"
 _MODEL_PILL_KEYS = frozenset({"chat_model"})
 
 
+class ViewTab(Label):
+    """A clickable tab label inside ViewTabs.
+
+    Owns its `view_name` and routes a click to the app's view switcher.
+    Active styling is set via the `-active` CSS class.
+    """
+
+    def __init__(self, view_name: str) -> None:
+        super().__init__(id=f"view-tab-{view_name.lower()}", classes="view-tab")
+        self.view_name = view_name
+
+    def set_active(self, active: bool) -> None:
+        self.set_class(active, "-active")
+        if active:
+            self.update(pill(f" {self.view_name} ", "$primary", "$text"))
+        else:
+            self.update(Content.assemble((f" {self.view_name} ", "dim")))
+
+    def on_click(self) -> None:
+        switch = getattr(self.app, "switch_view", None)
+        if callable(switch):
+            switch(self.view_name)
+
+
 class ViewTabs(Widget):
     """View tab strip with mode and active-model indicator."""
 
@@ -39,7 +64,12 @@ class ViewTabs(Widget):
     mode_text: reactive[str] = reactive("")
 
     def compose(self) -> ComposeResult:
-        yield Static(id="view-tabs-content")
+        with Horizontal(id="view-tabs-row"):
+            for i, name in enumerate(msg.get_nav_views()):
+                if i > 0:
+                    yield Static(DOT_SEP, classes="view-tab-sep")
+                yield ViewTab(name)
+            yield Static(id="view-tabs-trailing")
 
     def on_mount(self) -> None:
         self.active_view = getattr(self.app, "active_view", msg.DEFAULT_VIEW)
@@ -47,7 +77,7 @@ class ViewTabs(Widget):
         if signal is not None:
             signal.subscribe(self, self._on_settings_changed)
         # Defer the initial paint: update() during on_mount can no-op while
-        # the inner Static is still completing its mount cycle.
+        # children are still completing their mount cycle.
         self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
@@ -65,30 +95,19 @@ class ViewTabs(Widget):
     def _refresh(self) -> None:
         if not self.is_mounted:
             return
+        for tab in self.query(ViewTab):
+            tab.set_active(tab.view_name == self.active_view)
+        self._update_trailing()
+
+    def _update_trailing(self) -> None:
         parts: list[Content | str | tuple[str, str]] = []
-
-        tab_parts: list[Content | str | tuple[str, str]] = []
-        for name in msg.get_nav_views():
-            if name == self.active_view:
-                tab_parts.append(pill(f" {name} ", "$primary", "$text"))
-            else:
-                tab_parts.append((f" {name} ", "dim"))
-        joined: list[Content | str | tuple[str, str]] = []
-        for i, part in enumerate(tab_parts):
-            if i > 0:
-                joined.append((DOT_SEP, "$text-muted"))
-            joined.append(part)
-        parts.extend(joined)
-
         # ModelBar already shows the active chat model on the chat screen,
         # so the pill would just duplicate it there. Show it everywhere else.
         if cfg.chat_model and self.active_view != msg.DEFAULT_VIEW:
             parts.append("  ")
             parts.append(pill(f" {cfg.chat_model} ", "$accent", "$text"))
-
         if self.mode_text:
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")
             parts.append(pill(f" {self.mode_text} ", color, "$text"))
-
-        self.query_one("#view-tabs-content", Static).update(Content.assemble(*parts))
+        self.query_one("#view-tabs-trailing", Static).update(Content.assemble(*parts))

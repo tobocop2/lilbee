@@ -1948,6 +1948,21 @@ class TestViewTabs:
         assert "dock: bottom" not in ViewTabs.DEFAULT_CSS
         assert "dock: bottom" not in TaskBar.DEFAULT_CSS
 
+    async def test_clicking_tab_calls_switch_view(self) -> None:
+        """Clicking a ViewTab routes to app.switch_view with the tab's name."""
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        app = _ViewTabsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            switch_calls: list[str] = []
+            app.switch_view = lambda name: switch_calls.append(name)  # type: ignore[attr-defined]
+            tabs = list(app.query(ViewTab))
+            assert len(tabs) >= 2
+            await pilot.click(f"#{tabs[1].id}")
+            await pilot.pause()
+            assert switch_calls == [tabs[1].view_name]
+
     async def test_nav_views_contains_all_screens(self) -> None:
         from lilbee.cli.tui.messages import get_nav_views
 
