@@ -50,7 +50,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            container: quay.io/pypa/manylinux_2_28_x86_64
+            container: quay.io/pypa/manylinux_2_34_x86_64
             asset_name: lilbee-linux-x86_64
             backend: vulkan
           - os: macos-latest
@@ -89,11 +89,9 @@ jobs:
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
-      # Linux build runs inside the manylinux_2_28 container (AlmaLinux 8,
-      # glibc 2.28 baseline) so the produced binary runs on every currently-
-      # supported Linux distro. The container is dnf-based; the apt-based
-      # install_gpu_toolkit.sh path skips it, and we install the Vulkan SDK
-      # from LunarG instead.
+      # manylinux_2_34 container (AlmaLinux 9, glibc 2.34) is dnf-based;
+      # apt-based install_gpu_toolkit.sh skips it and we install the Vulkan
+      # SDK from LunarG instead.
       - name: Install Vulkan SDK (manylinux container)
         if: matrix.container != ''
         shell: bash
