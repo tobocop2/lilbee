@@ -1846,7 +1846,7 @@ class TestRunTuiKeyboardInterrupt:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
             MockApp.return_value.run.side_effect = KeyboardInterrupt
             with (
-                mock.patch("lilbee.cli.tui.shutdown_executor"),
+                mock.patch("lilbee.cli.sync.shutdown_executor"),
                 mock.patch("lilbee.cli.tui.reset_services"),
             ):
                 from lilbee.cli.tui import run_tui
@@ -1858,7 +1858,7 @@ class TestRunTuiKeyboardInterrupt:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
             MockApp.return_value.run.side_effect = KeyboardInterrupt
             with (
-                mock.patch("lilbee.cli.tui.shutdown_executor") as mock_shutdown,
+                mock.patch("lilbee.cli.sync.shutdown_executor") as mock_shutdown,
                 mock.patch("lilbee.cli.tui.reset_services") as mock_reset,
             ):
                 from lilbee.cli.tui import run_tui
