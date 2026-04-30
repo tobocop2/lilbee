@@ -122,6 +122,12 @@ class Config(BaseSettings):
     anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
     gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
 
+    # Picker default. False (default) shows the per-provider curated short
+    # list plus a "Show all" expander; True flips the picker to the full
+    # litellm catalog up-front. The catalog screen always shows the full
+    # set; this only controls the dropdown / modal.
+    show_all_api_models: bool = ConfigField(default=False, writable=True)
+
     # Retrieval quality knobs.
 
     # Max chunks per source in top-k; prevents one large file monopolizing results.

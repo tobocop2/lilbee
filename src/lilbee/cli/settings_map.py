@@ -186,6 +186,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Generation",
         help_text="System prompt sent when there are no documents to ground the answer",
     ),
+    "show_all_api_models": SettingDef(
+        bool,
+        nullable=False,
+        group="Models",
+        help_text=(
+            "Show every cloud model in the picker. Off by default: the picker "
+            "shows a curated short list with a Show all expander. "
+            "The catalog always lists every available model."
+        ),
+    ),
     "top_k": SettingDef(
         int,
         nullable=False,

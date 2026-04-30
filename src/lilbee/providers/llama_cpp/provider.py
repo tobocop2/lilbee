@@ -285,8 +285,15 @@ class LlamaCppProvider(LLMProvider):
         registry = get_services().registry
         return sorted(m.ref for m in registry.list_installed())
 
-    def list_chat_models(self, provider: str) -> list[str]:
-        """llama-cpp has no frontier-provider catalog; always ``[]``."""
+    def list_chat_models(
+        self, provider: str, *, mode: str = "curated"
+    ) -> list[str]:
+        """llama-cpp has no frontier-provider catalog; always ``[]``.
+
+        Accepts the ``mode`` parameter for protocol parity with SDK
+        backends but ignores it: local llama-cpp models are user-curated
+        by definition (only what's installed appears).
+        """
         return []
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:

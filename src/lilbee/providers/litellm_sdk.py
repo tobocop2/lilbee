@@ -272,8 +272,15 @@ class LitellmSdkBackend:
             return self._list_ollama_models(clean_base)
         return self._list_openai_models(clean_base, api_key)
 
-    def list_chat_models(self, provider: str) -> list[str]:
+    def list_chat_models(
+        self, provider: str, *, mode: str = "curated"
+    ) -> list[str]:
         """Return chat-mode model ids from litellm's static catalog.
+
+        ``mode="curated"`` returns the curated short list per
+        :mod:`lilbee.providers.curated_models`, falling back to an
+        alphabetical top-N from the upstream catalog when no curated
+        entry exists. ``mode="all"`` returns the full upstream catalog.
 
         Empty list when litellm is not installed or the provider has no
         chat-mode entries. Callers that care about the litellm debug
@@ -284,6 +291,14 @@ class LitellmSdkBackend:
             import litellm
         except ImportError:
             return []
+        all_chat = self._all_chat_models_for(provider, litellm)
+        if mode == "all":
+            return all_chat
+        return self._curated_chat_models_for(provider, all_chat)
+
+    @staticmethod
+    def _all_chat_models_for(provider: str, litellm: Any) -> list[str]:
+        """Filter litellm's catalog down to chat-mode entries for ``provider``."""
         models = litellm.models_by_provider.get(provider, set())
         chat_models: list[str] = []
         for model_name in sorted(models):
@@ -292,6 +307,26 @@ class LitellmSdkBackend:
                 continue
             chat_models.append(model_name)
         return chat_models
+
+    @staticmethod
+    def _curated_chat_models_for(provider: str, all_chat: list[str]) -> list[str]:
+        """Pick the curated short list, or top-N alphabetical when uncurated.
+
+        Filters the curated set down to ids actually present in the
+        upstream catalog so a provider rename doesn't surface a dead
+        entry. New providers without a curated entry get the alphabetical
+        top-N so they auto-graduate without flooding the picker.
+        """
+        from lilbee.providers.curated_models import (
+            CURATED_CHAT_MODELS,
+            TOP_N_FALLBACK,
+            curated_ids,
+        )
+
+        if provider in CURATED_CHAT_MODELS:
+            available = set(all_chat)
+            return [mid for mid in curated_ids(provider) if mid in available]
+        return all_chat[:TOP_N_FALLBACK]
 
     @staticmethod
     def _list_ollama_models(base_url: str) -> list[str]:
