@@ -237,7 +237,7 @@ class CatalogScreen(Screen[None]):
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
-        self.query_one("#catalog-search", Input).focus()
+        self._search_input.focus()
 
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
@@ -449,10 +449,37 @@ class CatalogScreen(Screen[None]):
         self._data_version += 1
         return True
 
+    @property
+    def _search_input(self) -> Input:
+        """Cached reference to the catalog filter input."""
+        cached = getattr(self, "_search_input_cache", None)
+        if cached is None or cached.app is None:
+            cached = self.query_one("#catalog-search", Input)
+            self._search_input_cache = cached
+        return cached
+
+    @property
+    def _grid_container(self) -> VerticalScroll:
+        """Cached reference to the grid scroll container."""
+        cached = getattr(self, "_grid_container_cache", None)
+        if cached is None or cached.app is None:
+            cached = self.query_one("#catalog-grid", VerticalScroll)
+            self._grid_container_cache = cached
+        return cached
+
+    @property
+    def _list_container(self) -> VerticalScroll:
+        """Cached reference to the list scroll container."""
+        cached = getattr(self, "_list_container_cache", None)
+        if cached is None or cached.app is None:
+            cached = self.query_one("#catalog-list", VerticalScroll)
+            self._list_container_cache = cached
+        return cached
+
     def _get_search_text(self) -> str:
         # Preserve the user's casing for display (e.g. the CTA label); matching
         # callers normalize via _normalize_for_search.
-        return self.query_one("#catalog-search", Input).value.strip()
+        return self._search_input.value.strip()
 
     def _local_rows_data_key(self) -> tuple:
         """Cache key for the constructed (un-filtered) local row sets.
@@ -604,7 +631,7 @@ class CatalogScreen(Screen[None]):
         if self._grid_cache_key == row_key:
             return
         self._grid_cache_key = row_key
-        container = self.query_one("#catalog-grid", VerticalScroll)
+        container = self._grid_container
         container.remove_children()
         widgets_to_mount: list[Static | GridSelect] = []
         for section in _group_rows_for_grid(all_rows, frontier_rows):
@@ -663,7 +690,7 @@ class CatalogScreen(Screen[None]):
                 if isinstance(w, Static):
                     w.update(cta_text)
             return
-        container = self.query_one("#catalog-grid", VerticalScroll)
+        container = self._grid_container
         container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
@@ -671,7 +698,7 @@ class CatalogScreen(Screen[None]):
         search = self._get_search_text()
         for card in self.query(ModelCard):
             card.display = matches_search(card.row, search)
-        container = self.query_one("#catalog-grid", VerticalScroll)
+        container = self._grid_container
         children = list(container.children)
         for i, child in enumerate(children):
             if not child.has_class("section-heading"):
@@ -714,7 +741,7 @@ class CatalogScreen(Screen[None]):
         """Rebuild the list view; frontier rows lead, then local rows."""
         self._rows = self._sort_rows(self._build_rows())
         frontier_rows = self._build_frontier_rows("")
-        container = self.query_one("#catalog-list", VerticalScroll)
+        container = self._list_container
         container.remove_children()
         widgets_to_mount: list[ModelListItem | SearchHFCtaItem | Static] = []
         if frontier_rows:
@@ -751,7 +778,7 @@ class CatalogScreen(Screen[None]):
 
     def _sync_list_search_cta(self, search: str) -> None:
         """Ensure the search-HF CTA row exists iff a search term is active."""
-        container = self.query_one("#catalog-list", VerticalScroll)
+        container = self._list_container
         existing = list(container.query(SearchHFCtaItem))
         for widget in existing:
             widget.remove()

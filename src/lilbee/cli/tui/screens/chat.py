@@ -170,6 +170,33 @@ class ChatScreen(Screen[None]):
         """The app-level TaskBarController (always set by LilbeeApp)."""
         return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
 
+    @property
+    def _chat_input(self) -> ChatInput:
+        """Cached reference to the chat prompt widget."""
+        cached = getattr(self, "_chat_input_cache", None)
+        if cached is None or cached.app is None:
+            cached = self.query_one("#chat-input", ChatInput)
+            self._chat_input_cache = cached
+        return cached
+
+    @property
+    def _chat_log(self) -> VerticalScroll:
+        """Cached reference to the scrollable chat log."""
+        cached = getattr(self, "_chat_log_cache", None)
+        if cached is None or cached.app is None:
+            cached = self.query_one("#chat-log", VerticalScroll)
+            self._chat_log_cache = cached
+        return cached
+
+    @property
+    def _completion_overlay(self) -> CompletionOverlay:
+        """Cached reference to the slash-command completion overlay."""
+        cached = getattr(self, "_completion_overlay_cache", None)
+        if cached is None or cached.app is None:
+            cached = self.query_one("#completion-overlay", CompletionOverlay)
+            self._completion_overlay_cache = cached
+        return cached
+
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
         from lilbee.cli.tui.widgets.top_bars import TopBars
@@ -213,7 +240,7 @@ class ChatScreen(Screen[None]):
         # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
         # via [/] navigation needs an explicit focus restore.
         with contextlib.suppress(Exception):
-            self.set_focus(self.query_one("#chat-input", ChatInput))
+            self.set_focus(self._chat_input)
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
@@ -266,12 +293,12 @@ class ChatScreen(Screen[None]):
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
-        self.query_one("#chat-input", ChatInput).focus()
+        self._chat_input.focus()
         self._update_input_style()
 
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if self._insert_mode:
             inp.remove_class("normal-mode")
         else:
@@ -292,7 +319,7 @@ class ChatScreen(Screen[None]):
 
         if not isinstance(event, Key):
             return
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if self._insert_mode:
             if not inp.has_focus and event.is_printable and event.character:
                 inp.focus()
@@ -438,7 +465,7 @@ class ChatScreen(Screen[None]):
         for worker in self.workers:
             worker.cancel()
         self.streaming = False
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._chat_log
         chat_log.remove_children()
         with self._history_lock:
             self._history.clear()
@@ -796,7 +823,7 @@ class ChatScreen(Screen[None]):
         """Send a user message and stream the response."""
         from textual.css.query import NoMatches
 
-        log = self.query_one("#chat-log", VerticalScroll)
+        log = self._chat_log
         with contextlib.suppress(NoMatches):
             log.query_one("#chat-welcome", ChatWelcome).remove()
         log.mount(UserMessage(text))
@@ -919,17 +946,17 @@ class ChatScreen(Screen[None]):
             self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
 
     def _scroll_to_bottom(self) -> None:
-        log_widget = self.query_one("#chat-log", VerticalScroll)
+        log_widget = self._chat_log
         # Only auto-scroll while the user is still tailing the output.
         # If they scrolled up to read, don't yank them back.
         if log_widget.max_scroll_y - log_widget.scroll_y < _AUTO_SCROLL_TAIL_LINES:
             log_widget.scroll_end(animate=False)
 
     def action_scroll_up(self) -> None:
-        self.query_one("#chat-log", VerticalScroll).scroll_page_up()
+        self._chat_log.scroll_page_up()
 
     def action_scroll_down(self) -> None:
-        self.query_one("#chat-log", VerticalScroll).scroll_page_down()
+        self._chat_log.scroll_page_down()
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
@@ -939,10 +966,10 @@ class ChatScreen(Screen[None]):
             self.streaming = False
             return
         if isinstance(self.focused, Select):
-            self.query_one("#chat-input", ChatInput).focus()
+            self._chat_input.focus()
             return
         self._insert_mode = False
-        self.query_one("#chat-log", VerticalScroll).focus()
+        self._chat_log.focus()
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
@@ -952,9 +979,9 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self.streaming = False
             return
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if inp.has_focus:
-            self.query_one("#chat-log", VerticalScroll).focus()
+            self._chat_log.focus()
 
     def _apply_model_change(self) -> None:
         """Cancel active stream (if any) and reset services for the new model."""
@@ -975,7 +1002,7 @@ class ChatScreen(Screen[None]):
         """Toggle between Markdown and plain-text rendering for chat responses."""
         cfg.markdown_rendering = not cfg.markdown_rendering
         use_md = cfg.markdown_rendering
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._chat_log
         for widget in chat_log.query(AssistantMessage):
             await widget.rebuild_content_widget(use_md)
         label = "Markdown" if use_md else "Plain text"
@@ -1042,7 +1069,7 @@ class ChatScreen(Screen[None]):
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/"
@@ -1059,7 +1086,7 @@ class ChatScreen(Screen[None]):
 
     def action_complete(self) -> None:
         """Tab: cycle autocomplete in input, else focus the next model dropdown."""
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if not inp.has_focus:
             if isinstance(self.focused, Select):
                 self.screen.focus_next()
@@ -1071,14 +1098,14 @@ class ChatScreen(Screen[None]):
 
     def action_complete_next(self) -> None:
         """Ctrl+N: show completions or cycle forward."""
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if not inp.has_focus:
             return
         self._cycle_completion_forward(inp)
 
     def _cycle_completion_forward(self, inp: ChatInput) -> bool:
         """Show or cycle forward through autocomplete; returns True if it acted."""
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        overlay = self._completion_overlay
 
         if overlay.is_visible:
             selection = overlay.cycle_next()
@@ -1109,8 +1136,8 @@ class ChatScreen(Screen[None]):
 
     def action_complete_prev(self) -> None:
         """Ctrl+P: cycle backward through completions."""
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
-        inp = self.query_one("#chat-input", ChatInput)
+        overlay = self._completion_overlay
+        inp = self._chat_input
 
         if overlay.is_visible:
             selection = overlay.cycle_prev()
@@ -1140,7 +1167,7 @@ class ChatScreen(Screen[None]):
         """Up arrow: recall previous input history entry."""
         if not self._insert_mode:
             raise SkipAction()
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if not inp.has_focus or not self._input_history:
             raise SkipAction()
         if self._history_index == -1:
@@ -1156,7 +1183,7 @@ class ChatScreen(Screen[None]):
         """Down arrow: recall next input history entry."""
         if not self._insert_mode:
             raise SkipAction()
-        inp = self.query_one("#chat-input", ChatInput)
+        inp = self._chat_input
         if not inp.has_focus or self._history_index == -1:
             raise SkipAction()
         if self._history_index < len(self._input_history) - 1:
@@ -1172,7 +1199,7 @@ class ChatScreen(Screen[None]):
         """Hide completion overlay when input changes manually."""
         if self._completing:
             return
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        overlay = self._completion_overlay
         if overlay.is_visible:
             overlay.hide()
 
@@ -1184,34 +1211,34 @@ class ChatScreen(Screen[None]):
         """Vim j: scroll down in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_down()
+        self._chat_log.scroll_down()
 
     def action_vim_scroll_up(self) -> None:
         """Vim k: scroll up in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_up()
+        self._chat_log.scroll_up()
 
     def action_vim_scroll_home(self) -> None:
         """Vim g: scroll to top in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_home()
+        self._chat_log.scroll_home()
 
     def action_vim_scroll_end(self) -> None:
         """Vim G: scroll to bottom in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_end()
+        self._chat_log.scroll_end()
 
     def action_half_page_down(self) -> None:
         """Ctrl-D: half-page down (vim style)."""
-        log_widget = self.query_one("#chat-log", VerticalScroll)
+        log_widget = self._chat_log
         half = max(1, log_widget.size.height // 2)
         log_widget.scroll_relative(y=half)
 
     def action_half_page_up(self) -> None:
         """Ctrl-U: half-page up (vim style)."""
-        log_widget = self.query_one("#chat-log", VerticalScroll)
+        log_widget = self._chat_log
         half = max(1, log_widget.size.height // 2)
         log_widget.scroll_relative(y=-half)
