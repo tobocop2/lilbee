@@ -295,18 +295,37 @@ class SettingsScreen(Screen[None]):
         """Blur the search input when Enter is pressed."""
         self.query_one("#settings-scroll", VerticalScroll).focus()
 
+    _FILTER_DEBOUNCE_SECONDS = 0.1
+
     @on(Input.Changed, "#settings-search")
     def _filter_settings(self, event: Input.Changed) -> None:
-        """Filter visible settings based on search input."""
+        """Schedule a filter pass after a short debounce.
+
+        Each keystroke walks ~100 setting rows and toggles ``display``,
+        which Textual treats as a layout change. Without the debounce the
+        UI re-runs the filter at typing speed and judders. The timer is
+        cancellable so rapid typing collapses to a single pass.
+        """
         term = event.value.strip().lower()
-        for group, rows in self._filter_index():
-            visible_count = 0
-            for row in rows:
-                matches = not term or term in (row.name or "")
-                row.display = matches
-                if matches:
-                    visible_count += 1
-            group.display = visible_count > 0
+        existing = getattr(self, "_filter_timer", None)
+        if existing is not None:
+            existing.stop()
+        self._filter_timer = self.set_timer(
+            self._FILTER_DEBOUNCE_SECONDS,
+            lambda: self._apply_filter(term),
+        )
+
+    def _apply_filter(self, term: str) -> None:
+        """Apply the filter term to all rows in a single batched update."""
+        with self.app.batch_update():
+            for group, rows in self._filter_index():
+                visible_count = 0
+                for row in rows:
+                    matches = not term or term in (row.name or "")
+                    row.display = matches
+                    if matches:
+                        visible_count += 1
+                group.display = visible_count > 0
 
     def _filter_index(self) -> list[tuple[Any, list[Any]]]:
         """Lazy cache of (group, rows) for the filter handler.

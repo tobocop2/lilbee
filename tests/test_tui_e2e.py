@@ -1703,7 +1703,7 @@ class TestSettingsInteractions:
 
             search = app.screen.query_one("#settings-search")
             search.value = "chat_model"
-            await pilot.pause()
+            await pilot.pause(0.15)  # wait past the filter debounce
 
             visible = [r for r in app.screen.query(".setting-row") if r.display]
             assert len(visible) < total
@@ -1721,7 +1721,7 @@ class TestSettingsInteractions:
 
             search = app.screen.query_one("#settings-search")
             search.value = "zzz_nonexistent_setting_zzz"
-            await pilot.pause()
+            await pilot.pause(0.15)  # wait past the filter debounce
 
             visible = [r for r in app.screen.query(".setting-row") if r.display]
             assert len(visible) == 0
@@ -1741,9 +1741,9 @@ class TestSettingsInteractions:
 
             search = app.screen.query_one("#settings-search")
             search.value = "chat_model"
-            await pilot.pause()
+            await pilot.pause(0.15)
             search.value = ""
-            await pilot.pause()
+            await pilot.pause(0.15)
 
             visible = [r for r in app.screen.query(".setting-row") if r.display]
             assert len(visible) == total
