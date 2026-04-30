@@ -3,6 +3,11 @@ name: Release Executables
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for artifact uploads (use a -nuitka.N suffix for dry-runs).'
+        required: true
 
 permissions:
   contents: write
@@ -39,28 +44,27 @@ jobs:
 
   build:
     needs: [lint, test]
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
             asset_name: lilbee-linux-x86_64
-            pyinstaller: .venv/bin/pyinstaller
             backend: vulkan
           - os: macos-latest
             asset_name: lilbee-macos-arm64
-            pyinstaller: .venv/bin/pyinstaller
             backend: metal
           - os: macos-13
             asset_name: lilbee-macos-x86_64
-            pyinstaller: .venv/bin/pyinstaller
             backend: metal
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
-            pyinstaller: .venv/Scripts/pyinstaller.exe
             backend: vulkan
 
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
 
     steps:
       - uses: actions/checkout@v6
@@ -73,12 +77,44 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      # GPU build SDK + GPU rebuild: same per-OS backend choices as the
-      # wheel build (Vulkan on Linux/Windows, Metal on macOS). All compile
-      # flags live in tools/wheel-build/cmake_args.sh — single source of
-      # truth so the wheel and the frozen exe ship matching builds.
+      - name: Compute version
+        # NUITKA_VERSION strips PEP 440 modifiers (b, rc, .dev) to a plain
+        # int-tuple. Nuitka --product-version rejects '0.6.66b456' but
+        # accepts '0.6.66.456'; using only digits keeps the {VERSION} token
+        # in --onefile-tempdir-spec unique per release without losing info.
+        shell: bash
+        run: |
+          VERSION=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          NUITKA_VERSION=$(python3 -c "import re, sys; parts=re.findall(r'\d+', sys.argv[1]); print('.'.join(parts[:4]))" "$VERSION")
+          echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
+
+      # Linux build runs inside the manylinux_2_28 container (AlmaLinux 8,
+      # glibc 2.28 baseline) so the produced binary runs on every currently-
+      # supported Linux distro. The container is dnf-based; the apt-based
+      # install_gpu_toolkit.sh path skips it, and we install the Vulkan SDK
+      # from LunarG instead.
+      - name: Install Vulkan SDK (manylinux container)
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dnf install -y libxkbcommon-devel libX11-devel libXrandr-devel libXcursor-devel libXi-devel libXinerama-devel mesa-libGL-devel
+          VULKAN_VERSION="1.3.296.0"
+          curl -L -o /tmp/vulkan-sdk.tar.xz \
+            "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_VERSION}.tar.xz"
+          mkdir -p /opt/vulkan
+          tar -xf /tmp/vulkan-sdk.tar.xz -C /opt/vulkan --strip-components=1
+          {
+            echo "VULKAN_SDK=/opt/vulkan/x86_64"
+            echo "LD_LIBRARY_PATH=/opt/vulkan/x86_64/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+          echo "/opt/vulkan/x86_64/bin" >> "$GITHUB_PATH"
+
+      # GPU build SDK on macOS / Windows runners. Linux is handled by the
+      # LunarG step above. Compile flags live in tools/wheel-build/cmake_args.sh.
       - name: Install GPU build toolkit
-        if: matrix.backend != 'metal'
+        if: matrix.container == '' && matrix.backend != 'metal'
         shell: bash
         env:
           BACKEND: ${{ matrix.backend }}
@@ -92,13 +128,15 @@ jobs:
           cache: true
           stripdown: true
 
+      - name: Set up ccache (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
+          max-size: '2G'
+
       - name: Install dependencies
-        run: |
-          uv sync --extra release && uv pip install pyinstaller
-          # python-multipart ships a multipart/ shim that shadows the real
-          # multipart.py in PyInstaller builds. Remove it so litestar gets
-          # the real module.
-          uv pip uninstall python-multipart
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5'
 
       # Build llama-cpp-python from source via the same script the wheel
       # job uses. uv pip install --reinstall hit uv's package cache by
@@ -129,32 +167,11 @@ jobs:
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
       - name: Build executable
-        # Bundles the optional extras (crawler, litellm, graph) so the
-        # released binary matches a source install. Adds roughly 150-250MB
-        # per platform. Chromium (crawl4ai) and en_core_web_sm (spacy) are
-        # still runtime downloads on first use.
-        run: >
-          ${{ matrix.pyinstaller }}
-          --onefile
-          --name ${{ matrix.asset_name }}
-          --copy-metadata lilbee
-          --copy-metadata litellm
-          --copy-metadata crawl4ai
-          --copy-metadata spacy
-          --copy-metadata catalogue
-          --collect-data lilbee
-          --collect-all lancedb
-          --collect-all tree_sitter_language_pack
-          --collect-all tiktoken_ext
-          --collect-all pypdfium2
-          --collect-all llama_cpp
-          --collect-all crawl4ai
-          --collect-all litellm
-          --collect-submodules litellm.llms
-          --collect-all spacy
-          --collect-all graspologic_native
-          --collect-all playwright
-          src/lilbee/__main__.py
+        shell: bash
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+          PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+        run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
         # Prove the frozen binary actually works, not just that it starts.
@@ -253,21 +270,32 @@ jobs:
 
           # Confirm the optional extras were bundled. Their runtime guards
           # keep them off the cold-start import path, so self-check above
-          # wouldn't notice if PyInstaller dropped them.
-          python - "$EXE" <<'PY'
-          import pathlib, sys
-          data = pathlib.Path(sys.argv[1]).read_bytes()
-          missing = [m for m in (b"litellm", b"crawl4ai", b"spacy", b"graspologic_native") if m not in data]
-          if missing:
-              print(f"FAIL: missing markers in frozen binary: {missing}")
-              sys.exit(1)
-          print("extras markers present in frozen binary")
-          PY
+          # wouldn't notice if Nuitka dropped them. Replaces the byte-grep
+          # over the binary that worked under PyInstaller: Nuitka compiles
+          # to C and the literal package-name strings may not appear in the
+          # binary even when the modules are correctly bundled.
+          EXTRAS_LOG=$(mktemp)
+          EXTRAS_RC=0
+          "$EXE" --json self-check-extras > "$EXTRAS_LOG" 2>&1 || EXTRAS_RC=$?
+          echo "=== self-check-extras output (exit=${EXTRAS_RC}) ==="
+          cat "$EXTRAS_LOG"
+          if [ "${EXTRAS_RC}" != "0" ]; then
+            echo "FAIL: self-check-extras exited ${EXTRAS_RC}"
+            exit 1
+          fi
 
-          echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference all green"
+          echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference, extras-import all green"
         shell: bash
 
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset_name }}
+
+      - name: Upload artifact (workflow_dispatch dry-run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}

@@ -45,3 +45,4 @@ PLAN.md
 scripts/
 .DS_Store
 .superpowers/
+tools/qa-binary.sh

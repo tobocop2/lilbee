@@ -22,6 +22,8 @@ Layout:
 
 from __future__ import annotations
 
+import os
+
 from lilbee.crawler.api import (
     crawl_and_save,
     crawl_recursive,
@@ -85,3 +87,7 @@ __all__ = [
     "url_to_filename",
     "validate_crawl_url",
 ]
+
+# Pin Playwright's browser cache so install and launch agree on Chromium's
+# location, regardless of wheel vs frozen-binary layout.
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(crawler_browsers_path()))
