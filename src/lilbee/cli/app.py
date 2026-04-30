@@ -116,7 +116,7 @@ def apply_overrides(
         raise typer.BadParameter("Cannot use --global with --data-dir")
 
     if use_global:
-        from lilbee.platform import default_data_dir
+        from lilbee.system import default_data_dir
 
         _apply_data_root(default_data_dir())
     elif data_dir is not None:

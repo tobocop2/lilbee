@@ -195,7 +195,7 @@ class TestRunServerIntegration:
 
 class TestMcpMainIntegration:
     def test_main_starts_watcher_when_env_set(self, monkeypatch):
-        from lilbee import mcp as mcp_mod
+        from lilbee import mcp_server as mcp_mod
 
         monkeypatch.setenv(PARENT_PID_ENV, "888888")
         with (
@@ -207,7 +207,7 @@ class TestMcpMainIntegration:
         watcher.assert_called_once()
 
     def test_main_skips_watcher_when_env_unset(self, monkeypatch):
-        from lilbee import mcp as mcp_mod
+        from lilbee import mcp_server as mcp_mod
 
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
@@ -219,13 +219,13 @@ class TestMcpMainIntegration:
         watcher.assert_not_called()
 
     def test_main_logs_when_pre_warm_fails(self, monkeypatch, caplog):
-        from lilbee import mcp as mcp_mod
+        from lilbee import mcp_server as mcp_mod
 
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services", side_effect=RuntimeError("no provider")),
             mock.patch.object(mcp_mod.mcp, "run"),
-            caplog.at_level("DEBUG", logger="lilbee.mcp"),
+            caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
         ):
             mcp_mod.main()
         assert "MCP pre-warm failed" in caplog.text

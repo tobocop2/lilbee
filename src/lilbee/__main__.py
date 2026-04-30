@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import runpy
 import sys
 
 
@@ -45,9 +46,35 @@ def _dispatch_frozen_child() -> bool:
     return True
 
 
+_DASH_M_MIN_ARGV = 3  # [bin, "-m", "lilbee.<module>"]
+
+
+def _dispatch_module_invocation() -> bool:
+    """Run a `python -m lilbee.<module>` reinvocation and return True when handled.
+
+    Internal subprocesses spawned via ``[sys.executable, "-m", "lilbee.X", ...]``
+    (e.g. ``splash._splash_runner``) hit typer's `--model -m` short-form parser
+    in a frozen build. Detect the pattern, route to runpy, never reach typer.
+    Restricted to the ``lilbee.*`` namespace so a stray ``lilbee -m foo`` typed
+    by a user can't reach exec.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    if len(sys.argv) < _DASH_M_MIN_ARGV or sys.argv[1] != "-m":
+        return False
+    module_name = sys.argv[2]
+    if not module_name.startswith("lilbee."):
+        return False
+    sys.argv = [module_name, *sys.argv[3:]]
+    runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+    return True
+
+
 if __name__ == "__main__":
     # Make the frozen exe a valid subprocess target for multiprocessing's
     # sys.executable reinvocations, BEFORE any import that could pull typer.
+    if _dispatch_module_invocation():
+        sys.exit(0)
     if _dispatch_frozen_child():
         sys.exit(0)
 

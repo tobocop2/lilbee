@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -798,6 +799,47 @@ def self_check_cmd(
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
 
 
+_SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
+
+
+@app.command("self-check-extras")
+def self_check_extras_cmd() -> None:
+    """Verify optional extras (crawler, litellm, graph) are bundled and importable.
+
+    Frozen-binary smoke gate. Replaces the byte-grep over the binary that
+    PyInstaller-era smoke used: under Nuitka's C-compiled output the literal
+    package-name strings may not appear in the binary even when the modules
+    are correctly bundled, so we exercise the import paths instead.
+    """
+    results: dict[str, Any] = {}
+    failed: list[str] = []
+    for name in _SELF_CHECK_EXTRAS:
+        try:
+            importlib.import_module(name)
+            results[name] = True
+        except ImportError as exc:
+            results[name] = False
+            results[f"{name}_error"] = str(exc)
+            failed.append(name)
+
+    if cfg.json_mode:
+        json_output({"ok": not failed, **results})
+    else:
+        for name in _SELF_CHECK_EXTRAS:
+            ok = results.get(name) is True
+            tag = (
+                f"[{theme.ACCENT}]ok[/{theme.ACCENT}]"
+                if ok
+                else f"[{theme.ERROR}]MISSING[/{theme.ERROR}]"
+            )
+            console.print(f"  {name}: {tag}")
+            if not ok:
+                console.print(f"    {results.get(f'{name}_error', '')}")
+
+    if failed:
+        raise typer.Exit(1)
+
+
 @app.command()
 def status(
     data_dir: Path | None = data_dir_option,
@@ -1094,7 +1136,7 @@ def login() -> None:
 @app.command(name="mcp")
 def mcp_cmd() -> None:
     """Start the MCP server (stdio transport) for agent integration."""
-    from lilbee.mcp import main
+    from lilbee.mcp_server import main
 
     main()
 
