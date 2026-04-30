@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 # Update version + per-platform sha256 in flake.nix in place.
-#
-# Mirrors render_pkgbuild.sh: stamps the values written by the release
-# workflow into the sentinel-tagged let-bindings in flake.nix. Sentinels
-# are RENDERED:VERSION / RENDERED:SHA_LINUX / RENDERED:SHA_DARWIN so the
-# regex never matches stray identifiers (e.g. meta.platforms entries).
 set -euo pipefail
 
 if [ "$#" -ne 4 ]; then
@@ -17,11 +12,26 @@ version="$2"
 sha_linux="$3"
 sha_darwin="$4"
 
-# Use [[:space:]] for BSD-sed (macOS) compatibility, even though CI runs on
-# ubuntu (GNU sed) — keeps local manual reruns portable.
-sed -i.bak \
-    -e "s|^\([[:space:]]*version = \)\"[^\"]*\"\(; # RENDERED:VERSION\)|\1\"${version}\"\2|" \
-    -e "s|^\([[:space:]]*x86_64-linux = \)\"[^\"]*\"\(; # RENDERED:SHA_LINUX\)|\1\"${sha_linux}\"\2|" \
-    -e "s|^\([[:space:]]*aarch64-darwin = \)\"[^\"]*\"\(; # RENDERED:SHA_DARWIN\)|\1\"${sha_darwin}\"\2|" \
-    "$flake"
+# Each lilbee flake field that the release pipeline updates is tagged with
+# a "# RENDERED:<KEY>" sentinel comment, e.g.
+#     version = "0.6.66b456"; # RENDERED:VERSION
+#     x86_64-linux = "abc..."; # RENDERED:SHA_LINUX
+# Capture group 1 is everything through the opening quote of the value,
+# group 2 is the closing quote and the sentinel comment. The quoted value
+# between them gets replaced. The identifier portion is permissive on
+# purpose: it matches both top-level fields (version) and attribute-set
+# entries (x86_64-linux, aarch64-darwin) without per-key regexes.
+readonly SENTINEL_PREFIX='[[:space:]]*[A-Za-z0-9_-]+ = '
+readonly SENTINEL_SUFFIX='; # RENDERED:'
+
+stamp() {
+    local key="$1" value="$2"
+    sed -i.bak -E \
+        "s|^(${SENTINEL_PREFIX})\"[^\"]*\"(${SENTINEL_SUFFIX}${key})|\1\"${value}\"\2|" \
+        "$flake"
+}
+
+stamp VERSION "$version"
+stamp SHA_LINUX "$sha_linux"
+stamp SHA_DARWIN "$sha_darwin"
 rm -f "${flake}.bak"
