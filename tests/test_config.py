@@ -725,7 +725,7 @@ class TestLocalDotLilbee:
         env = _clean_env()
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.platform.find_local_root", return_value=local),
+            mock.patch("lilbee.system.find_local_root", return_value=local),
         ):
             c = Config()
             assert c.data_root == local
@@ -738,7 +738,7 @@ class TestLocalDotLilbee:
         explicit = tmp_path / "explicit"
         with (
             mock.patch.dict(os.environ, {"LILBEE_DATA": str(explicit)}),
-            mock.patch("lilbee.platform.find_local_root", return_value=local),
+            mock.patch("lilbee.system.find_local_root", return_value=local),
         ):
             c = Config()
             assert c.data_root == explicit
@@ -748,7 +748,7 @@ class TestLocalDotLilbee:
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.platform.find_local_root", return_value=None),
+            mock.patch("lilbee.system.find_local_root", return_value=None),
         ):
             c = Config()
             assert c.data_root.name == "lilbee"

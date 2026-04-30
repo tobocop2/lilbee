@@ -30,7 +30,6 @@ from rich.progress import (
 from lilbee.chunk import build_chunking_config, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
 from lilbee.config import cfg
-from lilbee.platform import is_ignored_dir
 from lilbee.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
@@ -44,6 +43,7 @@ from lilbee.progress import (
 from lilbee.security import validate_path_within
 from lilbee.services import get_services
 from lilbee.store import CHUNK_TYPE_RAW
+from lilbee.system import is_ignored_dir
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)

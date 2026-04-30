@@ -17,7 +17,7 @@ from lilbee.cli.model import (
     RemoveResult,
     ShowModelResult,
 )
-from lilbee.mcp import (
+from lilbee.mcp_server import (
     _log_progress_failure,
     model_list,
     model_pull,
@@ -170,14 +170,14 @@ class TestLogProgressFailure:
     def test_success_is_silent(self, caplog):
         fut: Future[None] = Future()
         fut.set_result(None)
-        with caplog.at_level(logging.WARNING, logger="lilbee.mcp"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
             _log_progress_failure(fut)
         assert "report_progress failed" not in caplog.text
 
     def test_exception_is_logged_at_warning(self, caplog):
         fut: Future[None] = Future()
         fut.set_exception(RuntimeError("notify failed"))
-        with caplog.at_level(logging.WARNING, logger="lilbee.mcp"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
             _log_progress_failure(fut)
         assert "report_progress failed" in caplog.text
         assert "notify failed" in caplog.text
