@@ -97,6 +97,8 @@ def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
         get_services().provider.invalidate_load_cache()
 
 
+
+
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -130,6 +132,9 @@ class LilbeeApp(App[None]):
         self._switching = False
         self._theme_index = 0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
+        self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
+            self, "provider_availability_changed"
+        )
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
         self.task_bar = TaskBarController(self)
@@ -146,6 +151,7 @@ class LilbeeApp(App[None]):
         self._sync_theme_index_to_current()
 
         self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
+        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -154,6 +160,16 @@ class LilbeeApp(App[None]):
         self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
+
+    def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
+        """Republish on provider_availability_changed_signal when an API key
+        changes, so catalog and picker screens can refresh without each one
+        having to whitelist provider keys."""
+        from lilbee.core.config.keys import PROVIDER_API_KEYS
+
+        key, value = payload
+        if key in PROVIDER_API_KEYS:
+            self.provider_availability_changed_signal.publish((key, value))
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
