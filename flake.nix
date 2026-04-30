@@ -5,19 +5,10 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "0.6.66b456"; # RENDERED:VERSION
+      sources = builtins.fromJSON (builtins.readFile ./sources.json);
+      inherit (sources) version;
 
-      shas = {
-        x86_64-linux = "e6dc28e49a9bd9158eb217a47a278552f42195cae2cd68642413bf382ed0c54c"; # RENDERED:SHA_LINUX
-        aarch64-darwin = "6150740741616c46142fb6de1848bca979fabcc649d6e3183dacb4d9102fd73e"; # RENDERED:SHA_DARWIN
-      };
-
-      assets = {
-        x86_64-linux = "lilbee-linux-x86_64";
-        aarch64-darwin = "lilbee-macos-arm64";
-      };
-
-      systems = builtins.attrNames shas;
+      systems = builtins.attrNames sources.systems;
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
       # nixpkgs flags Elastic 2.0 as unfree; scope the allow to lilbee only.
@@ -35,21 +26,23 @@
         platforms = systems;
       };
 
-      mkBin = pkgs: system: pkgs.stdenvNoCC.mkDerivation {
-        pname = "lilbee-bin";
-        inherit version;
-        src = pkgs.fetchurl {
-          url = "https://github.com/tobocop2/lilbee/releases/download/v${version}/${assets.${system}}";
-          sha256 = shas.${system};
+      mkBin = pkgs: system:
+        let entry = sources.systems.${system}; in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "lilbee-bin";
+          inherit version;
+          src = pkgs.fetchurl {
+            url = "https://github.com/tobocop2/lilbee/releases/download/v${version}/${entry.asset}";
+            inherit (entry) sha256;
+          };
+          dontUnpack = true;
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 $src $out/bin/lilbee
+            runHook postInstall
+          '';
+          meta = mkMeta pkgs;
         };
-        dontUnpack = true;
-        installPhase = ''
-          runHook preInstall
-          install -Dm755 $src $out/bin/lilbee
-          runHook postInstall
-        '';
-        meta = mkMeta pkgs;
-      };
 
       # The release binary is PyInstaller / Nuitka onefile: it self-extracts
       # at launch and dlopen's its bundled .so's via the standard ld.so path.
