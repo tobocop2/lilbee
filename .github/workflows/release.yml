@@ -181,8 +181,20 @@ jobs:
         # stable per-version cache dir on first run, so subsequent runs of
         # `lilbee --version` skip the full bundle unpack (was ~15s on Windows
         # with PyInstaller).
+        #
+        # MYPYC_FLAGS captures top-level *__mypyc*.so helpers (chardet,
+        # charset_normalizer, mypy etc.) that mypyc-compiled packages need
+        # at runtime but live at site-packages root, not inside the package
+        # dir. Nuitka's standard config covers some of these (charset_normalizer)
+        # but not all (e.g. chardet 7.x); globbing here is forward-compatible.
         shell: bash
         run: |
+          SITE_PKG=$(uv run --no-sync python -c "import site; print(site.getsitepackages()[0])")
+          MYPYC_FLAGS=()
+          for f in "$SITE_PKG"/*__mypyc*.so; do
+            [ -e "$f" ] || continue
+            MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
+          done
           uv run --no-sync python -m nuitka \
             --mode=onefile \
             --no-deployment-flag=self-execution \
@@ -208,6 +220,8 @@ jobs:
             --include-package=textual           --include-package-data=textual \
             --include-package=rich              --include-package-data=rich \
             --include-package=catalogue \
+            --include-package=litestar          --include-package-data=litestar \
+            --include-package=mcp               --include-package-data=mcp \
             --include-distribution-metadata=lilbee \
             --include-distribution-metadata=litellm \
             --include-distribution-metadata=Crawl4AI \
@@ -215,6 +229,7 @@ jobs:
             --include-distribution-metadata=catalogue \
             --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
             --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
+            "${MYPYC_FLAGS[@]}" \
             src/lilbee/__main__.py
 
       - name: Smoke test

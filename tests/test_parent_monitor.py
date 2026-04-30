@@ -225,7 +225,7 @@ class TestMcpMainIntegration:
         with (
             mock.patch.object(mcp_mod, "get_services", side_effect=RuntimeError("no provider")),
             mock.patch.object(mcp_mod.mcp, "run"),
-            caplog.at_level("DEBUG", logger="lilbee.mcp"),
+            caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
         ):
             mcp_mod.main()
         assert "MCP pre-warm failed" in caplog.text

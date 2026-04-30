@@ -1136,7 +1136,7 @@ def login() -> None:
 @app.command(name="mcp")
 def mcp_cmd() -> None:
     """Start the MCP server (stdio transport) for agent integration."""
-    from lilbee.mcp import main
+    from lilbee.mcp_server import main
 
     main()
 
