@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.core.services import Services, set_services
+from lilbee.core.services import CrawlerSyncState, Services, set_services
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +44,8 @@ def mock_provider():
         hf_client=mock.MagicMock(),
         ingest_lock_registry=mock.MagicMock(),
         model_manager=mock.MagicMock(),
+        crawler_semaphore=None,
+        crawler_sync_state=CrawlerSyncState(),
     )
     set_services(services)
     yield provider
@@ -180,6 +182,8 @@ class TestExtractPageTextSubprocess:
             hf_client=mock.MagicMock(),
             ingest_lock_registry=mock.MagicMock(),
             model_manager=mock.MagicMock(),
+            crawler_semaphore=None,
+            crawler_sync_state=CrawlerSyncState(),
         )
         set_services(services)
 
@@ -205,6 +209,8 @@ class TestExtractPageTextSubprocess:
             hf_client=mock.MagicMock(),
             ingest_lock_registry=mock.MagicMock(),
             model_manager=mock.MagicMock(),
+            crawler_semaphore=None,
+            crawler_sync_state=CrawlerSyncState(),
         )
         set_services(services)
 

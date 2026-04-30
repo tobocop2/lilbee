@@ -239,7 +239,7 @@ def _default_clusterer_mock():
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs."""
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.core.services import Services
+    from lilbee.core.services import CrawlerSyncState, Services
     from lilbee.providers.base import LLMProvider
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
@@ -257,6 +257,8 @@ def make_mock_services(**overrides):
     hf_client = overrides.pop("hf_client", None) or HfClient()
     ingest_lock_registry = overrides.pop("ingest_lock_registry", None) or IngestLockRegistry()
     model_manager = overrides.pop("model_manager", None) or MagicMock()
+    crawler_semaphore = overrides.pop("crawler_semaphore", None)
+    crawler_sync_state = overrides.pop("crawler_sync_state", None) or CrawlerSyncState()
 
     return Services(
         provider=provider,
@@ -270,6 +272,8 @@ def make_mock_services(**overrides):
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
         model_manager=model_manager,
+        crawler_semaphore=crawler_semaphore,
+        crawler_sync_state=crawler_sync_state,
     )
 
 

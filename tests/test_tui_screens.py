@@ -8010,60 +8010,57 @@ async def test_app_action_quit_routes_to_wizard_cancel():
             assert not isinstance(app.screen, SetupWizard)
 
 
-async def test_app_action_quit_double_force_exits():
-    """Double Ctrl+C within 2s calls _force_quit."""
+async def test_action_quit_calls_request_abort_before_exit():
+    """Ctrl+C calls ``request_abort()`` before ``exit`` so ggml unblocks first."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # First quit sets last_quit_time
-        with patch.object(app, "exit"):
-            await app.action_quit()
-        # Second quit within 2s should force-quit
-        with patch.object(app, "_force_quit") as mock_fq:
-            await app.action_quit()
-            mock_fq.assert_called_once()
+        parent = MagicMock()
+        with (
+            patch("lilbee.cli.tui.app.request_abort", parent.request_abort),
+            patch.object(app, "exit", parent.exit),
+        ):
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            call_names = [c[0] for c in parent.mock_calls]
+            assert "request_abort" in call_names
+            # ``request_abort`` must come no later than ``exit`` in the call order.
+            assert call_names.index("request_abort") <= call_names.index("exit")
 
 
-async def test_app_force_quit_calls_os_exit():
-    """_force_quit resets services, runs Textual driver teardown, then calls os._exit."""
+async def test_no_force_quit_attribute():
+    """``LilbeeApp`` no longer carries the ``_force_quit`` GIL-block escape hatch."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with (
-            patch("lilbee.cli.tui.app.reset_services") as mock_reset,
-            patch("lilbee.cli.tui.app._restore_terminal_via_driver") as mock_restore,
-            patch("os._exit") as mock_exit,
-        ):
-            app._force_quit()
-            mock_reset.assert_called_once()
-            mock_restore.assert_called_once_with(app)
-            mock_exit.assert_called_once_with(1)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert not hasattr(app, "_force_quit")
 
 
-class TestRestoreTerminalViaDriver:
-    """``_restore_terminal_via_driver`` runs Textual's driver teardown before os._exit (bb-6b86)."""
+def test_no_restore_terminal_via_driver_module_attr():
+    """``_restore_terminal_via_driver`` was deleted along with ``_force_quit``."""
+    assert not hasattr(tui_app, "_restore_terminal_via_driver")
 
-    def test_calls_driver_stop_application_mode(self):
-        """Driver teardown is the path that emits Textual's full restore sequence."""
-        app = MagicMock()
-        tui_app._restore_terminal_via_driver(app)
-        app._driver.stop_application_mode.assert_called_once_with()
 
-    def test_no_op_when_driver_unset(self):
-        """Early-startup or post-teardown: ``_driver`` is None; no AttributeError."""
-        app = MagicMock()
-        app._driver = None
-        tui_app._restore_terminal_via_driver(app)  # must not raise
+async def test_action_quit_no_double_ctrl_c_window():
+    """Double Ctrl+C does not trigger any force-quit branch; both presses go through normal quit."""
+    from lilbee.cli.tui.app import LilbeeApp
 
-    def test_swallows_driver_teardown_failure(self):
-        """A driver mid-teardown that raises must not block ``os._exit``."""
-        app = MagicMock()
-        app._driver.stop_application_mode.side_effect = RuntimeError("boom")
-        tui_app._restore_terminal_via_driver(app)  # must not raise
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # No state should track press timing any more.
+        assert not hasattr(app, "last_quit_time")
+        with patch.object(app, "exit") as mock_exit:
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+        # Two normal quits, never an os._exit force-quit branch.
+        assert mock_exit.call_count >= 1
 
 
 class TestSilenceStderrLogHandlers:
@@ -8177,8 +8174,8 @@ async def test_command_provider_action_setup():
 # ---------------------------------------------------------------------------
 
 
-def test_run_tui_keyboard_interrupt_during_shutdown():
-    """run_tui handles KeyboardInterrupt during shutdown cleanup."""
+def test_run_tui_keyboard_interrupt_during_shutdown_propagates():
+    """KeyboardInterrupt during shutdown propagates instead of forcing os._exit."""
     from lilbee.cli.tui import run_tui
 
     mock_app = MagicMock()
@@ -8186,14 +8183,16 @@ def test_run_tui_keyboard_interrupt_during_shutdown():
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
         patch("lilbee.cli.tui.shutdown_executor", side_effect=KeyboardInterrupt),
-        patch("os._exit") as mock_exit,
+        patch("lilbee.cli.tui.reset_services") as mock_reset,
+        pytest.raises(KeyboardInterrupt),
     ):
         run_tui()
-        mock_exit.assert_called_once_with(1)
+    # reset_services in finally was never reached because shutdown_executor raised first.
+    mock_reset.assert_not_called()
 
 
-def test_run_tui_exception_during_shutdown():
-    """run_tui handles generic Exception during shutdown cleanup."""
+def test_run_tui_exception_during_shutdown_propagates():
+    """A generic Exception during shutdown propagates without an os._exit fallback."""
     from lilbee.cli.tui import run_tui
 
     mock_app = MagicMock()
@@ -8201,10 +8200,9 @@ def test_run_tui_exception_during_shutdown():
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
         patch("lilbee.cli.tui.shutdown_executor", side_effect=RuntimeError("fail")),
-        patch("os._exit") as mock_exit,
+        pytest.raises(RuntimeError, match="fail"),
     ):
         run_tui()
-        mock_exit.assert_called_once_with(1)
 
 
 async def test_chat_on_show_dismiss_with_fd():

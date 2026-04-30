@@ -19,7 +19,7 @@ def isolated_cfg():
 
 class TestServicesDataclass:
     def test_fields_are_immutable(self):
-        from lilbee.core.services import Services
+        from lilbee.core.services import CrawlerSyncState, Services
 
         services = Services(
             provider=MagicMock(),
@@ -33,6 +33,8 @@ class TestServicesDataclass:
             hf_client=MagicMock(),
             ingest_lock_registry=MagicMock(),
             model_manager=MagicMock(),
+            crawler_semaphore=None,
+            crawler_sync_state=CrawlerSyncState(),
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]

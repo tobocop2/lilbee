@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
@@ -26,12 +27,8 @@ from lilbee.crawler import (
 from lilbee.crawler import bootstrap as bootstrap_mod
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.runner import (
-    _drain_background_tasks,
     _get_crawl_semaphore,
     _maybe_periodic_sync,
-)
-from lilbee.crawler.runner import (
-    _state as crawler_state,
 )
 from lilbee.crawler.save import _save_single_result, _update_single_metadata
 from lilbee.runtime.progress import EventType
@@ -1376,36 +1373,30 @@ class TestCrawlAndSave:
 
     async def test_semaphore_limits_concurrency(self, isolated_env):
         """The semaphore limits concurrent crawls based on config."""
-        from lilbee.crawler import runner as crawler_mod
-
-        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 5
+        reset_services()
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == 5
-        crawler_mod._state.semaphore = None
+        reset_services()
 
     async def test_semaphore_defaults_to_cpu_count(self, isolated_env):
         """Default concurrency matches CPU count."""
         import os
 
-        from lilbee.crawler import runner as crawler_mod
-
-        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = os.cpu_count() or 4
+        reset_services()
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == (os.cpu_count() or 4)
-        crawler_mod._state.semaphore = None
+        reset_services()
 
     async def test_semaphore_unlimited_when_zero(self, isolated_env):
         """Setting crawl_max_concurrent=0 disables the semaphore."""
-        from lilbee.crawler import runner as crawler_mod
-
-        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 0
+        reset_services()
         assert _get_crawl_semaphore() is None
-        crawler_mod._state.semaphore = None
+        reset_services()
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_cancel_keeps_fetched_page(self, mock_crawl_single, isolated_env):
@@ -1428,209 +1419,117 @@ class TestCrawlAndSave:
 class TestPeriodicSync:
     async def test_sync_disabled_when_interval_zero(self, isolated_env):
         """No sync fires when crawl_sync_interval is 0."""
-        import threading
-
-        from lilbee.crawler import runner as crawler_mod
-
         cfg.crawl_sync_interval = 0
-        crawler_mod._state.last_sync_time = 0.0
-        crawler_mod._state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
 
+        tasks: set[asyncio.Task[None]] = set()
         with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync()
+            await _maybe_periodic_sync(tasks)
             mock_sync.assert_not_awaited()
+        assert not tasks
 
     async def test_sync_skipped_when_already_running(self, isolated_env):
         """No new sync is started if one is already in progress."""
-        import threading
-
-        from lilbee.crawler import runner as crawler_mod
-
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        lock = threading.Lock()
-        lock.acquire()  # simulate already-running
-        crawler_mod._state.sync_running = lock
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+        sync_state.lock.acquire()  # simulate already-running
 
-        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync()
-            mock_sync.assert_not_awaited()
-
-        lock.release()
+        tasks: set[asyncio.Task[None]] = set()
+        try:
+            with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
+                await _maybe_periodic_sync(tasks)
+                mock_sync.assert_not_awaited()
+        finally:
+            sync_state.lock.release()
 
     async def test_sync_skipped_when_interval_not_elapsed(self, isolated_env):
         """No sync fires if the interval hasn't elapsed since last sync."""
-        import threading
         import time
 
-        from lilbee.crawler import runner as crawler_mod
-
         cfg.crawl_sync_interval = 9999
-        crawler_mod._state.last_sync_time = time.monotonic()
-        crawler_mod._state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = time.monotonic()
 
+        tasks: set[asyncio.Task[None]] = set()
         with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync()
+            await _maybe_periodic_sync(tasks)
             mock_sync.assert_not_awaited()
 
     async def test_sync_fires_when_interval_elapsed(self, isolated_env):
         """Sync fires as a background task when interval has elapsed."""
-        import asyncio
-        import threading
-
-        from lilbee.crawler import runner as crawler_mod
-
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        crawler_mod._state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
 
+        tasks: set[asyncio.Task[None]] = set()
         mock_sync = AsyncMock()
         with patch("lilbee.data.ingest.sync", mock_sync):
-            await _maybe_periodic_sync()
-            # Let the background task run
-            await asyncio.sleep(0)
+            await _maybe_periodic_sync(tasks)
+            # Drain the spawned task so the awaited assertion is deterministic.
+            await asyncio.gather(*tasks, return_exceptions=True)
             mock_sync.assert_awaited_once()
 
     async def test_sync_failure_resets_running_flag(self, isolated_env):
-        """If sync raises, _sync_running lock is released so future syncs can proceed."""
-        import asyncio
-        import threading
-
-        from lilbee.crawler import runner as crawler_mod
-
+        """If sync raises, the sync lock is released so future syncs can proceed."""
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        lock = threading.Lock()
-        crawler_mod._state.sync_running = lock
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
 
+        tasks: set[asyncio.Task[None]] = set()
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
         with patch("lilbee.data.ingest.sync", mock_sync):
-            await _maybe_periodic_sync()
-            await asyncio.sleep(0)
+            await _maybe_periodic_sync(tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         # Lock should be released after failure
-        assert lock.acquire(blocking=False)
-        lock.release()
+        assert sync_state.lock.acquire(blocking=False)
+        sync_state.lock.release()
 
 
-class TestDrainBackgroundTasks:
-    """``_drain_background_tasks`` cancels periodic-sync tasks so crawl_and_save
-    can exit cleanly without 'destroyed but pending' warnings. (bb-zqws)"""
+class TestServicesCrawlerSemaphore:
+    def test_services_crawler_semaphore_rebuilds_on_reset(self, isolated_env):
+        """``reset_services`` produces a fresh semaphore matching the cfg limit."""
+        cfg.crawl_max_concurrent = 3
+        reset_services()
+        first = get_services().crawler_semaphore
+        assert first is not None
+        assert first._value == 3
+        reset_services()
+        second = get_services().crawler_semaphore
+        assert second is not None
+        assert second._value == 3
+        assert first is not second
 
-    async def test_no_pending_tasks_returns_immediately(self, isolated_env):
-        """With no spawned tasks, the helper is a fast no-op."""
-        crawler_state.background_tasks = set()
-        await _drain_background_tasks()
-        assert crawler_state.background_tasks == set()
-
-    async def test_cancels_pending_periodic_sync(self, isolated_env):
-        """The drain cancels (not awaits) so a slow sync can't block crawl_and_save's exit."""
-
-        async def _slow_sync() -> None:
-            await asyncio.sleep(60.0)  # would deadlock the test if awaited
-
-        task = asyncio.create_task(_slow_sync())
-        crawler_state.background_tasks = {task}
-        task.add_done_callback(crawler_state.background_tasks.discard)
-
-        await _drain_background_tasks()
-
-        assert task.done()
-        assert task.cancelled()
-
-    async def test_swallows_task_exception(self, isolated_env):
-        """A failing periodic-sync task must not bubble out of the drain."""
-
-        async def _boom() -> None:
-            await asyncio.sleep(0)
-            raise RuntimeError("sync exploded")
-
-        task = asyncio.create_task(_boom())
-        crawler_state.background_tasks = {task}
-        task.add_done_callback(crawler_state.background_tasks.discard)
-
-        await _drain_background_tasks()
-        assert task.done()
-
-    async def test_skips_already_done_task(self, isolated_env):
-        """A task that already finished is left untouched by the drain."""
-
-        async def _quick() -> str:
-            return "ok"
-
-        task = asyncio.create_task(_quick())
-        await task  # finish it before the drain sees it
-        # Re-add manually because add_done_callback already discarded it.
-        crawler_state.background_tasks = {task}
-
-        await _drain_background_tasks()
-        assert task.done()
-        assert not task.cancelled()
-        assert task.result() == "ok"
-
-    async def test_drops_cross_loop_task_from_registry(self, isolated_env):
-        """A task whose loop has closed gets dropped instead of awaited.
-
-        Mirrors what happens when an earlier asyncio.run() call left a task
-        in background_tasks: subsequent crawl_and_save() runs on a new loop
-        and must not try to cross-await it.
-        """
-        # MagicMock(spec=Task) lets us simulate a cross-loop entry without
-        # spawning a real task on a separate loop (which would be cleanup-heavy).
-        other_loop = asyncio.new_event_loop()
-        try:
-            stale_task = MagicMock(spec=asyncio.Task)
-            stale_task.done.return_value = False
-            stale_task.get_loop.return_value = other_loop
-
-            crawler_state.background_tasks = {stale_task}
-
-            await _drain_background_tasks()
-
-            assert stale_task not in crawler_state.background_tasks
-            stale_task.cancel.assert_not_called()  # never touched mid-flight
-        finally:
-            other_loop.close()
-
-
-class TestCrawlerStateReset:
-    def test_reset_clears_all_state(self, isolated_env):
-        """CrawlerState.reset() restores all fields to initial values."""
-        from lilbee.crawler import runner as crawler_mod
-
-        state = crawler_mod._state
-        state.semaphore = asyncio.Semaphore(3)
-        state.semaphore_limit = 3
-        state.last_sync_time = 99.0
-
-        state.reset()
-
-        assert state.semaphore is None
-        assert state.semaphore_limit == 0
-        assert state.last_sync_time == 0.0
-        assert state.sync_running.acquire(blocking=False)
-        state.sync_running.release()
-        assert state.background_tasks == set()
+    def test_services_crawler_semaphore_none_when_unlimited(self, isolated_env):
+        """``crawl_max_concurrent <= 0`` leaves ``crawler_semaphore`` as ``None``."""
+        cfg.crawl_max_concurrent = 0
+        reset_services()
+        assert get_services().crawler_semaphore is None
 
 
 class TestCrawlAndSaveSemaphore:
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_semaphore_acquired_and_released(self, mock_crawl_single, isolated_env):
         """When crawl_max_concurrent > 0, sem.acquire/release are called."""
-        from lilbee.crawler import runner as crawler_mod
-
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cfg.crawl_max_concurrent = 2
-        crawler_mod._state.semaphore = None
+        reset_services()
 
         paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
 
-        # Verify semaphore was created and is still available (released)
-        sem = crawler_mod._state.semaphore
+        # Verify semaphore is still at full capacity (released).
+        sem = get_services().crawler_semaphore
         assert sem is not None
         assert sem._value == 2
-        crawler_mod._state.semaphore = None
+        reset_services()
 
 
 class TestCrawlCancel:
@@ -2316,8 +2215,7 @@ class TestStreamingFlush:
         mock_sync.assert_awaited_once()
 
     async def test_crawl_and_save_drains_background_tasks(self, isolated_env):
-        """crawl_and_save cancels any spawned periodic-sync task before returning. (bb-zqws)"""
-        import threading
+        """crawl_and_save awaits its locally-spawned periodic-sync task before returning."""
 
         async def _gen():
             await asyncio.sleep(0)
@@ -2328,23 +2226,64 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        async def _slow_sync(*_args, **_kwargs):
-            # Would deadlock the test if the drain awaited instead of cancelling.
-            await asyncio.sleep(60.0)
+        sync_completed = asyncio.Event()
+
+        async def _short_sync(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            sync_completed.set()
 
         cfg.crawl_sync_interval = 1
-        crawler_state.last_sync_time = 0.0
-        crawler_state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+
+        # Snapshot tasks currently on this loop so we can assert no
+        # crawler-spawned task survives the call.
+        before = set(asyncio.all_tasks())
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.data.ingest.sync", _slow_sync),
+            patch("lilbee.data.ingest.sync", _short_sync),
         ):
             await crawl_and_save("https://example.com", depth=0)
 
-        # The done callback cleared the registry; any task that survived would
-        # mean the drain didn't await its cancellation.
-        assert all(t.done() for t in crawler_state.background_tasks)
+        # crawl_and_save must not return before its periodic-sync task finished.
+        assert sync_completed.is_set()
+        # No new pending tasks leak past the call.
+        leaked = {t for t in asyncio.all_tasks() if t not in before and not t.done()}
+        assert not leaked
+
+    async def test_concurrent_crawl_and_save_calls_isolated_tasks(self, isolated_env):
+        """Two concurrent crawl_and_save calls each own their own local task set."""
+        cfg.crawl_max_concurrent = 0  # don't serialize the two concurrent calls
+        cfg.crawl_sync_interval = 1  # spawn a periodic-sync per call
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+
+        async def _short_sync(*_args, **_kwargs):
+            await asyncio.sleep(0)
+
+        async def _fake_single(url: str, *, quiet: bool = False) -> CrawlResult:
+            await asyncio.sleep(0)
+            return CrawlResult(url=url, markdown=f"# {url}")
+
+        before = set(asyncio.all_tasks())
+
+        with (
+            patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
+            patch("lilbee.data.ingest.sync", _short_sync),
+        ):
+            results = await asyncio.gather(
+                crawl_and_save("https://example.com/a", depth=0),
+                crawl_and_save("https://example.com/b", depth=0),
+            )
+        assert len(results) == 2
+        assert all(len(paths) == 1 for paths in results)
+        # Each call's local task set was drained before returning, so no
+        # crawler-spawned task leaks past either invocation.
+        leaked = {t for t in asyncio.all_tasks() if t not in before and not t.done()}
+        assert not leaked
 
     async def test_metadata_flush_is_batched(self, isolated_env):
         """_flush_metadata fires every METADATA_FLUSH_INTERVAL pages, not every page."""

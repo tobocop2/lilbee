@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.providers.base import ProviderError
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
@@ -32,10 +34,18 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """
     Llama = import_llama_cpp().Llama  # noqa: N806
 
+    # Fresh abort flag: a prior request_abort() must not latch and break
+    # this metadata read, which is on the path of every model swap.
+    clear_abort()
     install_llama_log_handler()
-    llm = suppress_native_stderr(
-        Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
-    )
+    kwargs: dict[str, Any] = {
+        "model_path": str(model_path),
+        "vocab_only": True,
+        "verbose": False,
+        "n_gpu_layers": 0,
+    }
+    kwargs.setdefault("abort_callback", abort_callback)
+    llm = suppress_native_stderr(Llama, **kwargs)
     try:
         raw = llm.metadata or {}
         result: dict[str, str] = {}

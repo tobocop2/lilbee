@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
@@ -44,57 +45,9 @@ from lilbee.runtime.progress import (
 log = logging.getLogger(__name__)
 
 
-class CrawlerState:
-    """Per-process mutable state for the crawler (semaphore, periodic sync tracking).
-
-    Encapsulates state that would otherwise live as bare module-level globals.
-    Held as a module-level singleton (``_state``) rather than under
-    :class:`lilbee.core.services.Services`: the asyncio.Semaphore is bound to
-    whichever event loop happens to be running, and Services may be rebuilt
-    across event-loop boundaries via ``reset_services``. Test isolation is via
-    :meth:`reset`.
-    """
-
-    def __init__(self) -> None:
-        self.semaphore: asyncio.Semaphore | None = None
-        self.semaphore_limit: int = 0
-        self.last_sync_time: float = 0.0
-        self.sync_running: threading.Lock = threading.Lock()
-        self.background_tasks: set[asyncio.Task[None]] = set()
-
-    def reset(self) -> None:
-        """Reset all state (useful for testing)."""
-        self.semaphore = None
-        self.semaphore_limit = 0
-        self.last_sync_time = 0.0
-        self.sync_running = threading.Lock()
-        self.background_tasks = set()
-
-
-_state = CrawlerState()
-
-
-async def drain_background_tasks() -> None:
-    """Await any in-flight ``_maybe_periodic_sync`` tasks.
-
-    Short-lived callers (CLI) should call this right before closing their
-    event loop. Long-lived callers (HTTP server, MCP) skip it; their loops
-    stay open long enough for the fire-and-forget syncs to finish naturally.
-    """
-    if not _state.background_tasks:
-        return
-    await asyncio.gather(*_state.background_tasks, return_exceptions=True)
-
-
 def _get_crawl_semaphore() -> asyncio.Semaphore | None:
-    """Return an asyncio semaphore for crawl concurrency, or None if unlimited (0)."""
-    limit = cfg.crawl_max_concurrent
-    if limit <= 0:
-        return None
-    if _state.semaphore is None or _state.semaphore_limit != limit:
-        _state.semaphore = asyncio.Semaphore(limit)
-        _state.semaphore_limit = limit
-    return _state.semaphore
+    """Return the process-wide crawl semaphore, or None when unlimited."""
+    return get_services().crawler_semaphore
 
 
 def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
@@ -231,23 +184,24 @@ async def crawl_recursive(
     return results
 
 
-async def _maybe_periodic_sync() -> None:
+async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]]) -> None:
     """Fire off a background sync if the ``crawl_sync_interval`` has elapsed.
 
-    Skips if a sync is already running or periodic sync is disabled
-    (``interval=0``). Uses a ``threading.Lock`` to avoid asyncio
-    event-loop binding issues when called from different loops.
+    Skips when periodic sync is disabled (``interval=0``) or another sync
+    is already running. The spawned task is added to ``tasks`` so the
+    caller can drain it before returning.
     """
     interval = cfg.crawl_sync_interval
-    if interval <= 0 or not _state.sync_running.acquire(blocking=False):
+    sync_state = get_services().crawler_sync_state
+    if interval <= 0 or not sync_state.lock.acquire(blocking=False):
         return
 
     now = time.monotonic()
-    if now - _state.last_sync_time < interval:
-        _state.sync_running.release()
+    if now - sync_state.last_run < interval:
+        sync_state.lock.release()
         return
 
-    _state.last_sync_time = now
+    sync_state.last_run = now
 
     async def _run_sync() -> None:
         try:
@@ -257,37 +211,11 @@ async def _maybe_periodic_sync() -> None:
         except Exception as exc:
             log.warning("Periodic sync during crawl failed: %s", exc)
         finally:
-            _state.sync_running.release()
+            sync_state.lock.release()
 
     task = asyncio.create_task(_run_sync())
-    _state.background_tasks.add(task)
-    task.add_done_callback(_state.background_tasks.discard)
-
-
-async def _drain_background_tasks() -> None:
-    """Cancel periodic-sync tasks owned by the running loop. (bb-zqws)
-
-    TODO bb-odr1: the cross-loop filter and stale-entry drop both exist
-    because ``_state.background_tasks`` is a module-level global. Once
-    task tracking is scoped per ``crawl_and_save`` invocation, this whole
-    helper collapses to a local ``await asyncio.gather(*tasks)``.
-    """
-    loop = asyncio.get_running_loop()
-    pending: list[asyncio.Task[Any]] = []
-    stale: set[asyncio.Task[Any]] = set()
-    for task in list(_state.background_tasks):
-        if task.done():
-            continue
-        if task.get_loop() is loop:
-            pending.append(task)
-        else:
-            stale.add(task)
-    _state.background_tasks -= stale
-    if not pending:
-        return
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
 
 def _make_flush_page(
@@ -411,6 +339,7 @@ async def crawl_and_save(
     sem = _get_crawl_semaphore()
     if sem is not None:
         await sem.acquire()
+    tasks: set[asyncio.Task[None]] = set()
     try:
         if on_progress:
             start_depth = depth if depth is not None else 0
@@ -440,7 +369,7 @@ async def crawl_and_save(
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:
-            await _maybe_periodic_sync()
+            await _maybe_periodic_sync(tasks)
 
         if on_progress:
             on_progress(
@@ -450,8 +379,9 @@ async def crawl_and_save(
 
         return written_paths
     finally:
-        # Drain the periodic-sync task BEFORE releasing the crawl semaphore so
-        # asyncio.run() doesn't close the loop with the sync mid-ingest.
-        await _drain_background_tasks()
+        # Drain this call's periodic-sync tasks before returning so
+        # asyncio.run() doesn't close the loop with a pending sync.
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if sem is not None:
             sem.release()

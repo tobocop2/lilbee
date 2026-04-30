@@ -22,6 +22,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.batching import (
     BATCH_WINDOW_S,
     EMBED_FUTURE_TIMEOUT_S,
@@ -137,6 +138,10 @@ class LlamaCppProvider(LLMProvider):
         Embeds one text at a time because some model architectures (e.g.
         nomic-bert) fail with llama_decode -1 on multi-text batches.
         """
+        # Each new dispatch starts with a fresh abort flag: a previous
+        # request_abort() unblocks the prior in-flight call but must not
+        # latch and break this one.
+        clear_abort()
         try:
             llm = self._get_embed_llm()
         except Exception as exc:
@@ -169,6 +174,8 @@ class LlamaCppProvider(LLMProvider):
 
     def _dispatch_rerank(self, req: RerankRequest) -> None:
         """Run a single rerank request and resolve its future."""
+        # See ``_dispatch_batch`` for why we clear at the start of each dispatch.
+        clear_abort()
         try:
             llm = self._get_rerank_llm()
         except Exception as exc:
@@ -252,6 +259,9 @@ class LlamaCppProvider(LLMProvider):
     ) -> str | ClosableIterator[str]:
         """Chat completion: serialized via lock (Llama is not thread-safe)."""
         self._chat_lock.acquire()
+        # Clear AFTER the lock acquires so a concurrent chat can't clobber a
+        # mid-stream cancel still being honored by the prior holder.
+        clear_abort()
         try:
             llm = self._get_chat_llm(model)
             kwargs: dict[str, Any] = {}
@@ -584,6 +594,10 @@ def _construct_llama(llama_cls: Any, model_path: Path, kwargs: dict[str, Any]) -
     or unrelated TypeError), or continues with halved n_ctx; the loop is
     therefore structurally exhaustive and never falls through.
     """
+    # Fresh abort flag per load: a prior request_abort() that interrupted
+    # an inference must not latch and abort the next model swap.
+    clear_abort()
+    kwargs.setdefault("abort_callback", abort_callback)
     fa_dropped = False
     for attempt in range(_MAX_OOM_RETRIES + 1):
         try:
