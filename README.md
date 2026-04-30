@@ -273,6 +273,14 @@ docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest 
 
 Image is published to GitHub Container Registry on every release; tagged with both the version (`0.6.66b456`) and `latest`. The `LILBEE_DATA_DIR` is `/home/lilbee/data` inside the container, so mount a volume there to persist models, embeddings, and config.
 
+### Nix (NixOS, nix-darwin, or any host with nix)
+
+```bash
+nix run github:tobocop2/lilbee
+```
+
+Wraps the same release binary as Homebrew / AUR / Docker. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS without `libvulkan1` on the host.
+
 <a id="linux-runtime-requirements"></a>
 
 ### Linux runtime requirements

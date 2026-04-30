@@ -113,6 +113,39 @@ jobs:
           commit_message: "lilbee ${{ needs.resolve.outputs.version }}"
           force_push: false
 
+  nix-flake:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Render flake.nix
+        run: |
+          bash packaging/tools/render_flake.sh \
+            flake.nix \
+            "${{ needs.resolve.outputs.version }}" \
+            "${{ needs.resolve.outputs.sha_linux }}" \
+            "${{ needs.resolve.outputs.sha_macos_arm64 }}"
+      - name: Validate rendered flake
+        run: nix flake check --all-systems
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "lilbee-bot"
+          git config user.email "lilbee-bot@users.noreply.github.com"
+          git add flake.nix
+          if git diff --cached --quiet; then
+            echo "no flake changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee ${{ needs.resolve.outputs.version }} (flake.nix)"
+          git push origin main
+
   docker:
     needs: resolve
     runs-on: ubuntu-latest

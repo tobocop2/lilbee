@@ -1,0 +1,37 @@
+name: Flake Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/flake-check.yml
+      - packaging/tools/render_flake.sh
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/flake-check.yml
+      - packaging/tools/render_flake.sh
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            system: x86_64-linux
+          - os: macos-14
+            system: aarch64-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: nix flake check
+        run: nix flake check --all-systems
+      - name: nix build
+        run: nix build .#packages.${{ matrix.system }}.default --print-out-paths
+      - name: nix run --version smoke
+        run: nix run . -- --version
