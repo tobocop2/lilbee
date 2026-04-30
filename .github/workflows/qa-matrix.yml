@@ -315,8 +315,10 @@ jobs:
 
       - name: Resolve target lilbee version
         id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          TAG=$(curl -sf "https://api.github.com/repos/${{ github.repository }}/releases/latest" | python -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+          TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
