@@ -113,6 +113,49 @@ jobs:
           commit_message: "lilbee ${{ needs.resolve.outputs.version }}"
           force_push: false
 
+  nix-flake:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Update sources.json
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
+          SHA_DARWIN: ${{ needs.resolve.outputs.sha_macos_arm64 }}
+        run: |
+          jq -n \
+            --arg version "$VERSION" \
+            --arg sha_linux "$SHA_LINUX" \
+            --arg sha_darwin "$SHA_DARWIN" \
+            '{
+              version: $version,
+              systems: {
+                "x86_64-linux":   { asset: "lilbee-linux-x86_64", sha256: $sha_linux },
+                "aarch64-darwin": { asset: "lilbee-macos-arm64",  sha256: $sha_darwin }
+              }
+            }' > sources.json
+      - name: Validate flake against new sources
+        run: nix flake check --all-systems
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "lilbee-bot"
+          git config user.email "lilbee-bot@users.noreply.github.com"
+          git add sources.json
+          if git diff --cached --quiet; then
+            echo "no source changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee ${{ needs.resolve.outputs.version }} (flake)"
+          git push origin main
+
   docker:
     needs: resolve
     runs-on: ubuntu-latest
