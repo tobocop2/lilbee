@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.reactive import reactive
@@ -29,12 +30,19 @@ _DEFAULT_MODE_COLOR = "$error"
 _MODEL_PILL_KEYS = frozenset({"chat_model"})
 
 
-class ViewTab(Label):
-    """A clickable tab label inside ViewTabs.
+class ViewTab(Label, can_focus=True):
+    """A focusable, clickable tab label inside ViewTabs.
 
-    Owns its `view_name` and routes a click to the app's view switcher.
-    Active styling is set via the `-active` CSS class.
+    Owns its `view_name`. Click and Enter / Space when focused both
+    fire the app's view switcher. Active and focus styling are
+    handled in status_bar.tcss via the ``-active`` and ``:focus``
+    pseudo-classes.
     """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "activate", "Switch view", show=False),
+        Binding("space", "activate", "Switch view", show=False),
+    ]
 
     def __init__(self, view_name: str) -> None:
         super().__init__(id=f"view-tab-{view_name.lower()}", classes="view-tab")
@@ -48,9 +56,21 @@ class ViewTab(Label):
             self.update(Content.assemble((f" {self.view_name} ", "dim")))
 
     def on_click(self) -> None:
-        switch = getattr(self.app, "switch_view", None)
-        if callable(switch):
-            switch(self.view_name)
+        self._switch()
+
+    def action_activate(self) -> None:
+        self._switch()
+
+    def _switch(self) -> None:
+        # Late-binding via getattr would hide the contract; we rely on
+        # ViewTab being mounted under a LilbeeApp where switch_view is
+        # always defined. Tests using a stub app patch switch_view onto
+        # the App instance, so accessing it as an attribute works there
+        # too.
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view(self.view_name)
 
 
 class ViewTabs(Widget):

@@ -14,8 +14,19 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Collapsible,
+    Input,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+    TextArea,
+)
 
 from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
@@ -223,6 +234,9 @@ class SettingsScreen(Screen[None]):
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
+        # Tab walks every focusable on the screen (search, reset, the
+        # group Tabs strip, then editors inside the active TabPane).
+        # Use ←/→ to switch tabs while focus is on the strip.
         Binding("tab", "app.focus_next", "Next field", show=True),
         Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
         Binding("ctrl+r", "reset_focused", "Reset", show=False),
@@ -231,6 +245,14 @@ class SettingsScreen(Screen[None]):
         Binding("g", "scroll_home", "Top", show=False),
         Binding("G", "scroll_end", "End", show=False),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Cache of (TabPane, [setting-row]) pairs built once and reused
+        # across keystrokes for the search filter. Reset whenever the
+        # screen is re-mounted.
+        self._settings_filter_index: list[tuple[Any, list[Any]]] | None = None
+        self._filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -252,24 +274,35 @@ class SettingsScreen(Screen[None]):
                     id="reset-all-defaults",
                     classes="reset-all-button",
                 )
-        with VerticalScroll(id="settings-scroll"):
-            yield from self._compose_groups()
+        with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
+            yield from self._compose_group_tabs()
         with BottomBars():
             yield TaskBar()
             yield Footer()
 
-    def _compose_groups(self) -> ComposeResult:
-        """Yield grouped setting sections."""
+    def _compose_group_tabs(self) -> ComposeResult:
+        """Yield one TabPane per setting group.
+
+        TabbedContent only mounts the active TabPane's children, so the
+        screen surfaces with ~1 group's worth of editors instead of the
+        full ~500-widget tree. Switching tabs swaps in the next group.
+        """
         for group_name, items in _group_settings().items():
-            with VerticalGroup(classes="setting-group", id=f"group-{group_name.lower()}"):
-                yield Static(group_name, classes="group-title")
-                if group_name == _API_KEYS_GROUP:
-                    yield Static(
-                        msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
-                        classes=_API_KEYS_WARNING_CLASS,
-                    )
-                for key, defn in items:
-                    yield from self._compose_setting(key, defn)
+            pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
+            with TabPane(group_name, id=pane_id):
+                yield from self._compose_group_body(group_name, items)
+
+    def _compose_group_body(
+        self, group_name: str, items: list[tuple[str, SettingDef]]
+    ) -> ComposeResult:
+        """Yield the body of one settings tab: API-keys warning + rows."""
+        if group_name == _API_KEYS_GROUP:
+            yield Static(
+                msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
+                classes=_API_KEYS_WARNING_CLASS,
+            )
+        for key, defn in items:
+            yield from self._compose_setting(key, defn)
 
     def _compose_setting(self, key: str, defn: SettingDef) -> ComposeResult:
         """Yield widgets for a single setting row."""
@@ -307,9 +340,8 @@ class SettingsScreen(Screen[None]):
         cancellable so rapid typing collapses to a single pass.
         """
         term = event.value.strip().lower()
-        existing = getattr(self, "_filter_timer", None)
-        if existing is not None:
-            existing.stop()
+        if self._filter_timer is not None:
+            self._filter_timer.stop()
         self._filter_timer = self.set_timer(
             self._FILTER_DEBOUNCE_SECONDS,
             lambda: self._apply_filter(term),
@@ -330,13 +362,14 @@ class SettingsScreen(Screen[None]):
     def _filter_index(self) -> list[tuple[Any, list[Any]]]:
         """Lazy cache of (group, rows) for the filter handler.
 
-        One DOM walk at first keystroke, O(1) lookups after.
+        Each TabPane is the group container; the rows are its
+        ``.setting-row`` descendants. One DOM walk at first keystroke,
+        O(1) lookups after.
         """
-        cached: list[tuple[Any, list[Any]]] | None = getattr(self, "_settings_filter_index", None)
-        if cached is not None:
-            return cached
+        if self._settings_filter_index is not None:
+            return self._settings_filter_index
         index: list[tuple[Any, list[Any]]] = [
-            (group, list(group.query(".setting-row"))) for group in self.query(".setting-group")
+            (pane, list(pane.query(".setting-row"))) for pane in self.query(TabPane)
         ]
         self._settings_filter_index = index
         return index

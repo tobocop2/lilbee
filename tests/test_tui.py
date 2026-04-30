@@ -476,7 +476,7 @@ class TestSettingsScreenAsync:
             await pilot.pause()
             app.push_screen(SettingsScreen())
             await pilot.pause()
-            groups = app.screen.query(".setting-group")
+            groups = app.screen.query("TabPane")
             assert len(groups) > 0
 
 

@@ -1949,19 +1949,31 @@ class TestViewTabs:
         assert "dock: bottom" not in TaskBar.DEFAULT_CSS
 
     async def test_clicking_tab_calls_switch_view(self) -> None:
-        """Clicking a ViewTab routes to app.switch_view with the tab's name."""
+        """Clicking a ViewTab routes to app.switch_view with the tab's name.
+
+        Drives a real LilbeeApp because ViewTab now type-checks against
+        ``LilbeeApp`` to avoid the ``getattr(self.app, "switch_view", None)``
+        smell flagged in AGENTS.md.
+        """
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.status_bar import ViewTab
 
-        app = _ViewTabsApp()
+        app = LilbeeApp()
+        switch_calls: list[str] = []
         async with app.run_test() as pilot:
             await pilot.pause()
-            switch_calls: list[str] = []
-            app.switch_view = lambda name: switch_calls.append(name)  # type: ignore[attr-defined]
-            tabs = list(app.query(ViewTab))
+            tabs = list(app.screen.query(ViewTab))
             assert len(tabs) >= 2
-            await pilot.click(f"#{tabs[1].id}")
-            await pilot.pause()
-            assert switch_calls == [tabs[1].view_name]
+            target = tabs[1]
+            def _record(_self, name: str) -> None:
+                switch_calls.append(name)
+
+            with patch.object(LilbeeApp, "switch_view", _record):
+                await pilot.click(f"#{target.id}")
+                await pilot.pause()
+            assert switch_calls == [target.view_name]
 
     async def test_nav_views_contains_all_screens(self) -> None:
         from lilbee.cli.tui.messages import get_nav_views

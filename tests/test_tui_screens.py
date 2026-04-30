@@ -499,7 +499,7 @@ async def test_settings_screen_mounts_grouped_sections():
     """Settings screen renders grouped sections with setting rows."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        groups = app.screen.query(".setting-group")
+        groups = app.screen.query("TabPane")
         assert len(groups) > 0
         rows = app.screen.query(".setting-row")
         assert len(rows) > 0
@@ -540,12 +540,17 @@ async def test_settings_search_clears_restores_all():
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
+        # Settings groups its rows into a TabbedContent. The full row
+        # set is mounted under inactive TabPanes (display=False but in
+        # the DOM); count after a pause so layout has settled.
+        await pilot.pause(0.15)
         search = app.screen.query_one("#settings-search", Input)
         total = len(app.screen.query(".setting-row"))
+        assert total > 0
         search.value = "xyznonexistent"
-        await pilot.pause()
+        await pilot.pause(0.15)
         search.value = ""
-        await pilot.pause()
+        await pilot.pause(0.15)
         visible = [r for r in app.screen.query(".setting-row") if r.display]
         assert len(visible) == total
 
@@ -670,19 +675,22 @@ async def test_settings_checkbox_persist():
 
 
 async def test_settings_tab_reaches_checkbox_and_space_toggles():
-    """Tab walks focus to the checkbox and Space toggles it."""
+    """Tab walks focus to the checkbox in the active group; Space toggles it.
+
+    Settings groups its editors into a TabbedContent, so reaching a
+    given editor requires (a) activating its tab via the TabbedContent
+    API and (b) tab-walking inside the active pane until focus lands
+    on the editor."""
+    from textual.widgets import Checkbox, TabbedContent
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Checkbox
-
+        tabs = app.screen.query_one(TabbedContent)
+        tabs.active = "settings-tab-display"  # group hosting show_reasoning
+        await pilot.pause()
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
-        # Enough presses to cross every focusable setting row in the
-        # current settings map (Models/Ingest/Generation groups +
-        # Retrieval). Bumped from 30 when vision_model was added as a
-        # new writable Models-group entry (each row adds a reset
-        # button + editor field to the tab order).
-        for _ in range(60):
+        for _ in range(20):
             await pilot.press("tab")
             await pilot.pause()
             if app.focused is cb:
@@ -707,7 +715,7 @@ async def test_settings_vim_keys():
         await pilot.press("g")
         await pilot.press("G")
         assert isinstance(app.screen, SettingsScreen)
-        assert app.screen.query(".setting-group")
+        assert app.screen.query("TabPane")
 
 
 async def test_settings_pop_screen():
@@ -5414,7 +5422,7 @@ async def test_settings_group_titles_present():
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(SettingsScreen())
         await pilot.pause()
-        titles = app.screen.query(".group-title")
+        titles = app.screen.query("Tab")
         assert len(titles) >= 2
 
 

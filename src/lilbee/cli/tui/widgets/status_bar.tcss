@@ -22,6 +22,11 @@ ViewTabs Static {
     text-style: bold;
 }
 
+/* Visible focus ring when keyboard reaches a view tab via Tab. */
+.view-tab:focus {
+    text-style: bold reverse;
+}
+
 .view-tab-sep {
     width: auto;
     color: $text-muted;

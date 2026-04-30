@@ -18,6 +18,20 @@ SettingsScreen {
         padding: 0 1;
     }
 
+    /* TabbedContent focus highlight: bold text + accent underline on
+     * the active group-tab when the Tabs widget has focus. Default
+     * Textual styling shows the active tab in $primary; we lift
+     * contrast further so keyboard users can see the focus ring.
+     */
+    #settings-tabs Tabs:focus .-active {
+        text-style: bold underline;
+        color: $accent;
+    }
+    #settings-tabs Tabs:focus Tab.-active {
+        text-style: bold underline;
+        color: $accent;
+    }
+
     .setting-group {
         border-left: thick $surface-lighten-2;
         border-top: solid $surface-lighten-2;

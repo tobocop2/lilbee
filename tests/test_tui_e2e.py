@@ -1684,7 +1684,7 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
-            groups = app.screen.query(".group-title")
+            groups = app.screen.query("Tab")
             assert len(groups) >= 1
 
     async def test_search_filters_settings(self, _mock_resolve):
