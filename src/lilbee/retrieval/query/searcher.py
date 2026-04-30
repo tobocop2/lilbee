@@ -404,23 +404,21 @@ class Searcher:
         results = self.select_context(results, question)
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-        messages: list[ChatMessage] = [{"role": "system", "content": self._config.system_prompt}]
+        messages: list[ChatMessage] = [
+            {"role": "system", "content": self._config.rag_system_prompt}
+        ]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         return results, messages
 
-    _NO_EMBED_WARNING = (
-        "Chat only: no document search configured. "
-        "Install an embedding model: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF\n\n"
-    )
-    _NO_RESULTS_MESSAGE = "No relevant documents found for this query."
-
     def _direct_messages(
         self, question: str, history: list[ChatMessage] | None = None
     ) -> list[ChatMessage]:
         """Build messages for direct LLM chat (no RAG context)."""
-        messages: list[ChatMessage] = [{"role": "system", "content": self._config.system_prompt}]
+        messages: list[ChatMessage] = [
+            {"role": "system", "content": self._config.general_system_prompt}
+        ]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": question})
@@ -429,6 +427,19 @@ class Searcher:
     def _messages_for_provider(self, messages: list[ChatMessage]) -> list[dict[str, str]]:
         """Convert ChatMessage list to provider-expected format."""
         return [{"role": m["role"], "content": m["content"]} for m in messages]
+
+    def _direct_chat(
+        self,
+        question: str,
+        history: list[ChatMessage] | None,
+        options: dict[str, Any] | None,
+    ) -> str:
+        """Run a no-RAG chat turn and return the cleaned response."""
+        messages = self._direct_messages(question, history)
+        provider_messages = self._messages_for_provider(messages)
+        opts = options if options is not None else self._config.generation_options()
+        raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
+        return raw if self._config.show_reasoning else strip_reasoning(raw)
 
     def ask_raw(
         self,
@@ -439,20 +450,13 @@ class Searcher:
         *,
         chunk_type: str | None = None,
     ) -> AskResult:
-        """Ask a question and get a structured result."""
+        """Ask a question. Falls back to a no-RAG chat turn when search is
+        unconfigured or the query yields zero relevant chunks."""
         if not self._embedder.embedding_available():
-            messages = self._direct_messages(question, history)
-            provider_messages = self._messages_for_provider(messages)
-            opts = options if options is not None else self._config.generation_options()
-            raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
-            clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-            return AskResult(answer=self._NO_EMBED_WARNING + clean, sources=[])
+            return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            return AskResult(
-                answer=self._NO_RESULTS_MESSAGE,
-                sources=[],
-            )
+            return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
@@ -482,16 +486,15 @@ class Searcher:
         citations = deduplicate_sources(source_list)
         return f"{answer}\n\nSources:\n" + "\n".join(citations)
 
-    def _stream_no_embed_path(
+    def _stream_direct(
         self,
         question: str,
         history: list[ChatMessage] | None,
         options: dict[str, Any] | None,
     ) -> Generator[StreamToken, None, None]:
-        """Streaming branch when no embedding model is configured (chat-only)."""
+        """Streaming branch with the general system prompt (no RAG context)."""
         from lilbee.retrieval.reasoning import StreamToken, filter_reasoning
 
-        yield StreamToken(content=self._NO_EMBED_WARNING, is_reasoning=False)
         messages = self._direct_messages(question, history)
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
@@ -519,15 +522,12 @@ class Searcher:
         from lilbee.retrieval.reasoning import StreamToken, filter_reasoning
 
         if not self._embedder.embedding_available():
-            yield from self._stream_no_embed_path(question, history, options)
+            yield from self._stream_direct(question, history, options)
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            yield StreamToken(
-                content=self._NO_RESULTS_MESSAGE,
-                is_reasoning=False,
-            )
+            yield from self._stream_direct(question, history, options)
             return
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)

@@ -172,12 +172,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Generation",
         help_text="Random seed for reproducible output",
     ),
-    "system_prompt": SettingDef(
+    "rag_system_prompt": SettingDef(
         str,
         nullable=False,
         render=RenderStyle.FULL,
         group="Generation",
-        help_text="System prompt sent before every conversation",
+        help_text="System prompt sent when answering with retrieved context",
+    ),
+    "general_system_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Generation",
+        help_text="System prompt sent when there are no documents to ground the answer",
     ),
     "top_k": SettingDef(
         int,

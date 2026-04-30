@@ -1760,12 +1760,12 @@ class TestSettingsInteractions:
             app.switch_view("Settings")
             await pilot.pause()
 
-            editor = app.screen.query_one("#ed-system_prompt", Input)
+            editor = app.screen.query_one("#ed-rag_system_prompt", Input)
             editor.value = "test system prompt"
             event = Input.Submitted(editor, "test system prompt")
             app.screen._on_input_save(event)
             await pilot.pause()
-            assert cfg.system_prompt == "test system prompt"
+            assert cfg.rag_system_prompt == "test system prompt"
 
     async def test_toggle_boolean_checkbox(self, _mock_resolve):
         """Toggling a boolean checkbox updates cfg.
@@ -1884,13 +1884,13 @@ class TestSettingsInteractions:
             app.switch_view("Settings")
             await pilot.pause()
 
-            editor = app.screen.query_one("#ed-system_prompt", Input)
+            editor = app.screen.query_one("#ed-rag_system_prompt", Input)
             editor.value = "signal test prompt"
             event = Input.Submitted(editor, "signal test prompt")
             app.screen._on_input_save(event)
             await pilot.pause()
             assert len(received) >= 1
-            assert received[0][0] == "system_prompt"
+            assert received[0][0] == "rag_system_prompt"
 
 
 class TestStatusInteractions:

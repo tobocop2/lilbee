@@ -16,7 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .defaults import (
     _DEFAULT_CORS_ORIGIN_REGEX,
-    _DEFAULT_SYSTEM_PROMPT,
+    _DEFAULT_GENERAL_SYSTEM_PROMPT,
+    _DEFAULT_RAG_SYSTEM_PROMPT,
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
     DEFAULT_IGNORE_DIRS,
@@ -72,7 +73,12 @@ class Config(BaseSettings):
     # Minimum RRF relevance score for hybrid search results (0.0 = no filtering).
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
-    system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
+    rag_system_prompt: str = ConfigField(
+        default=_DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
+    )
+    general_system_prompt: str = ConfigField(
+        default=_DEFAULT_GENERAL_SYSTEM_PROMPT, min_length=1, writable=True
+    )
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     # OCR for scanned PDFs via vision-capable chat model.
     # None = auto-detect (use OCR if chat model is vision-capable).

@@ -479,13 +479,13 @@ class TestConfigRoute:
     @mock.patch(
         "lilbee.server.handlers.get_config",
         new_callable=AsyncMock,
-        return_value={"chat_model": "qwen3:8b", "system_prompt": "You are helpful."},
+        return_value={"chat_model": "qwen3:8b", "rag_system_prompt": "You are helpful."},
     )
     def test_returns_json(self, mock_cfg, client):
         resp = client.get("/api/config")
         assert resp.status_code == 200
         assert resp.json()["chat_model"] == "qwen3:8b"
-        assert "system_prompt" in resp.json()
+        assert "rag_system_prompt" in resp.json()
 
 
 class TestConfigDefaultsRoute:

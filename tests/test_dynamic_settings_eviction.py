@@ -95,7 +95,7 @@ def test_sampling_param_change_does_not_evict():
         _on_settings_changed_evict_cache(("repeat_penalty", 1.2))
         _on_settings_changed_evict_cache(("seed", 42))
         _on_settings_changed_evict_cache(("max_tokens", 1024))
-        _on_settings_changed_evict_cache(("system_prompt", "You are helpful"))
+        _on_settings_changed_evict_cache(("rag_system_prompt", "You are helpful"))
         assert provider.calls == []
     finally:
         _restore_services()

@@ -160,10 +160,10 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.max_distance == 1.5
 
-    def test_system_prompt_override(self):
-        with mock.patch.dict(os.environ, {"LILBEE_SYSTEM_PROMPT": "You are a pirate."}):
+    def test_rag_system_prompt_override(self):
+        with mock.patch.dict(os.environ, {"LILBEE_RAG_SYSTEM_PROMPT": "You are a pirate."}):
             c = Config()
-            assert c.system_prompt == "You are a pirate."
+            assert c.rag_system_prompt == "You are a pirate."
 
 
 class TestTomlConfigFile:
@@ -231,24 +231,24 @@ class TestTomlConfigFile:
             c = Config()
             assert c.temperature == 0.9
 
-    def test_system_prompt_from_toml(self, tmp_path):
+    def test_rag_system_prompt_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('system_prompt = "You are a pirate."\n')
+        toml_path.write_text('rag_system_prompt = "You are a pirate."\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.system_prompt == "You are a pirate."
+            assert c.rag_system_prompt == "You are a pirate."
 
-    def test_env_var_overrides_toml_for_system_prompt(self, tmp_path):
+    def test_env_var_overrides_toml_for_rag_system_prompt(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('system_prompt = "Be verbose."\n')
+        toml_path.write_text('rag_system_prompt = "Be verbose."\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
-        env["LILBEE_SYSTEM_PROMPT"] = "Be brief."
+        env["LILBEE_RAG_SYSTEM_PROMPT"] = "Be brief."
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.system_prompt == "Be brief."
+            assert c.rag_system_prompt == "Be brief."
 
     def test_enable_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -918,7 +918,7 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="You are helpful.",
+                rag_system_prompt="You are helpful.",
                 ignore_dirs=frozenset(),
             )
 
@@ -938,11 +938,11 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="You are helpful.",
+                rag_system_prompt="You are helpful.",
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_system_prompt_rejected(self, tmp_path):
+    def test_empty_rag_system_prompt_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
                 data_root=tmp_path,
@@ -958,7 +958,7 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="",
+                rag_system_prompt="",
                 ignore_dirs=frozenset(),
             )
 
@@ -978,7 +978,7 @@ class TestEmptyStringValidation:
             max_embed_chars=2000,
             top_k=10,
             max_distance=0.7,
-            system_prompt="You are helpful.",
+            rag_system_prompt="You are helpful.",
             ignore_dirs=frozenset(),
             enable_ocr=None,
         )

@@ -191,13 +191,19 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
 )
 
 
-_DEFAULT_SYSTEM_PROMPT = (
+_DEFAULT_RAG_SYSTEM_PROMPT = (
     "You are a precise, direct assistant grounded in the provided context. "
     "Answer using only the context: if it doesn't contain enough information, "
     "say so rather than guessing. Be specific: quote relevant passages and "
     "reference context by number (e.g. [1], [2]) inline. Prefer exact values "
     "over approximations. For code, prefer working examples over abstract "
     "explanations. Keep responses concise unless asked to elaborate."
+)
+
+_DEFAULT_GENERAL_SYSTEM_PROMPT = (
+    "You are a helpful, direct assistant. Answer the user's question from "
+    "general knowledge. Keep responses concise unless asked to elaborate. "
+    "For code, prefer working examples over abstract explanations."
 )
 
 # CORS allow-origin regex: Obsidian (desktop + iOS) and localhost loopback.
