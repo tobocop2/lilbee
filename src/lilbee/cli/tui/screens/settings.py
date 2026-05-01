@@ -191,10 +191,38 @@ def _stringify_default(default: object) -> str:
     return str(default)
 
 
+_FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
+    "API-Keys": lambda: _litellm_installed(),
+    "Crawling": lambda: _crawler_installed(),
+    "Wiki": lambda: bool(cfg.wiki),
+}
+
+
+def _litellm_installed() -> bool:
+    from lilbee.providers.litellm_sdk import litellm_available
+
+    return litellm_available()
+
+
+def _crawler_installed() -> bool:
+    from lilbee.crawler import crawler_available
+
+    return crawler_available()
+
+
 def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
-    """Group settings by their group field, preserving insertion order."""
+    """Group settings by their group field, preserving insertion order.
+
+    Gated groups disappear when their feature isn't available so the
+    user never sees a tab they can't act on. The mapping is reread on
+    every screen mount, so toggling cfg.wiki and reopening Settings
+    reflects the change without restart.
+    """
     groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
     for key, defn in SETTINGS_MAP.items():
+        gate = _FEATURE_GATED_GROUPS.get(defn.group)
+        if gate is not None and not gate():
+            continue
         groups[defn.group].append((key, defn))
     return dict(groups)
 

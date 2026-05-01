@@ -261,6 +261,53 @@ class TestTaskCenterOnHide:
             screen.on_hide()
 
 
+class TestSettingsFeatureGating:
+    """`_group_settings()` hides API-Keys / Crawling / Wiki groups when
+    the corresponding feature is not available."""
+
+    def test_wiki_group_hidden_when_cfg_wiki_off(self) -> None:
+        from lilbee.cli.tui.screens.settings import _group_settings
+
+        cfg.wiki = False
+        groups = _group_settings()
+        assert "Wiki" not in groups
+
+    def test_wiki_group_visible_when_cfg_wiki_on(self) -> None:
+        from lilbee.cli.tui.screens.settings import _group_settings
+
+        cfg.wiki = True
+        groups = _group_settings()
+        assert "Wiki" in groups
+
+    def test_api_keys_group_hidden_without_litellm(self) -> None:
+        from lilbee.cli.tui.screens import settings as settings_mod
+
+        with mock.patch.object(settings_mod, "_litellm_installed", return_value=False):
+            groups = settings_mod._group_settings()
+        assert "API-Keys" not in groups
+
+    def test_api_keys_group_visible_with_litellm(self) -> None:
+        from lilbee.cli.tui.screens import settings as settings_mod
+
+        with mock.patch.object(settings_mod, "_litellm_installed", return_value=True):
+            groups = settings_mod._group_settings()
+        assert "API-Keys" in groups
+
+    def test_crawling_group_hidden_without_crawler(self) -> None:
+        from lilbee.cli.tui.screens import settings as settings_mod
+
+        with mock.patch.object(settings_mod, "_crawler_installed", return_value=False):
+            groups = settings_mod._group_settings()
+        assert "Crawling" not in groups
+
+    def test_crawling_group_visible_with_crawler(self) -> None:
+        from lilbee.cli.tui.screens import settings as settings_mod
+
+        with mock.patch.object(settings_mod, "_crawler_installed", return_value=True):
+            groups = settings_mod._group_settings()
+        assert "Crawling" in groups
+
+
 class TestSettingsTabActivatedEdges:
     """`_on_tab_activated` early-returns when pane / pane.id is None."""
 

@@ -108,6 +108,25 @@ def _patch_chat_setup():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _settings_gates_open():
+    """Open all SettingsScreen feature gates so legacy tests can query
+    every group's editors regardless of which optional extras are
+    installed in the test environment."""
+    with (
+        patch(
+            "lilbee.cli.tui.screens.settings._litellm_installed",
+            return_value=True,
+        ),
+        patch(
+            "lilbee.cli.tui.screens.settings._crawler_installed",
+            return_value=True,
+        ),
+    ):
+        cfg.wiki = True
+        yield
+
+
 def _make_catalog_model(
     name: str | None = None,
     hf_repo: str | None = None,
