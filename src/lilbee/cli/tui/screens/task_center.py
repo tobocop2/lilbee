@@ -18,7 +18,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
-from textual.app import ComposeResult
+from textual.app import ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.message import Message
@@ -196,9 +196,14 @@ class TaskCenter(Screen[None]):
         """Bump the spinner frame and re-render counts + active row pulse."""
         # The on_hide path stops this timer, but Textual sometimes drains
         # one final tick after the screen leaves the top of the stack and
-        # before stop() takes effect. Skip when we're not the active
-        # screen so the late tick can't hit a torn-down DOM.
-        if self.app.screen is not self:
+        # before stop() takes effect (or while the stack is being torn
+        # down on app shutdown, which makes ``self.app.screen`` itself
+        # raise). Skip in either case so the tick can't hit a torn-down
+        # DOM.
+        try:
+            if self.app.screen is not self:
+                return
+        except ScreenStackError:
             return
         self._tick += 1
         tasks = self._all_tasks()

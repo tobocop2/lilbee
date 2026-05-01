@@ -8269,6 +8269,23 @@ async def test_task_center_advance_tick_skips_when_not_active_screen():
             assert mocked.return_value is not screen
 
 
+async def test_task_center_advance_tick_skips_when_stack_empty():
+    """A tick during app teardown raises ScreenStackError on app.screen.
+    The handler must swallow it and exit cleanly."""
+    from textual.app import ScreenStackError
+
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = TaskCenterTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        with patch.object(type(app), "screen", new_callable=PropertyMock) as mocked:
+            mocked.side_effect = ScreenStackError("teardown")
+            screen._advance_tick()
+
+
 async def test_task_center_go_back_non_lilbee_app():
     """action_go_back pops screen on non-LilbeeApp."""
     from lilbee.cli.tui.screens.task_center import TaskCenter
