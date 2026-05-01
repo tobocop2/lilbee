@@ -374,32 +374,30 @@ class TestModelBar:
         ):
             yield
 
-    async def test_renders_select_widgets(self) -> None:
+    async def test_renders_picker_buttons_and_scope_select(self) -> None:
         from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            selects = list(app.query(Select))
-            # Chat + Embed + Scope
-            assert len(selects) == 3
+            buttons = list(app.query(ModelPickerButton))
+            assert len(buttons) == 2
+            assert len(list(app.query(Select))) == 1  # scope only
 
-    async def test_widget_exists_with_3_selects(self) -> None:
-        from textual.widgets import Select
+    async def test_button_ids_are_present(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            chat_sel = app.query_one("#chat-model-select", Select)
-            embed_sel = app.query_one("#embed-model-select", Select)
-            scope_sel = app.query_one("#scope-select", Select)
-            assert chat_sel is not None
-            assert embed_sel is not None
-            assert scope_sel is not None
+            assert app.query_one("#chat-model-button", ModelPickerButton) is not None
+            assert app.query_one("#embed-model-button", ModelPickerButton) is not None
 
     async def test_labels_rendered(self) -> None:
         """Chat/Embed/Scope labels render as pills, not plain text.
@@ -448,9 +446,9 @@ class TestModelBar:
             await pilot.pause()
             assert app.query_one(ModelBar).scope is SearchScope.WIKI
 
-    async def test_on_unmount_collapses_open_dropdown(self) -> None:
-        """An open SelectOverlay must be torn down on unmount so its border
-        cells don't bleed into the next screen during navigation."""
+    async def test_on_unmount_collapses_open_scope_dropdown(self) -> None:
+        """An open scope SelectOverlay must be torn down on unmount so its
+        border cells don't bleed into the next screen during navigation."""
         from textual.widgets import Select
 
         from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -460,17 +458,14 @@ class TestModelBar:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            chat_sel = app.query_one("#chat-model-select", Select)
-            chat_sel.expanded = True
+            scope_sel = app.query_one("#scope-select", Select)
+            scope_sel.expanded = True
             await pilot.pause()
-            assert chat_sel.expanded is True
+            assert scope_sel.expanded is True
 
-            # Drive on_unmount directly; in the live lifecycle children unmount
-            # before the parent, so the for-loop here only fires when called
-            # while the Select is still attached.
             bar = app.query_one(ModelBar)
             bar.on_unmount()
-            assert chat_sel.expanded is False
+            assert scope_sel.expanded is False
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -558,16 +553,16 @@ class TestModelBar:
         from textual.css.query import NoMatches
         from textual.widgets import Select
 
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         cfg.wiki = False
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            # Still shows chat + embed selects
-            assert app.query_one("#chat-model-select", Select) is not None
-            assert app.query_one("#embed-model-select", Select) is not None
-            # But no scope select
+            assert app.query_one("#chat-model-button", ModelPickerButton) is not None
+            assert app.query_one("#embed-model-button", ModelPickerButton) is not None
             with pytest.raises(NoMatches):
                 app.query_one("#scope-select", Select)
 
@@ -609,6 +604,97 @@ class TestCloudProviderLabel:
         assert _cloud_provider_label("") is None
 
 
+@pytest.mark.usefixtures("wiki_enabled")
+class TestModelPickerButton:
+    """ModelPickerButton labels mirror cfg and route picks via apply_active_model."""
+
+    @pytest.fixture(autouse=True)
+    def mock_classify(self):
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=([], []),
+        ):
+            yield
+
+    async def test_button_label_reflects_cfg_chat_model(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            rendered = str(btn.render())
+            assert TEST_LOCAL_REF in rendered or "Test" in rendered
+
+    async def test_populate_repaints_buttons_when_options_arrive(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("Test Chat", TEST_LOCAL_REF)],
+                [ModelOption("Test Embed", TEST_EMBED_REF)],
+            )
+            await pilot.pause()
+            chat_btn = app.query_one("#chat-model-button", ModelPickerButton)
+            assert chat_btn._options[0].ref == TEST_LOCAL_REF
+
+    async def test_picker_dismiss_with_new_ref_writes_cfg(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            new_ref = "ollama/new-chat:latest"
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                btn._on_picker_dismissed(new_ref)
+                await pilot.pause()
+            assert cfg.chat_model == new_ref
+
+    async def test_picker_dismiss_same_ref_is_noop(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            write_tracker = mock.Mock()
+            with mock.patch("lilbee.core.settings.set_value", write_tracker):
+                btn._on_picker_dismissed(TEST_LOCAL_REF)
+                await pilot.pause()
+            write_tracker.assert_not_called()
+
+    async def test_picker_dismiss_none_is_noop(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            write_tracker = mock.Mock()
+            with mock.patch("lilbee.core.settings.set_value", write_tracker):
+                btn._on_picker_dismissed(None)
+                await pilot.pause()
+            write_tracker.assert_not_called()
+            assert cfg.chat_model == TEST_LOCAL_REF
+
+
 def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:
     return LocalCatalogRow(
         name=name,
@@ -643,6 +729,100 @@ class _ModelListApp(App):
         from lilbee.cli.tui.widgets.model_list import ModelList
 
         yield ModelList(id="model-list")
+
+
+class TestModelPickerModal:
+    """ModelPickerModal filters options by typed search and dismisses with selected ref."""
+
+    async def test_modal_dismisses_with_selected_ref(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Button
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        opts = [
+            ModelOption("Qwen3 0.6B", "qwen3-0.6b"),
+            ModelOption("Llama 8B", "llama-8b"),
+        ]
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        app = _App()
+        results: list[str | None] = []
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            def _capture(value: str | None) -> None:
+                results.append(value)
+
+            app.push_screen(ModelPickerModal(scope="chat", options=opts), _capture)
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ModelPickerModal)
+            ml = modal.query_one("#picker-list", ModelList)
+            ml.highlighted = 0
+            ml.action_select()
+            await pilot.pause()
+            assert "qwen3-0.6b" in results
+
+    async def test_modal_filters_options_by_search(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Button, Input
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        opts = [
+            ModelOption("Qwen3 0.6B", "qwen3-0.6b"),
+            ModelOption("Llama 8B", "llama-8b"),
+        ]
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        app = _App()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.push_screen(ModelPickerModal(scope="chat", options=opts))
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ModelPickerModal)
+            inp = modal.query_one("#picker-search", Input)
+            inp.value = "llama"
+            await pilot.pause()
+            ml = modal.query_one("#picker-list", ModelList)
+            assert ml.option_count == 1
+
+    async def test_modal_escape_dismisses_with_none(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Button
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        results: list[str | None] = []
+
+        def _capture(value: str | None) -> None:
+            results.append(value)
+
+        app = _App()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.push_screen(
+                ModelPickerModal(scope="embed", options=[ModelOption("X", "x")]),
+                _capture,
+            )
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert results == [None]
 
 
 class TestModelList:
@@ -2719,311 +2899,6 @@ class TestModelCardSelected:
         assert _build_status(self._make_row()) is None
 
 
-# ---------------------------------------------------------------------------
-# ModelBar additional coverage tests
-# ---------------------------------------------------------------------------
-
-
-class TestModelBarAdditional:
-    @pytest.fixture(autouse=True)
-    def mock_classify(self):
-        empty = ([], [])
-        with mock.patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=empty,
-        ):
-            yield
-
-    async def test_populate_chat_model_in_scanned(self) -> None:
-        """When current chat model IS in scanned list, value is preserved."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populate(
-                [
-                    ModelOption("Test Model", TEST_LOCAL_REF),
-                    ModelOption("Llama 7B", "ollama/llama3:8b"),
-                ],
-                [ModelOption("Test Embed", TEST_EMBED_REF)],
-            )
-            await pilot.pause()
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value == TEST_LOCAL_REF
-
-    async def test_populate_no_models_found(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            # Populate with empty lists: falls back to configured default
-            bar._populate([], [])
-            await pilot.pause()
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            # The configured default survives even when nothing matched.
-            assert chat_sel.value == TEST_LOCAL_REF
-
-    async def test_on_embed_model_changed(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populating = False
-            from textual.widgets import Select
-
-            embed_sel = app.query_one("#embed-model-select", Select)
-            new_embed = "ollama/new-embed:latest"
-            embed_sel.set_options([ModelOption("new-embed", new_embed)])
-            with (
-                mock.patch("lilbee.core.settings.set_value"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
-            ):
-                embed_sel.value = new_embed
-                await pilot.pause()
-            assert cfg.embedding_model == new_embed
-
-    async def test_populate_survives_auto_pick_race(self) -> None:
-        """bb-zvrv primary regression: ``_populate`` must not let the
-        Textual auto-pick intermediate Changed event clobber cfg.
-
-        When ``set_options`` receives a multi-option list whose first
-        entry does NOT match ``cfg.chat_model``, Textual posts a Changed
-        event carrying the auto-picked value and then, after the caller
-        reassigns ``sel.value = cfg.chat_model``, posts a second Changed
-        with the configured value. The handler must reject the stale
-        intermediate event. The synchronous defense is
-        ``str(event.value) != str(sel.value)`` in ``_extract_value``.
-        """
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            write_tracker = mock.Mock()
-            with (
-                mock.patch("lilbee.core.settings.set_value", write_tracker),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
-            ):
-                auto_chat = "ollama/auto-picked-alpha:latest"
-                auto_embed = "ollama/auto-embed-alpha:latest"
-                bar._populate(
-                    [
-                        ModelOption("auto-picked-alpha", auto_chat),
-                        ModelOption("Test Model", TEST_LOCAL_REF),
-                    ],
-                    [
-                        ModelOption("auto-embed-alpha", auto_embed),
-                        ModelOption("Test Embed", TEST_EMBED_REF),
-                    ],
-                )
-                await pilot.pause()
-            assert cfg.chat_model == TEST_LOCAL_REF
-            assert cfg.embedding_model == TEST_EMBED_REF
-            assert bar._populating is False
-            for call in write_tracker.call_args_list:
-                assert call.args[2] not in {auto_chat, auto_embed}
-
-    async def test_chat_model_change_noop_when_value_matches_config(self) -> None:
-        """Secondary defense against duplicate same-value events.
-
-        The primary bb-zvrv fix is the async-drain guard exercised by
-        ``test_populate_survives_auto_pick_race``. This test covers the
-        equality short-circuit that handles duplicate-value events
-        (e.g. a user re-selecting the active model) without a round-trip
-        through settings.
-        """
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populating = False
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            chat_sel.set_options([ModelOption("Test", TEST_LOCAL_REF)])
-            write_tracker = mock.Mock()
-            with (
-                mock.patch("lilbee.core.settings.set_value", write_tracker),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
-            ):
-                chat_sel.value = TEST_LOCAL_REF
-                await pilot.pause()
-            assert cfg.chat_model == TEST_LOCAL_REF
-            write_tracker.assert_not_called()
-
-    async def test_embed_model_change_noop_when_value_matches_config(self) -> None:
-        """Same bb-zvrv guard for the embedding-model Select."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populating = False
-            from textual.widgets import Select
-
-            embed_sel = app.query_one("#embed-model-select", Select)
-            embed_sel.set_options([ModelOption("Test Embed", TEST_EMBED_REF)])
-            write_tracker = mock.Mock()
-            with (
-                mock.patch("lilbee.core.settings.set_value", write_tracker),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
-            ):
-                embed_sel.value = TEST_EMBED_REF
-                await pilot.pause()
-            assert cfg.embedding_model == TEST_EMBED_REF
-            write_tracker.assert_not_called()
-
-    async def test_populate_embed_model_in_scanned(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populate(
-                [ModelOption("Test Model", TEST_LOCAL_REF)],
-                [ModelOption("Test Embed", TEST_EMBED_REF)],
-            )
-            await pilot.pause()
-            from textual.widgets import Select
-
-            embed_sel = app.query_one("#embed-model-select", Select)
-            assert embed_sel.value == TEST_EMBED_REF
-
-
-class TestSyncSelectPrepend:
-    """_sync_select always sets the widget value from cfg."""
-
-    def test_default_overrides_stale_current_value(self) -> None:
-        """Stale sel.value is discarded in favor of the configured default."""
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
-
-        ref_a = "ollama/mistral:latest"
-        ref_b = "ollama/smollm2:latest"
-        sel = mock.MagicMock()
-        sel.value = ref_a
-        opts = [ModelOption("mistral", ref_a), ModelOption("smollm2", ref_b)]
-        _sync_select(sel, opts, default=ref_b)
-        assert sel.value == ref_b
-        assert sel.set_options.call_count == 1
-
-    def test_default_used_when_select_is_disabled(self) -> None:
-        """When Select has no value, use the configured default."""
-        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
-
-        ref = "ollama/qwen3:8b"
-        sel = mock.MagicMock()
-        sel.value = _DISABLED
-        opts = [ModelOption("Qwen3 8B", ref)]
-        _sync_select(sel, opts, default=ref)
-        assert sel.value == ref
-
-    def test_default_prepended_when_not_in_opts(self) -> None:
-        """A configured-but-uninstalled default is prepended with a clear label."""
-        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
-
-        sel = mock.MagicMock()
-        sel.value = _DISABLED
-        opts = [ModelOption("Qwen3 8B", "ollama/qwen3:8b")]
-        missing = "ollama/llama3:8b"
-        _sync_select(sel, opts, default=missing)
-        assert sel.set_options.call_count == 1
-        passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0].ref == missing
-        assert "not installed" in passed[0].label
-        assert sel.value == missing
-
-    def test_unparseable_default_passes_through_unchanged(self) -> None:
-        """An unparseable default is used as-is so the picker stays usable;
-        the cfg validator is the proper place for the error to surface."""
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
-
-        sel = mock.MagicMock()
-        opts = [ModelOption("Qwen3 0.6B", "ollama/qwen3:0.6b")]
-        _sync_select(sel, opts, default="qwen3")
-        # Raw string passes through. Not normalised, not rejected.
-        assert sel.value == "qwen3"
-        passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0].ref == "qwen3"
-        assert "not installed" in passed[0].label
-
-    def test_no_default_leaves_value_untouched(self) -> None:
-        """When there's no default, don't assign a value."""
-        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
-
-        sel = mock.MagicMock()
-        sel.value = _DISABLED
-        opts = [ModelOption("Qwen3 8B", "ollama/qwen3:8b")]
-        _sync_select(sel, opts)
-        assert sel.set_options.call_count == 1
-        assert sel.value == _DISABLED
-
-    async def test_not_installed_label_renders_in_collapsed_select(self) -> None:
-        """Live Select shows the (not installed) suffix after _sync_select runs.
-
-        Regression test for bb-6jpp: Textual's ``set_options`` doesn't
-        refresh the closed-state label when the existing value still
-        matches: ``_sync_select`` now forces that refresh via
-        ``_refresh_select_label``.
-        """
-        from textual.app import App
-        from textual.widgets import Select
-        from textual.widgets._select import SelectCurrent
-
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
-
-        class _Harness(App[None]):
-            def compose(self):
-                yield Select(
-                    options=[("fake-ref", "fake-ref")],
-                    prompt="pick",
-                    allow_blank=False,
-                )
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            sel = app.query_one(Select)
-            sel.value = "fake-ref"
-            await pilot.pause()
-            # Simulate what _populate does once scan finishes: opts list
-            # doesn't contain the current value; _sync_select should
-            # prepend "(not installed)" AND refresh the collapsed label.
-            _sync_select(sel, [ModelOption("(none)", "")], default="fake-ref")
-            await pilot.pause()
-            current = sel.query_one(SelectCurrent)
-            rendered = str(current.label)
-            assert "not installed" in rendered, rendered
-
-
 class TestCollectNativeModelsError:
     def test_exception_suppressed(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_native_models
@@ -3750,357 +3625,6 @@ class TestModelCardBuildStatusDownloads:
         result = _build_status(row)  # type: ignore[arg-type]
         assert result is not None
         assert "1K" in str(result)
-
-
-# ---------------------------------------------------------------------------
-# ModelBar: _populate branch coverage and refresh_models
-# ---------------------------------------------------------------------------
-
-
-class TestModelBarPopulateBranches:
-    @pytest.fixture(autouse=True)
-    def mock_classify(self):
-        empty = ([], [])
-        with mock.patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=empty,
-        ):
-            yield
-
-    async def test_populate_with_matching_models(self) -> None:
-        """When scanned models match config, values are preserved."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            other_chat = "ollama/other:latest"
-            other_embed = "ollama/other-embed:latest"
-            bar._populate(
-                [
-                    ModelOption("Test Model", TEST_LOCAL_REF),
-                    ModelOption("other", other_chat),
-                ],
-                [
-                    ModelOption("Test Embed", TEST_EMBED_REF),
-                    ModelOption("other-embed", other_embed),
-                ],
-            )
-            await pilot.pause()
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            embed_sel = app.query_one("#embed-model-select", Select)
-            assert chat_sel.value == TEST_LOCAL_REF
-            assert embed_sel.value == TEST_EMBED_REF
-
-    async def test_populate_empty_lists_uses_config_default(self) -> None:
-        """When no models found, configured default from cfg is used."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populate([], [])
-            await pilot.pause()
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value == TEST_LOCAL_REF
-
-    async def test_populate_retains_matching_value(self) -> None:
-        """When current value matches a scanned model, it's preserved."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            embed_sel = app.query_one("#embed-model-select", Select)
-
-            bar._populate(
-                [
-                    ModelOption("Test Model", TEST_LOCAL_REF),
-                    ModelOption("Llama 7B", "ollama/llama3:8b"),
-                ],
-                [ModelOption("Test Embed", TEST_EMBED_REF)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == TEST_LOCAL_REF
-            assert embed_sel.value == TEST_EMBED_REF
-
-    async def test_populate_blank_value_uses_config_default(self) -> None:
-        """When Select has no value, falls back to configured default from cfg.
-        We force the Select to return empty by intercepting set_options to
-        simulate a widget that lost its value during refresh.
-        """
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            from textual.widgets import Select
-
-            chat_sel = app.query_one("#chat-model-select", Select)
-            embed_sel = app.query_one("#embed-model-select", Select)
-
-            # Patch the first set_options to force _reactive_value = Select.NULL
-            # (bypassing validation), so the current-value branch is skipped
-            # and _sync_select falls back to the configured default.
-            for sel in (chat_sel, embed_sel):
-                orig_fn = sel.set_options
-                call_count = [0]
-
-                def make_patched(s, orig, cc):
-                    def patched(opts):
-                        orig(opts)
-                        cc[0] += 1
-                        if cc[0] == 1:
-                            s._reactive_value = Select.NULL  # type: ignore[attr-defined]
-
-                    return patched
-
-                sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]
-
-            bar._populate(
-                [ModelOption("Test Model", TEST_LOCAL_REF)],
-                [ModelOption("Test Embed", TEST_EMBED_REF)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == TEST_LOCAL_REF
-            assert embed_sel.value == TEST_EMBED_REF
-
-    async def test_refresh_models(self) -> None:
-        """Cover line 267: refresh_models calls _scan_models."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar.refresh_models()
-            await pilot.pause()
-            assert bar.display is True
-
-    async def test_after_model_change_with_chat_screen(self) -> None:
-        """Delegate to ChatScreen._apply_model_change when on a chat screen."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            mock_screen = mock.MagicMock(spec=ChatScreen)
-            with mock.patch.object(
-                type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
-            ):
-                bar._after_model_change()
-                mock_screen._apply_model_change.assert_called_once()
-
-    async def test_after_model_change_no_chat_screen(self) -> None:
-        """Reset services directly when not on a chat screen."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            with mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset:
-                bar._after_model_change()
-            mock_reset.assert_called_once()
-
-
-class TestModelBarCfgSourceOfTruth:
-    """Model dropdowns must match cfg after every refresh."""
-
-    @pytest.fixture(autouse=True)
-    def mock_classify(self):
-        with mock.patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], []),
-        ):
-            yield
-
-    async def test_refresh_follows_cfg_chat_model_change(self) -> None:
-        """After cfg.chat_model changes, refresh snaps dropdown to the new value."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        chat_a = "ollama/qwen3:8b"
-        chat_b = "ollama/smollm2:latest"
-        embed_a = "ollama/nomic:latest"
-
-        cfg.chat_model = chat_a
-        cfg.embedding_model = embed_a
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            chat_sel = app.query_one("#chat-model-select", Select)
-
-            bar._populate(
-                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
-                [ModelOption(embed_a, embed_a)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == chat_a
-
-            cfg.chat_model = chat_b
-            bar._populate(
-                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
-                [ModelOption(embed_a, embed_a)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == chat_b
-
-    async def test_refresh_follows_cfg_embedding_model_change(self) -> None:
-        """Embedding dropdown also snaps to cfg on refresh."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        chat_a = "ollama/qwen3:8b"
-        embed_a = "ollama/nomic:latest"
-        embed_b = "ollama/bge-small:latest"
-
-        cfg.chat_model = chat_a
-        cfg.embedding_model = embed_a
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            embed_sel = app.query_one("#embed-model-select", Select)
-
-            bar._populate(
-                [ModelOption(chat_a, chat_a)],
-                [ModelOption(embed_a, embed_a), ModelOption(embed_b, embed_b)],
-            )
-            await pilot.pause()
-            assert embed_sel.value == embed_a
-
-            cfg.embedding_model = embed_b
-            bar._populate(
-                [ModelOption(chat_a, chat_a)],
-                [ModelOption(embed_a, embed_a), ModelOption(embed_b, embed_b)],
-            )
-            await pilot.pause()
-            assert embed_sel.value == embed_b
-
-    async def test_manual_user_pick_writes_cfg_and_survives_refresh(self) -> None:
-        """A real user pick flows through Select.Changed -> cfg, so refresh keeps it."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        chat_a = "ollama/qwen3:8b"
-        chat_b = "ollama/smollm2:latest"
-        embed_a = "ollama/nomic:latest"
-
-        cfg.chat_model = chat_a
-        cfg.embedding_model = embed_a
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            chat_sel = app.query_one("#chat-model-select", Select)
-
-            bar._populate(
-                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
-                [ModelOption(embed_a, embed_a)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == chat_a
-
-            with (
-                mock.patch("lilbee.core.settings.set_value"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
-            ):
-                chat_sel.value = chat_b
-                await pilot.pause()
-
-            assert cfg.chat_model == chat_b
-
-            bar._populate(
-                [ModelOption(chat_a, chat_a), ModelOption(chat_b, chat_b)],
-                [ModelOption(embed_a, embed_a)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == chat_b
-
-    async def test_chat_changed_ignores_null_event(self) -> None:
-        """A Select.Changed event with NULL value is ignored (no cfg write)."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populating = False
-            chat_sel = app.query_one("#chat-model-select", Select)
-
-            null_event = mock.MagicMock(spec=Select.Changed)
-            null_event.value = _DISABLED
-            null_event.select = chat_sel
-            bar._on_chat_model_changed(null_event)
-
-            # cfg must not have been mutated (still the original value).
-            assert cfg.chat_model == TEST_LOCAL_REF
-
-    async def test_first_populate_respects_cfg_over_scanner_order(self) -> None:
-        """First populate must honor cfg even when scanner lists other models first."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        chat_a = "ollama/mistral:latest"
-        chat_target = "ollama/smollm2:latest"
-        chat_c = "ollama/llama3:8b"
-        embed_a = "ollama/nomic:latest"
-
-        cfg.chat_model = chat_target
-        cfg.embedding_model = embed_a
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            chat_sel = app.query_one("#chat-model-select", Select)
-
-            bar._populate(
-                [
-                    ModelOption(chat_a, chat_a),
-                    ModelOption(chat_target, chat_target),
-                    ModelOption(chat_c, chat_c),
-                ],
-                [ModelOption(embed_a, embed_a)],
-            )
-            await pilot.pause()
-            assert chat_sel.value == chat_target
 
 
 class TestConfirmDialog:

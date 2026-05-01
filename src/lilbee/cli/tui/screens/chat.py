@@ -35,7 +35,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
+from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
@@ -317,8 +317,8 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select handle Enter / i / a / o itself.
-            if isinstance(self.focused, Select):
+            # Let a focused Select / picker button handle Enter / i / a / o itself.
+            if isinstance(self.focused, (Select, ModelPickerButton)):
                 return
             self._enter_insert_mode()
             event.prevent_default()
@@ -1069,13 +1069,11 @@ class ChatScreen(Screen[None]):
             inp.action_end()
 
     def action_focus_model_bar(self) -> None:
-        """Focus the first Select in the model bar (normal mode only)."""
+        """Focus the chat-model picker button in the model bar (normal mode only)."""
         if self._insert_mode:
             raise SkipAction()
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            self.query_one("#chat-model-select", Select).focus()
+        with contextlib.suppress(NoMatches):
+            self.query_one("#chat-model-button", ModelPickerButton).focus()
 
     def action_toggle_chat_mode(self) -> None:
         """F3: flip between Search and Chat mode."""

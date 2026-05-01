@@ -15,7 +15,8 @@ ModelBar .model-bar-pill {
 }
 
 ModelBar Select {
-    width: 1fr;
+    width: auto;
+    min-width: 8;
     height: 1;
     max-height: 1;
     margin: 0 1 0 0;
@@ -43,6 +44,25 @@ ModelBar Select:focus > SelectCurrent {
 ModelBar Select > SelectOverlay {
     max-height: 12;
     constrain: inflect inflect;
+}
+
+ModelBar ModelPickerButton {
+    width: 1fr;
+    height: 1;
+    margin: 0 1 0 0;
+    padding: 0 1;
+    background: transparent;
+    text-overflow: ellipsis;
+}
+
+ModelBar ModelPickerButton:focus {
+    background: $primary 30%;
+    color: $text;
+    text-style: bold;
+}
+
+ModelBar ModelPickerButton:hover {
+    background: $surface;
 }
 
 ModelBar .cloud-warning {

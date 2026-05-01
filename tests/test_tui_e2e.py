@@ -190,7 +190,7 @@ class TestModelSwitchSafety:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
     async def test_switch_cancels_stream(self, _fam, _cat, _mock_resolve):
         """Changing model while streaming must cancel the stream first."""
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -198,30 +198,13 @@ class TestModelSwitchSafety:
             screen = app.screen
             screen.streaming = True
 
-            bar = screen.query_one("#model-bar", ModelBar)
-            bar._populating = False
-
-            # Simulate model change: set sel.value synchronously so that
-            # _extract_value's stale-event check (event.value must match
-            # sel.value) is satisfied. In production, Textual posts the
-            # Changed event from the value reactive, so the two always
-            # match when the handler runs.
-            from textual.widgets import Select
-
-            from lilbee.cli.tui.widgets.model_bar import ModelOption
-
+            chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
             ref = "ollama/new-model:latest"
-            chat_sel = bar.query_one("#chat-model-select", Select)
-            chat_sel.set_options([ModelOption(ref, ref)])
-            chat_sel.value = ref
-
-            event = mock.MagicMock()
-            event.value = ref
-            event.select = mock.MagicMock()
-            event.select.id = "chat-model-select"
-
-            with mock.patch.object(screen, "_apply_model_change") as mock_apply:
-                bar._on_chat_model_changed(event)
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch.object(screen, "_apply_model_change") as mock_apply,
+            ):
+                chat_btn._on_picker_dismissed(ref)
 
             mock_apply.assert_called_once()
 

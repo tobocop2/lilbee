@@ -240,3 +240,7 @@ CHAT_MODE_BANNER_SEARCH_NO_RESULTS = (
     "Search returned 0 results, falling back to chat for this turn."
 )
 CHAT_MODE_SET = "Mode: {label}"
+MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
+MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"
+MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
+MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"

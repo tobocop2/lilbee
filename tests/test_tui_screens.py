@@ -5133,7 +5133,7 @@ async def test_chat_action_complete_next():
 
 async def test_chat_action_complete_next_noop_when_input_unfocused():
     """Ctrl+N must not move focus when the input is not focused."""
-    from textual.widgets import Select
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5141,12 +5141,12 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        chat_sel.focus()
+        chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
+        chat_btn.focus()
         await pilot.pause()
         screen.action_complete_next()
         await pilot.pause()
-        assert chat_sel.has_focus
+        assert chat_btn.has_focus
 
 
 async def test_chat_action_complete_prev_opens_overlay():
@@ -5398,9 +5398,9 @@ async def test_chat_tab_in_input_inserts_literal_tab():
         assert inp.has_focus
 
 
-async def test_chat_tab_cycles_between_model_selects():
-    """Tab on a focused Select advances to the next Select."""
-    from textual.widgets import Select
+async def test_chat_tab_cycles_between_model_buttons():
+    """Tab on a focused chat-model button advances to the embed-model button."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5408,11 +5408,11 @@ async def test_chat_tab_cycles_between_model_selects():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#chat-model-select", Select).focus()
+        screen.query_one("#chat-model-button", ModelPickerButton).focus()
         await pilot.press("tab")
         await pilot.pause()
-        embed_sel = screen.query_one("#embed-model-select", Select)
-        assert embed_sel.has_focus
+        embed_btn = screen.query_one("#embed-model-button", ModelPickerButton)
+        assert embed_btn.has_focus
 
 
 async def test_chat_tab_in_normal_mode_advances_focus():
@@ -5435,9 +5435,9 @@ async def test_chat_tab_in_normal_mode_advances_focus():
         assert app.focused is not before, "Tab did not move focus in normal mode"
 
 
-async def test_chat_enter_on_focused_select_does_not_enter_insert_mode():
-    """Enter on a focused dropdown bubbles to the Select instead of insert mode."""
-    from textual.widgets import Select
+async def test_chat_enter_on_focused_picker_button_does_not_enter_insert_mode():
+    """Enter on the focused chat-model button stays in normal mode."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5450,7 +5450,7 @@ async def test_chat_enter_on_focused_select_does_not_enter_insert_mode():
         assert isinstance(screen, ChatScreen)
         await pilot.press("escape")
         await pilot.pause()
-        screen.query_one("#chat-model-select", Select).focus()
+        screen.query_one("#chat-model-button", ModelPickerButton).focus()
         await pilot.pause()
         assert screen._insert_mode is False
         await pilot.press("enter")
