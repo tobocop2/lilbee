@@ -2498,7 +2498,13 @@ class TestCatalogLazyLoad:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                await pilot.pause()
+                # The streaming-section mount chain in _refresh_grid yields
+                # several refresh ticks before _mount_grid_ctas mounts the
+                # browse-more card; pause until it lands or timeout.
+                for _ in range(20):
+                    await pilot.pause()
+                    if app.screen.query(".browse-more-hf"):
+                        break
                 cards = app.screen.query(".browse-more-hf")
                 assert len(cards) >= 1
 

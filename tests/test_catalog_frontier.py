@@ -265,6 +265,9 @@ class TestFrontierTabBehavior:
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("x")]
             screen._sync_frontier_tab()
+            # Two pauses: TabbedContent.add_pane returns AwaitComplete and
+            # the mount lands on the next refresh tick, not the same one.
+            await pilot.pause()
             await pilot.pause()
             from unittest import mock
 

@@ -9532,7 +9532,11 @@ async def test_catalog_cycle_sort_noop_when_input_focused():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await pilot.pause()
+            # Drain the streaming-section call_after_refresh chain so the
+            # later mounts can't pull focus away from #catalog-search after
+            # we focus it below.
+            for _ in range(8):
+                await pilot.pause()
             screen._grid_view = False
             screen.query_one("#catalog-search", Input).focus()
             await pilot.pause()
