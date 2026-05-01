@@ -178,8 +178,6 @@ class CatalogScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
         self._fetch_installed_names()
         self.add_class("-grid-view")
         self._refresh_grid()
@@ -195,8 +193,6 @@ class CatalogScreen(Screen[None]):
             )
 
     def on_unmount(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
         if isinstance(self.app, LilbeeApp):
             with contextlib.suppress(Exception):
                 self.app.provider_availability_changed_signal.unsubscribe(self)
