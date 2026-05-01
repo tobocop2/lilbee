@@ -8468,7 +8468,11 @@ async def test_chat_action_toggle_chat_mode_returns_silently_when_disabled():
 
 
 async def test_chat_action_toggle_chat_mode_returns_silently_when_toggle_missing():
-    """F3 with no ChatModeToggle mounted (e.g. mid-screen-tear) is a no-op."""
+    """F3 with no ChatModeToggle mounted (e.g. mid-screen-tear) is a no-op.
+
+    Calls the action directly: patching ``screen.query_one`` is too broad
+    for ``pilot.press``, which relies on query_one for binding dispatch.
+    """
     from textual.css.query import NoMatches
 
     app = ChatTestApp()

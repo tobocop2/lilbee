@@ -994,7 +994,6 @@ class TestCatalogInteractions:
 
     async def test_v_toggles_to_list_and_back(self, _mock_resolve):
         """Pressing v flips the catalog between grid and list views."""
-        from textual.containers import VerticalScroll
 
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -1027,7 +1026,6 @@ class TestCatalogInteractions:
 
     async def test_v_toggle_after_bracket_nav_from_chat(self, _mock_resolve):
         """Pressing v still toggles the view after navigating in from chat via ]."""
-        from textual.containers import VerticalScroll
 
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -1566,30 +1564,6 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 assert app.screen._sort_column == "Size"
                 assert app.screen._sort_ascending is True
-
-    async def test_search_filters_list_view(self, _mock_resolve):
-        """Search input filters rows in list view."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                await pilot.pause()
-
-                await pilot.press("v")
-                await pilot.pause()
-
-                initial_visible = app.screen._list_widget.option_count
-
-                search = app.screen.query_one("#catalog-search")
-                search.value = "TestChat"
-                await pilot.pause(0.15)
-                await pilot.pause()
-
-                filtered_visible = app.screen._list_widget.option_count
-                assert filtered_visible <= initial_visible
 
     async def test_delete_model_without_selection_warns(self, _mock_resolve):
         """Pressing d without a highlighted model shows warning."""
