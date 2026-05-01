@@ -22,7 +22,7 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ClustererBackend, KvCacheType, WikiEntityMode
+from .enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -79,11 +79,7 @@ class Config(BaseSettings):
     general_system_prompt: str = ConfigField(
         default=DEFAULT_GENERAL_SYSTEM_PROMPT, min_length=1, writable=True
     )
-    # Search vs Chat mode. "search" runs every chat turn through document
-    # retrieval first; "chat" skips retrieval and uses general_system_prompt.
-    # Without an embedding model the toggle is forced to "chat" at the UI
-    # layer. Validated by field_validator below.
-    chat_mode: str = ConfigField(default="search", writable=True)
+    chat_mode: str = ConfigField(default=ChatMode.SEARCH.value, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     # OCR for scanned PDFs via vision-capable chat model.
     # None = auto-detect (use OCR if chat model is vision-capable).
@@ -476,13 +472,15 @@ class Config(BaseSettings):
     @field_validator("chat_mode", mode="before")
     @classmethod
     def _normalize_chat_mode(cls, v: Any) -> str:
-        """Coerce chat_mode to one of {'search', 'chat'}; default 'search'."""
+        """Coerce chat_mode to a ChatMode value; default ChatMode.SEARCH."""
         if v is None or v == "":
-            return "search"
+            return ChatMode.SEARCH.value
         candidate = str(v).strip().lower()
-        if candidate not in {"search", "chat"}:
-            raise ValueError(f"chat_mode must be 'search' or 'chat', got {v!r}")
-        return candidate
+        try:
+            return ChatMode(candidate).value
+        except ValueError as exc:
+            valid = ", ".join(repr(m.value) for m in ChatMode)
+            raise ValueError(f"chat_mode must be one of {{{valid}}}, got {v!r}") from exc
 
     @field_validator("enable_ocr", mode="before")
     @classmethod

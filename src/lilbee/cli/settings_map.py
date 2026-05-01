@@ -9,7 +9,7 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ClustererBackend, KvCacheType, WikiEntityMode
+from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
 
 
 class RenderStyle(StrEnum):
@@ -191,7 +191,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group="Generation",
-        choices=("search", "chat"),
+        choices=tuple(m.value for m in ChatMode),
         help_text="search runs every chat turn through document retrieval; chat skips it",
     ),
     "top_k": SettingDef(

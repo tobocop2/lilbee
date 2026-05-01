@@ -20,6 +20,7 @@ from lilbee.cli.tui.app import apply_active_model, apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
 from lilbee.core.services import get_services, reset_services
 from lilbee.data.store import SearchScope
 from lilbee.modelhub.models import ModelTask
@@ -297,13 +298,11 @@ class ChatModeToggle(Static, can_focus=True):
         return is_model_available(cfg.embedding_model, get_services().provider)
 
     def _refresh(self) -> None:
-        ready = self._embedding_ready()
-        mode = cfg.chat_mode if ready else "chat"
-        # Render both states inline so the toggle reads as a switch, not a label.
-        # Active segment gets the accent pill, inactive segment is dim.
         from textual.content import Content
 
-        active_search = mode == "search"
+        ready = self._embedding_ready()
+        mode = cfg.chat_mode if ready else ChatMode.CHAT.value
+        active_search = mode == ChatMode.SEARCH.value
         search_style = "$primary on $surface bold" if active_search else "dim $text-muted"
         chat_style = "dim $text-muted" if active_search else "$accent on $surface bold"
         self.update(
@@ -324,7 +323,9 @@ class ChatModeToggle(Static, can_focus=True):
         """Flip mode if embedding is ready. Returns True when the mode changed."""
         if not self._embedding_ready():
             return False
-        new_mode = "chat" if cfg.chat_mode == "search" else "search"
+        new_mode = (
+            ChatMode.CHAT.value if cfg.chat_mode == ChatMode.SEARCH.value else ChatMode.SEARCH.value
+        )
         apply_setting(self.app, "chat_mode", new_mode)
         self._refresh()
         return True
@@ -436,7 +437,7 @@ class ModelBar(Widget, can_focus=False):
 
         screen = self.app.screen
         if isinstance(screen, ChatScreen):
-            screen._apply_model_change()
+            screen.apply_model_change()
         else:
             reset_services()
 

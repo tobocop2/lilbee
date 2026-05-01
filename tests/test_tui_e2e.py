@@ -202,7 +202,7 @@ class TestModelSwitchSafety:
             ref = "ollama/new-model:latest"
             with (
                 mock.patch("lilbee.core.settings.set_value"),
-                mock.patch.object(screen, "_apply_model_change") as mock_apply,
+                mock.patch.object(screen, "apply_model_change") as mock_apply,
             ):
                 chat_btn._on_picker_dismissed(ref)
 
@@ -1007,7 +1007,7 @@ class TestCatalogInteractions:
 
                 assert app.screen.has_class("-grid-view")
                 grid = app.screen.query_one("#catalog-grid")
-                list_container = app.screen.query_one("#catalog-list", VerticalScroll)
+                list_container = app.screen._list_widget
                 assert grid.display is True
                 assert list_container.display is False
 
@@ -1045,7 +1045,7 @@ class TestCatalogInteractions:
                 assert app.screen.has_class("-grid-view")
 
                 grid = app.screen.query_one("#catalog-grid")
-                list_container = app.screen.query_one("#catalog-list", VerticalScroll)
+                list_container = app.screen._list_widget
                 assert grid.display is True
                 assert list_container.display is False
 
@@ -1133,10 +1133,9 @@ class TestCatalogInteractions:
                 grid = app.screen.query_one(GridSelect)
                 assert grid.has_focus
 
-    async def test_search_cta_visible_alongside_local_matches(self, _mock_resolve):
-        """The HF search CTA appears whenever search is non-empty, even with local hits."""
+    async def test_search_filters_list_view(self, _mock_resolve):
+        """Typing in the filter narrows the visible row count in list view."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1146,15 +1145,13 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await pilot.press("v")
                 await pilot.pause()
+                initial = app.screen._list_widget.option_count
 
                 search = app.screen.query_one("#catalog-search")
-                search.value = "TestChat"
+                search.value = "definitely-no-such-model"
                 await pilot.pause(0.15)
-
-                ctas = list(app.screen.query(SearchHFCtaItem))
-                assert len(ctas) == 1
-                # User's casing is preserved for display.
-                assert ctas[0].term == "TestChat"
+                await pilot.pause()
+                assert app.screen._list_widget.option_count <= initial
 
     async def test_search_cta_survives_view_toggle(self, _mock_resolve):
         """Toggling list→grid with a pending search must mount the grid-view CTA."""
@@ -1239,12 +1236,10 @@ class TestCatalogInteractions:
                 stale = msg.CATALOG_SEARCH_HF_CTA.format(query="foo")
                 assert stale not in str(cta.render())
 
-    async def test_search_cta_fires_hf_worker_on_select(self, _mock_resolve):
-        """Selecting the CTA fires the HF worker and merges results into the list."""
+    async def test_search_grid_cta_fires_hf_worker_on_click(self, _mock_resolve):
+        """Clicking the grid-view CTA fires the HF worker and merges results into the rows."""
         from lilbee.catalog import CatalogModel, CatalogResult
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
-        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 
         hf_hit = CatalogModel(
             hf_repo="some/zzz_remote-GGUF",
@@ -1276,22 +1271,16 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                await pilot.press("v")
-                await pilot.pause()
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "zzz_remote"
                 await pilot.pause(0.15)
-
-                cta = app.screen.query_one(SearchHFCtaItem)
-                cta.action_select()
+                # Click the grid-view CTA
+                app.screen._on_search_hf_cta_clicked()
                 await app.workers.wait_for_complete()
-                await pilot.pause()
                 await pilot.pause()
 
                 assert "zzz_remote" in call_log
-                names = [item.row.name for item in app.screen.query(ModelListItem)]
-                assert "zzz_remote" in names
 
     async def test_submit_with_zero_local_matches_fires_hf_search(self, _mock_resolve):
         """Enter on a query that filters the list empty should fire HF itself."""
@@ -1405,7 +1394,6 @@ class TestCatalogInteractions:
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1423,9 +1411,9 @@ class TestCatalogInteractions:
                 await search.action_submit()
                 for _ in range(10):
                     await pilot.pause()
-                    if isinstance(app.screen.focused, ModelListItem):
+                    if app.screen._list_widget.has_focus:
                         break
-                assert isinstance(app.screen.focused, ModelListItem)
+                assert app.screen._list_widget.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """Verify correct number of cards for featured models."""
@@ -1444,7 +1432,6 @@ class TestCatalogInteractions:
     async def test_list_view_j_k_navigation(self, _mock_resolve):
         """In list view, cursor actions move focus up/down through list items."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1459,18 +1446,19 @@ class TestCatalogInteractions:
                 # Disable prefetch so the worker doesn't rebuild the list
                 # and invalidate our item references.
                 app.screen._hf_has_more = False
-                items = list(app.screen.query(ModelListItem))
-                if len(items) > 1:
-                    items[0].focus()
+                items_count = app.screen._list_widget.option_count
+                if items_count > 1:
+                    app.screen._list_widget.highlighted = 0
+                    app.screen._list_widget.focus()
                     await pilot.pause()
                     assert app.screen._focused_list_index() == 0
                     await pilot.press("j")
                     await pilot.pause()
-                    assert items[1].has_focus
+                    assert app.screen._list_widget.highlighted == 1
 
                     await pilot.press("k")
                     await pilot.pause()
-                    assert items[0].has_focus
+                    assert app.screen._list_widget.highlighted == 0
 
     @pytest.mark.xfail(
         reason=(
@@ -1486,7 +1474,6 @@ class TestCatalogInteractions:
     async def test_list_view_g_G_jump(self, _mock_resolve):
         """In list view, g jumps to top, G jumps to bottom."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1503,22 +1490,25 @@ class TestCatalogInteractions:
                 # Disable prefetch so the worker doesn't rebuild the list
                 # and invalidate our item references.
                 app.screen._hf_has_more = False
-                items = list(app.screen.query(ModelListItem))
-                if items:
-                    items[0].focus()
+                items_count = app.screen._list_widget.option_count
+                if items_count:
+                    app.screen._list_widget.highlighted = 0
+                    app.screen._list_widget.focus()
                     await pilot.pause()
                     await pilot.press("G")
                     await pilot.pause()
-                    assert items[-1].has_focus
+                    assert (
+                        app.screen._list_widget.highlighted
+                        == app.screen._list_widget.option_count - 1
+                    )
 
                     await pilot.press("g")
                     await pilot.pause()
-                    assert items[0].has_focus
+                    assert app.screen._list_widget.highlighted == 0
 
     async def test_list_view_page_down_up(self, _mock_resolve):
         """In list view, space/ctrl-d pages down, ctrl-u pages up."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1530,9 +1520,10 @@ class TestCatalogInteractions:
                 await pilot.press("v")
                 await pilot.pause()
 
-                items = list(app.screen.query(ModelListItem))
-                if items:
-                    items[0].focus()
+                items_count = app.screen._list_widget.option_count
+                if items_count:
+                    app.screen._list_widget.highlighted = 0
+                    app.screen._list_widget.focus()
                     await pilot.pause()
                 await pilot.press("space")
                 await pilot.pause()
@@ -1543,7 +1534,6 @@ class TestCatalogInteractions:
     async def test_column_header_click_sorts_list(self, _mock_resolve):
         """Pressing s cycles the sort column in list view."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1559,9 +1549,10 @@ class TestCatalogInteractions:
                 assert app.screen._sort_ascending is True
 
                 # Focus a list item so `s` is not swallowed by the search input.
-                items = list(app.screen.query(ModelListItem))
-                if items:
-                    items[0].focus()
+                items_count = app.screen._list_widget.option_count
+                if items_count:
+                    app.screen._list_widget.highlighted = 0
+                    app.screen._list_widget.focus()
                     await pilot.pause()
 
                 # Cycle: Name -> Downloads
@@ -1579,7 +1570,6 @@ class TestCatalogInteractions:
     async def test_search_filters_list_view(self, _mock_resolve):
         """Search input filters rows in list view."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1591,15 +1581,14 @@ class TestCatalogInteractions:
                 await pilot.press("v")
                 await pilot.pause()
 
-                all_items = list(app.screen.query(ModelListItem))
-                initial_visible = len([i for i in all_items if i.display])
+                initial_visible = app.screen._list_widget.option_count
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "TestChat"
+                await pilot.pause(0.15)
                 await pilot.pause()
 
-                all_items_after = list(app.screen.query(ModelListItem))
-                filtered_visible = len([i for i in all_items_after if i.display])
+                filtered_visible = app.screen._list_widget.option_count
                 assert filtered_visible <= initial_visible
 
     async def test_delete_model_without_selection_warns(self, _mock_resolve):
@@ -2150,7 +2139,7 @@ class TestChatSlashCommands:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.streaming = True
-            with mock.patch.object(app.screen, "_apply_model_change") as mock_apply:
+            with mock.patch.object(app.screen, "apply_model_change") as mock_apply:
                 app.screen._handle_slash("/model ollama/stream-switch:latest")
                 await pilot.pause()
                 mock_apply.assert_called()

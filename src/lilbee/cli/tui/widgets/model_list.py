@@ -70,6 +70,28 @@ class ModelList(OptionList):
         if options:
             self.add_options(options)
 
+    @property
+    def row_count(self) -> int:
+        """Number of selectable rows currently mounted (excludes section headings)."""
+        return len(self._row_by_option_id)
+
+    def row_at(self, option_id: str) -> CatalogRow | None:
+        """Return the CatalogRow for the given option id, or None when unknown."""
+        return self._row_by_option_id.get(option_id)
+
+    def highlighted_row(self) -> CatalogRow | None:
+        """Return the CatalogRow under the highlight cursor, or None."""
+        idx = self.highlighted
+        if idx is None:
+            return None
+        try:
+            opt = self.get_option_at_index(idx)
+        except IndexError:
+            return None
+        if opt.id is None:
+            return None
+        return self.row_at(opt.id)
+
     def _build_options(self, sections: list[ModelListSection], *, start_idx: int) -> list[Option]:
         options: list[Option] = []
         idx = start_idx
@@ -121,37 +143,43 @@ def _render_frontier(row: FrontierCatalogRow) -> Content:
 
 
 def _render_local(row: LocalCatalogRow) -> Content:
-    # Two-line row, plain text (no colored pills): line 1 = featured star
-    # + bold name + dim "installed" tag, line 2 = indented meta strip.
-    # native backend is implicit and dropped to reduce visual noise.
-    line1: list[Content] = []
-    if row.featured:
-        line1.append(Content.styled(f"{FEATURED_STAR} ", "$warning"))
-    else:
-        line1.append(Content("  "))
-    line1.append(Content.styled(row.name, "bold"))
-    if row.installed:
-        line1.append(Content.styled("    installed", "$success italic"))
+    line1 = _render_local_headline(row)
+    line2 = _render_local_meta(row)
+    return Content.assemble(*line1, Content("\n"), *line2, Content("\n"))
 
-    line2: list[Content] = [Content("   ")]
+
+def _render_local_headline(row: LocalCatalogRow) -> list[Content]:
+    parts: list[Content] = [
+        Content.styled(f"{FEATURED_STAR} ", "$warning") if row.featured else Content("  "),
+        Content.styled(row.name, "bold"),
+    ]
+    if row.installed:
+        parts.append(Content.styled("    installed", "$success italic"))
+    return parts
+
+
+def _render_local_meta(row: LocalCatalogRow) -> list[Content]:
+    parts: list[Content] = [Content("   ")]
     if row.task:
         task_color = TASK_COLORS.get(row.task, "$text-muted")
-        line2.append(Content.styled(row.task, f"{task_color} italic"))
-        line2.append(Content.styled(f" {MIDDLE_DOT} ", "dim $text-muted"))
-    rest_parts: list[str] = []
+        parts.append(Content.styled(row.task, f"{task_color} italic"))
+        parts.append(Content.styled(f" {MIDDLE_DOT} ", "dim $text-muted"))
+    rest = [s for s in _local_meta_strip(row) if s]
+    if rest:
+        parts.append(Content.styled(f" {MIDDLE_DOT} ".join(rest), "dim $text-muted"))
+    return parts
+
+
+def _local_meta_strip(row: LocalCatalogRow) -> list[str]:
+    rest: list[str] = []
     if row.backend and row.backend != "native":
-        rest_parts.append(row.backend)
+        rest.append(row.backend)
     specs = _format_specs(row)
     if specs:
-        rest_parts.append(specs)
+        rest.append(specs)
     if row.downloads and row.downloads != "--":
-        rest_parts.append(f"↓ {row.downloads}")
-    if rest_parts:
-        line2.append(Content.styled(f" {MIDDLE_DOT} ".join(rest_parts), "dim $text-muted"))
-
-    # Trailing newline gives each row a blank-line gutter so the list reads
-    # as a series of cards rather than a wall of text.
-    return Content.assemble(*line1, Content("\n"), *line2, Content("\n"))
+        rest.append(f"↓ {row.downloads}")
+    return rest
 
 
 def _format_specs(row: LocalCatalogRow) -> str:

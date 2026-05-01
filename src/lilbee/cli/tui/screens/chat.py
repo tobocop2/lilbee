@@ -40,6 +40,7 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
 from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
@@ -266,7 +267,7 @@ class ChatScreen(Screen[None]):
         if not self._embedding_ready():
             banner.update(msg.CHAT_ONLY_BANNER)
             banner.display = True
-        elif cfg.chat_mode == "chat":
+        elif cfg.chat_mode == ChatMode.CHAT.value:
             banner.update(msg.CHAT_MODE_BANNER_CHAT)
             banner.display = True
         else:
@@ -676,7 +677,7 @@ class ChatScreen(Screen[None]):
             apply_active_model(self.app, "chat_model", args)
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
-            self._apply_model_change()
+            self.apply_model_change()
             self.refresh_model_bar()
         else:
             from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -932,7 +933,7 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, widget.finish, sources)
         call_from_thread(self, self._scroll_to_bottom)
         if (
-            cfg.chat_mode == "search"
+            cfg.chat_mode == ChatMode.SEARCH.value
             and self._embedding_ready()
             and full_response
             and "\n\nSources:\n" not in full_response
@@ -985,7 +986,7 @@ class ChatScreen(Screen[None]):
         if inp.has_focus:
             self._chat_log.focus()
 
-    def _apply_model_change(self) -> None:
+    def apply_model_change(self) -> None:
         """Cancel active stream (if any) and reset services for the new model."""
         if self.streaming:
             self.action_cancel_stream()
@@ -1093,7 +1094,9 @@ class ChatScreen(Screen[None]):
         if not toggle.toggle():
             return
         label = (
-            msg.CHAT_MODE_SEARCH_LABEL if cfg.chat_mode == "search" else msg.CHAT_MODE_CHAT_LABEL
+            msg.CHAT_MODE_SEARCH_LABEL
+            if cfg.chat_mode == ChatMode.SEARCH.value
+            else msg.CHAT_MODE_CHAT_LABEL
         )
         self.notify(msg.CHAT_MODE_SET.format(label=label))
 

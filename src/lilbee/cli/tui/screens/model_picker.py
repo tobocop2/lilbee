@@ -9,7 +9,6 @@ selected ref via ``dismiss``; the caller routes it through
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import ClassVar, Literal
 
 from textual import on
@@ -29,8 +28,6 @@ from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 
 PickerScope = Literal["chat", "embed"]
-
-_CSS_FILE = Path(__file__).parent / "model_picker.tcss"
 
 
 @dataclass
@@ -71,7 +68,7 @@ def _matches(option: ModelOption, search: str) -> bool:
 class ModelPickerModal(ModalScreen[str | None]):
     """Searchable model list. Returns the selected ref or None on cancel."""
 
-    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
+    CSS_PATH: ClassVar[str] = "model_picker.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss(None)", "Cancel", show=True),

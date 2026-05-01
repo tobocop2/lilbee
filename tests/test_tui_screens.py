@@ -2552,8 +2552,8 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen.streaming is False
 
 
-async def test_apply_model_change_cancels_stream_when_streaming():
-    """_apply_model_change cancels stream and defers service reset."""
+async def testapply_model_change_cancels_stream_when_streaming():
+    """apply_model_change cancels stream and defers service reset."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -2562,19 +2562,19 @@ async def test_apply_model_change_cancels_stream_when_streaming():
             patch.object(screen, "action_cancel_stream") as mock_cancel,
             patch.object(screen, "call_later") as mock_later,
         ):
-            screen._apply_model_change()
+            screen.apply_model_change()
             mock_cancel.assert_called_once()
             mock_later.assert_called_once_with(screen._deferred_service_reset)
 
 
-async def test_apply_model_change_resets_immediately_when_not_streaming():
-    """_apply_model_change resets services immediately when not streaming."""
+async def testapply_model_change_resets_immediately_when_not_streaming():
+    """apply_model_change resets services immediately when not streaming."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
         with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
-            screen._apply_model_change()
+            screen.apply_model_change()
             mock_reset.assert_called_once()
 
 
@@ -4069,13 +4069,20 @@ async def test_chat_on_setup_complete_skipped_shows_banner():
 
 async def test_chat_on_setup_complete_skipped_no_banner_when_embedding_ready():
     """Skipping wizard does not show banner when embedding model is already configured."""
+    from lilbee.core.config import cfg as _cfg
+
+    old_mode = _cfg.chat_mode
+    _cfg.chat_mode = "search"
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_embedding_ready", return_value=True):
-            app.screen._on_setup_complete("skipped")
-            await _pilot.pause()
-            banner = app.screen.query_one("#chat-only-banner")
-            assert banner.display is False
+    try:
+        async with app.run_test(size=(120, 40)) as _pilot:
+            with patch.object(app.screen, "_embedding_ready", return_value=True):
+                app.screen._on_setup_complete("skipped")
+                await _pilot.pause()
+                banner = app.screen.query_one("#chat-only-banner")
+                assert banner.display is False
+    finally:
+        _cfg.chat_mode = old_mode
 
 
 async def test_chat_on_setup_complete_success():
@@ -8424,12 +8431,12 @@ async def test_chat_on_settings_changed_repaints_banner_for_chat_mode():
 
 
 async def test_chat_action_toggle_chat_mode_notifies_label():
-    """F3 action flips the toggle and posts a notify with the new label."""
+    """F3 keypress flips the toggle and posts a notify with the new label."""
     from lilbee.cli.tui import messages as chat_msg
 
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
         screen = app.screen
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
@@ -8437,16 +8444,17 @@ async def test_chat_action_toggle_chat_mode_notifies_label():
             patch.object(ChatModeToggle, "toggle", return_value=True),
             patch.object(screen, "notify") as mock_notify,
         ):
-            screen.action_toggle_chat_mode()
+            await pilot.press("f3")
+            await pilot.pause()
             mock_notify.assert_called_once()
             assert chat_msg.CHAT_MODE_SET.split(":")[0] in mock_notify.call_args[0][0]
 
 
 async def test_chat_action_toggle_chat_mode_returns_silently_when_disabled():
-    """F3 with the toggle disabled (no embedding) does not notify."""
+    """F3 keypress with the toggle disabled (no embedding) does not notify."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
         screen = app.screen
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
@@ -8454,7 +8462,8 @@ async def test_chat_action_toggle_chat_mode_returns_silently_when_disabled():
             patch.object(ChatModeToggle, "toggle", return_value=False),
             patch.object(screen, "notify") as mock_notify,
         ):
-            screen.action_toggle_chat_mode()
+            await pilot.press("f3")
+            await pilot.pause()
             mock_notify.assert_not_called()
 
 
@@ -8802,8 +8811,8 @@ def test_chat_embedding_ready_real_code_false():
     assert hasattr(ChatScreen, "_embedding_ready")
 
 
-def test_on_list_item_selected_calls_select_row():
-    """_on_list_item_selected calls _select_row with the item's row."""
+def test_on_model_list_selected_calls_select_row():
+    """_on_model_list_selected dispatches the row to _select_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
@@ -8820,11 +8829,9 @@ def test_on_list_item_selected_calls_select_row():
         sort_downloads=1000,
         sort_size=4.0,
     )
-    item = MagicMock()
-    item.row = row
     event = MagicMock()
-    event.item = item
-    CatalogScreen._on_list_item_selected(screen, event)
+    event.row = row
+    CatalogScreen._on_model_list_selected(screen, event)
     screen._select_row.assert_called_once_with(row)
 
 

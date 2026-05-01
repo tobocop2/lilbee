@@ -170,9 +170,6 @@ class CatalogScreen(Screen[None]):
             TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
         ):
             yield VerticalScroll(id="catalog-grid")
-            # ModelList is a virtualized OptionList: only visible rows pay the
-            # render/CSS cost. With 1700+ HF models the prior ModelListItem
-            # tree mounted every row and locked up on every mouse move.
             yield ModelList(id="catalog-list")
         yield Static("", id="model-detail")
         with BottomBars():
@@ -220,15 +217,10 @@ class CatalogScreen(Screen[None]):
     def _fetch_installed_names(self) -> None:
         """Populate installed identities from the shared ModelManager cache.
 
-        Reads through ``services.model_manager.list_native_identities``
-        which memoizes the registry walk for 30 seconds; previously
-        every Catalog mount built a fresh ``ModelRegistry`` and walked
-        it synchronously (~150-300 ms on cold caches).
-
-        The set contains both the canonical ref (``hf_repo/filename``)
-        and the bare ``hf_repo`` so catalog rows whose ref is the repo
-        alone still light up as installed when at least one quant of
-        that repo has a manifest.
+        The set contains both the canonical ref (``hf_repo/filename``) and
+        the bare ``hf_repo`` so catalog rows whose ref is the repo alone
+        still light up as installed when at least one quant of that repo
+        has a manifest.
         """
         with contextlib.suppress(Exception):
             self._installed_names = set(get_services().model_manager.list_native_identities())
@@ -358,6 +350,7 @@ class CatalogScreen(Screen[None]):
         with contextlib.suppress(Exception):
             if self._list_widget.option_count:
                 self._list_widget.highlighted = 0
+                self._list_widget.focus()
                 self._list_widget.action_select()
 
     def _fetch_hf_page(self) -> list[CatalogModel]:
@@ -836,12 +829,7 @@ class CatalogScreen(Screen[None]):
         self._update_sort_label()
 
     def _filter_list(self) -> None:
-        """Filter the list view to rows matching the active search.
-
-        OptionList is virtualized; rebuilding via set_rows with a filtered
-        subset is O(visible) and cheaper than the prior display-toggle
-        loop over thousands of mounted ModelListItems.
-        """
+        """Filter the list view to rows matching the active search."""
         search = self._get_search_text()
         visible = [r for r in self._rows if not search or matches_search(r, search)]
         self._list_widget.set_rows([ModelListSection(heading=None, rows=list(visible))])
@@ -1032,12 +1020,8 @@ class CatalogScreen(Screen[None]):
     def _get_highlighted_model_name(self) -> str | None:
         """Return the registry-compatible model ref for the focused/highlighted row."""
         if not self._grid_view and self._list_widget.has_focus:
-            idx = self._list_widget.highlighted
-            if idx is None:
-                return None
-            opt = self._list_widget.get_option_at_index(idx)
-            row = self._list_widget._row_by_option_id.get(opt.id or "")
-            return (row.ref if row else None) or None
+            row = self._list_widget.highlighted_row()
+            return row.ref or None if row else None
         focused_grid = self._focused_grid()
         if focused_grid is None or focused_grid.highlighted is None:
             return None
@@ -1084,7 +1068,7 @@ class CatalogScreen(Screen[None]):
 
     def _list_count(self) -> int:
         """Total options currently shown in the list view (excluding headings)."""
-        return len(self._list_widget._row_by_option_id)
+        return self._list_widget.row_count
 
     def _focus_list_item(self, index: int) -> None:
         """Highlight the row at *index*, clamped to the visible range."""
@@ -1120,24 +1104,26 @@ class CatalogScreen(Screen[None]):
     _SCROLL_PREFETCH_COOLDOWN = 0.8
 
     def _on_list_scrolled(self, _scroll_y: float) -> None:
-        """Trigger _load_more when the user scrolls near the bottom of the list.
-
-        Cooldown prevents a runaway cascade where appending new rows changes
-        max_scroll_y, the watcher fires again immediately, and load_more
-        kicks off the next fetch before the user has even noticed.
-        """
-        if self._grid_view or not self._hf_has_more or self._loading_more:
+        """Trigger _load_more when the user scrolls near the bottom of the list."""
+        if not self._scroll_prefetch_due():
             return
+        self._scroll_prefetch_armed_at = time.monotonic()
+        self._load_more()
+
+    def _scroll_prefetch_due(self) -> bool:
+        # Cooldown blocks a runaway cascade where appending rows shifts
+        # max_scroll_y, the watcher refires, and load_more kicks off the
+        # next fetch before the user notices.
+        if self._grid_view or not self._hf_has_more or self._loading_more:
+            return False
         if self._scroll_prefetch_armed_at:
             elapsed = time.monotonic() - self._scroll_prefetch_armed_at
             if elapsed < self._SCROLL_PREFETCH_COOLDOWN:
-                return
+                return False
         max_y = self._list_widget.max_scroll_y
         if max_y <= 0:
-            return
-        if self._list_widget.scroll_y / max_y >= self._SCROLL_PREFETCH_RATIO:
-            self._scroll_prefetch_armed_at = time.monotonic()
-            self._load_more()
+            return False
+        return self._list_widget.scroll_y / max_y >= self._SCROLL_PREFETCH_RATIO
 
     def _page_rows(self) -> int:
         """How many cursor steps make up one 'page' in the active view."""
