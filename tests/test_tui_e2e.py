@@ -2443,12 +2443,19 @@ class TestCatalogViewToggle:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                await pilot.pause()
-                ctas = [
-                    s
-                    for s in app.screen.query(".grid-cta")
-                    if msg.CATALOG_VIEW_TOGGLE_GRID in str(s.render())
-                ]
+                # Catalog defers the rest-of-sections + CTAs to the next
+                # refresh tick via call_after_refresh; poll the deferred
+                # batch on slow Windows xdist shards.
+                ctas: list = []
+                for _ in range(10):
+                    await pilot.pause()
+                    ctas = [
+                        s
+                        for s in app.screen.query(".grid-cta")
+                        if msg.CATALOG_VIEW_TOGGLE_GRID in str(s.render())
+                    ]
+                    if ctas:
+                        break
                 assert len(ctas) >= 1
 
     async def test_our_picks_heading_in_grid(self, _mock_resolve):
@@ -2460,9 +2467,13 @@ class TestCatalogViewToggle:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                await pilot.pause()
-                headings = app.screen.query(".section-heading")
-                texts = [str(h.render()) for h in headings]
+                texts: list[str] = []
+                for _ in range(10):
+                    await pilot.pause()
+                    headings = app.screen.query(".section-heading")
+                    texts = [str(h.render()) for h in headings]
+                    if "Our picks" in texts:
+                        break
                 assert "Our picks" in texts
 
 

@@ -4428,6 +4428,37 @@ async def test_catalog_jump_top_bottom():
             assert screen._list_widget.highlighted == 0
 
 
+async def test_catalog_grid_actions_drive_focused_grid():
+    """Grid-view page/jump actions forward to the focused GridSelect.
+
+    Mocks ``_focused_grid`` so the grid branches in ``action_page_down`` /
+    ``action_page_up`` / ``action_jump_top`` / ``action_jump_bottom`` are
+    exercised deterministically on every xdist shard. A live GridSelect is
+    expensive to mount with the empty patched catalog, and a real grid race
+    is what makes those branches occasionally drop off the Windows-3.11/3.13
+    coverage gate.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._grid_view is True
+            fake_grid = MagicMock()
+            with patch.object(screen, "_focused_grid", return_value=fake_grid):
+                screen.action_page_down()
+                screen.action_page_up()
+                screen.action_jump_top()
+                screen.action_jump_bottom()
+            assert fake_grid.action_cursor_down.call_count >= 1
+            assert fake_grid.action_cursor_up.call_count >= 1
+            fake_grid.highlight_first.assert_called_once()
+            fake_grid.highlight_last.assert_called_once()
+
+
 async def test_chat_vim_j_scrolls_from_chat_log():
     """action_vim_scroll_down scrolls in normal mode."""
     app = ChatTestApp()
