@@ -58,11 +58,7 @@ from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
-# When the highlighted row is within this many rows of the end we
-# auto-fetch the next page. Small enough that the request is already
-# in flight by the time the user reaches the bottom.
 _HF_LOAD_MORE_TRIGGER = 5
-# Long enough to register; short enough to clear before a warm-cache fetch.
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
@@ -75,11 +71,8 @@ _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
 
-# Sort columns cycled by the `s` keybinding in list view.
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
-# Fingerprint of the inputs to ``_all_*_rows`` row construction. Bumping
-# any field invalidates the cached rows; see ``_local_rows_data_key``.
 _RowCacheKey = tuple[int, int, int, bool, int, int]
 
 
@@ -127,7 +120,6 @@ class CatalogScreen(Screen[None]):
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
     ]
 
-    # Hot-path widget refs via Textual's typed descriptor.
     _search_input = getters.query_one("#catalog-search", Input)
     _grid_container = getters.query_one("#catalog-grid", VerticalScroll)
     _list_container = getters.query_one("#catalog-list", VerticalScroll)
@@ -148,36 +140,17 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
         self._loading_more: bool = False
         self._grid_cache_key: tuple = ()
-        # Mirror cache for list view. Toggling grid <-> list every keystroke
-        # in stress QA used to remove + remount ~300 ModelListItems even
-        # when nothing had changed; the cache key keeps remount on real
-        # data churn (sort, frontier delta, install/uninstall) only.
         self._list_cache_key: tuple = ()
         self._search_in_flight: bool = False
-        # Frontier rows are populated by a worker (litellm import + key
-        # checks block the UI thread for hundreds of ms). Empty until the
-        # first successful fetch lands.
         self._frontier_rows: list[FrontierCatalogRow] = []
-        # Bumped by every worker callback that lands new data, so the
-        # row caches in _all_*_rows know to rebuild even when collection
-        # lengths happen to coincide.
+        # Bumped on every worker callback so the _all_*_rows caches
+        # invalidate even when collection lengths happen to coincide.
         self._data_version: int = 0
-        # Row build caches keyed off ``_local_rows_data_key`` so worker
-        # callbacks that grow / replace the backing collections invalidate
-        # the construction step. Widget refs use ``getters.query_one``
-        # at the class level instead of instance caches.
         self._family_rows_cache: _RowCacheEntry | None = None
         self._hf_rows_cache: _RowCacheEntry | None = None
         self._remote_rows_cache: _RowCacheEntry | None = None
-        # Atomicity gate for action_toggle_view (B1).
         self._view_switching: bool = False
-        # Frontier-fetch debounce timer (B-Rank 8). None when no fetch
-        # is queued.
         self._frontier_refresh_timer: Timer | None = None
-        # Search filter debounce. Each keystroke would otherwise walk
-        # every ``ModelCard`` / ``ModelListItem`` and toggle ``display``,
-        # triggering a full layout pass per char. The timer collapses
-        # rapid typing to at most one filter pass per ~80 ms.
         self._search_filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
@@ -201,9 +174,6 @@ class CatalogScreen(Screen[None]):
         self._focus_first_grid()
         self._fetch_remote_models()
         self._fetch_frontier_models()
-        # Live-refresh frontier rows when an API key is added/changed.
-        # Gated on isinstance so test apps without LilbeeApp's signal
-        # set don't crash; never observed in production.
         if isinstance(self.app, LilbeeApp):
             self.app.provider_availability_changed_signal.subscribe(
                 self, self._on_provider_availability_changed
@@ -214,20 +184,10 @@ class CatalogScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 self.app.provider_availability_changed_signal.unsubscribe(self)
 
-    # Coalesce a burst of provider_availability_changed payloads (e.g. a
-    # user typing into a Settings api_key field on every keystroke) into
-    # one frontier-fetch worker per ``_FRONTIER_REFRESH_DEBOUNCE`` window.
     _FRONTIER_REFRESH_DEBOUNCE = 1.0
 
     def _on_provider_availability_changed(self, _payload: tuple[str, object]) -> None:
-        """Re-fetch frontier rows when an API key is saved or cleared.
-
-        The fetch hits ``discover_api_models`` which imports litellm and
-        probes provider keys (~hundreds of ms). Run it in a worker; the
-        worker callback reseats _frontier_rows and triggers a refresh.
-        Per-stroke key edits in Settings would otherwise spawn a worker
-        per character, so we debounce the fetch.
-        """
+        """Debounced refetch of frontier rows when an API key changes."""
         if self._frontier_refresh_timer is not None:
             self._frontier_refresh_timer.stop()
         self._frontier_refresh_timer = self.set_timer(
@@ -501,31 +461,22 @@ class CatalogScreen(Screen[None]):
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         elif name == _WORKER_FETCH_FRONTIER:
-            # Reset the cached grid key so a previously-rendered grid
-            # without frontier rows actually rebuilds with them.
             self._frontier_rows = result
+            # Force grid rebuild so newly arriving frontier rows render.
             self._grid_cache_key = ()
         else:
             return False
-        # Bump version so the local-row caches see the new data even
-        # when collection length coincides with the prior state.
         self._data_version += 1
         return True
 
     def _get_search_text(self) -> str:
-        # Preserve the user's casing for display (e.g. the CTA label); matching
-        # callers normalize via _normalize_for_search.
         return self._search_input.value.strip()
 
     def _local_rows_data_key(self) -> _RowCacheKey:
-        """Cache key for the constructed (un-filtered) local row sets.
+        """Cache key over the inputs that drive row construction.
 
-        Pulls in only the data shape that affects row construction.
-        ``_data_version`` is bumped whenever a worker callback replaces
-        or extends a backing collection, which covers both wholesale
-        replacement (``_remote_models = result``) and in-place mutation
-        (``_hf_models.extend(result)``). Searching does not invalidate
-        the cache because we filter the cached rows at call time.
+        ``_data_version`` covers replacements and extensions both;
+        search text deliberately omitted (we filter cached rows).
         """
         return (
             len(self._families),
@@ -640,12 +591,8 @@ class CatalogScreen(Screen[None]):
             else:
                 self._refresh_list()
 
-    # Hard cap on HF browse rows shown in grid view. ItemGrid layout
-    # cost grows linearly with children, and ModelCard mounts five
-    # subwidgets each, so a large HF page (~100 rows) can lock the UI
-    # thread for seconds. The list view renders lighter ModelListItem
-    # widgets without the cap; the grid surfaces a CTA pointing users
-    # there once the cap is hit.
+    # Cap protects against ItemGrid layout cost (~5 subwidgets per
+    # card * N cards locks the UI). List view has no cap.
     _GRID_HF_BUDGET = 24
 
     def _refresh_grid(self) -> None:
@@ -657,8 +604,6 @@ class CatalogScreen(Screen[None]):
         hf_overflow = max(0, len(hf_rows_full) - self._GRID_HF_BUDGET)
         hf_rows = hf_rows_full[: self._GRID_HF_BUDGET]
         all_rows = family_rows + remote_rows + hf_rows
-        # Include the full search text so toggle-back + value-change combinations
-        # rebuild the grid (and therefore the CTA) with the current query.
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
             tuple((r.name, r.key_status.value) for r in frontier_rows),
@@ -789,10 +734,6 @@ class CatalogScreen(Screen[None]):
         self._rows = self._sort_rows(self._build_rows())
         frontier_rows = self._build_frontier_rows("")
         search = self._get_search_text()
-        # Same shape as _grid_cache_key: any change in row composition,
-        # frontier key-status, or active search term forces a remount;
-        # toggle-only (grid -> list -> grid with no data churn) is a
-        # cache hit so we keep the existing widget tree.
         list_key = (
             tuple((r.name, r.installed) for r in self._rows),
             tuple((r.name, r.key_status.value) for r in frontier_rows),
@@ -873,11 +814,8 @@ class CatalogScreen(Screen[None]):
         self._sort_column = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._sort_ascending = True
         self._refresh_list()
-        # _refresh_list replaces the list children asynchronously via
-        # mount_all; focusing before the new widgets settle can leave focus
-        # on the filter Input, which swallows the next `s` press as text
-        # . Defer the focus move until after Textual's next refresh
-        # so _list_items() actually returns the new rows.
+        # mount_all is async; focus the first row after Textual's next
+        # refresh so the filter Input doesn't swallow the next `s` press.
         self.call_after_refresh(self._focus_list_item, 0)
 
     def _select_row(self, row: CatalogRow) -> None:
@@ -904,9 +842,6 @@ class CatalogScreen(Screen[None]):
             apply_active_model(self.app, "chat_model", row.ref)
             self.notify(msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider))
             return
-        # Missing key: tell the user where to set it. The settings screen
-        # already exposes per-provider key fields; nudging the user there
-        # avoids a silent failure on the first chat turn.
         key_field = f"{row.provider_id}_api_key"
         self.notify(
             msg.CATALOG_NEEDS_KEY.format(provider=row.provider, key_field=key_field),
@@ -969,9 +904,8 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def action_go_back(self) -> None:
-        # First Escape press unfocuses the filter input; without this
-        # the screen-level `s` / `v` keys get typed into the input and the only
-        # way to regain screen focus is to leave the screen entirely.
+        # Escape unfocuses the filter input first so screen-level keys
+        # (s / v) reach the screen, not the input.
         if isinstance(self.focused, Input):
             self._focus_list_or_grid()
             return
