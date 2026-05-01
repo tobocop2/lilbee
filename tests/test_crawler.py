@@ -50,6 +50,12 @@ def isolated_env(tmp_path, monkeypatch, request):
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    # Disable periodic sync by default. The drain step in the runner's
+    # finally-block waits for a real ingest to complete; on slow CI
+    # runners (ubuntu 3.11) the embedding cold-start blows the
+    # pytest-timeout. Tests that exercise periodic sync explicitly set
+    # crawl_sync_interval to a non-zero value themselves.
+    cfg.crawl_sync_interval = 0
     cls = request.cls.__name__ if request.cls else ""
     if cls != "TestPlaywrightBrowserCheck":
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
@@ -1339,12 +1345,6 @@ class TestCrawlAndSave:
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
         """Same content on re-crawl skips saving (hash-based detection)."""
-        # Disable periodic sync so the test isn't waiting on a real ingest
-        # to drain in the finally-block. Default 30s interval means each
-        # call kicks one off; on slower runners the drain blows the test
-        # timeout while the embedding pipeline cold-starts.
-        cfg.crawl_sync_interval = 0
-        reset_services()
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Dup"
         )
