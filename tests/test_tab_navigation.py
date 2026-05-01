@@ -159,11 +159,22 @@ async def test_settings_tab_chain_visits_tabs_widget_and_search() -> None:
 
 
 async def test_catalog_tab_chain_visits_search() -> None:
-    """Tab from CatalogScreen should visit the search input."""
+    """Tab walk on CatalogScreen visits the search input.
+
+    The catalog auto-focus is the first GridSelect, but data fetches
+    are async so on the first frame nothing may be focused yet. The
+    test pins the start to a known-stable view tab so the chain has
+    a deterministic origin.
+    """
+    from lilbee.cli.tui.widgets.status_bar import ViewTabs
+
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await pilot.pause()
         app.switch_view("Catalog")
-        await pilot.pause(0.2)
+        await pilot.pause(0.3)
+        view_tabs = app.screen.query_one(ViewTabs)
+        view_tabs.query_one("#view-tab-catalog").focus()
+        await pilot.pause()
         chain = await _walk_tab_chain(app, pilot, max_presses=40)
         assert "catalog-search" in chain, f"catalog-search missing from {chain}"

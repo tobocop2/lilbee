@@ -210,6 +210,18 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         log.debug("Could not discover API models", exc_info=True)
 
 
+def _options_fingerprint(opts: list[ModelOption], default: str) -> tuple[tuple[str, str], ...]:
+    """Stable hashable fingerprint of (options, active default).
+
+    The fingerprint includes the active default because ``_sync_select``
+    inserts a synthetic ``"(not installed)"`` option when the default
+    is missing from the list, so two scans with the same backing
+    options but different ``cfg.chat_model`` produce different visible
+    dropdowns.
+    """
+    return ((default, default), *((o.label, o.ref) for o in opts))
+
+
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Populate a Select with *opts*; show *default* with ``(not installed)``
     when it isn't in the list, and pass unparseable defaults through unchanged."""
@@ -271,6 +283,13 @@ class ModelBar(Widget, can_focus=False):
         super().__init__(id=id)
         self._populating = True  # Guard against change events during init
         self._scope: SearchScope = SearchScope.BOTH
+        # Cached option fingerprints for set_options skip. Each entry is
+        # the ``(label, ref)`` tuple list that is currently mounted on
+        # the Select; ``_scan_models`` runs on every chat ``on_show``,
+        # but the install set rarely changes between visits and Textual
+        # rebuilds the dropdown unconditionally on every set_options.
+        self._chat_options_cache: tuple[tuple[str, str], ...] = ()
+        self._embed_options_cache: tuple[tuple[str, str], ...] = ()
 
     @property
     def scope(self) -> SearchScope:
@@ -363,8 +382,15 @@ class ModelBar(Widget, can_focus=False):
         chat_opts = list(chat_models) if chat_models else [ModelOption("(none)", "")]
         embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
 
-        _sync_select(chat_sel, chat_opts, cfg.chat_model)
-        _sync_select(embed_sel, embed_opts, cfg.embedding_model)
+        chat_fingerprint = _options_fingerprint(chat_opts, cfg.chat_model)
+        if chat_fingerprint != self._chat_options_cache:
+            _sync_select(chat_sel, chat_opts, cfg.chat_model)
+            self._chat_options_cache = chat_fingerprint
+
+        embed_fingerprint = _options_fingerprint(embed_opts, cfg.embedding_model)
+        if embed_fingerprint != self._embed_options_cache:
+            _sync_select(embed_sel, embed_opts, cfg.embedding_model)
+            self._embed_options_cache = embed_fingerprint
 
         self._populating = False
 

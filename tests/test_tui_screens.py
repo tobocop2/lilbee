@@ -3594,11 +3594,11 @@ async def test_catalog_input_changed_refreshes():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            await pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -3606,6 +3606,8 @@ async def test_catalog_input_changed_refreshes():
                 event = MagicMock(spec=Input.Changed)
                 event.input = inp
                 screen._on_search_changed(event)
+                # Wait for the debounce timer (80 ms) plus a frame.
+                await pilot.pause(0.15)
                 mock_filter.assert_called()
 
 

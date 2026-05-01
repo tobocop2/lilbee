@@ -92,10 +92,17 @@ class ViewTabs(Widget):
             yield Static(id="view-tabs-trailing")
 
     def on_mount(self) -> None:
-        self.active_view = getattr(self.app, "active_view", msg.DEFAULT_VIEW)
-        signal = getattr(self.app, "settings_changed_signal", None)
-        if signal is not None:
-            signal.subscribe(self, self._on_settings_changed)
+        # ViewTabs is mounted under any App in tests (ChatTestApp,
+        # CatalogTestApp, etc.) that don't carry the LilbeeApp signal
+        # set, so the wiring is gated on isinstance rather than asking
+        # for a duck-typed attribute.
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.active_view = self.app.active_view
+            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        else:
+            self.active_view = msg.DEFAULT_VIEW
         # Defer the initial paint: update() during on_mount can no-op while
         # children are still completing their mount cycle.
         self.call_after_refresh(self._refresh)

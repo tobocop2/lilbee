@@ -157,6 +157,11 @@ class CatalogScreen(Screen[None]):
         # Frontier-fetch debounce timer (B-Rank 8). None when no fetch
         # is queued.
         self._frontier_refresh_timer: Timer | None = None
+        # Search filter debounce. Each keystroke would otherwise walk
+        # every ``ModelCard`` / ``ModelListItem`` and toggle ``display``,
+        # triggering a full layout pass per char. The timer collapses
+        # rapid typing to at most one filter pass per ~80 ms.
+        self._search_filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -173,6 +178,8 @@ class CatalogScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
         self._fetch_installed_names()
         self.add_class("-grid-view")
         self._refresh_grid()
@@ -180,15 +187,19 @@ class CatalogScreen(Screen[None]):
         self._fetch_remote_models()
         self._fetch_frontier_models()
         # Live-refresh frontier rows when an API key is added/changed.
-        signal = getattr(self.app, "provider_availability_changed_signal", None)
-        if signal is not None:
-            signal.subscribe(self, self._on_provider_availability_changed)
+        # Gated on isinstance so test apps without LilbeeApp's signal
+        # set don't crash; never observed in production.
+        if isinstance(self.app, LilbeeApp):
+            self.app.provider_availability_changed_signal.subscribe(
+                self, self._on_provider_availability_changed
+            )
 
     def on_unmount(self) -> None:
-        signal = getattr(self.app, "provider_availability_changed_signal", None)
-        if signal is not None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
             with contextlib.suppress(Exception):
-                signal.unsubscribe(self)
+                self.app.provider_availability_changed_signal.unsubscribe(self)
 
     # Coalesce a burst of provider_availability_changed payloads (e.g. a
     # user typing into a Settings api_key field on every keystroke) into
@@ -268,9 +279,26 @@ class CatalogScreen(Screen[None]):
         """Focus the filter input -- bound to / key."""
         self._search_input.focus()
 
+    _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
+
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Filter models when search input changes."""
+        """Schedule a filter pass after a short debounce.
+
+        Per keystroke the filter walks every visible ``ModelCard`` /
+        ``ModelListItem`` and toggles ``display``, which Textual treats
+        as a layout invalidation. Without the debounce, a 5-char term
+        produces 5 full layout passes; with it, typing collapses to a
+        single pass once the user pauses.
+        """
+        if self._search_filter_timer is not None:
+            self._search_filter_timer.stop()
+        self._search_filter_timer = self.set_timer(
+            self._SEARCH_FILTER_DEBOUNCE_SECONDS,
+            self._apply_search_filter,
+        )
+
+    def _apply_search_filter(self) -> None:
         if self._grid_view:
             self._filter_grid()
             self._sync_grid_search_cta()
@@ -696,20 +724,31 @@ class CatalogScreen(Screen[None]):
         container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
-        """Filter visible cards by search text without recreating widgets."""
+        """Filter visible cards by search text without recreating widgets.
+
+        Walks the grid container once per section: toggles each card's
+        ``display`` and accumulates ``has_visible`` in the same pass, so
+        we avoid a second ``self.query(ModelCard)`` DOM walk that would
+        match the same set the section iteration already enumerates.
+        """
         search = self._get_search_text()
-        for card in self.query(ModelCard):
-            card.display = matches_search(card.row, search)
-        container = self._grid_container
-        children = list(container.children)
+        children = list(self._grid_container.children)
         for i, child in enumerate(children):
             if not child.has_class("section-heading"):
                 continue
             grid = children[i + 1] if i + 1 < len(children) else None
-            if isinstance(grid, GridSelect):
-                has_visible = any(c.display for c in grid.children)
-                child.display = has_visible
-                grid.display = has_visible
+            if not isinstance(grid, GridSelect):
+                continue
+            has_visible = False
+            for card in grid.children:
+                if not isinstance(card, ModelCard):
+                    continue
+                visible = matches_search(card.row, search)
+                card.display = visible
+                if visible:
+                    has_visible = True
+            child.display = has_visible
+            grid.display = has_visible
 
     @on(Click, ".browse-more-hf")
     def _on_browse_more_clicked(self) -> None:
