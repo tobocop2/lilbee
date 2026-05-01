@@ -276,6 +276,14 @@ docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest 
 
 Image is published to GitHub Container Registry on every release; tagged with both the version (`0.6.66b456`) and `latest`. The `LILBEE_DATA_DIR` is `/home/lilbee/data` inside the container, so mount a volume there to persist models, embeddings, and config.
 
+### Nix (NixOS, nix-darwin, or any host with nix)
+
+```bash
+nix run github:tobocop2/lilbee
+```
+
+Wraps the same release binary as Homebrew / AUR / Docker. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS without `libvulkan1` on the host.
+
 <a id="linux-runtime-requirements"></a>
 
 ### Linux runtime requirements
@@ -345,6 +353,8 @@ chmod +x lilbee-linux-x86_64
 ```
 
 Always points at the latest pre-release.
+
+The Linux binary is built on `manylinux_2_28` and requires **glibc 2.28 or newer**, which covers every currently-supported distribution: Fedora 28+, RHEL/AlmaLinux/Rocky 8+, Debian 10+, Ubuntu 18.10+, Amazon Linux 2023, and current Arch. For older systems (CentOS 7, Amazon Linux 2, RHEL 7), use `uv tool install lilbee` or the [Docker image](#docker).
 
 ### Optional extras
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.core.platform import canonical_models_dir
+from lilbee.core.system import canonical_models_dir
 
 # macOS CI runners use CPU-only inference (no Metal GPU passthrough).
 # SmolLM2-135M is fast enough; Qwen3-0.6B is too slow.

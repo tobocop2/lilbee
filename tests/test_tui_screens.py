@@ -8557,7 +8557,7 @@ def test_run_tui_keyboard_interrupt_during_shutdown_propagates():
     mock_app.run.return_value = None
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
-        patch("lilbee.cli.tui.shutdown_executor", side_effect=KeyboardInterrupt),
+        patch("lilbee.cli.sync.shutdown_executor", side_effect=KeyboardInterrupt),
         patch("lilbee.cli.tui.reset_services") as mock_reset,
         pytest.raises(KeyboardInterrupt),
     ):
@@ -8574,7 +8574,7 @@ def test_run_tui_exception_during_shutdown_propagates():
     mock_app.run.return_value = None
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
-        patch("lilbee.cli.tui.shutdown_executor", side_effect=RuntimeError("fail")),
+        patch("lilbee.cli.sync.shutdown_executor", side_effect=RuntimeError("fail")),
         pytest.raises(RuntimeError, match="fail"),
     ):
         run_tui()

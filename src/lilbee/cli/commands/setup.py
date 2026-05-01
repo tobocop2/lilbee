@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,40 @@ def self_check_cmd(
             f"n_gpu_layers={provider_kwargs['n_gpu_layers']}"
         )
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
+
+
+_SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
+
+
+def self_check_extras_cmd() -> None:
+    """Verify optional extras (crawler, litellm, graph) are bundled and importable."""
+    results: dict[str, Any] = {}
+    failed: list[str] = []
+    for name in _SELF_CHECK_EXTRAS:
+        try:
+            importlib.import_module(name)
+            results[name] = True
+        except ImportError as exc:
+            results[name] = False
+            results[f"{name}_error"] = str(exc)
+            failed.append(name)
+
+    if cfg.json_mode:
+        json_output({"ok": not failed, **results})
+    else:
+        for name in _SELF_CHECK_EXTRAS:
+            ok = results.get(name) is True
+            tag = (
+                f"[{theme.ACCENT}]ok[/{theme.ACCENT}]"
+                if ok
+                else f"[{theme.ERROR}]MISSING[/{theme.ERROR}]"
+            )
+            console.print(f"  {name}: {tag}")
+            if not ok:
+                console.print(f"    {results.get(f'{name}_error', '')}")
+
+    if failed:
+        raise typer.Exit(1)
 
 
 def token(

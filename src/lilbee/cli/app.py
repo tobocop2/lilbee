@@ -71,7 +71,7 @@ def _apply_data_root(root: Path) -> None:
 def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:
     """Resolve the data-root precedence: --data-dir | --global | LILBEE_DATA | default."""
     if use_global:
-        from lilbee.core.platform import default_data_dir
+        from lilbee.core.system import default_data_dir
 
         _apply_data_root(default_data_dir())
         return

@@ -674,7 +674,7 @@ class TestSetupWizard:
 
 class TestCanonicalModelsDir:
     def test_returns_platform_path(self) -> None:
-        from lilbee.core.platform import canonical_models_dir
+        from lilbee.core.system import canonical_models_dir
 
         result = canonical_models_dir()
         assert result.name == "models"

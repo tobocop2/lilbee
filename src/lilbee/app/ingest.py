@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lilbee.core.config import cfg
-from lilbee.core.platform import is_ignored_dir
 from lilbee.core.security import validate_path_within
+from lilbee.core.system import is_ignored_dir
 
 
 @dataclass

@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.core.platform import (
+from lilbee.core.system import (
     default_data_dir,
     find_local_root,
     is_ignored_dir,
@@ -70,7 +70,7 @@ class TestFindLocalRoot:
 
     def test_defaults_to_cwd(self, tmp_path):
         (tmp_path / ".lilbee").mkdir()
-        with mock.patch("lilbee.core.platform.Path.cwd", return_value=tmp_path):
+        with mock.patch("lilbee.core.system.Path.cwd", return_value=tmp_path):
             assert find_local_root() == tmp_path / ".lilbee"
 
 

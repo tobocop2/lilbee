@@ -45,3 +45,4 @@ scripts/qa/*
 !scripts/qa/*.py
 .DS_Store
 .superpowers/
+tools/qa-binary.sh

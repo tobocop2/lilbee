@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import sys
 
-from lilbee.cli.sync import shutdown_executor
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.services import reset_services
 
@@ -33,6 +32,9 @@ def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None
     *initial_view* deep-links to a named view (e.g. ``"Catalog"``) after
     the default chat screen is mounted. Used by ``lilbee model browse``.
     """
+    # heavy: cli.sync transitively imports ingest -> store -> pyarrow (~1.8s
+    # cold-start on bare runners); only needed at TUI shutdown. (bb-oae5)
+    from lilbee.cli.sync import shutdown_executor
     from lilbee.cli.tui.app import LilbeeApp
 
     setup_tui_log_file()

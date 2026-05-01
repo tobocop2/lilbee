@@ -9,7 +9,7 @@ import lilbee.core.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
-from lilbee.mcp import (
+from lilbee.mcp_server import (
     add,
     crawl,
     crawl_status,
@@ -523,13 +523,13 @@ class TestAdd:
 
 
 class TestMain:
-    @mock.patch("lilbee.mcp.mcp")
+    @mock.patch("lilbee.mcp_server.mcp")
     def test_main_calls_run(self, mock_mcp):
         main()
         mock_mcp.run.assert_called_once()
 
-    @mock.patch("lilbee.mcp.mcp")
-    @mock.patch("lilbee.mcp.get_services", side_effect=RuntimeError("boom"))
+    @mock.patch("lilbee.mcp_server.mcp")
+    @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
     def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_mcp):
         """A crash in the pre-warm path falls through to mcp.run() instead of aborting."""
         main()
@@ -591,7 +591,7 @@ class TestAddWithUrls:
 
 class TestCrawl:
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.mcp.start_crawl", return_value="abc123")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
     def test_returns_task_id(self, mock_start, _mock_avail, isolated_env):
         """Non-blocking crawl returns a task_id immediately."""
         result = crawl(url="https://example.com")
@@ -601,7 +601,7 @@ class TestCrawl:
         mock_start.assert_called_once_with("https://example.com", depth=None, max_pages=None)
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.mcp.start_crawl", return_value="def456")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="def456")
     def test_passes_depth_and_max_pages(self, mock_start, _mock_avail, isolated_env):
         """Depth and max_pages are forwarded to start_crawl."""
         result = crawl(url="https://example.com", depth=2, max_pages=10)
@@ -622,7 +622,7 @@ class TestCrawl:
 
 
 class TestCrawlStatus:
-    @mock.patch("lilbee.mcp.get_task")
+    @mock.patch("lilbee.mcp_server.get_task")
     def test_returns_task_state(self, mock_get_task, isolated_env):
         """Status returns current task state."""
         from lilbee.runtime.crawl_task import CrawlTask, TaskStatus
@@ -877,7 +877,7 @@ class TestWikiRead:
 
 
 class TestMcpSubcommand:
-    @mock.patch("lilbee.mcp.main")
+    @mock.patch("lilbee.mcp_server.main")
     def test_mcp_subcommand(self, mock_main):
         from typer.testing import CliRunner
 

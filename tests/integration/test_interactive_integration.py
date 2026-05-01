@@ -22,8 +22,8 @@ from typer.testing import CliRunner
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
 from lilbee.cli.app import app
 from lilbee.core.config import cfg
-from lilbee.core.platform import canonical_models_dir
 from lilbee.core.services import reset_services as reset_provider
+from lilbee.core.system import canonical_models_dir
 from tests.integration.conftest import skip_if_small_chat_model
 
 pytestmark = pytest.mark.slow

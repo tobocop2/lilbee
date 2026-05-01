@@ -639,7 +639,7 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.core.platform import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
 
         if not isinstance(data, dict):  # pragma: no cover
             return data
@@ -672,7 +672,7 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.platform import default_data_dir, find_local_root
+        from lilbee.core.system import default_data_dir, find_local_root
 
         data_env = os.environ.get("LILBEE_DATA", "")
         if data_env:
