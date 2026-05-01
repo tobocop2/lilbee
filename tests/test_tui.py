@@ -402,7 +402,8 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
-            await pilot.pause()
+            for _ in range(8):
+                await pilot.pause()
             # Focus the filter input explicitly to match the scenario.
             catalog.query_one("#catalog-search", Input).focus()
             await pilot.pause()

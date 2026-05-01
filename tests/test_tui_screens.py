@@ -3128,7 +3128,8 @@ async def test_catalog_focus_search():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             screen.action_focus_search()
             await _pilot.pause()
             from textual.widgets import Input
@@ -3204,7 +3205,8 @@ async def test_catalog_vim_keys_in_input():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -4657,7 +4659,8 @@ async def test_catalog_key_g_G_noop_in_input():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -9186,7 +9189,8 @@ async def test_catalog_delete_when_input_focused():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
 
             # Focus the search input
             inp = screen.query_one("#catalog-search")
