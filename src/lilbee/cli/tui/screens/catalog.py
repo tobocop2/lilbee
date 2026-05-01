@@ -78,6 +78,18 @@ _LIST_PAGE_ROWS = 10
 # Sort columns cycled by the `s` keybinding in list view.
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
+# Fingerprint of the inputs to ``_all_*_rows`` row construction. Bumping
+# any field invalidates the cached rows; see ``_local_rows_data_key``.
+_RowCacheKey = tuple[int, int, int, bool, int, int]
+
+
+@dataclass(frozen=True)
+class _RowCacheEntry:
+    """Memoized output of one ``_all_*_rows`` builder."""
+
+    key: _RowCacheKey
+    rows: list[LocalCatalogRow]
+
 
 class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
@@ -154,9 +166,9 @@ class CatalogScreen(Screen[None]):
         # callbacks that grow / replace the backing collections invalidate
         # the construction step. Widget refs use ``getters.query_one``
         # at the class level instead of instance caches.
-        self._family_rows_cache: tuple[tuple, list[LocalCatalogRow]] | None = None
-        self._hf_rows_cache: tuple[tuple, list[LocalCatalogRow]] | None = None
-        self._remote_rows_cache: tuple[tuple, list[LocalCatalogRow]] | None = None
+        self._family_rows_cache: _RowCacheEntry | None = None
+        self._hf_rows_cache: _RowCacheEntry | None = None
+        self._remote_rows_cache: _RowCacheEntry | None = None
         # Atomicity gate for action_toggle_view (B1).
         self._view_switching: bool = False
         # Frontier-fetch debounce timer (B-Rank 8). None when no fetch
@@ -512,7 +524,7 @@ class CatalogScreen(Screen[None]):
         # callers normalize via _normalize_for_search.
         return self._search_input.value.strip()
 
-    def _local_rows_data_key(self) -> tuple:
+    def _local_rows_data_key(self) -> _RowCacheKey:
         """Cache key for the constructed (un-filtered) local row sets.
 
         Pulls in only the data shape that affects row construction.
@@ -533,36 +545,36 @@ class CatalogScreen(Screen[None]):
 
     def _all_family_rows(self) -> list[LocalCatalogRow]:
         key = self._local_rows_data_key()
-        cached = getattr(self, "_family_rows_cache", None)
-        if cached is not None and cached[0] == key:
-            return cached[1]
+        cached = self._family_rows_cache
+        if cached is not None and cached.key == key:
+            return cached.rows
         rows: list[LocalCatalogRow] = []
         for fam in self._families:
             for v in fam.variants:
                 installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
                 rows.append(variant_to_row(v, fam, installed))
-        self._family_rows_cache = (key, rows)
+        self._family_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
 
     def _all_hf_rows(self) -> list[LocalCatalogRow]:
         key = self._local_rows_data_key()
-        cached = getattr(self, "_hf_rows_cache", None)
-        if cached is not None and cached[0] == key:
-            return cached[1]
+        cached = self._hf_rows_cache
+        if cached is not None and cached.key == key:
+            return cached.rows
         rows: list[LocalCatalogRow] = []
         for m in self._hf_models:
             installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
             rows.append(catalog_to_row(m, installed))
-        self._hf_rows_cache = (key, rows)
+        self._hf_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
 
     def _all_remote_rows(self) -> list[LocalCatalogRow]:
         key = self._local_rows_data_key()
-        cached = getattr(self, "_remote_rows_cache", None)
-        if cached is not None and cached[0] == key:
-            return cached[1]
+        cached = self._remote_rows_cache
+        if cached is not None and cached.key == key:
+            return cached.rows
         rows = [remote_to_row(rm) for rm in self._remote_models]
-        self._remote_rows_cache = (key, rows)
+        self._remote_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
 
     def _build_rows(self) -> list[LocalCatalogRow]:

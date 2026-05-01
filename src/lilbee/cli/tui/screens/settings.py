@@ -87,12 +87,13 @@ class _LazyGroupBody(VerticalGroup):
     first activated; the builder is a no-arg callable that returns
     the list of row widgets to mount. Subsequent activations are a
     no-op so we don't re-mount.
+
+    Inherits ``VerticalGroup``'s ``width: 1fr; height: auto`` defaults;
+    no extra CSS is needed.
     """
 
-    DEFAULT_CSS: ClassVar[str] = "_LazyGroupBody { width: 1fr; height: auto; }"
-
     def __init__(self, *, id: str | None = None) -> None:
-        super().__init__(id=id, classes="settings-group-body")
+        super().__init__(id=id)
         self._populated = False
 
     @property
@@ -364,6 +365,18 @@ class SettingsScreen(Screen[None]):
         if pane is None or pane.id is None:
             return
         self._populate_pane(pane.id)
+
+    def populate_all_panes(self) -> None:
+        """Force every tab body to mount its editors right now.
+
+        Production users hit each pane lazily as they activate it.
+        Programmatic callers (e2e tests, an agent that wants every
+        setting reachable by id without simulating tab navigation,
+        or any integration that walks SETTINGS_MAP) call this once
+        after the screen mounts to flatten that distinction.
+        """
+        for pane_id in self._pane_groups:
+            self._populate_pane(pane_id)
 
     def _populate_pane(self, pane_id: str) -> None:
         """Mount this pane's setting editors into its lazy body.

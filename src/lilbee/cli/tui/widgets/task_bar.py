@@ -449,6 +449,9 @@ class TaskBar(Static):
         # is skipped. Visible idle cost drops from "every tick" to "on
         # actual change", recovering ~5-8 ms/sec on idle screens.
         self._last_render_fingerprint: tuple[object, ...] | None = None
+        # Poll handle. Set in on_mount and cleared in on_unmount; declared
+        # here so on_unmount can read it directly without a getattr fallback.
+        self._interval: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("", id="task-status-label")
@@ -460,12 +463,11 @@ class TaskBar(Static):
         # interval firing against a detached widget, racing with the new
         # TaskBar and occasionally setting ``display=False`` on the live
         # instance (bb-3uzp).
-        self._interval: Timer | None = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+        self._interval = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
 
     def on_unmount(self) -> None:
-        interval = getattr(self, "_interval", None)
-        if interval is not None:
-            interval.stop()
+        if self._interval is not None:
+            self._interval.stop()
             self._interval = None
 
     @property

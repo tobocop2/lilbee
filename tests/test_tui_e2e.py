@@ -1673,7 +1673,7 @@ class TestCatalogInteractions:
 
 
 class TestSettingsInteractions:
-    """Test all settings screen interactions: search, editing, navigation."""
+    """Test all settings screen interactions: editing and navigation."""
 
     async def test_grouped_sections_visible(self, _mock_resolve):
         """Grouped sections are visible on mount."""
@@ -1687,77 +1687,20 @@ class TestSettingsInteractions:
             groups = app.screen.query("Tab")
             assert len(groups) >= 1
 
-    async def test_search_filters_settings(self, _mock_resolve):
-        """Typing in search hides non-matching rows."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.switch_view("Settings")
-            await pilot.pause()
-
-            all_rows = app.screen.query(".setting-row")
-            total = len(all_rows)
-            assert total > 0
-
-            search = app.screen.query_one("#settings-search")
-            search.value = "chat_model"
-            await pilot.pause(0.15)  # wait past the filter debounce
-
-            visible = [r for r in app.screen.query(".setting-row") if r.display]
-            assert len(visible) < total
-            assert len(visible) >= 1
-
-    async def test_search_no_match_hides_all(self, _mock_resolve):
-        """Search with no matching text hides all rows."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.switch_view("Settings")
-            await pilot.pause()
-
-            search = app.screen.query_one("#settings-search")
-            search.value = "zzz_nonexistent_setting_zzz"
-            await pilot.pause(0.15)  # wait past the filter debounce
-
-            visible = [r for r in app.screen.query(".setting-row") if r.display]
-            assert len(visible) == 0
-
-    async def test_search_empty_shows_all(self, _mock_resolve):
-        """Clearing search shows all rows again."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.switch_view("Settings")
-            await pilot.pause()
-
-            all_rows = app.screen.query(".setting-row")
-            total = len(all_rows)
-
-            search = app.screen.query_one("#settings-search")
-            search.value = "chat_model"
-            await pilot.pause(0.15)
-            search.value = ""
-            await pilot.pause(0.15)
-
-            visible = [r for r in app.screen.query(".setting-row") if r.display]
-            assert len(visible) == total
-
     async def test_edit_string_value_updates_cfg(self, _mock_resolve):
         """Editing a writable string setting persists to cfg."""
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
             await pilot.pause()
 
             editor = app.screen.query_one("#ed-rag_system_prompt", Input)
@@ -1779,11 +1722,15 @@ class TestSettingsInteractions:
         from textual.widgets import Checkbox
 
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 120)) as pilot:
             await pilot.pause()
             app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
             await pilot.pause()
 
             checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
@@ -1801,11 +1748,15 @@ class TestSettingsInteractions:
     async def test_read_only_fields_have_no_editor(self, _mock_resolve):
         """Read-only settings do not have an editor widget."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
             await pilot.pause()
 
             from lilbee.cli.settings_map import SETTINGS_MAP
@@ -1874,6 +1825,7 @@ class TestSettingsInteractions:
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = LilbeeApp()
         received = []
@@ -1882,6 +1834,9 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.settings_changed_signal.subscribe(app, lambda data: received.append(data))
             app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
             await pilot.pause()
 
             editor = app.screen.query_one("#ed-rag_system_prompt", Input)

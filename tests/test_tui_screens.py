@@ -506,8 +506,7 @@ def _make_eager_settings_screen():
 
         def on_mount(self) -> None:
             super().on_mount()
-            for pane_id in self._pane_groups:
-                self._populate_pane(pane_id)
+            self.populate_all_panes()
 
     return _EagerSettingsScreen
 
@@ -1722,8 +1721,15 @@ async def test_status_screen_storage_section(mock_svc):
 
 async def test_status_screen_arch_section(mock_svc):
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         info = app.screen.query_one("#arch-info", Static)
+        # Architecture reads run on a worker; poll until the
+        # placeholder is replaced with real content, capped so a
+        # genuine failure still fails fast.
+        for _ in range(40):
+            await pilot.pause()
+            if "Chat arch" in str(info.render()):
+                break
         rendered = str(info.render())
         assert "Chat arch" in rendered
         assert "Handler" in rendered
@@ -1732,8 +1738,12 @@ async def test_status_screen_arch_section(mock_svc):
 async def test_status_screen_arch_with_vision(mock_svc):
     cfg.chat_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         info = app.screen.query_one("#arch-info", Static)
+        for _ in range(40):
+            await pilot.pause()
+            if "Vision proj" in str(info.render()):
+                break
         rendered = str(info.render())
         assert "Vision proj" in rendered
 
@@ -1904,8 +1914,9 @@ def test_status_read_vision_arch_swallows_errors():
 
 
 def test_status_read_model_arch_import_error():
-    from lilbee.modelhub.model_info import get_model_architecture
+    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
 
+    invalidate_cache()
     with patch(
         "builtins.__import__",
         side_effect=lambda name, *a, **kw: (
@@ -1916,6 +1927,33 @@ def test_status_read_model_arch_import_error():
     ):
         result = get_model_architecture()
     assert result.chat_arch == "unknown"
+
+
+def test_get_model_architecture_caches_within_session():
+    """Repeated calls under the same model refs return the cached instance."""
+    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
+
+    invalidate_cache()
+    first = get_model_architecture()
+    second = get_model_architecture()
+    # Cached identity, not just equal value: a cache hit returns the
+    # exact same object so callers can rely on cheap reads.
+    assert first is second
+
+
+def test_invalidate_cache_forces_reread():
+    """invalidate_cache drops the memoized arch info so the next call
+    re-reads instead of returning the stale instance."""
+    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
+
+    invalidate_cache()
+    first = get_model_architecture()
+    invalidate_cache()
+    second = get_model_architecture()
+    # Different instances after invalidate (re-read happens), even
+    # though the values are equal because nothing changed on disk.
+    assert first is not second
+    assert first == second
 
 
 async def test_app_mounts_chat_screen():
