@@ -88,10 +88,20 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
 
 
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
-    """Return the CatalogModel to download for a non-installed card, or None."""
-    if card and not card.row.installed:
-        return card.row.catalog_model
-    return None
+    """Return the CatalogModel to download for a non-installed card, or None.
+
+    Setup wizard only renders local rows; the isinstance guard narrows
+    the union (CatalogRow = LocalCatalogRow | FrontierCatalogRow) so
+    the .installed / .catalog_model reads are typecheck-clean.
+    """
+    if card is None:
+        return None
+    row = card.row
+    if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+        return None
+    if row.installed:
+        return None
+    return row.catalog_model
 
 
 class SetupWizard(Screen[str | None]):
@@ -228,9 +238,12 @@ class SetupWizard(Screen[str | None]):
             if not recommended:
                 continue
             for card in cards:
-                cm = card.row.catalog_model
+                row = card.row
+                if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+                    continue
+                cm = row.catalog_model
                 if cm and cm.ref == recommended.ref:
-                    self._mark_selection(card, card.row.task)
+                    self._mark_selection(card, row.task)
                     break
 
     def _mark_selection(self, card: ModelCard, task: str) -> None:

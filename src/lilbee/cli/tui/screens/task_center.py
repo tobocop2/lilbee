@@ -14,6 +14,7 @@ while the queue is idle.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
@@ -108,11 +109,18 @@ class TaskCenter(Screen[None]):
         self._rows: dict[str, TaskRow] = {}
         self._refresh_rows()
         self._focus_initial_row()
-        self.app.task_bar.queue.subscribe(self._on_queue_change)
         self.set_interval(_TICK_INTERVAL_SECONDS, self._advance_tick)
 
-    def on_unmount(self) -> None:
-        self.app.task_bar.queue.unsubscribe(self._on_queue_change)
+    def on_show(self) -> None:
+        # Subscribe while visible; install_screen keeps this instance
+        # alive across switch_view, so anchoring on on_mount would leave
+        # a dead subscription firing into a detached DOM.
+        self.app.task_bar.queue.subscribe(self._on_queue_change)
+        self._refresh_rows()
+
+    def on_hide(self) -> None:
+        with contextlib.suppress(Exception):
+            self.app.task_bar.queue.unsubscribe(self._on_queue_change)
 
     def _on_queue_change(self) -> None:
         """Queue notification: post a thread-safe message to the screen."""

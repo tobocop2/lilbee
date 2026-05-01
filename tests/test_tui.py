@@ -845,7 +845,8 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert any("Search" in d for d in visible)
+        # Search binding was removed when the settings filter was dropped.
+        assert not any("Search" in d for d in visible)
         assert len(visible) <= 4
 
 

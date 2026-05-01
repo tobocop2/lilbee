@@ -1195,8 +1195,8 @@ def _group_rows_for_grid(
     sections: list[GridSection] = []
     if frontier_rows:
         per_provider: dict[str, list[CatalogRow]] = {}
-        for row in frontier_rows:
-            per_provider.setdefault(row.provider, []).append(row)
+        for f_row in frontier_rows:
+            per_provider.setdefault(f_row.provider, []).append(f_row)
         for provider in sorted(per_provider):
             sections.append(
                 GridSection(
