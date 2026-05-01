@@ -44,7 +44,7 @@ Local AI tools have gotten great at getting you to a chat window fast. The first
 
 Local AI can be made more substantial than a chatbot. lilbee lets you pair the chatbot with a real search engine reviewing a curated set of documents. Make a library of what matters to you, let a local model reason over it, and get answers with citations you can click back to the source. Now the model knows your world.
 
-To acheive this in the past a user would manage a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal; including a GGUF model catalog browser.
+To acheive this in the past a user would manage a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal; including a built-in model browser.
 
 The same executable ships a Textual TUI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Curated documents with topic-specificity produce better answers than a single catch-all vault of personal documents, white papers, instruction manuals, codebases, and so on.
 
@@ -73,7 +73,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │ ┌───────────────────────────────────────────────────────────┐ │
  │ │ Ask anything...                                           │ │
  │ │                                                           │ │
- │ │ Chat: [Qwen3 0.6B v]    Embed: [Nomic v1.5 v]             │ │
+ │ │ Chat [Qwen3 0.6B]  Embed [Nomic v1.5]   [Search|Chat]     │ │
  │ └───────────────────────────────────────────────────────────┘ │
  │ SYNC vault   [============------------]  42%                  │
  └───────────────────────────────────────────────────────────────┘
@@ -121,18 +121,18 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  └───────────────────────────────────────────────┘
 ```
 
-**Model catalog.** Browse, install, and switch roles without leaving the terminal. `*` indicates the developer's recommendation for each role.
+**Model catalog.** Browse, install, and switch roles without leaving the terminal. The Local sub-tab covers anything you can run on this machine (native GGUF and any locally-running SDK provider). The Frontier sub-tab appears when at least one cloud-provider API key is configured and lists what each provider exposes, grouped by Anthropic, Gemini, OpenAI, and so on. `*` indicates the developer's recommendation for each role.
 
 ```
  ┌─ Model Catalog ───────────────────────────────────┐
- │ [All tasks v] [All sizes v] [Featured v]          │
+ │ [ Local | Frontier ]                              │
+ │ [All tasks v] [All sizes v]                       │
  │ search...                       [Grid | List]     │
  │                                                   │
  │ Our picks                                         │
  │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
  │ │ Qwen3 0.6B *│ │ Nomic v1.5  │ │ BGE Rerank  │   │
  │ │ [chat]      │ │ [embed]     │ │ [rerank]    │   │
- │ │ [GGUF]      │ │ [GGUF]      │ │ [GGUF]      │   │
  │ │ 450 MB  ok  │ │ 274 MB  ok  │ │ 1.2 GB      │   │
  │ │ [Use]       │ │ [Use]       │ │ [Pull]      │   │
  │ └─────────────┘ └─────────────┘ └─────────────┘   │
@@ -140,13 +140,14 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │ Chat                                              │
  │ ┌─────────────┐ ┌─────────────┐                   │
  │ │ Qwen3 8B    │ │ Phi-4 14B   │                   │
- │ │ [GGUF]      │ │ [GGUF]      │                   │
  │ │ 4.9 GB      │ │ 9.1 GB      │                   │
  │ │ [Pull]      │ │ [Pull]      │                   │
  │ └─────────────┘ └─────────────┘                   │
  │                  [Load more]                      │
  └───────────────────────────────────────────────────┘
 ```
+
+Picking a row on Frontier sets that model as the active chat model. Frontier listings come straight from the SDK backend's view of each provider; lilbee does not curate or filter the list.
 
 ## What you can do with it
 
@@ -174,17 +175,19 @@ Scanned PDFs and photographed notes go through an OCR pipeline with a choice of 
 
 ### Pick and tune your models
 
-Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a GGUF, pick a role. Retrieval and generation are deeply tunable. You can make chunks smaller for finer-grained matches, make search stricter to filter out loose results, skip automatic query rewriting for faster responses, turn on a second-pass re-scorer for precision over the top results, or lean more on topic relationships when your corpus has lots of interconnected ideas. All editable from the TUI, environment variables, or a project-local config file, with sensible defaults out of the box.
+Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation are deeply tunable. You can make chunks smaller for finer-grained matches, make search stricter to filter out loose results, skip automatic query rewriting for faster responses, turn on a second-pass re-scorer for precision over the top results, or lean more on topic relationships when your corpus has lots of interconnected ideas. All editable from the TUI, environment variables, or a project-local config file, with sensible defaults out of the box.
 
-### Local-first, frontier-capable
+### Frontier-capable, no cloud round-trips by default
 
-lilbee is built as a local-first tool, but can also connect to cloud-hosted models. The TUI supports API keys and shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. When a local model isn't enough you can start to access popular frontier models with the commands
+lilbee runs entirely on your machine, but can also connect to cloud-hosted models. The TUI supports API keys and shows a persistent warning whenever a cloud-hosted model is active so it's clear when chunks are leaving the machine. When a local model isn't enough you can start to access popular frontier models with the commands
 `pip install --pre 'lilbee[litellm]'`
 or `uv tool install --prerelease=allow 'lilbee[litellm]''
 
 ## TUI
 
 `lilbee` with no args (or `lilbee chat`) launches a full Textual terminal app. Chat streams replies with clickable citations. A Task Center tracks every background job (sync, crawl, wiki build, model pull) and lets you cancel them with `/cancel`. Other screens cover the model catalog (`/models`), settings (`/settings`), first-time setup wizard (`/setup`), and the auto-built wiki (`/wiki`). Tab completion works for slash commands, file paths, model names, setting keys, and themes.
+
+The model bar above the prompt has searchable pickers for the active chat and embedding models (click or press Enter on the button to open a modal with a search box and a virtualized list; type to filter, Enter to pick, Escape to cancel). Next to the pickers is a Search / Chat toggle (also bound to F3). In Search mode every prompt runs through document retrieval; in Chat mode retrieval is skipped and the model answers directly. Search mode falls through to a chat answer when nothing relevant is indexed, and shows a one-time toast when that happens. The toggle is forced to Chat and disabled when no embedding model is configured.
 
 See [Previews](#previews) for a visual and the [slash-command reference](docs/usage.md#slash-commands) for the full list.
 
@@ -218,7 +221,7 @@ Popular frontier models are optional; install with `pip install --pre 'lilbee[li
 - Python 3.11, 3.12, 3.13, or 3.14
 - **Optional** (for scanned PDF / image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a GGUF vision model (see [vision OCR](docs/usage.md#vision-models))
 
-No external services needed. lilbee downloads and runs GGUF models locally via llama-cpp-python.
+No external services needed. lilbee downloads and runs models locally via llama-cpp-python.
 
 ### Default install (recommended for almost everyone)
 
@@ -272,6 +275,14 @@ docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest 
 ```
 
 Image is published to GitHub Container Registry on every release; tagged with both the version (`0.6.66b456`) and `latest`. The `LILBEE_DATA_DIR` is `/home/lilbee/data` inside the container, so mount a volume there to persist models, embeddings, and config.
+
+### Nix (NixOS, nix-darwin, or any host with nix)
+
+```bash
+nix run github:tobocop2/lilbee
+```
+
+Wraps the same release binary as Homebrew / AUR / Docker. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS without `libvulkan1` on the host.
 
 <a id="linux-runtime-requirements"></a>
 

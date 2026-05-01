@@ -34,7 +34,20 @@ export CMAKE_ARGS
 
 echo "Building llama-cpp-python==${version} (${backend}) with CMAKE_ARGS=${CMAKE_ARGS}"
 
-pip wheel "llama-cpp-python==${version}" \
+# Locate pip. uv-managed Python doesn't put pip on PATH, so prefer the
+# project venv's pip when present; fall back to PATH for setup-python
+# (build-wheels.yml) and Homebrew/system installs (release.yml on macOS).
+if [ -n "${PIP_CMD:-}" ]; then
+  pip_cmd=$PIP_CMD
+elif [ -x ".venv/bin/pip" ]; then
+  pip_cmd=".venv/bin/pip"
+elif [ -x ".venv/Scripts/pip.exe" ]; then
+  pip_cmd=".venv/Scripts/pip.exe"
+else
+  pip_cmd="pip"
+fi
+
+"$pip_cmd" wheel "llama-cpp-python==${version}" \
   --no-deps \
   --no-binary=llama-cpp-python \
   -w "${build_dir}"

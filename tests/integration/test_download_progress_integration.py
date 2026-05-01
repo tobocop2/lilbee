@@ -1,4 +1,4 @@
-"""Integration test — proves real-time download progress with an actual HF download.
+"""Integration test: proves real-time download progress with an actual HF download.
 
 Downloads a tiny model (~3 MB) and verifies:
 1. Progress callback fires incrementally (not just 0 → 100)
@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.catalog import FEATURED_EMBEDDING, CatalogModel, download_model
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 pytestmark = pytest.mark.slow
 

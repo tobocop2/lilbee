@@ -1,11 +1,11 @@
-"""Tests for LanceDB store operations — hybrid search + FTS index lifecycle."""
+"""Tests for LanceDB store operations: hybrid search + FTS index lifecycle."""
 
 from unittest import mock
 
 import pytest
 
-from lilbee.config import META_TABLE, cfg
-from lilbee.store import (
+from lilbee.core.config import META_TABLE, cfg
+from lilbee.data.store import (
     CitationRecord,
     SearchChunk,
     SearchScope,
@@ -108,7 +108,7 @@ class TestEnsureFtsIndex:
 class TestHasFtsIndex:
     def test_returns_false_on_fresh_table(self, store):
         store.add_chunks(_make_records())
-        from lilbee.store import _has_fts_index
+        from lilbee.data.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
@@ -117,7 +117,7 @@ class TestHasFtsIndex:
     def test_returns_true_after_create(self, store):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        from lilbee.store import _has_fts_index
+        from lilbee.data.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
@@ -125,7 +125,7 @@ class TestHasFtsIndex:
 
     def test_returns_false_on_list_indices_error(self, store):
         store.add_chunks(_make_records())
-        from lilbee.store import _has_fts_index
+        from lilbee.data.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
@@ -182,7 +182,7 @@ class TestHybridSearch:
         store.add_chunks(records)
         store.ensure_fts_index()
         query_vec = [0.5] * test_config.embedding_dim
-        with mock.patch("lilbee.store._hybrid_search", side_effect=RuntimeError("boom")):
+        with mock.patch("lilbee.data.store.core._hybrid_search", side_effect=RuntimeError("boom")):
             results = store.search(query_vec, top_k=3, query_text="chunk")
         assert len(results) > 0
         assert results[0].distance is not None
@@ -870,7 +870,7 @@ class TestAdaptiveFilterFinalPass:
 class TestTableNamesAttributeError:
     def test_fallback_to_list_when_no_tables_attr(self, store):
         """_table_names falls back to list() when result has no .tables attribute."""
-        from lilbee.store import _table_names
+        from lilbee.data.store.lance_helpers import _table_names
 
         mock_db = mock.MagicMock()
         mock_db.list_tables.return_value = ["chunks", "sources"]
@@ -903,7 +903,7 @@ class TestSuppressLancedbThreadError:
         """Errors from LanceDB background threads are silently dropped."""
         import threading
 
-        from lilbee.store import install_lancedb_thread_error_suppressor
+        from lilbee.data.store import install_lancedb_thread_error_suppressor
 
         original = threading.excepthook
         try:
@@ -912,7 +912,7 @@ class TestSuppressLancedbThreadError:
             args = threading.ExceptHookArgs(
                 (RuntimeError, RuntimeError("shutdown"), None, lance_thread)
             )
-            # Should return without calling original hook — no exception raised.
+            # Should return without calling original hook: no exception raised.
             threading.excepthook(args)
         finally:
             threading.excepthook = original
@@ -921,7 +921,7 @@ class TestSuppressLancedbThreadError:
         """Errors from other threads are forwarded to the original excepthook."""
         import threading
 
-        from lilbee.store import install_lancedb_thread_error_suppressor
+        from lilbee.data.store import install_lancedb_thread_error_suppressor
 
         calls: list[threading.ExceptHookArgs] = []
 
@@ -971,14 +971,14 @@ class TestChunkTypePredicate:
     """The SQL predicate for scope filtering tolerates NULL for raw."""
 
     def test_raw_matches_null_for_legacy_rows(self):
-        from lilbee.store import _chunk_type_predicate
+        from lilbee.data.store.lance_helpers import _chunk_type_predicate
 
         pred = _chunk_type_predicate("raw")
         assert "IS NULL" in pred
         assert "'raw'" in pred
 
     def test_wiki_does_not_match_null(self):
-        from lilbee.store import _chunk_type_predicate
+        from lilbee.data.store.lance_helpers import _chunk_type_predicate
 
         pred = _chunk_type_predicate("wiki")
         assert "IS NULL" not in pred
@@ -1001,7 +1001,7 @@ class TestEmbeddingModelGate:
 
     def test_add_chunks_raises_when_model_drifts_same_dim(self, store, test_config):
         """Same dim, different model = silent corruption today; the gate refuses now."""
-        from lilbee.store import EmbeddingModelMismatchError
+        from lilbee.data.store import EmbeddingModelMismatchError
 
         store.add_chunks(_make_records())
         original_model = test_config.embedding_model
@@ -1016,7 +1016,7 @@ class TestEmbeddingModelGate:
 
     def test_search_raises_when_model_drifts(self, store, test_config):
         """Search refuses to serve under a different embedding model than the persisted one."""
-        from lilbee.store import EmbeddingModelMismatchError
+        from lilbee.data.store import EmbeddingModelMismatchError
 
         store.add_chunks(_make_records())
         test_config.embedding_model = "ollama/switched-model:latest"
@@ -1026,7 +1026,7 @@ class TestEmbeddingModelGate:
 
     def test_search_raises_when_dim_drifts(self, store, test_config):
         """Switching to a different-dim model is rejected by the meta gate."""
-        from lilbee.store import EmbeddingModelMismatchError
+        from lilbee.data.store import EmbeddingModelMismatchError
 
         store.add_chunks(_make_records())
         test_config.embedding_dim = test_config.embedding_dim + 16
@@ -1046,12 +1046,13 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.data.store.types import _META_DELETE_ALL_PREDICATE
 
         _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
         assert store.get_meta() is None
 
-        with caplog.at_level(logging.WARNING, logger="lilbee.store"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.store"):
             results = store.search([0.1] * test_config.embedding_dim)
 
         assert isinstance(results, list)
@@ -1087,7 +1088,8 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.data.store.types import _META_DELETE_ALL_PREDICATE
 
         _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
         original_model = test_config.embedding_model
@@ -1114,7 +1116,8 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
-        from lilbee.store import _META_DELETE_ALL_PREDICATE, _safe_delete_unlocked
+        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.data.store.types import _META_DELETE_ALL_PREDICATE
 
         _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
 

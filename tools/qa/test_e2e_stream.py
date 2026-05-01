@@ -263,3 +263,39 @@ def test_tui_chat_advances_past_thinking_spinner(
         )
     finally:
         session.close()
+
+
+@pytest.mark.writer
+@pytest.mark.timeout(420)
+def test_chat_stream_rejects_concurrent_request_with_429(
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_models: dict[str, str],
+    served_lilbee: tuple[str, dict[str, str], dict[str, str]],
+) -> None:
+    """A second concurrent /api/chat/stream request returns 429 with Retry-After."""
+    _seed_corpus(lilbee_data)
+    sync = subprocess.run(
+        [lane.lilbee_bin, "sync"],
+        env=lilbee_env_with_models,
+        capture_output=True,
+        text=True,
+        timeout=_SYNC_TIMEOUT,
+        check=False,
+    )
+    assert sync.returncode == 0, sync.stderr
+
+    base_url, _env, headers = served_lilbee
+    payload = {"messages": [{"role": "user", "content": "Say hi in one word."}]}
+
+    with (
+        httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as holder,
+        holder.stream("POST", f"{base_url}/api/chat/stream", json=payload) as held,
+    ):
+        held.raise_for_status()
+        # Pull a single chunk so the server-side handler is past lock acquisition.
+        next(iter(held.iter_lines()), None)
+        with httpx.Client(timeout=15.0, headers=headers) as competitor:
+            second = competitor.post(f"{base_url}/api/chat/stream", json=payload)
+        assert second.status_code == 429, second.text
+        assert second.headers.get("Retry-After") == "1", dict(second.headers)

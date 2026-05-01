@@ -1,4 +1,4 @@
-"""Integration test configuration — shared fixtures for real-backend tests."""
+"""Integration test configuration: shared fixtures for real-backend tests."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.system import canonical_models_dir
+from lilbee.core.config import cfg
+from lilbee.core.system import canonical_models_dir
 
 # macOS CI runners use CPU-only inference (no Metal GPU passthrough).
 # SmolLM2-135M is fast enough; Qwen3-0.6B is too slow.
@@ -36,7 +36,7 @@ TEST_DOCS = {f.name: f.read_text() for f in sorted(DOCS_DIR.iterdir()) if f.is_f
 def _resolve_installed_ref(hf_repo: str) -> str:
     """Return the canonical ``hf_repo/filename`` ref for whichever quant of
     *hf_repo* is currently installed in the registry."""
-    from lilbee.registry import ModelRegistry
+    from lilbee.modelhub.registry import ModelRegistry
 
     for manifest in ModelRegistry(cfg.models_dir).list_installed():
         if manifest.hf_repo == hf_repo:
@@ -101,9 +101,8 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     yields pipeline data, then restores config.
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
-    from lilbee.ingest import sync
-    from lilbee.model_manager import reset_model_manager
-    from lilbee.services import reset_services as reset_provider
+    from lilbee.core.services import reset_services as reset_provider
+    from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("rag_integration")
@@ -130,7 +129,6 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     cfg.max_tokens = 512  # keep inference fast on slow CI runners
 
     reset_provider()
-    reset_model_manager()
 
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
@@ -152,7 +150,6 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     }
 
     reset_provider()
-    reset_model_manager()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -164,9 +161,8 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     runs sync, yields pipeline data, then restores config.
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
-    from lilbee.ingest import sync
-    from lilbee.model_manager import reset_model_manager
-    from lilbee.services import reset_services as reset_provider
+    from lilbee.core.services import reset_services as reset_provider
+    from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()
     tmp = tmp_path_factory.mktemp("wiki_integration")
@@ -195,7 +191,6 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     (tmp / "wiki").mkdir(parents=True, exist_ok=True)
 
     reset_provider()
-    reset_model_manager()
 
     embed_entry = FEATURED_EMBEDDING[0]
     download_model(embed_entry)
@@ -217,6 +212,5 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     }
 
     reset_provider()
-    reset_model_manager()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

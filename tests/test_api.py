@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 def _fake_embed(text):
@@ -93,6 +93,33 @@ class TestCreate:
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "envroot"))
         bee = Lilbee()
         assert "envroot" in str(bee.config.data_root)
+
+    def test_user_supplied_provider_is_wired_through(self, tmp_path):
+        """An explicit ``provider=`` argument replaces the auto-created provider.
+
+        Constructing the embedder with the supplied mock and triggering an
+        embed-bearing path (``search`` → ``Searcher`` → ``Embedder``) must call
+        the mock's ``embed``, not the factory-built provider's.
+        """
+        from lilbee import Lilbee
+
+        custom_provider = mock.MagicMock(
+            embed=mock.MagicMock(side_effect=lambda texts: [[0.5] * 768 for _ in texts]),
+            pull_model=mock.MagicMock(),
+            shutdown=mock.MagicMock(),
+        )
+        with mock.patch("lilbee.providers.factory.create_provider") as factory:
+            bee = Lilbee(tmp_path / "userprov", provider=custom_provider)
+            # The factory must NOT have been called: the user's provider wins.
+            factory.assert_not_called()
+
+        # The composed Embedder must hold the user's provider.
+        assert bee.embedder._provider is custom_provider
+
+        # Triggering a search (empty index is fine) must route the embed call
+        # through the user's provider, not via the factory-built one.
+        bee.search("anything")
+        assert custom_provider.embed.called
 
 
 class TestSync:
@@ -259,3 +286,12 @@ class TestIsolation:
         assert "b.md" in status_b["sources"]
         assert "b.md" not in status_a["sources"]
         assert "a.md" not in status_b["sources"]
+
+
+class TestPackageGetattr:
+    def test_unknown_attribute_raises(self):
+        """Package-level ``__getattr__`` raises AttributeError for unknown names."""
+        import lilbee
+
+        with pytest.raises(AttributeError, match="has no attribute 'definitely_not_a_thing'"):
+            getattr(lilbee, "definitely_not_a_thing")  # noqa: B009

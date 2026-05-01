@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 from textual.command import Hit, Hits, Provider
 
-from lilbee import settings
-from lilbee.config import cfg
-from lilbee.services import get_services
+from lilbee.core import settings
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class LilbeeCommandProvider(Provider):
         """Generate commands for installed models."""
         commands: list[tuple[str, str, Any]] = []
         try:
-            from lilbee.models import list_installed_models
+            from lilbee.modelhub.models import list_installed_models
 
             for name in list_installed_models():
                 commands.append(
@@ -107,7 +107,7 @@ class LilbeeCommandProvider(Provider):
         display = value or "off"
         self.screen.app.notify(f"{attr}: {display}")
         if attr == "chat_model":
-            self.screen.app.title = f"lilbee — {value}"
+            self.screen.app.title = f"lilbee: {value}"
 
     def _delete_doc(self, name: str) -> None:
         store = get_services().store
@@ -119,7 +119,7 @@ class LilbeeCommandProvider(Provider):
         self.screen.app.notify("Use /add <path> or auto-sync on launch")
 
     def _action_version(self) -> None:
-        from lilbee.cli.helpers import get_version
+        from lilbee.app.version import get_version
 
         self.screen.app.notify(f"lilbee {get_version()}")
 

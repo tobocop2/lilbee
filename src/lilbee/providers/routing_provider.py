@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.catalog import is_rerank_ref
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
@@ -34,7 +34,7 @@ class RoutingProvider(LLMProvider):
 
     def _get_llama_cpp(self) -> LLMProvider:
         if self._llama_cpp is None:
-            from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+            from lilbee.providers.llama_cpp import LlamaCppProvider
 
             self._llama_cpp = LlamaCppProvider()
         return self._llama_cpp

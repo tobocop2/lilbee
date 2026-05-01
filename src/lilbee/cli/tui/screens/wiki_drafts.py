@@ -22,10 +22,9 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.task_bar import TaskBar
-from lilbee.config import cfg
-from lilbee.services import get_services
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.wiki.drafts import accept_draft, diff_draft, list_drafts, reject_draft
 
 if TYPE_CHECKING:
@@ -100,7 +99,7 @@ class WikiDraftsScreen(Screen[None]):
         table.cursor_type = "row"
         yield Horizontal(
             Vertical(
-                NavAwareInput(
+                Input(
                     placeholder=msg.WIKI_DRAFTS_SEARCH_PLACEHOLDER,
                     id="wiki-drafts-search",
                 ),

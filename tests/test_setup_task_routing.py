@@ -1,6 +1,6 @@
 """Setup wizard: Enter-on-card installs via TaskBarController.
 
-After the Bucket 2 UX redesign there's no Install & Go button — pressing
+After the Bucket 2 UX redesign there's no Install & Go button: pressing
 Enter on a model card (which fires ``GridSelect.Selected``) routes
 directly to ``_commit_selection``, which writes settings and submits
 the download to the app-level controller.
@@ -28,7 +28,7 @@ def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = N
 
 
 def _patch_setup_ram(ram_gb: float = 16.0):
-    return patch("lilbee.models.get_system_ram_gb", return_value=ram_gb)
+    return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
 
 
 class _PlainApp(App[None]):
@@ -60,7 +60,7 @@ async def test_enter_on_non_installed_chat_card_submits_download() -> None:
             mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
-                patch("lilbee.settings.set_value"),
+                patch("lilbee.core.settings.set_value"),
             ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
             mock_start.assert_called_once()
@@ -87,7 +87,7 @@ async def test_enter_on_installed_card_does_not_submit_download() -> None:
             mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download") as mock_start,
-                patch("lilbee.settings.set_value"),
+                patch("lilbee.core.settings.set_value"),
             ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=chosen))
             mock_start.assert_not_called()
@@ -110,7 +110,7 @@ async def test_enter_does_not_resubmit_same_model_twice() -> None:
             mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
-                patch("lilbee.settings.set_value"),
+                patch("lilbee.core.settings.set_value"),
             ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
@@ -129,7 +129,7 @@ async def test_enter_noop_outside_lilbee_app() -> None:
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             mock_grid = GridSelect()
-            with patch("lilbee.settings.set_value"):
+            with patch("lilbee.core.settings.set_value"):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
             assert first.selected is True
 
@@ -137,7 +137,7 @@ async def test_enter_noop_outside_lilbee_app() -> None:
 @pytest.mark.asyncio
 async def test_commit_selection_with_no_ref_returns_early() -> None:
     """Defensive: _commit_selection bails out if _mark_selection left no ref."""
-    from lilbee.models import ModelTask
+    from lilbee.modelhub.models import ModelTask
 
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
@@ -158,7 +158,7 @@ async def test_commit_selection_with_no_ref_returns_early() -> None:
             with (
                 patch.object(wizard, "_mark_selection", side_effect=_stub),
                 patch.object(app.task_bar, "start_download") as mock_start,
-                patch("lilbee.settings.set_value") as mock_set,
+                patch("lilbee.core.settings.set_value") as mock_set,
             ):
                 wizard._commit_selection(first, ModelTask.CHAT)
             mock_start.assert_not_called()
@@ -174,7 +174,7 @@ async def test_escape_without_selection_dismisses_skipped() -> None:
             await pilot.pause()
             wizard = app.screen
             assert isinstance(wizard, SetupWizard)
-            from lilbee.models import ModelTask
+            from lilbee.modelhub.models import ModelTask
 
             wizard._selections[ModelTask.CHAT] = (None, None)
             wizard._selections[ModelTask.EMBEDDING] = (None, None)

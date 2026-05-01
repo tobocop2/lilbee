@@ -5,6 +5,11 @@
 - [OCR](#ocr)
 - [Querying](#querying)
 - [Interactive chat](#interactive-chat)
+  - [Slash commands](#slash-commands)
+  - [Model bar](#model-bar)
+  - [Search vs Chat mode](#search-vs-chat-mode)
+  - [Catalog screen](#catalog-screen)
+  - [Settings screen](#settings-screen)
 - [Managing documents](#managing-documents)
 - [Wiki](#wiki)
 - [Agent integration](#agent-integration)
@@ -158,6 +163,84 @@ All slash commands available from the TUI:
 Slash commands and paths tab-complete. A spinner shows while waiting for the
 first token from the LLM. Background jobs (sync, crawl, wiki build, model pull)
 appear in the Task Center and are cancellable with `/cancel`.
+
+### Model bar
+
+The bar above the prompt shows what's active for chat and embedding, plus the
+mode toggle:
+
+```
+Chat [Qwen3 0.6B]   Embed [Nomic v1.5]   [Search | Chat]
+```
+
+The chat and embedding labels are searchable pickers. Click one (or focus it
+with Tab and press Enter) to open a modal with a search input above a
+virtualized list of every model that role can use. Type to filter; Enter
+picks the highlighted row; Escape cancels. The active model's display label
+sits on the button at all times so you can see what's loaded without opening
+the picker.
+
+The pickers list everything the role can run: native GGUFs you already have
+installed plus, when the `litellm` extra is installed and an API key is set,
+whatever the SDK backend exposes for that provider. There is no separate
+"local-only" picker; routing happens automatically once the model is selected.
+
+### Search vs Chat mode
+
+Next to the pickers is a two-state pill that toggles between Search and Chat.
+F3 flips it.
+
+- **Search** (default). Every prompt goes through document retrieval first.
+  Relevant chunks are passed to the chat model as grounding context, and the
+  reply ends with a Sources block of clickable citations. If retrieval finds
+  nothing, lilbee falls through to a chat-only answer for that single prompt
+  and shows a one-time toast so you know the answer wasn't grounded.
+- **Chat.** Retrieval is skipped entirely; the model answers directly from
+  whatever it already knows. Useful for conversational follow-ups that don't
+  need the corpus, or for talking to a model when you haven't indexed
+  anything yet.
+
+The toggle is disabled and forced to Chat when no embedding model is
+configured (Search has nothing to search against). Configure an embedding
+model and the toggle becomes available again.
+
+The mode is also exposed as the `chat_mode` setting (`search` or `chat`),
+so `/set chat_mode chat` from the prompt or a `chat_mode = "chat"` line in
+`config.toml` work the same as flicking the toggle.
+
+### Catalog screen
+
+`/models` (or `/m`, `/catalog`) opens the catalog. The top of the screen has
+two sub-tabs:
+
+- **Local.** Everything you can run on this machine. Native GGUF models from
+  the developer's picks, the full HuggingFace catalog browsable by task and
+  size, and any locally-running SDK backend (Ollama, LM Studio, etc.) that
+  exposes models on its REST endpoint. Toggle between a card grid and a
+  dense list view; both share the same search box. Pulling a model
+  installs it; selecting an installed model assigns it to the matching role.
+- **Frontier.** Cloud chat models grouped by provider (Anthropic, Gemini,
+  OpenAI, and so on). Only appears when at least one provider API key is
+  configured, either via the Settings screen's API-Keys tab or the
+  provider's standard environment variable. The list shows whatever the
+  provider's SDK exposes for that key with no curation on lilbee's side.
+  Selecting a row makes that model the active chat model and routes
+  subsequent prompts through the cloud provider; a persistent warning
+  appears in the model bar so it's clear when chunks are leaving the
+  machine.
+
+### Settings screen
+
+`/settings` opens a tabbed settings editor. Tabs for features that aren't
+installed are hidden, not greyed out:
+
+- **API-Keys** appears only when the `litellm` extra is installed.
+- **Crawling** appears only when the `crawler` extra is installed.
+- **Wiki** appears only when the experimental wiki layer is enabled
+  (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
+
+Install the relevant extra (or flip the wiki flag) and the tab shows up on
+the next visit.
 
 ## Managing documents
 

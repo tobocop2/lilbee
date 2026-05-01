@@ -1,0 +1,182 @@
+"""HuggingFace API client with TTL cache."""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+from http import HTTPStatus
+
+import httpx
+from huggingface_hub import ModelInfo
+from huggingface_hub.hf_api import RepoSibling
+
+from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
+
+log = logging.getLogger(__name__)
+
+HF_API_URL = "https://huggingface.co/api/models"
+
+DEFAULT_TIMEOUT = 30.0
+
+# Fields requested from the HF listing API via ``?expand=``. Without this
+# expand, the default response omits siblings, cardData, and gguf.
+_HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"]
+
+# HF ``?search=`` is a single space-tokenized substring match on the model id.
+# Multiple ``search=`` params are silently ignored, so the user's query is
+# space-joined onto the GGUF filter into one param value.
+_HF_GGUF_SEARCH_TERM = "GGUF"
+
+_EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
+
+_BYTES_PER_GB = 1024**3
+
+
+def hf_token() -> str | None:
+    """Read HuggingFace token from env vars or huggingface_hub login cache."""
+    token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
+    if token:
+        return token
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:
+        return None
+
+
+def hf_headers() -> dict[str, str]:
+    """Build HTTP headers for HuggingFace API requests."""
+    token = hf_token()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def _hf_search_value(search: str) -> str:
+    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
+    tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
+    return " ".join(tokens)
+
+
+def _has_gguf_siblings(siblings: list[RepoSibling]) -> bool:
+    """Return True if the sibling list contains at least one .gguf file."""
+    return any(s.rfilename.endswith(".gguf") for s in siblings)
+
+
+def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
+    """Estimate model size in GB from the largest GGUF file in siblings."""
+    max_bytes = 0
+    for sib in siblings:
+        if sib.rfilename.endswith(".gguf"):
+            max_bytes = max(max_bytes, sib.size or 0)
+    if max_bytes > 0:
+        return round(max_bytes / _BYTES_PER_GB, 1)
+    return 0.0  # unknown: display as "?" in UI
+
+
+class HfClient:
+    """HuggingFace catalog API client with a per-instance TTL cache.
+
+    Holds the per-process cache of catalog pages keyed by query
+    parameters. The cache TTL and capacity are class-level so tests can
+    override them via subclassing if needed; the cache state itself is
+    per-instance so ``reset_services()`` discards a stale instance
+    along with its cache.
+    """
+
+    CACHE_TTL: float = 300.0
+    CACHE_MAX_ENTRIES: int = 50
+
+    def __init__(self) -> None:
+        self._cache: dict[str, tuple[float, HfPage]] = {}
+        self._cache_lock = threading.Lock()
+
+    def fetch_models(
+        self,
+        pipeline_tag: str = "text-generation",
+        sort: str = "downloads",
+        limit: int = 50,
+        offset: int = 0,
+        library: str | None = None,
+        search: str = "",
+    ) -> HfPage:
+        """Fetch GGUF models from HuggingFace API with TTL cache.
+
+        Returns an ``HfPage`` with a ``has_more`` flag derived from the
+        ``Link: <...>; rel="next"`` response header (RFC 5988), the same
+        mechanism the ``huggingface_hub`` library uses internally.
+        """
+        # Local import to avoid a cycle: query imports hf_client (this
+        # module), and hf_client uses pipeline_to_task from query.
+        from lilbee.catalog.query import pipeline_to_task
+
+        search_value = _hf_search_value(search)
+        cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{search_value}"
+        now = time.monotonic()
+        with self._cache_lock:
+            expired = [k for k, (ts, _) in self._cache.items() if now - ts >= self.CACHE_TTL]
+            for k in expired:
+                del self._cache[k]
+
+            cached = self._cache.get(cache_key)
+            if cached and now - cached[0] < self.CACHE_TTL:
+                return cached[1]
+
+        params = httpx.QueryParams(
+            pipeline_tag=pipeline_tag,
+            search=search_value,
+            sort=sort,
+            limit=limit,
+            skip=offset,
+            expand=_HF_EXPAND_FIELDS,
+        )
+        if library:
+            params = params.add("library", library)
+        try:
+            resp = httpx.get(
+                HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
+            )
+            if resp.status_code >= HTTPStatus.BAD_REQUEST:
+                log.warning("HuggingFace API returned HTTP %d", resp.status_code)
+                return _EMPTY_HF_PAGE
+            data = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning("Failed to fetch models from HuggingFace: %s", exc)
+            return _EMPTY_HF_PAGE
+
+        has_more = "next" in resp.links
+
+        models: list[CatalogModel] = []
+        for raw in data:
+            if not raw.get("id"):
+                continue
+            item = ModelInfo(**raw)
+            card_desc = item.card_data.get("description", "") if item.card_data else ""
+            gguf_meta = HfGgufMeta(**(item.gguf or {}))
+            if gguf_meta.total > 0:
+                size_gb = round(gguf_meta.total / _BYTES_PER_GB, 1)
+            else:
+                size_gb = _estimate_size_from_siblings(item.siblings or [])
+            task = pipeline_to_task(item.pipeline_tag or "")
+            models.append(
+                CatalogModel(
+                    hf_repo=item.id,
+                    gguf_filename="*.gguf",
+                    size_gb=size_gb,
+                    min_ram_gb=max(2.0, size_gb * 1.5),
+                    description=card_desc[:120] if card_desc else "",
+                    featured=False,
+                    downloads=item.downloads or 0,
+                    task=task,
+                )
+            )
+        page = HfPage(models=models, has_more=has_more)
+        with self._cache_lock:
+            self._cache[cache_key] = (now, page)
+            if len(self._cache) > self.CACHE_MAX_ENTRIES:
+                oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+                del self._cache[oldest_key]
+        return page

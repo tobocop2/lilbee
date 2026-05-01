@@ -1,6 +1,6 @@
 """Tests for the progress callback protocol module."""
 
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     BatchProgressEvent,
     CrawlDoneEvent,
     CrawlPageEvent,

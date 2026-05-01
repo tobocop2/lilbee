@@ -145,7 +145,7 @@ class TestRunServerIntegration:
         return cfg
 
     async def test_no_watcher_task_when_env_unset(self, fake_server, fake_config, monkeypatch):
-        from lilbee.cli import commands
+        from lilbee.cli.commands import servers as commands
 
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
@@ -160,7 +160,7 @@ class TestRunServerIntegration:
     async def test_schedules_watcher_when_env_set(
         self, fake_server, fake_config, monkeypatch, tmp_path
     ):
-        from lilbee.cli import commands
+        from lilbee.cli.commands import servers as commands
 
         monkeypatch.setenv(PARENT_PID_ENV, "999999")
         port_file = tmp_path / "server.port"
@@ -183,7 +183,7 @@ class TestRunServerIntegration:
     async def test_loads_config_when_not_loaded(
         self, fake_server, fake_config, monkeypatch, tmp_path
     ):
-        from lilbee.cli import commands
+        from lilbee.cli.commands import servers as commands
 
         fake_config.loaded = False
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)

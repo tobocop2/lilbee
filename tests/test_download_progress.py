@@ -1,4 +1,4 @@
-"""Tests for download progress — proves callbacks fire incrementally and errors surface.
+"""Tests for download progress: proves callbacks fire incrementally and errors surface.
 
 Unit tests use mocked hf_hub_download to verify the _CallbackProgressBar chain.
 Integration test downloads a real small model to prove end-to-end progress.
@@ -16,11 +16,11 @@ import pytest
 from lilbee.catalog import (
     CatalogModel,
     DownloadProgress,
-    _CallbackProgressBar,
-    _ProgressTracker,
     download_model,
     make_download_callback,
 )
+from lilbee.catalog.download_progress import _CallbackProgressBar, _ProgressTracker
+from lilbee.core.config import cfg
 
 
 def _tracker_tqdm_class(callback):
@@ -45,7 +45,7 @@ class TestCallbackProgressBarTerminalSuppression:
     """Verify _CallbackProgressBar never writes to a terminal."""
 
     def test_no_terminal_output(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """tqdm output is fully suppressed — nothing leaks to stderr/stdout."""
+        """tqdm output is fully suppressed: nothing leaks to stderr/stdout."""
         calls: list[tuple[int, int]] = []
         cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         bar = cls(total=1000)
@@ -123,7 +123,7 @@ class TestCallbackProgressBarIncrementalUpdates:
         bar.close()
 
     def test_small_chunks_fire_many_callbacks(self) -> None:
-        """50 small chunks each produce a callback — no coalescing/skipping."""
+        """50 small chunks each produce a callback: no coalescing/skipping."""
         calls: list[tuple[int, int]] = []
         cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         bar = cls(total=5000)
@@ -152,7 +152,7 @@ class TestCallbackProgressBarLockSafety:
 
         lock = _CallbackProgressBar.get_lock()
         # threading.RLock() returns an _RLock instance whose repr starts with
-        # "<unlocked _thread.RLock" — compare via the factory type.
+        # "<unlocked _thread.RLock": compare via the factory type.
         assert isinstance(lock, type(threading.RLock()))
 
     def test_init_survives_bad_stderr_fileno(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,7 +366,7 @@ class TestDownloadModelProgressChain:
         """download_model passes incremental progress to the user callback."""
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
         monkeypatch.setattr("huggingface_hub.hf_hub_download", self._fake_download_with_chunks)
 
@@ -389,10 +389,9 @@ class TestDownloadModelProgressChain:
     def test_already_downloaded_reports_100_immediately(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Pre-existing files report (size, size) — a single 100% call."""
-        from lilbee import catalog
+        """Pre-existing files report (size, size): a single 100% call."""
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = _test_entry()
         existing = tmp_path / entry.gguf_filename
         existing.write_bytes(b"fake model data")
@@ -409,11 +408,11 @@ class TestDownloadModelProgressChain:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_cached_download(**kwargs: Any) -> str:
-            # Return a file without calling tqdm_class — simulates HF cache hit
+            # Return a file without calling tqdm_class: simulates HF cache hit
             content = b"cached model"
             digest = hashlib.sha256(content).hexdigest()
             repo_id = kwargs.get("repo_id", "")
@@ -445,7 +444,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_timeout(**kwargs: Any) -> str:
@@ -464,7 +463,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_connect(**kwargs: Any) -> str:
@@ -481,7 +480,7 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_oserror(**kwargs: Any) -> str:
@@ -498,7 +497,7 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_unexpected(**kwargs: Any) -> str:
@@ -517,7 +516,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_gated(**kwargs: Any) -> str:
@@ -536,7 +535,7 @@ class TestDownloadModelErrorPropagation:
 
         from lilbee import catalog
 
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_not_found(**kwargs: Any) -> str:
@@ -597,7 +596,7 @@ class TestMakeDownloadCallback:
         updates: list[DownloadProgress] = []
         cb = make_download_callback(updates.append, throttle_interval=0)
         cb(500, 1000)  # partial
-        cb(1000, 1000)  # 100% but after partial — not a cache hit
+        cb(1000, 1000)  # 100% but after partial: not a cache hit
         assert len(updates) == 2
         assert updates[0].is_cache_hit is False
         assert updates[1].is_cache_hit is False

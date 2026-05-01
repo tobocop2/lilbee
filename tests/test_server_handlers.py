@@ -7,11 +7,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import lilbee.services as svc_mod
-from lilbee.config import cfg
-from lilbee.ingest import SyncResult
+import lilbee.core.services as svc_mod
+from lilbee.core.config import cfg
+from lilbee.data.ingest import SyncResult
+from lilbee.data.store import SearchChunk
 from lilbee.server import handlers
-from lilbee.store import SearchChunk
+from lilbee.server.handlers import (
+    ingest as _ingest_h,
+)
+from lilbee.server.handlers import (
+    rag as _rag_h,
+)
+from lilbee.server.handlers import (
+    sse as _sse_h,
+)
 
 _SAMPLE_CHUNK = SearchChunk(
     source="a.pdf",
@@ -87,7 +96,7 @@ class TestHealth:
 
 class TestStatus:
     async def test_returns_config_and_sources(self):
-        from lilbee.cli.helpers import StatusConfig, StatusResult
+        from lilbee.app.status import StatusConfig, StatusResult
 
         mock_status = StatusResult(
             config=StatusConfig(
@@ -161,7 +170,7 @@ class TestSearch:
 
 class TestAsk:
     async def test_returns_answer_and_sources(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(
             answer="42",
@@ -186,7 +195,7 @@ class TestAsk:
         assert result.sources[0].distance == 0.1
 
     async def test_no_sources(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="No docs found.", sources=[])
         result = await handlers.ask("what?")
@@ -202,7 +211,7 @@ class TestAsk:
             await handlers.ask("   ")
 
     async def test_forwards_chunk_type_to_searcher(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
         await handlers.ask("q", chunk_type="wiki")
@@ -327,7 +336,7 @@ class TestAskStream:
 
 class TestChat:
     async def test_passes_history(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
@@ -338,7 +347,7 @@ class TestChat:
         )
 
     async def test_forwards_chunk_type(self, mock_svc):
-        from lilbee.query import AskResult
+        from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
         await handlers.chat("q", [], chunk_type="raw")
@@ -446,13 +455,13 @@ class TestSyncStream:
 
         async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import FileDoneEvent, SyncDoneEvent
+                from lilbee.runtime.progress import FileDoneEvent, SyncDoneEvent
 
                 on_progress("file_done", FileDoneEvent(file="a.txt", status="ok", chunks=3))
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
         non_empty = [e for e in events if e]
@@ -468,7 +477,7 @@ class TestSyncStream:
 
         async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
+                from lilbee.runtime.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
 
                 on_progress(
                     "file_start",
@@ -478,7 +487,7 @@ class TestSyncStream:
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
         non_empty = [e for e in events if e]
@@ -497,7 +506,7 @@ class TestSyncStream:
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=slow_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=slow_sync):
             events = [e async for e in handlers.sync_stream()]
 
         done_events = [e for e in events if e.startswith("event: done")]
@@ -513,7 +522,7 @@ class TestSyncStream:
         async def blocking_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             captured_cancel.append(cancel)
             if on_progress:
-                from lilbee.progress import FileStartEvent
+                from lilbee.runtime.progress import FileStartEvent
 
                 on_progress(
                     "file_start", FileStartEvent(file="a.txt", total_files=1, current_file=1)
@@ -522,7 +531,7 @@ class TestSyncStream:
             return SyncResult()
 
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        with patch("lilbee.ingest.sync", side_effect=blocking_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=blocking_sync):
             gen = handlers.sync_stream()
             async for event in gen:
                 if event and "file_start" in event:
@@ -544,7 +553,7 @@ class TestAddFiles:
         async def fake_sync(**kwargs):
             return SyncResult()
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = []
             async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
                 events.append(event)
@@ -558,7 +567,7 @@ class TestAddFiles:
         async def failing_sync(**kwargs):
             raise RuntimeError("sync blew up")
 
-        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
             events = []
             async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
                 events.append(event)
@@ -580,12 +589,12 @@ class TestSyncStreamDoneDelivery:
 
         async def instant_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import SyncDoneEvent
+                from lilbee.runtime.progress import SyncDoneEvent
 
                 on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=instant_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=instant_sync):
             events = [e async for e in handlers.sync_stream()]
 
         # The sync-emitted done (SyncDoneEvent counts) must be delivered, and
@@ -604,12 +613,12 @@ class TestSyncStreamDoneDelivery:
 
         async def noop_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
-                from lilbee.progress import SyncDoneEvent
+                from lilbee.runtime.progress import SyncDoneEvent
 
                 on_progress("done", SyncDoneEvent(added=0, updated=0, removed=0, failed=0))
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=noop_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=noop_sync):
             events = [e async for e in handlers.sync_stream()]
 
         done_events = [e for e in events if e.startswith("event: done")]
@@ -641,7 +650,7 @@ class TestSyncStreamDoneDelivery:
         async def failing_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             raise RuntimeError("boom")
 
-        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
             events = [e async for e in handlers.sync_stream()]
 
         error_events = [e for e in events if e.startswith("event: error")]
@@ -660,7 +669,7 @@ class TestSyncStreamDoneDelivery:
             observed["force_rebuild"] = force_rebuild
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             _ = [e async for e in handlers.sync_stream(force_rebuild=True)]
 
         assert observed["force_rebuild"] is True
@@ -674,7 +683,7 @@ class TestSyncStreamDoneDelivery:
             observed["force_rebuild"] = force_rebuild
             return sync_result
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             _ = [e async for e in handlers.sync_stream()]
 
         assert observed["force_rebuild"] is False
@@ -764,10 +773,10 @@ class TestDrainHeartbeat:
 
 
 class TestListModels:
-    @patch("lilbee.server.handlers.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_catalogs(self, mock_get_mm):
         installed = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
-        mock_get_mm.return_value.list_installed.return_value = [installed]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         assert result.chat.active == cfg.chat_model
@@ -775,10 +784,10 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert installed in result.chat.installed
 
-    @patch("lilbee.server.handlers.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_installed_flag_in_catalog(self, mock_get_mm):
-        installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
-        mock_get_mm.return_value.list_installed.return_value = [installed]
+        installed = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [installed]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
@@ -788,32 +797,32 @@ class TestListModels:
         mistral_entry = next(m for m in catalog if "Mistral" in m.name)
         assert mistral_entry.installed is False
 
-    @patch("lilbee.server.handlers.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_reranker_installed_detected_via_registry(self, mock_get_mm):
         """Rerankers install as GGUFs like chat/embedding; the ref match marks them installed."""
         from lilbee.catalog import FEATURED_RERANK
 
         bge = FEATURED_RERANK[0]
-        mock_get_mm.return_value.list_installed.return_value = [bge.ref]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [bge.ref]
         result = await handlers.list_models()
         bge_entry = next(m for m in result.reranker.catalog if bge.display_name in m.name)
         assert bge_entry.installed is True
 
-    @patch("lilbee.server.handlers.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_embedding_installed_detected_via_registry(self, mock_get_mm):
         """Embedding installs surface via the same registry path as chat/reranker."""
         from lilbee.catalog import FEATURED_EMBEDDING
 
         entry = FEATURED_EMBEDDING[0]
-        mock_get_mm.return_value.list_installed.return_value = [entry.ref]
+        mock_get_mm.return_value.model_manager.list_installed.return_value = [entry.ref]
         result = await handlers.list_models()
         embed_entry = next(m for m in result.embedding.catalog if entry.display_name in m.name)
         assert embed_entry.installed is True
 
-    @patch("lilbee.server.handlers.get_model_manager")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_vision_and_reranker_sections(self, mock_get_mm):
         """list_models exposes chat, embedding, vision, and reranker catalogs."""
-        mock_get_mm.return_value.list_installed.return_value = []
+        mock_get_mm.return_value.model_manager.list_installed.return_value = []
         cfg.vision_model = ""
         cfg.reranker_model = ""
         result = await handlers.list_models()
@@ -883,7 +892,7 @@ class TestSetChatModel:
 class TestModelsCatalog:
     @staticmethod
     def _manifest(hf_repo: str, gguf_filename: str, task: str = "chat"):
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         return ModelManifest(
             hf_repo=hf_repo,
@@ -893,7 +902,7 @@ class TestModelsCatalog:
             downloaded_at="2026-01-01T00:00:00+00:00",
         )
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_returns_catalog_response(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogModel, CatalogResult
 
@@ -931,7 +940,7 @@ class TestModelsCatalog:
         assert m.installed is True
         assert m.source == "native"
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogResult
 
@@ -958,7 +967,7 @@ class TestModelsCatalog:
             offset=5,
         )
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_installed_flag(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogModel, CatalogResult
 
@@ -985,7 +994,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogResult
 
@@ -996,7 +1005,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
         assert result.has_more is True
 
-    @patch("lilbee.catalog.get_catalog")
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_installed_reflects_registry_not_routing_provider(
         self, mock_get_catalog, mock_svc
     ):
@@ -1008,7 +1017,7 @@ class TestModelsCatalog:
         in the registry for that ref.
         """
         from lilbee.catalog import CatalogModel, CatalogResult
-        from lilbee.registry import ModelManifest
+        from lilbee.modelhub.registry import ModelManifest
 
         mock_get_catalog.return_value = CatalogResult(
             total=2,
@@ -1065,10 +1074,13 @@ class TestModelsInstalled:
     async def test_returns_installed_models(self):
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["ollama/qwen3:8b", "ollama/mistral:7b"]
-        from lilbee.model_manager import ModelSource
+        from lilbee.modelhub.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.REMOTE
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_installed()
         assert len(result.models) == 2
         assert result.models[0].source == "remote"
@@ -1077,7 +1089,10 @@ class TestModelsInstalled:
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["unknown"]
         mock_manager.get_source.return_value = None
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_installed()
         assert result.models[0].source == "remote"
 
@@ -1093,7 +1108,10 @@ class TestModelsPull:
             return
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             events = [e async for e in handlers.models_pull("test", source="native")]
         non_empty = [e for e in events if e]
         assert any('"current": 500' in e for e in non_empty)
@@ -1110,7 +1128,10 @@ class TestModelsPull:
             return
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             events = [e async for e in handlers.models_pull("test", source="remote")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
@@ -1119,7 +1140,10 @@ class TestModelsPull:
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
         mock_manager.pull.side_effect = RuntimeError("fail")
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             events = [e async for e in handlers.models_pull("bad", source="native")]
         non_empty = [e for e in events if e]
         assert any("error" in e and "fail" in e for e in non_empty)
@@ -1140,7 +1164,10 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = blocking_pull
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             gen = handlers.models_pull("test", source="native")
             async for event in gen:
                 if event and "current" in event:
@@ -1156,7 +1183,10 @@ class TestModelsDelete:
     async def test_returns_deleted_true(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_delete("test", source="remote")
         assert result.deleted is True
         assert result.model == "test"
@@ -1164,7 +1194,10 @@ class TestModelsDelete:
     async def test_returns_deleted_false(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = False
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
         assert result.freed_gb == 0.0
@@ -1184,7 +1217,7 @@ class TestModelsShow:
 
 class TestDeleteDocuments:
     async def test_removes_known_documents(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = await handlers.delete_documents(["a.md"])
@@ -1192,7 +1225,7 @@ class TestDeleteDocuments:
         assert result.not_found == []
 
     async def test_not_found(self, mock_svc):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["missing.md"]
@@ -1202,7 +1235,7 @@ class TestDeleteDocuments:
         assert result.not_found == ["missing.md"]
 
     async def test_delete_files_removes_from_disk(self, mock_svc, tmp_path):
-        from lilbee.store import RemoveResult
+        from lilbee.data.store import RemoveResult
 
         cfg.documents_dir = tmp_path
         f = tmp_path / "a.md"
@@ -1237,7 +1270,7 @@ class TestUpdateConfig:
         assert result.updated == ["temperature"]
         assert cfg.temperature is None
         # Verify delete_value was called (file should not contain temperature)
-        from lilbee import settings as s
+        from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert "temperature" not in stored
@@ -1248,7 +1281,7 @@ class TestUpdateConfig:
 
     async def test_non_nullable_field_rejects_null(self):
         with pytest.raises(ValueError, match="does not accept null"):
-            await handlers.update_config({"system_prompt": None})
+            await handlers.update_config({"rag_system_prompt": None})
 
     async def test_empty_dict_returns_no_updates(self):
         result = await handlers.update_config({})
@@ -1299,8 +1332,8 @@ class TestUpdateConfig:
         """If second field is invalid, first field should NOT be applied."""
         original_temp = cfg.temperature
         with pytest.raises(ValueError, match="does not accept null"):
-            await handlers.update_config({"temperature": 0.9, "system_prompt": None})
-        # temperature should be unchanged — validation happens before apply
+            await handlers.update_config({"temperature": 0.9, "rag_system_prompt": None})
+        # temperature should be unchanged: validation happens before apply
         assert cfg.temperature == original_temp
 
     async def test_multi_field_success(self, tmp_path):
@@ -1311,20 +1344,20 @@ class TestUpdateConfig:
         assert cfg.temperature == 0.7
         assert cfg.top_k == 5
         # Verify both persisted
-        from lilbee import settings as s
+        from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert stored["temperature"] == "0.7"
         assert stored["top_k"] == "5"
 
     async def test_api_key_update_injects_provider_keys(self, tmp_path):
-        with patch("lilbee.server.handlers.inject_provider_keys") as mock_inject:
+        with patch("lilbee.server.handlers.config.inject_provider_keys") as mock_inject:
             result = await handlers.update_config({"openai_api_key": "sk-new"})
         assert result.updated == ["openai_api_key"]
         mock_inject.assert_called_once()
 
     async def test_non_key_update_skips_injection(self, tmp_path):
-        with patch("lilbee.server.handlers.inject_provider_keys") as mock_inject:
+        with patch("lilbee.server.handlers.config.inject_provider_keys") as mock_inject:
             await handlers.update_config({"temperature": 0.5})
         mock_inject.assert_not_called()
 
@@ -1349,28 +1382,28 @@ class TestUpdateConfig:
 
 
 _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
 class TestSetEmbeddingModel:
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_updates_config_and_persists(self, mock_svc, tmp_path):
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.model == _EMBED_REF
         assert cfg.embedding_model == _EMBED_REF
-        from lilbee import settings as s
+        from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert stored["embedding_model"] == _EMBED_REF
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_empty_string_rejected(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = []
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_embedding_model("")
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_embedding_model_bare_repo_resolves_to_installed_quant(self, mock_svc, tmp_path):
         """Setting an embedding by bare ``hf_repo`` resolves to whichever
         quant of that repo is currently installed.
@@ -1381,13 +1414,13 @@ class TestSetEmbeddingModel:
         assert result.model == _EMBED_REF
         assert cfg.embedding_model == _EMBED_REF
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_unavailable_embedding_model(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         with pytest.raises(ValueError, match="not available"):
             await handlers.set_embedding_model("org/Bogus-GGUF/bogus.gguf")
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_out_of_catalog_model(self, mock_svc):
         """Non-catalog installed model cannot be assigned to the embedding role."""
         custom = "org/Custom-Embed-GGUF/custom.gguf"
@@ -1395,14 +1428,14 @@ class TestSetEmbeddingModel:
         with pytest.raises(ValueError, match="featured catalog"):
             await handlers.set_embedding_model(custom)
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model_on_embedding_endpoint(self, mock_svc):
         """Setting a chat-task model as embedding returns a task-mismatch error."""
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(ValueError, match="not embedding"):
             await handlers.set_embedding_model(_CHAT_REF)
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_reindex_required_when_persisted_meta_differs(self, mock_svc):
         """Switching to a model different from the one that built the store flags rebuild."""
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
@@ -1416,7 +1449,7 @@ class TestSetEmbeddingModel:
         assert result.model == _EMBED_REF
         assert result.reindex_required is True
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_no_reindex_required_on_empty_store(self, mock_svc):
         """A store with no _meta row (fresh install) does not need a rebuild."""
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
@@ -1424,7 +1457,7 @@ class TestSetEmbeddingModel:
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_no_reindex_required_when_same_model(self, mock_svc):
         """Re-setting the same model that already built the store does not need a rebuild."""
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
@@ -1437,7 +1470,7 @@ class TestSetEmbeddingModel:
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc):
         """A pre-upgrade store with chunks but no _meta is pinned under the OLD cfg.
 
@@ -1470,7 +1503,7 @@ class TestGetConfig:
         result = await handlers.get_config()
         dumped = result.model_dump()
         assert "chat_model" in dumped
-        assert "system_prompt" in dumped
+        assert "rag_system_prompt" in dumped
         assert "remote_base_url" in dumped
         assert "diversity_max_per_source" in dumped
         assert "mmr_lambda" in dumped
@@ -1622,15 +1655,15 @@ _VISION_REF = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
 
 
 class TestSetVisionModel:
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_sets_vision_model(self, mock_svc, tmp_path):
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
         result = await handlers.set_vision_model(_VISION_REF)
         assert result.model == _VISION_REF
         assert cfg.vision_model == _VISION_REF
 
-    @patch("lilbee.server.handlers.settings.set_value")
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.settings.set_value")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_empty_string_unsets(self, mock_svc, mock_set_value):
         cfg.vision_model = _VISION_REF
         result = await handlers.set_vision_model("")
@@ -1638,7 +1671,7 @@ class TestSetVisionModel:
         assert cfg.vision_model == ""
         mock_set_value.assert_called_once_with(cfg.data_root, "vision_model", "")
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):
         """Whitespace-only strings must not bypass the empty-check guard."""
         cfg.vision_model = _VISION_REF
@@ -1646,14 +1679,18 @@ class TestSetVisionModel:
         assert result.model == ""
         assert cfg.vision_model == ""
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
-        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
-        with pytest.raises(ValueError, match="not vision") as exc:
-            await handlers.set_vision_model(_CHAT_REF)
-        assert "PUT /api/models/chat" in str(exc.value)
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
 
-    @patch("lilbee.server.handlers.get_services")
+        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
+        with pytest.raises(TaskMismatchError) as exc:
+            await handlers.set_vision_model(_CHAT_REF)
+        assert exc.value.entry_task == ModelTask.CHAT
+        assert exc.value.expected_task == ModelTask.VISION
+
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_out_of_catalog(self, mock_svc):
         custom = "org/Custom-Vision-GGUF/custom.gguf"
         mock_svc.return_value.provider.list_models.return_value = [custom]
@@ -1665,15 +1702,15 @@ _RERANK_REF = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
 
 
 class TestSetRerankerModel:
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_sets_reranker_model(self, mock_svc, tmp_path):
         mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
         result = await handlers.set_reranker_model(_RERANK_REF)
         assert result.model == _RERANK_REF
         assert cfg.reranker_model == _RERANK_REF
 
-    @patch("lilbee.server.handlers.settings.set_value")
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.settings.set_value")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_empty_string_unsets(self, mock_svc, mock_set_value):
         cfg.reranker_model = _RERANK_REF
         result = await handlers.set_reranker_model("")
@@ -1681,7 +1718,7 @@ class TestSetRerankerModel:
         assert cfg.reranker_model == ""
         mock_set_value.assert_called_once_with(cfg.data_root, "reranker_model", "")
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):
         """Whitespace-only strings must not bypass the empty-check guard."""
         cfg.reranker_model = _RERANK_REF
@@ -1689,7 +1726,7 @@ class TestSetRerankerModel:
         assert result.model == ""
         assert cfg.reranker_model == ""
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_resolves_bare_repo_to_installed_quant(self, mock_svc, tmp_path):
         """PUT with bare ``hf_repo`` resolves to whichever quant is installed.
 
@@ -1701,35 +1738,51 @@ class TestSetRerankerModel:
         assert result.model == _RERANK_REF
         assert cfg.reranker_model == _RERANK_REF
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
-        with pytest.raises(ValueError, match="not rerank") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_reranker_model(_CHAT_REF)
-        assert "PUT /api/models/chat" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.CHAT
+        assert exc.value.expected_task == ModelTask.RERANK
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_vision_model(self, mock_svc):
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
-        with pytest.raises(ValueError, match="not rerank") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_reranker_model(_VISION_REF)
-        assert "PUT /api/models/vision" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.VISION
+        assert exc.value.expected_task == ModelTask.RERANK
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_embedding_model_in_vision_slot(self, mock_svc):
-        """Embedding model in the reranker slot redirects to the embedding endpoint."""
-        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
-        with pytest.raises(ValueError, match="not rerank") as exc:
-            await handlers.set_reranker_model(_EMBED_REF)
-        assert "PUT /api/models/embedding" in str(exc.value)
+        """Embedding model in the reranker slot carries the structured task pair."""
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
 
-    @patch("lilbee.server.handlers.get_services")
+        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
+        with pytest.raises(TaskMismatchError) as exc:
+            await handlers.set_reranker_model(_EMBED_REF)
+        assert exc.value.entry_task == ModelTask.EMBEDDING
+        assert exc.value.expected_task == ModelTask.RERANK
+
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_reranker_in_vision_slot(self, mock_svc):
-        """Reranker in the vision slot: redirect must use /reranker (not /rerank)."""
+        """Reranker in the vision slot reports the rerank/vision task pair."""
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
+
         mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
-        with pytest.raises(ValueError, match="not vision") as exc:
+        with pytest.raises(TaskMismatchError) as exc:
             await handlers.set_vision_model(_RERANK_REF)
-        assert "PUT /api/models/reranker" in str(exc.value)
+        assert exc.value.entry_task == ModelTask.RERANK
+        assert exc.value.expected_task == ModelTask.VISION
 
 
 class TestTaskEndpointPath:
@@ -1740,7 +1793,7 @@ class TestTaskEndpointPath:
     """
 
     def test_index_with_enum(self) -> None:
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
         from lilbee.server.handlers import TASK_ENDPOINT_PATH
 
         assert TASK_ENDPOINT_PATH[ModelTask.CHAT] == "chat"
@@ -1750,7 +1803,7 @@ class TestTaskEndpointPath:
 
     def test_coerces_catalog_task_string(self) -> None:
         """Coercion via ``ModelTask(entry.task)`` resolves to the enum key."""
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.models import ModelTask
         from lilbee.server.handlers import TASK_ENDPOINT_PATH
 
         assert TASK_ENDPOINT_PATH[ModelTask("chat")] == "chat"
@@ -1770,7 +1823,7 @@ class TestCrawlStream:
         from pathlib import Path
 
         async def fake_crawl(url, *, depth, max_pages, on_progress, cancel=None):
-            from lilbee.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
+            from lilbee.runtime.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
             on_progress("crawl_page", CrawlPageEvent(url=url, current=1, total=1))
@@ -1802,7 +1855,7 @@ class TestCrawlStream:
         barrier = threading.Event()
 
         async def blocking_crawl(url, *, depth, max_pages, on_progress, cancel=None):
-            from lilbee.progress import CrawlStartEvent
+            from lilbee.runtime.progress import CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
             barrier.wait(timeout=2)
@@ -1872,11 +1925,11 @@ class TestClassifyLoadError:
 
 class TestResolveGenerationOptions:
     def test_with_options(self):
-        result = handlers._resolve_generation_options({"temperature": 0.5})
+        result = _sse_h._resolve_generation_options({"temperature": 0.5})
         assert result is not None
 
     def test_without_options(self):
-        result = handlers._resolve_generation_options(None)
+        result = _sse_h._resolve_generation_options(None)
         assert result is None
 
 
@@ -1886,27 +1939,27 @@ class TestListExternalModels:
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
         """Reset the external models cache before each test."""
-        import lilbee.server.handlers as h
+        from lilbee.server.handlers import models as h
 
         h._external_cache = h._ExternalModelsCache()
         yield
         h._external_cache = h._ExternalModelsCache()
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_provider_models(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a", "model-b"]
         result = await handlers.list_external_models()
         assert result.models == ["model-a", "model-b"]
         assert result.error is None
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_error_returns_empty_with_message(self, mock_svc):
         mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
         result = await handlers.list_external_models()
         assert result.models == []
         assert result.error is not None
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_cache_reuses_result(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         result1 = await handlers.list_external_models()
@@ -1915,8 +1968,8 @@ class TestListExternalModels:
         assert result1.models == ["model-a"]
         mock_svc.return_value.provider.list_models.assert_called_once()
 
-    @patch("lilbee.server.handlers.time")
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.time")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_cache_expires(self, mock_svc, mock_time):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         mock_time.monotonic.return_value = 0.0
@@ -1927,7 +1980,7 @@ class TestListExternalModels:
 
         assert mock_svc.return_value.provider.list_models.call_count == 2
 
-    @patch("lilbee.server.handlers.get_services")
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         cfg.remote_base_url = "https://provider-a.example"
@@ -1960,9 +2013,9 @@ class TestRunLlmStreamCancel:
         stream_data = iter(["token1", "token2"])
         mock_provider.chat.return_value = stream_data
 
-        with patch("lilbee.server.handlers.get_services") as mock_svc:
+        with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
             mock_svc.return_value.provider = mock_provider
-            handlers._run_llm_stream(
+            _rag_h._run_llm_stream(
                 [{"role": "user", "content": "hi"}],
                 None,
                 queue,
@@ -1979,7 +2032,7 @@ class TestRunLlmStreamCancel:
 class TestParseOcrParams:
     def test_ocr_timeout_coerced_to_float(self):
         """_parse_ocr_params coerces ocr_timeout to float."""
-        enable_ocr, ocr_timeout = handlers._parse_ocr_params({"ocr_timeout": "60"})
+        enable_ocr, ocr_timeout = _ingest_h._parse_ocr_params({"ocr_timeout": "60"})
         assert ocr_timeout == 60.0
         assert isinstance(ocr_timeout, float)
         assert enable_ocr is None
@@ -1997,8 +2050,8 @@ class TestAddHandlerCancel:
         copy_result.copied = ["test.txt"]
         copy_result.skipped = []
 
-        with patch("lilbee.server.handlers.copy_files", return_value=copy_result):
-            result = await handlers._run_add(
+        with patch("lilbee.server.handlers.ingest.copy_files", return_value=copy_result):
+            result = await _ingest_h._run_add(
                 paths=[],
                 force=False,
                 enable_ocr=None,
@@ -2049,7 +2102,10 @@ class TestModelPullProgressCancel:
             self.cancel.set()  # Pre-set cancel before pull starts
 
         with (
-            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
             patch.object(handlers.SseStream, "__init__", patched_init),
         ):
             gen = handlers.models_pull("test", source="native")
@@ -2083,7 +2139,10 @@ class TestModelPullProgressCancel:
             self.cancel.set()
 
         with (
-            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
             patch.object(handlers.SseStream, "__init__", patched_init),
         ):
             gen = handlers.models_pull("test", source="remote")
@@ -2120,7 +2179,7 @@ class TestSearchRouteErrors:
         from lilbee.server.app import create_app
 
         async with AsyncTestClient(create_app()) as client:
-            with patch("lilbee.server.handlers.get_services") as mock_svc:
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.searcher.search.side_effect = RuntimeError("down")
                 resp = await client.get(
                     "/api/search", params={"q": "test"}, headers=self._auth_headers()
@@ -2144,7 +2203,7 @@ class TestSearchRouteErrors:
         from lilbee.server.app import create_app
 
         async with AsyncTestClient(create_app()) as client:
-            with patch("lilbee.server.handlers.get_services") as mock_svc:
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.searcher.ask_raw.side_effect = RuntimeError("down")
                 resp = await client.post(
                     "/api/ask", json={"question": "test"}, headers=self._auth_headers()

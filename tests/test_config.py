@@ -7,14 +7,14 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import (
-    _DEFAULT_CORS_ORIGIN_REGEX,
+from lilbee.core.config import (
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
     SOURCES_TABLE,
     Config,
     cfg,
 )
+from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
@@ -32,7 +32,7 @@ def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     return env
 
 
-_DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+_DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _DEFAULT_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 
@@ -60,7 +60,7 @@ class TestFromEnvDefaults:
 
     def test_config_field_public_false_marker(self):
         """ConfigField(public=False) stores the flag in json_schema_extra."""
-        from lilbee.config import ConfigField
+        from lilbee.core.config import ConfigField
 
         info = ConfigField(default="", writable=True, public=False)
         extra = info.json_schema_extra
@@ -96,6 +96,19 @@ class TestEnvVarOverrides:
         with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": ref}):
             c = Config()
             assert c.chat_model == ref
+
+    def test_chat_mode_defaults_to_search_when_none_or_empty(self):
+        """The validator coerces None / "" to 'search' so old configs round-trip."""
+        from lilbee.core.config.model import Config as ConfigCls
+
+        assert ConfigCls._normalize_chat_mode(None) == "search"
+        assert ConfigCls._normalize_chat_mode("") == "search"
+
+    def test_chat_mode_rejects_unknown_value(self):
+        from lilbee.core.config.model import Config as ConfigCls
+
+        with pytest.raises(ValueError, match="chat_mode must be"):
+            ConfigCls._normalize_chat_mode("rag")
 
     def test_embedding_model_override(self):
         ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -160,10 +173,10 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.max_distance == 1.5
 
-    def test_system_prompt_override(self):
-        with mock.patch.dict(os.environ, {"LILBEE_SYSTEM_PROMPT": "You are a pirate."}):
+    def test_rag_system_prompt_override(self):
+        with mock.patch.dict(os.environ, {"LILBEE_RAG_SYSTEM_PROMPT": "You are a pirate."}):
             c = Config()
-            assert c.system_prompt == "You are a pirate."
+            assert c.rag_system_prompt == "You are a pirate."
 
 
 class TestTomlConfigFile:
@@ -231,24 +244,24 @@ class TestTomlConfigFile:
             c = Config()
             assert c.temperature == 0.9
 
-    def test_system_prompt_from_toml(self, tmp_path):
+    def test_rag_system_prompt_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('system_prompt = "You are a pirate."\n')
+        toml_path.write_text('rag_system_prompt = "You are a pirate."\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.system_prompt == "You are a pirate."
+            assert c.rag_system_prompt == "You are a pirate."
 
-    def test_env_var_overrides_toml_for_system_prompt(self, tmp_path):
+    def test_env_var_overrides_toml_for_rag_system_prompt(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('system_prompt = "Be verbose."\n')
+        toml_path.write_text('rag_system_prompt = "Be verbose."\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
-        env["LILBEE_SYSTEM_PROMPT"] = "Be brief."
+        env["LILBEE_RAG_SYSTEM_PROMPT"] = "Be brief."
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.system_prompt == "Be brief."
+            assert c.rag_system_prompt == "Be brief."
 
     def test_enable_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -383,7 +396,7 @@ class TestEnableOcrConfig:
             assert c.enable_ocr is True
 
     def test_garbage_value_coerces_via_bool(self) -> None:
-        """Unrecognized string falls through _parse_bool and coerces via ``bool()``."""
+        """Unrecognized string falls through parse_bool and coerces via ``bool()``."""
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
             c = Config()
             assert c.enable_ocr is True  # bool("maybe") is True
@@ -505,7 +518,7 @@ class TestSemanticChunkingConfig:
 
         with (
             mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "banana"}),
-            caplog.at_level(logging.WARNING, logger="lilbee.config"),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
         ):
             c = Config()
             assert c.semantic_chunking is False
@@ -518,7 +531,7 @@ class TestSemanticChunkingConfig:
         its own conversion before a mode="before" validator even sees
         simple types like int.
         """
-        from lilbee.config import Config
+        from lilbee.core.config import Config
 
         parse = Config._parse_semantic_chunking
         assert parse(1) is True
@@ -580,22 +593,22 @@ class TestTopicThresholdConfig:
 
 class TestParseBool:
     def test_truthy_values(self) -> None:
-        from lilbee.config import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
-            assert _parse_bool(truthy) is True
+            assert parse_bool(truthy) is True
 
     def test_falsy_values(self) -> None:
-        from lilbee.config import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         for falsy in ("false", "FALSE", "0", "no", "  NO  "):
-            assert _parse_bool(falsy) is False
+            assert parse_bool(falsy) is False
 
     def test_invalid_raises(self) -> None:
-        from lilbee.config import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         with pytest.raises(ValueError, match="Invalid boolean"):
-            _parse_bool("maybe")
+            parse_bool("maybe")
 
 
 class TestOcrTimeoutConfig:
@@ -700,7 +713,7 @@ class TestCorsOriginRegexConfig:
 
     def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
         # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
-        # to set a regex that matches nothing — e.g. ^$.
+        # to set a regex that matches nothing: e.g. ^$.
         env = _clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
         with mock.patch.dict(os.environ, env, clear=True):
@@ -715,7 +728,7 @@ class TestCorsOriginRegexConfig:
     def test_cors_origin_regex_default_equals_constant(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.cors_origin_regex == _DEFAULT_CORS_ORIGIN_REGEX
+            assert c.cors_origin_regex == DEFAULT_CORS_ORIGIN_REGEX
 
 
 class TestLocalDotLilbee:
@@ -725,7 +738,7 @@ class TestLocalDotLilbee:
         env = _clean_env()
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.system.find_local_root", return_value=local),
+            mock.patch("lilbee.core.system.find_local_root", return_value=local),
         ):
             c = Config()
             assert c.data_root == local
@@ -738,7 +751,7 @@ class TestLocalDotLilbee:
         explicit = tmp_path / "explicit"
         with (
             mock.patch.dict(os.environ, {"LILBEE_DATA": str(explicit)}),
-            mock.patch("lilbee.system.find_local_root", return_value=local),
+            mock.patch("lilbee.core.system.find_local_root", return_value=local),
         ):
             c = Config()
             assert c.data_root == explicit
@@ -748,7 +761,7 @@ class TestLocalDotLilbee:
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.system.find_local_root", return_value=None),
+            mock.patch("lilbee.core.system.find_local_root", return_value=None),
         ):
             c = Config()
             assert c.data_root.name == "lilbee"
@@ -918,7 +931,7 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="You are helpful.",
+                rag_system_prompt="You are helpful.",
                 ignore_dirs=frozenset(),
             )
 
@@ -938,11 +951,11 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="You are helpful.",
+                rag_system_prompt="You are helpful.",
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_system_prompt_rejected(self, tmp_path):
+    def test_empty_rag_system_prompt_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
                 data_root=tmp_path,
@@ -958,7 +971,7 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="",
+                rag_system_prompt="",
                 ignore_dirs=frozenset(),
             )
 
@@ -978,7 +991,7 @@ class TestEmptyStringValidation:
             max_embed_chars=2000,
             top_k=10,
             max_distance=0.7,
-            system_prompt="You are helpful.",
+            rag_system_prompt="You are helpful.",
             ignore_dirs=frozenset(),
             enable_ocr=None,
         )
@@ -1012,7 +1025,7 @@ class TestIgnoreDirsFallback:
 class TestParseEnableOcrFallback:
     def test_non_string_non_bool_coerced_via_bool(self):
         """An integer like 42 falls through to bool(v)."""
-        from lilbee.config import Config
+        from lilbee.core.config import Config
 
         assert Config._parse_enable_ocr(42) is True
         assert Config._parse_enable_ocr(0) is False
@@ -1025,7 +1038,7 @@ class TestDefaultCrawlExcludePatterns:
     def _matches_any(self, url: str) -> bool:
         import re
 
-        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         return any(re.search(p, url) for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS)
 
@@ -1033,14 +1046,15 @@ class TestDefaultCrawlExcludePatterns:
         """Every shipped default must be valid Python regex."""
         import re
 
-        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         for pattern in DEFAULT_CRAWL_EXCLUDE_PATTERNS:
             re.compile(pattern)
 
     def test_every_category_contributes(self):
         """Each per-category tuple appears in the master default list."""
-        from lilbee.config import (
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+        from lilbee.core.config.defaults import (
             _ARCHIVE_EXCLUDE,
             _ATTACHMENT_EXCLUDE,
             _AUTH_EXCLUDE,
@@ -1050,7 +1064,6 @@ class TestDefaultCrawlExcludePatterns:
             _META_EXCLUDE,
             _TRACKING_EXCLUDE,
             _WP_EXCLUDE,
-            DEFAULT_CRAWL_EXCLUDE_PATTERNS,
         )
 
         for category in (
@@ -1191,21 +1204,21 @@ class TestDefaultCrawlExcludePatterns:
 class TestCrawlExcludePatternsValidator:
     def test_newline_separated_string_splits(self):
         """Env vars come in as strings; validator splits by newline."""
-        from lilbee.config import Config
+        from lilbee.core.config import Config
 
         result = Config._split_crawl_exclude_patterns("/page/\\d+\n/tag/\n/category/")
         assert result == ["/page/\\d+", "/tag/", "/category/"]
 
     def test_list_passes_through_unchanged(self):
         """TOML lists and programmatic lists pass through the validator."""
-        from lilbee.config import Config
+        from lilbee.core.config import Config
 
         result = Config._split_crawl_exclude_patterns(["/page/", "/tag/"])
         assert result == ["/page/", "/tag/"]
 
     def test_empty_string_yields_empty_list(self):
         """Empty env var collapses to an empty list, disabling the filter."""
-        from lilbee.config import Config
+        from lilbee.core.config import Config
 
         assert Config._split_crawl_exclude_patterns("") == []
         assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
@@ -1249,39 +1262,39 @@ class TestValidateModelTaskAssignment:
     """
 
     def test_chat_slot_accepts_chat_model(self, _task_validation_enabled):
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         result = validate_model_task_assignment("chat_model", _DEFAULT_CHAT_REF)
         assert result == _DEFAULT_CHAT_REF
 
     def test_chat_slot_rejects_vision_model(self, _task_validation_enabled):
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         vision = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="vision"):
             validate_model_task_assignment("chat_model", vision)
 
     def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         rerank = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="rerank"):
             validate_model_task_assignment("chat_model", rerank)
 
     def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
             validate_model_task_assignment("embedding_model", _DEFAULT_CHAT_REF)
 
     def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
             validate_model_task_assignment("vision_model", _DEFAULT_CHAT_REF)
 
     def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         vision = "noctrex/LightOnOCR-2-1B-GGUF/lightonocr-Q4_K_M.gguf"
         with pytest.raises(ValueError, match="vision"):
@@ -1289,7 +1302,7 @@ class TestValidateModelTaskAssignment:
 
     def test_empty_string_passes_through(self, _task_validation_enabled):
         """Empty or whitespace refs bypass validation (role unset)."""
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         assert validate_model_task_assignment("vision_model", "") == ""
         assert validate_model_task_assignment("reranker_model", "   ") == "   "
@@ -1298,14 +1311,14 @@ class TestValidateModelTaskAssignment:
         """Provider-prefixed refs (ollama/, openai/, ...) bypass the featured
         catalog check entirely; routing handles task taxonomy at the wire.
         """
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         ref = "ollama/qwen3:0.6b"
         assert validate_model_task_assignment("chat_model", ref) == ref
 
     def test_bare_hf_repo_canonicalizes_to_catalog_ref(self, _task_validation_enabled):
         """A bare ``hf_repo`` resolves to the catalog entry's ref (= the repo)."""
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         result = validate_model_task_assignment(
             "reranker_model", "gpustack/bge-reranker-v2-m3-GGUF"
@@ -1314,14 +1327,14 @@ class TestValidateModelTaskAssignment:
 
     def test_out_of_catalog_rejected(self, _task_validation_enabled):
         """Out-of-catalog model names are rejected since we can't verify the role."""
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="featured catalog"):
             validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
 
     def test_skip_env_var_disables_check(self, tmp_path):
         """LILBEE_SKIP_MODEL_TASK_VALIDATION bypasses the role check when pytest is imported."""
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         with mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}):
             # Bypass: returns input unchanged, does not raise.
@@ -1332,7 +1345,7 @@ class TestValidateModelTaskAssignment:
         """Shell-level env var without the pytest sentinel must not bypass validation."""
         import sys
 
-        from lilbee.config import validate_model_task_assignment
+        from lilbee.core.config import validate_model_task_assignment
 
         saved_pytest = sys.modules.pop("pytest", None)
         try:
@@ -1345,18 +1358,20 @@ class TestValidateModelTaskAssignment:
             if saved_pytest is not None:
                 sys.modules["pytest"] = saved_pytest
 
-    def test_task_mismatch_message_parity_with_handler(self, _task_validation_enabled):
-        """Validator helper and handler produce identical 422 messages."""
-        from lilbee.config import validate_model_task_assignment
-        from lilbee.models import ModelTask
-        from lilbee.server.handlers import format_task_mismatch
+    def test_task_mismatch_carries_structured_fields(self, _task_validation_enabled):
+        """TaskMismatchError carries the structured fields each surface needs to format messages."""
+        from lilbee.core.config import validate_model_task_assignment
+        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.models import ModelTask
 
         vision = "noctrex/LightOnOCR-2-1B-GGUF"
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(TaskMismatchError) as exc_info:
             validate_model_task_assignment("chat_model", vision)
 
-        handler_message = format_task_mismatch(vision, ModelTask.VISION, ModelTask.CHAT)
-        assert handler_message in str(exc_info.value)
+        err = exc_info.value
+        assert err.ref == vision
+        assert err.entry_task == ModelTask.VISION
+        assert err.expected_task == ModelTask.CHAT
 
 
 class TestBuildCfgFallback:
@@ -1364,7 +1379,7 @@ class TestBuildCfgFallback:
 
     def test_falls_back_to_defaults_on_validation_error(self, tmp_path):
         """A toml carrying an invalid model ref triggers the fallback path."""
-        from lilbee.config import _build_cfg
+        from lilbee.core.config.model import _build_cfg
 
         toml_path = tmp_path / "config.toml"
         # Bare ``name:tag`` is rejected by the new validator.
@@ -1375,11 +1390,11 @@ class TestBuildCfgFallback:
             built_cfg, error = _build_cfg()
         assert error is not None
         assert "must be a HuggingFace ref" in str(error)
-        # Falls back to defaults — chat_model is the featured Qwen3 ref.
+        # Falls back to defaults: chat_model is the featured Qwen3 ref.
         assert built_cfg.chat_model.endswith(".gguf")
 
     def test_returns_none_error_on_clean_load(self, tmp_path):
-        from lilbee.config import _build_cfg
+        from lilbee.core.config.model import _build_cfg
 
         env = _clean_env(tmp_path)
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"

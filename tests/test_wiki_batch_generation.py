@@ -1,6 +1,6 @@
-"""Tests for Phase D per-source batched wiki generation.
+"""Tests for per-source batched wiki generation.
 
-Covers the new per-source batch path in ``lilbee.wiki.gen``:
+Covers the per-source batch path in ``lilbee.wiki.generation``:
 section splitting, concept curation toggling, parse-failure and
 slug-collision drafts, the incremental ``extract_concepts=False``
 kwarg, and PENDING marker replacement on successful regen.
@@ -13,27 +13,26 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.store import SearchChunk
+from lilbee.core.config import cfg
+from lilbee.data.store import SearchChunk
+from lilbee.wiki.batch import chunks_for_source
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.gen import (
-    _all_sources_in_scope,
-    _chunks_for_source,
-    _delete_pending_marker_if_present,
-    _generate_source_batch,
-    _prefix_heading,
-    _split_batched_output,
-    build_wiki,
-)
+from lilbee.wiki.generation import _all_sources_in_scope, build_wiki
+from lilbee.wiki.persistence import delete_pending_marker_if_present
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     ENTITIES_SUBDIR,
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
+)
+from lilbee.wiki.synthesis import (
+    _prefix_heading,
+    _split_batched_output,
+    generate_source_batch,
 )
 
 
@@ -75,7 +74,8 @@ def stub_embedder(monkeypatch):
     svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
         [0.1] * cfg.embedding_dim for _ in texts
     ]
-    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.page.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
     return svc
 
 
@@ -167,7 +167,7 @@ class TestPrefixHeading:
         assert "body text" in out
 
     def test_preserves_existing_h1(self):
-        # Body already starts with an H1 — we keep it verbatim.
+        # Body already starts with an H1: we keep it verbatim.
         already = "# Henry Ford\n\nbody"
         assert _prefix_heading("Henry Ford", already) == already
 
@@ -177,14 +177,14 @@ class TestChunksForSource:
         c1 = _chunk("a.md", 0, "a0")
         c2 = _chunk("b.md", 0, "b0")
         c3 = _chunk("a.md", 1, "a1")
-        filtered = _chunks_for_source([c1, c2, c3], "a.md")
+        filtered = chunks_for_source([c1, c2, c3], "a.md")
         assert [c.chunk_index for c in filtered] == [0, 1]
         assert all(c.source == "a.md" for c in filtered)
 
 
 class TestDeletePendingMarkerIfPresent:
     def test_returns_false_when_path_missing(self, tmp_path: Path):
-        assert _delete_pending_marker_if_present(tmp_path, "missing") is False
+        assert delete_pending_marker_if_present(tmp_path, "missing") is False
 
     def test_returns_false_when_file_is_not_pending_marker(self, tmp_path: Path):
         drafts = tmp_path / "drafts"
@@ -192,7 +192,7 @@ class TestDeletePendingMarkerIfPresent:
         path = drafts / "foo.md"
         # No leading PENDING-PARSE / PENDING-COLLISION marker.
         path.write_text("just a plain draft body\n")
-        assert _delete_pending_marker_if_present(drafts, "foo") is False
+        assert delete_pending_marker_if_present(drafts, "foo") is False
         assert path.exists()
 
     def test_returns_false_on_read_oserror(self, tmp_path: Path, monkeypatch):
@@ -205,17 +205,17 @@ class TestDeletePendingMarkerIfPresent:
             raise OSError("unreadable")
 
         monkeypatch.setattr(Path, "read_text", boom)
-        assert _delete_pending_marker_if_present(drafts, "foo") is False
+        assert delete_pending_marker_if_present(drafts, "foo") is False
         # File stays on disk since we couldn't even read it.
         assert path.exists()
 
 
 class TestGenerateSourceBatchEdgeCases:
-    """Phase D guard branches in ``_generate_source_batch``."""
+    """Guard branches in ``generate_source_batch``."""
 
     def test_empty_chunks_returns_empty_list(self, stub_embedder):
         provider = _mock_batch_provider("unused")
-        pages = _generate_source_batch(
+        pages = generate_source_batch(
             source="s.txt",
             entities=[],
             chunks=[],
@@ -233,8 +233,8 @@ class TestGenerateSourceBatchEdgeCases:
         provider = MagicMock()
         provider.chat.side_effect = RuntimeError("LLM down")
         provider.get_capabilities.return_value = []
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
-        pages = _generate_source_batch(
+        caplog.set_level("WARNING", logger="lilbee.wiki.synthesis")
+        pages = generate_source_batch(
             source="s.txt",
             entities=[_entity("henry", "Henry", ["s.txt"])],
             chunks=chunks,
@@ -251,8 +251,8 @@ class TestGenerateSourceBatchEdgeCases:
         chunks = [_chunk("s.txt", 0, "body")]
         # strip_reasoning + .strip() produces an empty string.
         provider = _mock_batch_provider("   \n  \n")
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
-        pages = _generate_source_batch(
+        caplog.set_level("WARNING", logger="lilbee.wiki.synthesis")
+        pages = generate_source_batch(
             source="s.txt",
             entities=[_entity("henry", "Henry", ["s.txt"])],
             chunks=chunks,
@@ -267,22 +267,22 @@ class TestGenerateSourceBatchEdgeCases:
 
 
 class TestFinalizeSectionGuards:
-    """``_finalize_section`` safety rails that run before any write."""
+    """``finalize_section`` safety rails that run before any write."""
 
     def test_empty_header_label_produces_empty_slug_and_skips(self, stub_embedder, caplog):
         """A header that slugifies to empty (all-punctuation) is dropped."""
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
-        # ``---`` splits into a section whose header is ``---`` — after
+        # ``---`` splits into a section whose header is ``---``: after
         # make_slug, this yields the empty string and the section is
         # dropped with an INFO log. The downstream faithfulness /
         # citation checks never run.
         text = "## ---\n\n> Henry Ford founded Ford Motor. [^src1]\n" + _valid_citation_block()
         provider = _mock_batch_provider(text)
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        caplog.set_level("INFO", logger="lilbee.wiki.batch")
         # Concept-curation mode so the unmatched header is tagged as a
         # concept and reaches _finalize_section (entities-only mode
         # would just drop it in _split_batched_output).
-        pages = _generate_source_batch(
+        pages = generate_source_batch(
             source="s.txt",
             entities=[],
             chunks=chunks,
@@ -304,15 +304,15 @@ class TestFinalizeSectionGuards:
         # First entry to zero-vec body, then flip one element on
         # subsequent calls (index step), so the chunk vectors used
         # earlier still differ.
-        monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
         chunks = [_chunk("s.txt", 0, "Henry Ford founded Ford Motor.")]
         text = (
             _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
             + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
-        pages = _generate_source_batch(
+        caplog.set_level("INFO", logger="lilbee.wiki.batch")
+        pages = generate_source_batch(
             source="s.txt",
             entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
             chunks=chunks,
@@ -347,7 +347,7 @@ class TestAllSourcesInScope:
         store = MagicMock()
         store.get_sources.side_effect = RuntimeError("backend down")
         grouped = {"a.md": []}
-        caplog.set_level("WARNING", logger="lilbee.wiki.gen")
+        caplog.set_level("WARNING", logger="lilbee.wiki.generation")
         result = _all_sources_in_scope(
             entities=[],
             grouped=grouped,
@@ -388,7 +388,7 @@ class TestAllSourcesInScope:
             config=cfg,
             extract_concepts=True,
         )
-        # Still a single-element set — dedup kept the grouped entry.
+        # Still a single-element set: dedup kept the grouped entry.
         assert result == {"a.md"}
 
     def test_skips_sources_below_min_chunks(self):
@@ -421,7 +421,7 @@ class TestBuildWikiSkipLogging:
         ]
         store.get_chunks_by_source.return_value = [_chunk("s.txt", 0, "x")]
         provider = _mock_batch_provider("unused")
-        caplog.set_level("INFO", logger="lilbee.wiki.gen")
+        caplog.set_level("INFO", logger="lilbee.wiki.generation")
         pages = build_wiki([], provider, store, cfg, extract_concepts=True)
         assert pages == []
         assert any("Skipping source" in r.message for r in caplog.records)
@@ -445,7 +445,7 @@ class TestBatchGeneration:
             + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        pages = _generate_source_batch(
+        pages = generate_source_batch(
             source="s.txt",
             entities=entities,
             chunks=chunks,
@@ -469,7 +469,7 @@ class TestBatchGeneration:
             + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        _generate_source_batch(
+        generate_source_batch(
             source="s.txt",
             entities=entities,
             chunks=chunks,
@@ -490,7 +490,7 @@ class TestBatchGeneration:
             "# Henry Ford\n\n> Henry Ford founded Ford Motor. [^src1]\n" + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        pages = _generate_source_batch(
+        pages = generate_source_batch(
             source="s.txt",
             entities=entities,
             chunks=chunks,
@@ -514,7 +514,7 @@ class TestBatchGeneration:
         # Only one section is present; Ford Motor fails to parse.
         text = _section("Henry Ford", "> body.[^src1]\n") + _valid_citation_block()
         provider = _mock_batch_provider(text)
-        _generate_source_batch(
+        generate_source_batch(
             source="s.txt",
             entities=entities,
             chunks=chunks,
@@ -545,7 +545,7 @@ class TestBatchGeneration:
 
         written: dict[str, str] = {}
         provider1 = _mock_batch_provider(_batch_text("s1.txt"))
-        _generate_source_batch(
+        generate_source_batch(
             source="s1.txt",
             entities=[],
             chunks=chunks1,
@@ -556,7 +556,7 @@ class TestBatchGeneration:
             written_concept_slugs=written,
         )
         provider2 = _mock_batch_provider(_batch_text("s2.txt"))
-        _generate_source_batch(
+        generate_source_batch(
             source="s2.txt",
             entities=[],
             chunks=chunks2,
@@ -580,7 +580,7 @@ class TestBatchGeneration:
         ]
         store.get_chunks_by_source.return_value = [_chunk("s.txt", 0, "x")]
         provider = _mock_batch_provider("unused")
-        with patch("lilbee.wiki.gen._generate_source_batch") as batch:
+        with patch("lilbee.wiki.generation.generate_source_batch") as batch:
             build_wiki([], provider, store, cfg)
         batch.assert_not_called()
 
@@ -619,7 +619,7 @@ class TestBatchGeneration:
             + _valid_citation_block()
         )
         provider = _mock_batch_provider(text)
-        _generate_source_batch(
+        generate_source_batch(
             source="s.txt",
             entities=entities,
             chunks=chunks,

@@ -15,7 +15,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from lilbee.config import Config, cfg
+from lilbee.core.config import Config, cfg
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     ENTITIES_SUBDIR,

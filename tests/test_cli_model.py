@@ -8,9 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from lilbee.cli import app
-from lilbee.cli import model as model_mod
-from lilbee.cli.model import (
+from lilbee.app import models as model_mod
+from lilbee.app.models import (
     CatalogEntryData,
     ListModelsResult,
     ManifestData,
@@ -21,8 +20,9 @@ from lilbee.cli.model import (
     RemoveResult,
     ShowModelResult,
 )
-from lilbee.model_manager import ModelNotFoundError, ModelSource
-from lilbee.registry import ModelManifest
+from lilbee.cli import app
+from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.registry import ModelManifest
 
 runner = CliRunner()
 
@@ -122,14 +122,14 @@ class _FakeManager:
 @pytest.fixture
 def fake_manager():
     manager = _FakeManager(native=[_CHAT_REF], litellm=[_OLLAMA_REF])
-    with patch("lilbee.model_manager.get_model_manager", return_value=manager):
+    with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
         yield manager
 
 
 @pytest.fixture
 def empty_manager():
     manager = _FakeManager()
-    with patch("lilbee.model_manager.get_model_manager", return_value=manager):
+    with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
         yield manager
 
 
@@ -138,20 +138,20 @@ def native_manifests():
     manifests = {
         _CHAT_REF: _manifest(_CHAT_REPO, _CHAT_FILE, size=5 * 1024**3, task="chat"),
     }
-    with patch("lilbee.cli.model._native_manifest_index", return_value=manifests):
+    with patch("lilbee.app.models._native_manifest_index", return_value=manifests):
         yield manifests
 
 
 @pytest.fixture
 def no_remote_classify():
-    with patch("lilbee.model_manager.classify_remote_models", return_value=[]):
+    with patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]):
         yield
 
 
 @pytest.fixture
 def with_remote_classify():
     remote = [_remote(_OLLAMA_REF, task="chat", parameter_size="8B")]
-    with patch("lilbee.model_manager.classify_remote_models", return_value=remote):
+    with patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=remote):
         yield remote
 
 
@@ -194,7 +194,7 @@ class TestListModelsData:
         assert sources == {"native", "remote"}
 
     def test_filter_source_native_skips_litellm_http(self, fake_manager, native_manifests):
-        with patch("lilbee.model_manager.classify_remote_models") as classify:
+        with patch("lilbee.modelhub.model_manager.classify_remote_models") as classify:
             data = model_mod.list_models_data(source=ModelSource.NATIVE)
         classify.assert_not_called()
         assert data.total == 1
@@ -214,7 +214,7 @@ class TestListModelsData:
         assert empty.total == 0
 
     def test_empty_when_no_models_installed(self, empty_manager, no_remote_classify):
-        with patch("lilbee.cli.model._native_manifest_index", return_value={}):
+        with patch("lilbee.app.models._native_manifest_index", return_value={}):
             data = model_mod.list_models_data()
         assert data.total == 0
 
@@ -234,7 +234,7 @@ class TestListCmd:
         assert {e.name for e in parsed.models} == {_CHAT_REF, _OLLAMA_REF}
 
     def test_empty_human_message(self, empty_manager, no_remote_classify):
-        with patch("lilbee.cli.model._native_manifest_index", return_value={}):
+        with patch("lilbee.app.models._native_manifest_index", return_value={}):
             result = runner.invoke(app, ["model", "list"])
         assert result.exit_code == 0
         assert "No models installed" in result.output
@@ -258,7 +258,7 @@ class TestShowModelData:
         with (
             patch("lilbee.catalog.find_catalog_entry", return_value=entry),
             patch(
-                "lilbee.cli.model._resolve_native_path",
+                "lilbee.app.models._resolve_native_path",
                 return_value="/fake/path.gguf",
             ),
         ):
@@ -275,7 +275,7 @@ class TestShowModelData:
     def test_catalog_only_not_installed(self, empty_manager):
         entry = _catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
         with (
-            patch("lilbee.cli.model._native_manifest_index", return_value={}),
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
             patch("lilbee.catalog.find_catalog_entry", return_value=entry),
         ):
             data = model_mod.show_model_data("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
@@ -285,7 +285,7 @@ class TestShowModelData:
 
     def test_unknown_ref_raises_not_found(self, empty_manager):
         with (
-            patch("lilbee.cli.model._native_manifest_index", return_value={}),
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
             patch("lilbee.catalog.find_catalog_entry", return_value=None),
             pytest.raises(ModelNotFoundError, match="model not found: ghost"),
         ):
@@ -296,21 +296,21 @@ class TestResolveNativePath:
     def test_returns_path_when_registry_resolves(self, tmp_path):
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = tmp_path / "blob.gguf"
-        with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             path = model_mod._resolve_native_path(_CHAT_REF)
         assert path == str(tmp_path / "blob.gguf")
 
     def test_suppresses_key_error_from_missing_blob(self):
         fake_registry = MagicMock()
         fake_registry.resolve.side_effect = KeyError("no blob")
-        with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             path = model_mod._resolve_native_path(_CHAT_REF)
         assert path is None
 
     def test_suppresses_value_error_from_invalid_ref(self):
         fake_registry = MagicMock()
         fake_registry.resolve.side_effect = ValueError("bad ref")
-        with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             path = model_mod._resolve_native_path(_CHAT_REF)
         assert path is None
 
@@ -321,7 +321,7 @@ class TestShowCmd:
         with (
             patch("lilbee.catalog.find_catalog_entry", return_value=entry),
             patch(
-                "lilbee.cli.model._resolve_native_path",
+                "lilbee.app.models._resolve_native_path",
                 return_value="/fake/path.gguf",
             ),
         ):
@@ -335,7 +335,7 @@ class TestShowCmd:
         entry = _catalog_model()
         with (
             patch("lilbee.catalog.find_catalog_entry", return_value=entry),
-            patch("lilbee.cli.model._resolve_native_path", return_value="/p.gguf"),
+            patch("lilbee.app.models._resolve_native_path", return_value="/p.gguf"),
         ):
             result = runner.invoke(app, ["--json", "model", "show", _CHAT_REF])
         assert result.exit_code == 0, result.output
@@ -347,7 +347,7 @@ class TestShowCmd:
 
     def test_json_not_found_exits_1(self, empty_manager):
         with (
-            patch("lilbee.cli.model._native_manifest_index", return_value={}),
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
             patch("lilbee.catalog.find_catalog_entry", return_value=None),
         ):
             result = runner.invoke(app, ["--json", "model", "show", "ghost:1"])
@@ -357,7 +357,7 @@ class TestShowCmd:
 
     def test_human_not_found_exits_1(self, empty_manager):
         with (
-            patch("lilbee.cli.model._native_manifest_index", return_value={}),
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
             patch("lilbee.catalog.find_catalog_entry", return_value=None),
         ):
             result = runner.invoke(app, ["model", "show", "ghost:1"])
@@ -398,7 +398,7 @@ class TestPullModelData:
                 return
 
         manager = _Litellm()
-        with patch("lilbee.model_manager.get_model_manager", return_value=manager):
+        with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
             result = model_mod.pull_model_data(
                 _OLLAMA_REF, ModelSource.REMOTE, on_update=events.append
             )
@@ -434,7 +434,7 @@ class TestPullCmd:
     def test_runtime_error_json(self, native_manifests):
         manager = _FakeManager()
         manager.pull = MagicMock(side_effect=RuntimeError("no network"))
-        with patch("lilbee.model_manager.get_model_manager", return_value=manager):
+        with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
             result = runner.invoke(
                 app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
             )
@@ -445,7 +445,7 @@ class TestPullCmd:
     def test_runtime_error_human(self, native_manifests):
         manager = _FakeManager()
         manager.pull = MagicMock(side_effect=RuntimeError("boom"))
-        with patch("lilbee.model_manager.get_model_manager", return_value=manager):
+        with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
             result = runner.invoke(
                 app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
             )
@@ -468,7 +468,7 @@ class TestRemoveModelData:
         assert fake_manager.remove_calls == [(_CHAT_REF, None)]
 
     def test_missing_manifest_returns_zero_freed(self, fake_manager):
-        with patch("lilbee.cli.model._native_manifest_index", return_value={}):
+        with patch("lilbee.app.models._native_manifest_index", return_value={}):
             result = model_mod.remove_model_data(_CHAT_REF)
         assert result.deleted is True
         assert result.freed_gb == 0.0
@@ -564,7 +564,7 @@ class TestNativeManifestIndex:
         fake_registry.list_installed.return_value = [
             _manifest(_CHAT_REPO, _CHAT_FILE, size=1024, task="chat"),
         ]
-        with patch("lilbee.registry.ModelRegistry", return_value=fake_registry):
+        with patch("lilbee.app.models.ModelRegistry", return_value=fake_registry):
             index = model_mod._native_manifest_index()
         assert _CHAT_REF in index
         assert index[_CHAT_REF].task == "chat"

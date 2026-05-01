@@ -1,4 +1,4 @@
-"""Pill badge — colored inline label using half-block characters.
+"""Pill badge: colored inline label using half-block characters.
 
 Ported from toad (https://github.com/batrachianai/toad).
 """

@@ -1,4 +1,4 @@
-"""Tests for providers.model_ref — model reference parsing and option translation."""
+"""Tests for providers.model_ref: model reference parsing and option translation."""
 
 from __future__ import annotations
 

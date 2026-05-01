@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from lilbee.store import SearchScope
+from lilbee.data.store import SearchScope
 
 _VALID_CHUNK_TYPES = frozenset({SearchScope.RAW.value, SearchScope.WIKI.value})
 
@@ -419,7 +419,7 @@ class WikiSynthesizeResult(BaseModel):
 class DraftInfoResponse(BaseModel):
     """Metadata about a single wiki draft, mirroring ``DraftInfo.to_dict()``.
 
-    ``pending_kind`` distinguishes drift drafts (``None``) from the Phase D
+    ``pending_kind`` distinguishes drift drafts (``None``) from
     batched-generation markers (``"parse"``, ``"collision"``).
     """
 

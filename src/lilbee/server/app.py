@@ -1,4 +1,4 @@
-"""Litestar application factory — imports routes from modules, creates app with lifespan."""
+"""Litestar application factory: imports routes from modules, creates app with lifespan."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
-from lilbee.cli.helpers import get_version
-from lilbee.config import cfg
+from lilbee.app.version import get_version
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.routes.crawl import crawl_route
@@ -69,7 +70,6 @@ from lilbee.server.wiki import (
     wiki_synthesize_route,
     wiki_update_route,
 )
-from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 

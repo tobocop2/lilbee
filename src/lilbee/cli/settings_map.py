@@ -7,7 +7,9 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.config import ClustererBackend, KvCacheType, WikiEntityMode, cfg
+from lilbee.cli.tui.app import DARK_THEMES
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
 
 
 class RenderStyle(StrEnum):
@@ -171,12 +173,26 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Generation",
         help_text="Random seed for reproducible output",
     ),
-    "system_prompt": SettingDef(
+    "rag_system_prompt": SettingDef(
         str,
         nullable=False,
         render=RenderStyle.FULL,
         group="Generation",
-        help_text="System prompt sent before every conversation",
+        help_text="System prompt sent when answering with retrieved context",
+    ),
+    "general_system_prompt": SettingDef(
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Generation",
+        help_text="System prompt sent when there are no documents to ground the answer",
+    ),
+    "chat_mode": SettingDef(
+        str,
+        nullable=False,
+        group="Generation",
+        choices=tuple(m.value for m in ChatMode),
+        help_text="search runs every chat turn through document retrieval; chat skips it",
     ),
     "top_k": SettingDef(
         int,
@@ -201,6 +217,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Display",
         help_text="TUI color theme. Cycle with Ctrl+T; the active theme persists across sessions.",
+        choices=tuple(DARK_THEMES),
     ),
     "wiki": SettingDef(
         bool,
