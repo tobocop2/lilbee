@@ -3040,6 +3040,59 @@ class TestModelCardBuildHelpers:
         row = FakeRow(installed=False, sort_downloads=0, downloads="--")
         assert _build_status(row) is None  # type: ignore[arg-type]
 
+    def test_frontier_card_adds_frontier_class(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        row = FrontierCatalogRow(
+            name="gemini-2.0-flash",
+            ref="gemini-2.0-flash",
+            task="chat",
+            provider="Gemini",
+            provider_id="gemini",
+            key_status=KeyStatus.READY,
+            is_curated=True,
+        )
+        card = ModelCard(row)
+        assert card.has_class("-frontier")
+
+    def test_key_status_pill_missing_key(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import KeyStatus
+        from lilbee.cli.tui.widgets.model_card import _key_status_pill
+
+        ready = _key_status_pill(KeyStatus.READY)
+        missing = _key_status_pill(KeyStatus.MISSING_KEY)
+        assert "ready" in ready.plain
+        assert "needs key" in missing.plain
+
+    async def test_compose_frontier_renders_frontier_branch(self) -> None:
+        """ModelCard.compose for a FrontierCatalogRow renders the
+        frontier-specific child tree (provider + key-status pills)."""
+        from textual.app import App
+
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        row = FrontierCatalogRow(
+            name="gpt-4o",
+            ref="openai/gpt-4o",
+            task="chat",
+            provider="OpenAI",
+            provider_id="openai",
+            key_status=KeyStatus.MISSING_KEY,
+            is_curated=False,
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ModelCard(row)
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            card = pilot.app.query_one(ModelCard)
+            assert card.query_one("#card-name") is not None
+            assert card.query_one("#card-status") is not None
+
 
 # ---------------------------------------------------------------------------
 # TaskBar additional coverage tests
@@ -4329,6 +4382,88 @@ class TestModelListItem:
 
         content = _build_specs("--", "--", "--")
         assert str(content.plain) == "--"
+
+    def test_frontier_row_adds_frontier_class(self) -> None:
+        """Constructing a list item with a FrontierCatalogRow tags it
+        as a frontier row so CSS can style it distinctly."""
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        row = FrontierCatalogRow(
+            name="gemini-test",
+            ref="gemini-test",
+            task="chat",
+            provider="Gemini",
+            provider_id="gemini",
+            key_status=KeyStatus.READY,
+            is_curated=True,
+        )
+        item = ModelListItem(row)
+        assert item.has_class("-frontier")
+        assert item.row is row
+
+    def test_key_status_pill_missing_key(self) -> None:
+        """The MISSING_KEY pill renders the 'needs key' label."""
+        from lilbee.cli.tui.screens.catalog_utils import KeyStatus
+        from lilbee.cli.tui.widgets.model_list_item import _key_status_pill
+
+        ready = _key_status_pill(KeyStatus.READY)
+        missing = _key_status_pill(KeyStatus.MISSING_KEY)
+        assert "ready" in ready.plain
+        assert "needs key" in missing.plain
+
+    def test_build_local_status_no_status(self) -> None:
+        """A non-installed row with zero downloads has no status pill."""
+        from lilbee.cli.tui.widgets.model_list_item import _build_local_status
+
+        row = _make_list_row(installed=False, sort_downloads=0)
+        assert _build_local_status(row) is None
+
+    def test_build_frontier_head_curated_includes_star(self) -> None:
+        """A curated frontier row prefixes its head line with the featured star."""
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets.model_list_item import _build_frontier_head
+        from lilbee.modelhub.models import FEATURED_STAR
+
+        row = FrontierCatalogRow(
+            name="gpt-4o",
+            ref="gpt-4o",
+            task="chat",
+            provider="OpenAI",
+            provider_id="openai",
+            key_status=KeyStatus.MISSING_KEY,
+            is_curated=True,
+        )
+        head = _build_frontier_head(row)
+        assert FEATURED_STAR in head.plain
+
+    async def test_compose_frontier_yields_head_and_meta(self) -> None:
+        """ModelListItem.compose for a FrontierCatalogRow renders the
+        frontier branch (head Static + meta HorizontalGroup)."""
+        from textual.app import App
+
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        row = FrontierCatalogRow(
+            name="claude-3-5-sonnet",
+            ref="anthropic/claude-3-5-sonnet",
+            task="chat",
+            provider="Anthropic",
+            provider_id="anthropic",
+            key_status=KeyStatus.READY,
+            is_curated=False,
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ModelListItem(row)
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            mounted = pilot.app.query_one(ModelListItem)
+            head = mounted.query_one("#list-head")
+            assert head is not None
 
 
 class TestSearchHFCtaItem:
