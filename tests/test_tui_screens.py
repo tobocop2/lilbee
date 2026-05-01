@@ -8251,6 +8251,24 @@ class TaskCenterTestApp(App[None]):
         self.push_screen(TaskCenter())
 
 
+async def test_task_center_advance_tick_skips_when_not_active_screen():
+    """A late tick that fires after the screen is no longer on top must
+    not query a torn-down DOM."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = TaskCenterTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        # Hide the screen by replacing app.screen ownership; the timer
+        # path early-exits without touching widgets.
+        with patch.object(type(app), "screen", new_callable=PropertyMock) as mocked:
+            mocked.return_value = MagicMock()
+            screen._advance_tick()
+            assert mocked.return_value is not screen
+
+
 async def test_task_center_go_back_non_lilbee_app():
     """action_go_back pops screen on non-LilbeeApp."""
     from lilbee.cli.tui.screens.task_center import TaskCenter

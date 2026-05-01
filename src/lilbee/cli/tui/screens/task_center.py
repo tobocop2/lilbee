@@ -194,6 +194,12 @@ class TaskCenter(Screen[None]):
 
     def _advance_tick(self) -> None:
         """Bump the spinner frame and re-render counts + active row pulse."""
+        # The on_hide path stops this timer, but Textual sometimes drains
+        # one final tick after the screen leaves the top of the stack and
+        # before stop() takes effect. Skip when we're not the active
+        # screen so the late tick can't hit a torn-down DOM.
+        if self.app.screen is not self:
+            return
         self._tick += 1
         tasks = self._all_tasks()
         for task in tasks:
