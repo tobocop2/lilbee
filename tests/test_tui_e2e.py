@@ -280,14 +280,21 @@ class TestViewCycling:
 
 class TestChatOnlyBanner:
     async def test_banner_hidden_when_embedding_available(self, _mock_resolve):
-        """Banner must be hidden when embedding model resolves."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            from textual.widgets import Static
+        """Banner must be hidden when embedding model resolves and Search mode is on."""
+        from lilbee.core.config import cfg as _cfg
 
-            banner = app.screen.query_one("#chat-only-banner", Static)
-            assert banner.display is False
+        old_mode = _cfg.chat_mode
+        _cfg.chat_mode = "search"
+        app = ChatTestApp()
+        try:
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                from textual.widgets import Static
+
+                banner = app.screen.query_one("#chat-only-banner", Static)
+                assert banner.display is False
+        finally:
+            _cfg.chat_mode = old_mode
 
     async def test_banner_shown_when_embedding_unavailable(self, _mock_resolve):
         """Banner must show when _embedding_ready returns False."""

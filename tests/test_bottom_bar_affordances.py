@@ -9,6 +9,7 @@ from textual.app import App
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
@@ -17,6 +18,8 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+_TEST_LOCAL_LABEL = display_label_for_ref(TEST_LOCAL_REF)
+_ALT_CHAT_LABEL = display_label_for_ref(_ALT_CHAT_REF)
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +98,7 @@ async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert TEST_LOCAL_REF not in text
+        assert _TEST_LOCAL_LABEL not in text
 
 
 async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup) -> None:
@@ -113,7 +116,7 @@ async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup
 
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert TEST_LOCAL_REF in text
+        assert _TEST_LOCAL_LABEL in text
 
 
 async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_setup) -> None:
@@ -130,14 +133,14 @@ async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_set
         await pilot.pause()
 
         tabs = app.screen.query_one(ViewTabs)
-        assert TEST_LOCAL_REF in _rendered_tab_text(tabs)
+        assert _TEST_LOCAL_LABEL in _rendered_tab_text(tabs)
 
         cfg.chat_model = _ALT_CHAT_REF
         app.settings_changed_signal.publish(("chat_model", _ALT_CHAT_REF))
         await pilot.pause()
 
-        assert _ALT_CHAT_REF in _rendered_tab_text(tabs)
-        assert TEST_LOCAL_REF not in _rendered_tab_text(tabs)
+        assert _ALT_CHAT_LABEL in _rendered_tab_text(tabs)
+        assert _TEST_LOCAL_LABEL not in _rendered_tab_text(tabs)
 
 
 async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -> None:
