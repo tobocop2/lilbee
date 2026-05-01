@@ -63,6 +63,13 @@ _BUDGETS_MS: dict[str, float] = {
     "press ]": 250.0,
     "press escape (chat normal mode)": 250.0,
     "press i (chat insert mode)": 250.0,
+    # Stress budgets. ``type+clear long catalog filter`` types 28 chars
+    # then deletes 28; debounce collapses it to two filter passes total.
+    # The toggle storm is 8 keystrokes against the list cache. The
+    # paging stress is 40 scroll keys with no remount cost.
+    "stress: type+clear long catalog filter": 1500.0,
+    "stress: 8x grid <-> list toggle": 1200.0,
+    "stress: 40x pgdn/pgup in catalog": 1500.0,
 }
 
 
@@ -283,6 +290,50 @@ async def run_profile() -> ProfileReport:
             "switch to Catalog",
             lambda: _switch_and_settle(app, pilot, CatalogScreen, "Catalog"),
         )
+
+        # Stress steps: simulate the kind of heavy catalog navigation a
+        # user does while picking a model -- typing a long query,
+        # toggling grid <-> list repeatedly, scrolling the list, then
+        # clearing and retyping the filter. These exercise paths that
+        # were brittle (B1 deadlock, repeat remount on toggle) and
+        # produce the "jittery / sluggish" symptoms in user reports.
+
+        async def stress_long_filter() -> None:
+            search = app.screen.query_one("#catalog-search", Input)
+            search.focus()
+            await pilot.pause()
+            for ch in "qwen2-instruct-vision-large":
+                await pilot.press(ch)
+            await pilot.pause(0.2)  # past debounce, single filter pass
+            for _ in range(28):
+                await pilot.press("backspace")
+            await pilot.pause(0.2)
+
+        await profiler.step("stress: type+clear long catalog filter", stress_long_filter)
+
+        async def stress_toggle_storm() -> None:
+            scroll = app.screen.query_one("#catalog-grid")
+            scroll.focus()
+            await pilot.pause()
+            for _ in range(8):  # 4 round trips
+                await pilot.press("v")
+                await pilot.pause()
+
+        await profiler.step("stress: 8x grid <-> list toggle", stress_toggle_storm)
+
+        async def stress_list_pagedown() -> None:
+            # Make sure we're in list view, then scroll heavy.
+            scroll_id = "#catalog-list" if not app.screen._grid_view else "#catalog-grid"
+            scroll = app.screen.query_one(scroll_id)
+            scroll.focus()
+            await pilot.pause()
+            for _ in range(20):
+                await pilot.press("pagedown")
+            for _ in range(20):
+                await pilot.press("pageup")
+            await pilot.pause()
+
+        await profiler.step("stress: 40x pgdn/pgup in catalog", stress_list_pagedown)
 
     return report
 
