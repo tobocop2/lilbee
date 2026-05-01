@@ -535,8 +535,15 @@ class CatalogScreen(Screen[None]):
             ModelList(id=_FRONTIER_LIST_ID),
             id=_FRONTIER_TAB_ID,
         )
-        tabs.add_pane(pane)
-        self.call_after_refresh(self._populate_frontier_list)
+        # add_pane returns AwaitComplete; awaiting it via a worker
+        # guarantees the pane is in the DOM before _populate_frontier_list
+        # runs. Without this, downstream queries on slower runners can
+        # land before the mount completes.
+        self.run_worker(self._mount_frontier_pane(tabs, pane), exclusive=False)
+
+    async def _mount_frontier_pane(self, tabs: TabbedContent, pane: TabPane) -> None:
+        await tabs.add_pane(pane)
+        self._populate_frontier_list()
 
     def _populate_frontier_list(self) -> None:
         try:
@@ -546,7 +553,13 @@ class CatalogScreen(Screen[None]):
         ml.set_rows(_group_frontier_rows(self._build_frontier_rows(self._get_search_text())))
 
     def _get_search_text(self) -> str:
-        return self._search_input.value.strip()
+        # Deferred refresh callbacks can land while the screen is between
+        # mount cycles (e.g. switch_view chaining); the descriptor query
+        # would otherwise raise NoMatches and crash the callback.
+        try:
+            return self._search_input.value.strip()
+        except Exception:
+            return ""
 
     def _local_rows_data_key(self) -> _RowCacheKey:
         """Cache key over the inputs that drive row construction.

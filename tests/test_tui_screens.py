@@ -3240,7 +3240,8 @@ async def test_catalog_page_down_no_focus():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
