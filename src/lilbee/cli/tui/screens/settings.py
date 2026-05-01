@@ -65,13 +65,7 @@ _CONFIG_TOML_FILENAME = "config.toml"
 
 @dataclass(frozen=True)
 class _PaneGroup:
-    """One settings tab's bundle: pane id, group label, ordered settings.
-
-    The pane id is the DOM identifier for both the ``TabPane`` and its
-    inner ``_LazyGroupBody`` (the body uses ``{pane_id}-body``). The
-    items list preserves SETTINGS_MAP insertion order so the rows
-    render in the same sequence the config was authored in.
-    """
+    """One settings tab: pane id, group label, ordered settings."""
 
     pane_id: str
     group_name: str
@@ -79,18 +73,7 @@ class _PaneGroup:
 
 
 class _LazyGroupBody(VerticalGroup):
-    """Pane-body container that mounts its rows on demand.
-
-    Each TabPane wraps one of these instead of yielding rows directly,
-    so the screen's first paint only constructs the active pane's
-    editors. The screen calls ``populate(builder)`` when the pane is
-    first activated; the builder is a no-arg callable that returns
-    the list of row widgets to mount. Subsequent activations are a
-    no-op so we don't re-mount.
-
-    Inherits ``VerticalGroup``'s ``width: 1fr; height: auto`` defaults;
-    no extra CSS is needed.
-    """
+    """Pane-body container that mounts its rows on first activation."""
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -153,12 +136,7 @@ def _env_var_name(key: str) -> str:
 
 
 def _env_pill(key: str) -> Content | None:
-    """Return a warning pill showing the literal env var when it's set.
-
-    The pill appears only when the user has exported the corresponding
-    env var, signalling that TUI edits won't persist because the env
-    wins on next launch.
-    """
+    """Pill warning that an env var is overriding TUI edits, or None."""
     env_name = _env_var_name(key)
     if os.environ.get(env_name) is None:
         return None
@@ -211,13 +189,7 @@ def _crawler_installed() -> bool:
 
 
 def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
-    """Group settings by their group field, preserving insertion order.
-
-    Gated groups disappear when their feature isn't available so the
-    user never sees a tab they can't act on. The mapping is reread on
-    every screen mount, so toggling cfg.wiki and reopening Settings
-    reflects the change without restart.
-    """
+    """Group settings by group field, hiding entries gated by unavailable features."""
     groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
     for key, defn in SETTINGS_MAP.items():
         gate = _FEATURE_GATED_GROUPS.get(defn.group)
@@ -352,16 +324,7 @@ class SettingsScreen(Screen[None]):
             yield Footer()
 
     def _compose_group_tabs(self) -> ComposeResult:
-        """Yield one TabPane per setting group, populated on activation.
-
-        Each pane mounts a ``_LazyGroupBody`` container that composes
-        nothing on initial mount; its real children land when the
-        screen's ``on_mount`` (for the first pane) or
-        ``TabbedContent.TabActivated`` (for the rest) calls
-        ``populate()``. This means first-paint of Settings only
-        constructs the active tab's editors -- ~20 widgets instead of
-        ~430 -- so the screen reaches interactivity well under 200 ms.
-        """
+        """Yield one TabPane per setting group; bodies populate on activation."""
         first = True
         for group_name, items in _group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
@@ -395,23 +358,12 @@ class SettingsScreen(Screen[None]):
         self._populate_pane(pane.id)
 
     def populate_all_panes(self) -> None:
-        """Force every tab body to mount its editors right now.
-
-        Production users hit each pane lazily as they activate it.
-        Programmatic callers (e2e tests, an agent that wants every
-        setting reachable by id without simulating tab navigation,
-        or any integration that walks SETTINGS_MAP) call this once
-        after the screen mounts to flatten that distinction.
-        """
+        """Force every tab body to populate now (test/agent helper)."""
         for pane_id in self._pane_groups:
             self._populate_pane(pane_id)
 
     def _populate_pane(self, pane_id: str) -> None:
-        """Mount this pane's setting editors into its lazy body.
-
-        Delegates to ``_LazyGroupBody.populate``; the body itself
-        gates against double-mount so repeat activations are no-ops.
-        """
+        """Populate a pane's body if known and the body widget is mounted."""
         group = self._pane_groups.get(pane_id)
         if group is None:
             return
@@ -423,14 +375,7 @@ class SettingsScreen(Screen[None]):
         body.populate(lambda: self._build_pane_widgets(group))
 
     def _build_pane_widgets(self, group: _PaneGroup) -> list[Widget]:
-        """Build the body widgets for one settings tab as a flat list.
-
-        ``_LazyGroupBody.populate`` mounts whatever is returned here
-        directly, so each top-level entry must already carry its
-        children via the constructor (a generator that uses
-        ``with VerticalGroup(): yield X`` only works inside ``compose``,
-        not inside this loose builder).
-        """
+        """Return the body widgets for one settings tab."""
         widgets: list[Widget] = []
         if group.group_name == _API_KEYS_GROUP:
             widgets.append(

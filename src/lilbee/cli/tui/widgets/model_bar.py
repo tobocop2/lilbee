@@ -46,12 +46,7 @@ _CLOUD_PROVIDER_LABELS: dict[str, str] = {name: label for name, _, _, label in P
 
 
 def _cloud_provider_label(chat_model: str) -> str | None:
-    """Return the provider display label for cloud-routed models, else None.
-
-    Local models and Ollama (remote but user-local) return None. Anything
-    classified as an API provider by ``parse_model_ref`` returns the
-    matching label from PROVIDER_KEYS.
-    """
+    """Return the provider display label for cloud-routed models, else None."""
     if not chat_model:
         return None
     ref = parse_model_ref(chat_model)
@@ -73,10 +68,7 @@ def _is_mmproj(name: str) -> bool:
 
 
 def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
-    """Classify installed models into (chat, embedding) lists.
-    Uses registry manifests for native models and the SDK backend's
-    backend metadata for remote models. Filters out mmproj files.
-    """
+    """Classify installed models into (chat, embedding) lists, dropping mmproj."""
     buckets: dict[ModelTask, list[ModelOption]] = {task: [] for task in ModelTask}
     seen: set[str] = set()
 
@@ -96,11 +88,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
 def _lookup_bucket(
     buckets: dict[ModelTask, list[ModelOption]], task: str, ref: str
 ) -> list[ModelOption] | None:
-    """Return the bucket for *task*, or None if *task* is not a known ModelTask.
-
-    Unknown tasks from forward-compat manifests are dropped rather than
-    silently misclassified into chat.
-    """
+    """Return the bucket for *task*, or None if it is not a known ModelTask."""
     try:
         key = ModelTask(task)
     except ValueError:
@@ -146,11 +134,10 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing.
+    """Add remote (Ollama / OpenAI-compatible) models, prefixed for routing.
 
-    Skipped entirely when the SDK extra (``lilbee[litellm]``) isn't installed:
-    surfacing a model the SDK can't actually serve only sets the user up
-    for a runtime traceback when they pick it. (bb-ezwy)
+    Skipped when the litellm extra is not installed -- surfacing a model
+    the SDK cannot route is a guaranteed runtime error.
     """
     from lilbee.providers.litellm_sdk import litellm_available
 
@@ -180,12 +167,7 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket.
-
-    Same litellm guard as ``_collect_remote_models``: API providers
-    require the SDK to route a turn; without it, surfacing them just
-    invites a runtime traceback. (bb-ezwy)
-    """
+    """Add frontier API chat models. Skipped without litellm (cannot route)."""
     from lilbee.providers.litellm_sdk import litellm_available
 
     if not litellm_available():
@@ -211,20 +193,12 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
 
 
 def _options_fingerprint(opts: list[ModelOption], default: str) -> tuple[tuple[str, str], ...]:
-    """Stable hashable fingerprint of (options, active default).
-
-    The fingerprint includes the active default because ``_sync_select``
-    inserts a synthetic ``"(not installed)"`` option when the default
-    is missing from the list, so two scans with the same backing
-    options but different ``cfg.chat_model`` produce different visible
-    dropdowns.
-    """
+    """Hashable fingerprint of (options, active default) for cache hits."""
     return ((default, default), *((o.label, o.ref) for o in opts))
 
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
-    """Populate a Select with *opts*; show *default* with ``(not installed)``
-    when it isn't in the list, and pass unparseable defaults through unchanged."""
+    """Populate a Select; show ``(not installed)`` for a default missing from opts."""
     if default:
         try:
             ref = parse_model_ref(default)

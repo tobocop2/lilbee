@@ -14,7 +14,7 @@ from lilbee.core.config import (
     Config,
     cfg,
 )
-from lilbee.core.config.defaults import _DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
@@ -383,7 +383,7 @@ class TestEnableOcrConfig:
             assert c.enable_ocr is True
 
     def test_garbage_value_coerces_via_bool(self) -> None:
-        """Unrecognized string falls through _parse_bool and coerces via ``bool()``."""
+        """Unrecognized string falls through parse_bool and coerces via ``bool()``."""
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
             c = Config()
             assert c.enable_ocr is True  # bool("maybe") is True
@@ -580,22 +580,22 @@ class TestTopicThresholdConfig:
 
 class TestParseBool:
     def test_truthy_values(self) -> None:
-        from lilbee.core.config.parsing import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
-            assert _parse_bool(truthy) is True
+            assert parse_bool(truthy) is True
 
     def test_falsy_values(self) -> None:
-        from lilbee.core.config.parsing import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         for falsy in ("false", "FALSE", "0", "no", "  NO  "):
-            assert _parse_bool(falsy) is False
+            assert parse_bool(falsy) is False
 
     def test_invalid_raises(self) -> None:
-        from lilbee.core.config.parsing import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         with pytest.raises(ValueError, match="Invalid boolean"):
-            _parse_bool("maybe")
+            parse_bool("maybe")
 
 
 class TestOcrTimeoutConfig:
@@ -715,7 +715,7 @@ class TestCorsOriginRegexConfig:
     def test_cors_origin_regex_default_equals_constant(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.cors_origin_regex == _DEFAULT_CORS_ORIGIN_REGEX
+            assert c.cors_origin_regex == DEFAULT_CORS_ORIGIN_REGEX
 
 
 class TestLocalDotLilbee:

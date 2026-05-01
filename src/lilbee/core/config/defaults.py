@@ -191,7 +191,7 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
 )
 
 
-_DEFAULT_RAG_SYSTEM_PROMPT = (
+DEFAULT_RAG_SYSTEM_PROMPT = (
     "You are a precise, direct assistant grounded in the provided context. "
     "Answer using only the context: if it doesn't contain enough information, "
     "say so rather than guessing. Be specific: quote relevant passages and "
@@ -200,7 +200,7 @@ _DEFAULT_RAG_SYSTEM_PROMPT = (
     "explanations. Keep responses concise unless asked to elaborate."
 )
 
-_DEFAULT_GENERAL_SYSTEM_PROMPT = (
+DEFAULT_GENERAL_SYSTEM_PROMPT = (
     "You are a helpful, direct assistant. Answer the user's question from "
     "general knowledge. Keep responses concise unless asked to elaborate. "
     "For code, prefer working examples over abstract explanations."
@@ -208,7 +208,7 @@ _DEFAULT_GENERAL_SYSTEM_PROMPT = (
 
 # CORS allow-origin regex: Obsidian (desktop + iOS) and localhost loopback.
 # Mutating endpoints still require auth regardless of origin.
-_DEFAULT_CORS_ORIGIN_REGEX = (
+DEFAULT_CORS_ORIGIN_REGEX = (
     r"^(app://obsidian\.md"
     r"|capacitor://localhost"
     r"|https?://localhost(:\d+)?"

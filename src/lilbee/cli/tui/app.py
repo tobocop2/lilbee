@@ -42,11 +42,7 @@ DARK_THEMES = (
 
 
 def _view_screen_name(view_name: str) -> str:
-    """Stable install_screen identifier for a top-level view.
-
-    Lower-cased so it never collides with the user-facing display name
-    used in the tab strip.
-    """
+    """Stable install_screen identifier for a top-level view (lower-cased)."""
     return view_name.lower()
 
 
@@ -96,21 +92,17 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
-_MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model"})
+_MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model", "reranker_model"})
 
 
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
-    # Lazy: llama_cpp provider's transitive imports cost ~500ms.
     from lilbee.providers.llama_cpp.provider import LOAD_AFFECTING_KEYS
 
     key, _value = payload
     if key in LOAD_AFFECTING_KEYS:
         get_services().provider.invalidate_load_cache()
     if key in _MODEL_REF_KEYS:
-        # Architecture cache is keyed on the active refs; a swap
-        # would otherwise return stale metadata until the screen
-        # was rebuilt.
         from lilbee.modelhub.model_info import invalidate_cache
 
         invalidate_cache()
@@ -184,17 +176,7 @@ class LilbeeApp(App[None]):
             self.switch_view(self._initial_view)
 
     def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback for this session.
-
-        Persisted ``cfg.chat_model`` / ``cfg.embedding_model`` may point at
-        a GGUF the user removed, an API ref whose key was rotated out, or
-        a provider lilbee no longer recognizes. Without canonicalization
-        the very first chat turn errors with 'model not found' until the
-        user manually picks something. Swap to the first available
-        fallback (API first, then local for chat; local-only for embed)
-        and surface a notification. The persisted file stays untouched so
-        the user's intent comes back if they reinstall the original.
-        """
+        """Swap stale persisted refs to a working fallback for this session."""
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
@@ -217,9 +199,7 @@ class LilbeeApp(App[None]):
             )
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
-        """Republish on provider_availability_changed_signal when an API key
-        changes, so catalog and picker screens can refresh without each one
-        having to whitelist provider keys."""
+        """Republish on provider_availability_changed_signal when an API key changes."""
         from lilbee.core.config.keys import PROVIDER_API_KEYS
 
         key, value = payload
@@ -283,18 +263,9 @@ class LilbeeApp(App[None]):
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view, installing each screen at most once.
 
-        Guards against concurrent switches: ``switch_screen`` is async
-        (processed on the next event-loop tick) but callers read
-        ``active_view`` synchronously. Without a guard, rapid keypresses
-        queue conflicting switches that corrupt the screen stack.
+        Guards against concurrent switches via ``self._switching`` so
+        rapid keypresses don't corrupt the screen stack.
         ``active_view`` is updated after the switch completes.
-
-        Each non-Chat screen is built lazily on its first visit and
-        installed by name. Subsequent visits ``switch_screen`` to the
-        same instance, so ``compose`` + ``on_mount`` (Footer reactive
-        wiring, signal subscriptions, worker spawn) run once per
-        session instead of once per visit. Screens refresh their data
-        in ``on_show`` where applicable.
         """
         if self._switching:
             return
