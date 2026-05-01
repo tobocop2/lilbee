@@ -7,6 +7,7 @@ Every test here reproduces a bug that was found by manual testing.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 from unittest import mock
 
@@ -14,6 +15,7 @@ import pytest
 from textual.app import App, ComposeResult
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 
@@ -2714,6 +2716,141 @@ class TestChatEmbeddingReadyCoverage:
         finally:
             set_services(None)
             cfg.embedding_model = snapshot_embed
+
+
+class TestChatStreaming:
+    """Single-message-at-a-time + visible Stop affordance."""
+
+    @staticmethod
+    def _make_blocking_stream(release: threading.Event):
+        """Iterator that yields one ``StreamToken`` then blocks until ``release`` is set."""
+        from lilbee.retrieval.reasoning import StreamToken
+
+        def _gen():
+            yield StreamToken(content="first-token ", is_reasoning=False)
+            release.wait(timeout=5.0)
+            return
+
+        return _gen()
+
+    @staticmethod
+    async def _wait_streaming(pilot, screen, target: bool, ticks: int = 30) -> None:
+        for _ in range(ticks):
+            if screen.streaming is target:
+                return
+            await pilot.pause()
+
+    async def test_second_submit_while_streaming_is_dropped(self, _mock_resolve, _mock_services):
+        """A second Enter while streaming must not spawn another assistant turn."""
+        from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
+
+        release = threading.Event()
+        _mock_services.searcher.ask_stream.return_value = self._make_blocking_stream(release)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await pilot.pause()
+                inp = app.screen.query_one("#chat-input", ChatInput)
+                inp.value = "first message"
+                await pilot.press("enter")
+                await self._wait_streaming(pilot, app.screen, True)
+                assert app.screen.streaming
+                inp.value = "second message"
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(list(app.screen.query(UserMessage))) == 1
+                assert len(list(app.screen.query(AssistantMessage))) == 1
+            finally:
+                release.set()
+                await self._wait_streaming(pilot, app.screen, False)
+
+    async def test_stop_button_cancels_active_stream(self, _mock_resolve, _mock_services):
+        """Clicking the Stop button cancels the worker and re-enables input."""
+        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
+
+        release = threading.Event()
+        _mock_services.searcher.ask_stream.return_value = self._make_blocking_stream(release)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await pilot.pause()
+                inp = app.screen.query_one("#chat-input", ChatInput)
+                inp.value = "stop me"
+                await pilot.press("enter")
+                await self._wait_streaming(pilot, app.screen, True)
+                assert app.screen.streaming
+                button = app.screen.query_one(ChatStopButton)
+                button.action_press()
+                await pilot.pause()
+                assert app.screen.streaming is False
+            finally:
+                release.set()
+                await self._wait_streaming(pilot, app.screen, False)
+            assert not list(app.screen.query(ChatStopButton))
+
+    async def test_esc_cancels_active_stream(self, _mock_resolve, _mock_services):
+        """Esc keystroke cancels the worker (regression for action_enter_normal_mode path)."""
+        release = threading.Event()
+        _mock_services.searcher.ask_stream.return_value = self._make_blocking_stream(release)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await pilot.pause()
+                inp = app.screen.query_one("#chat-input", ChatInput)
+                inp.value = "esc me"
+                await pilot.press("enter")
+                await self._wait_streaming(pilot, app.screen, True)
+                assert app.screen.streaming
+                app.screen.action_enter_normal_mode()
+                await pilot.pause()
+                assert app.screen.streaming is False
+            finally:
+                release.set()
+                await self._wait_streaming(pilot, app.screen, False)
+
+    async def test_input_placeholder_swaps_with_streaming_state(
+        self, _mock_resolve, _mock_services
+    ):
+        """Placeholder reflects streaming state across the full lifecycle."""
+        release = threading.Event()
+        _mock_services.searcher.ask_stream.return_value = self._make_blocking_stream(release)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await pilot.pause()
+                inp = app.screen.query_one("#chat-input", ChatInput)
+                assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
+                inp.value = "go"
+                await pilot.press("enter")
+                await self._wait_streaming(pilot, app.screen, True)
+                assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_STREAMING
+            finally:
+                release.set()
+                await self._wait_streaming(pilot, app.screen, False)
+            assert (
+                app.screen.query_one("#chat-input", ChatInput).placeholder
+                == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
+            )
+
+    async def test_model_switch_during_streaming_cancels(self, _mock_resolve, _mock_services):
+        """apply_model_change cancels any in-flight stream. Regression for the model-swap path."""
+        release = threading.Event()
+        _mock_services.searcher.ask_stream.return_value = self._make_blocking_stream(release)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await pilot.pause()
+                inp = app.screen.query_one("#chat-input", ChatInput)
+                inp.value = "swap me"
+                await pilot.press("enter")
+                await self._wait_streaming(pilot, app.screen, True)
+                assert app.screen.streaming
+                app.screen.apply_model_change()
+                await pilot.pause()
+                assert app.screen.streaming is False
+            finally:
+                release.set()
+                await self._wait_streaming(pilot, app.screen, False)
 
 
 class TestStreamFlushCoalescing:

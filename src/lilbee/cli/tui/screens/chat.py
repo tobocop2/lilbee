@@ -19,6 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Select, Static
 
@@ -34,6 +35,7 @@ from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -122,6 +124,8 @@ class ChatScreen(Screen[None]):
     CSS_PATH = "chat.tcss"
     AUTO_FOCUS = "#chat-input"
 
+    streaming: reactive[bool] = reactive(False)
+
     HELP = (
         "# Chat\n\n"
         "Ask questions about your knowledge base.\n\n"
@@ -168,7 +172,6 @@ class ChatScreen(Screen[None]):
         self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
-        self.streaming = False
         self._insert_mode: bool = True
         self._completing = False
         self._sync_active: bool = False
@@ -195,7 +198,7 @@ class ChatScreen(Screen[None]):
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
                 yield ChatInput(
-                    placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                    placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
                 )
                 yield ModelBar(id="model-bar")
@@ -343,7 +346,8 @@ class ChatScreen(Screen[None]):
         if text.startswith("/"):
             self._handle_slash(text)
             return
-
+        if self.streaming:
+            return
         self._send_message(text)
 
     def _handle_slash(self, text: str) -> None:
@@ -355,6 +359,38 @@ class ChatScreen(Screen[None]):
             getattr(self, handler_name)(args)
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
+
+    def _set_streaming(self, value: bool) -> None:
+        """Main-thread setter so worker-thread paths can route through ``call_from_thread``."""
+        self.streaming = value
+
+    def watch_streaming(self, streaming: bool) -> None:
+        if streaming:
+            self._enter_streaming_state()
+        else:
+            self._exit_streaming_state()
+
+    def _enter_streaming_state(self) -> None:
+        self.add_class("streaming")
+        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_STREAMING
+        # Both cancel paths and the natural finalize write streaming=False;
+        # reactive dedupe makes the watcher a no-op on equal values, so the
+        # button mount happens exactly once per streaming session.
+        with contextlib.suppress(Exception):
+            self.query_one("#chat-prompt-area", PromptArea).mount(
+                ChatStopButton(button_id="chat-stop")
+            )
+
+    def _exit_streaming_state(self) -> None:
+        self.remove_class("streaming")
+        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+        for w in self.query("#chat-stop"):
+            w.remove()
+
+    @on(ChatStopButton.Pressed)
+    def _on_chat_stop_pressed(self, event: ChatStopButton.Pressed) -> None:
+        event.stop()
+        self.action_cancel_stream()
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -924,7 +960,9 @@ class ChatScreen(Screen[None]):
         self, widget: AssistantMessage, sources: list[str], response_parts: list[str]
     ) -> None:
         """Persist the assistant turn and update the widget. Always runs."""
-        self.streaming = False
+        # _stream_response runs in a worker thread; reactive setters mutate
+        # widgets, so the streaming flag must flip on the main thread.
+        call_from_thread(self, self._set_streaming, False)
         full_response = "".join(response_parts)
         if full_response:
             with self._history_lock:
