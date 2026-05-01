@@ -30,11 +30,7 @@ _arch_cache: dict[tuple[str, str, str], ModelArchInfo] = {}
 
 
 def _cache_key() -> tuple[str, str, str]:
-    return (
-        cfg.chat_model or "",
-        cfg.embedding_model or "",
-        getattr(cfg, "vision_model", "") or "",
-    )
+    return (cfg.chat_model or "", cfg.embedding_model or "", cfg.vision_model or "")
 
 
 def invalidate_cache() -> None:

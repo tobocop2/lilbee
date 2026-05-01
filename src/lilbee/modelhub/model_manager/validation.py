@@ -108,32 +108,29 @@ def _first_installed_local_ref() -> str | None:
     return installed[0].ref if installed else None
 
 
-def canonicalize_chat_model() -> CanonicalRef:
-    """Return the effective chat ref for this session.
+def _canonicalize(original: str, *, allow_api: bool) -> CanonicalRef:
+    """Resolve a persisted ref to its effective session value.
 
-    Falls back in this order when the persisted ref doesn't validate:
-    1. First available API chat model where the user has a configured key.
-    2. First installed local model.
-    3. Original ref (caller surfaces the broken state).
+    ``allow_api`` controls the fallback chain: chat allows an API
+    fallback first; embedding is local-only because most providers
+    have no embedding equivalent.
     """
-    original = cfg.chat_model
     status = validate_persisted_model(original)
     if status == ValidationResult.OK:
         return CanonicalRef(original=original, effective=original, status=status)
-    effective = _first_available_api_chat_ref() or _first_installed_local_ref() or original
+    candidates: list[str | None] = []
+    if allow_api:
+        candidates.append(_first_available_api_chat_ref())
+    candidates.append(_first_installed_local_ref())
+    effective = next((c for c in candidates if c), original)
     return CanonicalRef(original=original, effective=effective, status=status)
+
+
+def canonicalize_chat_model() -> CanonicalRef:
+    """Effective chat ref for this session, falling back API -> local -> original."""
+    return _canonicalize(cfg.chat_model, allow_api=True)
 
 
 def canonicalize_embedding_model() -> CanonicalRef:
-    """Return the effective embedding ref for this session.
-
-    Embedding lacks an API equivalent for most providers, so the
-    fallback chain is local-only: first installed local model, then the
-    original ref (caller surfaces the broken state).
-    """
-    original = cfg.embedding_model
-    status = validate_persisted_model(original)
-    if status == ValidationResult.OK:
-        return CanonicalRef(original=original, effective=original, status=status)
-    effective = _first_installed_local_ref() or original
-    return CanonicalRef(original=original, effective=effective, status=status)
+    """Effective embedding ref for this session, falling back local -> original."""
+    return _canonicalize(cfg.embedding_model, allow_api=False)
