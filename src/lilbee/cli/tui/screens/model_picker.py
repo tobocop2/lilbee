@@ -17,6 +17,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
@@ -88,7 +89,7 @@ class ModelPickerModal(ModalScreen[str | None]):
         super().__init__()
         self._scope: PickerScope = scope
         self._options = _PickerOptions(options=options)
-        self._search_timer = None
+        self._search_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         title = (

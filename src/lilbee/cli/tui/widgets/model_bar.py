@@ -278,8 +278,8 @@ class ChatModeToggle(Static, can_focus=True):
     """Two-state pill toggling cfg.chat_mode between 'search' and 'chat'."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "toggle", "Toggle mode", show=False),
-        Binding("space", "toggle", "Toggle mode", show=False),
+        Binding("enter", "flip_mode", "Toggle mode", show=False),
+        Binding("space", "flip_mode", "Toggle mode", show=False),
     ]
 
     def __init__(self) -> None:
@@ -333,7 +333,7 @@ class ChatModeToggle(Static, can_focus=True):
         event.stop()
         self.toggle()
 
-    def action_toggle(self) -> None:
+    def action_flip_mode(self) -> None:
         self.toggle()
 
 
