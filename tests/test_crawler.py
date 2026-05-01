@@ -1339,6 +1339,12 @@ class TestCrawlAndSave:
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
         """Same content on re-crawl skips saving (hash-based detection)."""
+        # Disable periodic sync so the test isn't waiting on a real ingest
+        # to drain in the finally-block. Default 30s interval means each
+        # call kicks one off; on slower runners the drain blows the test
+        # timeout while the embedding pipeline cold-starts.
+        cfg.crawl_sync_interval = 0
+        reset_services()
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Dup"
         )
