@@ -30,6 +30,15 @@ def _disable_concepts():
 
 
 @pytest.fixture(autouse=True)
+def _reset_chat_mode():
+    """Pin chat_mode to 'search' so retrieval-tests are not skipped by stale state."""
+    old = cfg.chat_mode
+    cfg.chat_mode = "search"
+    yield
+    cfg.chat_mode = old
+
+
+@pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so tests never hit real backends."""
     from tests.conftest import make_mock_services

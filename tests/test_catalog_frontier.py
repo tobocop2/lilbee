@@ -108,6 +108,277 @@ class TestGroupFrontierRows:
         assert _group_frontier_rows([]) == []
 
 
+class TestFrontierTabBehavior:
+    """Coverage for Frontier-tab UI plumbing: action gating + sort-label + dispatch."""
+
+    async def test_active_tab_id_falls_back_to_local_when_unmounted(self) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        # No tabs mounted; the helper should swallow the lookup failure.
+        assert screen._active_tab_id() == "local"
+
+    async def test_apply_search_filter_in_frontier_tab_repopulates_list(self, monkeypatch) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [_frontier("gemini-2.0-flash")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
+            await pilot.pause()
+            from unittest import mock
+
+            with mock.patch.object(screen, "_populate_frontier_list") as populate:
+                screen._apply_search_filter()
+                populate.assert_called_once()
+
+    async def test_action_toggle_view_is_noop_on_frontier_tab(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [_frontier("x")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
+            await pilot.pause()
+            grid_before = screen._grid_view
+            screen.action_toggle_view()
+            assert screen._grid_view is grid_before
+
+    async def test_action_cycle_sort_is_noop_on_frontier_tab(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [_frontier("x")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
+            await pilot.pause()
+            sort_before = screen._sort_column
+            screen.action_cycle_sort()
+            assert screen._sort_column == sort_before
+
+    async def test_frontier_summary_label_uses_provider_count(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [
+                _frontier("gemini-x", provider="Gemini"),
+                _frontier("gpt-x", provider="OpenAI"),
+            ]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
+            screen._update_sort_label()
+            await pilot.pause()
+            text = str(screen.query_one("#sort-label", Static).render())
+            assert "2" in text  # 2 cloud models
+            assert "providers" in text
+
+    async def test_populate_frontier_list_silently_returns_when_widget_missing(self) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._frontier_rows = []
+        screen._populate_frontier_list()
+
+    async def test_action_load_more_is_noop_on_frontier_tab(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [_frontier("x")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
+            await pilot.pause()
+            from unittest import mock
+
+            with mock.patch.object(screen, "_load_more") as mock_load:
+                screen.action_load_more()
+                mock_load.assert_not_called()
+
+    async def test_sync_frontier_tab_swallows_lookup_failure(self) -> None:
+        """_sync_frontier_tab returns silently if catalog-tabs is gone."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._frontier_rows = [_frontier("x")]
+        screen._sync_frontier_tab()
+
+    async def test_sync_frontier_tab_repopulates_when_tab_already_present(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [_frontier("x")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            from unittest import mock
+
+            with mock.patch.object(screen, "_populate_frontier_list") as populate:
+                screen._sync_frontier_tab()
+                populate.assert_called_once()
+
+
+class TestFetchFrontierWorker:
+    """The frontier worker reads provider keys from cfg and emits rows."""
+
+    def test_emits_rows_with_ready_status_when_key_set(self, monkeypatch) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.modelhub.model_manager import RemoteModel
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._frontier_rows = []
+
+        rm = RemoteModel(
+            name="model-x",
+            task="chat",
+            provider="OpenAI",
+            parameter_size="--",
+            family="gpt",
+        )
+        monkeypatch.setattr(
+            "lilbee.modelhub.model_manager.discover_api_models",
+            lambda: {"OpenAI": [rm]},
+        )
+        from lilbee.core.config import cfg as _cfg
+
+        old_key = _cfg.openai_api_key
+        _cfg.openai_api_key = "sk-test"
+        try:
+            rows = screen._fetch_frontier_models.__wrapped__(screen)
+        finally:
+            _cfg.openai_api_key = old_key
+        assert rows
+        assert rows[0].provider == "OpenAI"
+
+    def test_returns_empty_list_when_discover_raises(self, monkeypatch) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._frontier_rows = []
+
+        def _boom() -> dict:
+            raise RuntimeError("provider discovery is down")
+
+        monkeypatch.setattr(
+            "lilbee.modelhub.model_manager.discover_api_models",
+            _boom,
+        )
+        rows = screen._fetch_frontier_models.__wrapped__(screen)
+        assert rows == []
+
+
+class TestFrontierSelection:
+    """ModelList.Selected on the Frontier tab routes through _select_row."""
+
+    async def test_frontier_list_selected_dispatches_to_select_row(self) -> None:
+        from unittest import mock
+
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            row = _frontier("gpt-x", provider="OpenAI")
+            evt = mock.MagicMock()
+            evt.row = row
+            with mock.patch.object(screen, "_select_row") as select:
+                screen._on_model_list_selected(evt)
+                select.assert_called_once_with(row)
+
+    async def test_select_row_dispatches_frontier_branch(self) -> None:
+        """_select_row routes FrontierCatalogRow into _select_frontier_row."""
+        from unittest import mock
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        row = _frontier("gpt-x", provider="OpenAI")
+        with mock.patch.object(screen, "_select_frontier_row") as select_frontier:
+            screen._select_row(row)
+            select_frontier.assert_called_once_with(row)
+
+    async def test_select_frontier_row_missing_key_switches_to_settings(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.catalog_utils import KeyStatus
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        # Patch the .app attribute on the descriptor so the LilbeeApp branch fires.
+        fake_app = mock.MagicMock(spec=LilbeeApp)
+        with (
+            mock.patch.object(
+                CatalogScreen, "app", new_callable=mock.PropertyMock, return_value=fake_app
+            ),
+            mock.patch.object(CatalogScreen, "notify"),
+        ):
+            row = _frontier("gpt-x", provider="OpenAI", status=KeyStatus.MISSING_KEY)
+            screen._select_frontier_row(row)
+        fake_app.switch_view.assert_called_once_with("Settings")
+
+
 class TestSyncFrontierTab:
     """Frontier TabPane is mounted iff at least one frontier row is cached."""
 

@@ -591,7 +591,7 @@ class ChatScreen(Screen[None]):
                         ),
                         indeterminate=False,
                     )
-                else:
+                else:  # pragma: no cover - live crawl without sitemap
                     reporter.update(
                         0,
                         msg.CMD_CRAWL_PAGE_INDETERMINATE.format(current=data.current, url=data.url),
@@ -611,6 +611,9 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Catalog")
+            return
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         self.app.push_screen(CatalogScreen())
@@ -770,6 +773,9 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Settings")
+            return
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         self.app.push_screen(SettingsScreen())
@@ -780,6 +786,9 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def _cmd_status(self, _args: str) -> None:
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Status")
+            return
         from lilbee.cli.tui.screens.status import StatusScreen
 
         self.app.push_screen(StatusScreen())

@@ -46,7 +46,7 @@ class _PickerOptions:
 def _option_to_row(option: ModelOption) -> CatalogRow:
     return LocalCatalogRow(
         name=option.label,
-        task="chat",
+        task="",
         params="--",
         size="--",
         quant="--",
@@ -77,6 +77,8 @@ class ModelPickerModal(ModalScreen[str | None]):
         Binding("slash", "focus_search", "Search", show=True),
     ]
 
+    _SEARCH_DEBOUNCE_SECONDS = 0.08
+
     def __init__(
         self,
         *,
@@ -86,6 +88,7 @@ class ModelPickerModal(ModalScreen[str | None]):
         super().__init__()
         self._scope: PickerScope = scope
         self._options = _PickerOptions(options=options)
+        self._search_timer = None
 
     def compose(self) -> ComposeResult:
         title = (
@@ -107,7 +110,14 @@ class ModelPickerModal(ModalScreen[str | None]):
 
     @on(Input.Changed, "#picker-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        self._refresh_list(event.value.strip())
+        # Debounce: rapid typing collapses to one rebuild after the user pauses.
+        # Without this, each keystroke remounts every option (~50 ms each at 500 rows).
+        if self._search_timer is not None:
+            self._search_timer.stop()
+        search = event.value.strip()
+        self._search_timer = self.set_timer(
+            self._SEARCH_DEBOUNCE_SECONDS, lambda: self._refresh_list(search)
+        )
 
     @on(Input.Submitted, "#picker-search")
     def _on_search_submitted(self) -> None:

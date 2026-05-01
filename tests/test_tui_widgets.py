@@ -694,6 +694,93 @@ class TestModelPickerButton:
             write_tracker.assert_not_called()
             assert cfg.chat_model == TEST_LOCAL_REF
 
+    async def test_embed_picker_dismiss_writes_cfg_after_legacy_pin(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            new_ref = "ollama/new-embed:latest"
+            store_mock = mock.MagicMock()
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=mock.MagicMock(store=store_mock),
+                ),
+            ):
+                btn._on_picker_dismissed(new_ref)
+                await pilot.pause()
+            store_mock.initialize_meta_if_legacy.assert_called_once()
+            assert cfg.embedding_model == new_ref
+
+    async def test_embed_picker_dismiss_same_ref_is_noop(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            write_tracker = mock.Mock()
+            with mock.patch("lilbee.core.settings.set_value", write_tracker):
+                btn._on_picker_dismissed(TEST_EMBED_REF)
+                await pilot.pause()
+            write_tracker.assert_not_called()
+
+    async def test_picker_button_click_pushes_modal(self) -> None:
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            await pilot.click(btn)
+            await pilot.pause()
+            assert isinstance(app.screen, ModelPickerModal)
+
+    async def test_chat_mode_toggle_click_flips_mode(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                await pilot.click(toggle)
+                await pilot.pause()
+                assert cfg.chat_mode == "chat"
+
+    async def test_scope_select_blank_event_is_dropped(self) -> None:
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            scope_sel = app.query_one("#scope-select", Select)
+            event = mock.MagicMock(spec=Select.Changed)
+            event.value = Select.BLANK
+            event.select = scope_sel
+            before = bar.scope
+            bar._on_scope_changed(event)
+            assert bar.scope is before
+
 
 def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:
     return LocalCatalogRow(
@@ -793,7 +880,7 @@ class TestModelPickerModal:
             assert isinstance(modal, ModelPickerModal)
             inp = modal.query_one("#picker-search", Input)
             inp.value = "llama"
-            await pilot.pause()
+            await pilot.pause(0.15)  # let the debounce timer fire
             ml = modal.query_one("#picker-list", ModelList)
             assert ml.option_count == 1
 
@@ -967,7 +1054,7 @@ class TestModelList:
             assert "Already Here" in rendered
             assert "installed" in rendered
 
-    async def test_local_row_renders_featured_star_and_backend_pill(self) -> None:
+    async def test_local_row_renders_featured_star_and_meta_strip(self) -> None:
         from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 
         row = LocalCatalogRow(
@@ -992,7 +1079,10 @@ class TestModelList:
             await pilot.pause()
             rendered = str(ml.get_option_at_index(0).prompt)
             assert "Featured Model" in rendered
-            assert "native" in rendered
+            assert "chat" in rendered
+            assert "8B" in rendered
+            # native is the implicit default; we drop it from the meta strip.
+            assert "native" not in rendered
 
     async def test_selected_event_with_unknown_option_id_is_dropped(self) -> None:
         from textual.widgets import OptionList
@@ -2508,6 +2598,53 @@ class TestViewTabs:
         from lilbee.cli.tui import messages as msg
 
         assert msg.get_nav_views()[0] == msg.DEFAULT_VIEW
+
+
+class TestLilbeeAppSettingWriter:
+    """LilbeeApp.set_setting + apply_setting cover the non-model write boundary."""
+
+    async def test_set_setting_writes_cfg_settings_and_publishes(self) -> None:
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                mock.patch("lilbee.core.settings.set_value") as mock_set,
+                mock.patch.object(app.settings_changed_signal, "publish") as mock_publish,
+            ):
+                app.set_setting("chat_mode", "chat")
+            assert cfg.chat_mode == "chat"
+            assert mock_set.called
+            mock_publish.assert_called_once_with(("chat_mode", "chat"))
+            cfg.chat_mode = "search"
+
+    async def test_apply_setting_routes_through_lilbee_app(self) -> None:
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        from lilbee.cli.tui.app import LilbeeApp, apply_setting
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch.object(app, "set_setting") as mock_set_setting:
+                apply_setting(app, "chat_mode", "chat")
+                mock_set_setting.assert_called_once_with("chat_mode", "chat")
+
+    def test_apply_setting_falls_back_to_direct_write_when_not_lilbee_app(self) -> None:
+        from textual.app import App
+
+        from lilbee.cli.tui.app import apply_setting
+
+        cfg.chat_mode = "search"
+        plain_app = App()
+        with mock.patch("lilbee.core.settings.set_value") as mock_set:
+            apply_setting(plain_app, "chat_mode", "chat")
+        assert cfg.chat_mode == "chat"
+        assert mock_set.called
+        cfg.chat_mode = "search"
 
 
 class TestLilbeeAppViewTabs:

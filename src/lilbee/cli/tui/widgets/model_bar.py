@@ -9,6 +9,7 @@ from typing import ClassVar, Literal, NamedTuple
 
 from textual import events, on, work
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Select, Static
@@ -217,6 +218,11 @@ _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
 class ModelPickerButton(Static, can_focus=True):
     """Pill button that opens a ModelPickerModal scoped to chat or embed."""
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "open_picker", "Pick model", show=False),
+        Binding("space", "open_picker", "Pick model", show=False),
+    ]
+
     def __init__(self, *, scope: Literal["chat", "embed"], button_id: str) -> None:
         super().__init__(id=button_id)
         self._scope: Literal["chat", "embed"] = scope
@@ -238,6 +244,9 @@ class ModelPickerButton(Static, can_focus=True):
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
+        self.open_picker()
+
+    def action_open_picker(self) -> None:
         self.open_picker()
 
     def open_picker(self) -> None:
@@ -267,6 +276,11 @@ class ModelPickerButton(Static, can_focus=True):
 
 class ChatModeToggle(Static, can_focus=True):
     """Two-state pill toggling cfg.chat_mode between 'search' and 'chat'."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "toggle", "Toggle mode", show=False),
+        Binding("space", "toggle", "Toggle mode", show=False),
+    ]
 
     def __init__(self) -> None:
         super().__init__(id=_CHAT_MODE_TOGGLE_ID)
@@ -306,6 +320,9 @@ class ChatModeToggle(Static, can_focus=True):
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
+        self.toggle()
+
+    def action_toggle(self) -> None:
         self.toggle()
 
 

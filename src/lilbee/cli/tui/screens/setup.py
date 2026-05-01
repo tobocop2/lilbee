@@ -239,7 +239,9 @@ class SetupWizard(Screen[str | None]):
                 continue
             for card in cards:
                 row = card.row
-                if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+                if not isinstance(
+                    row, LocalCatalogRow
+                ):  # pragma: no cover - setup never mounts frontier
                     continue
                 cm = row.catalog_model
                 if cm and cm.ref == recommended.ref:
