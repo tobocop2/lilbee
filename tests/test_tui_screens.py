@@ -3636,6 +3636,15 @@ async def test_catalog_sort_label_covers_every_pagination_state():
             assert "for more" not in text.lower()
 
 
+async def test_catalog_get_search_text_returns_empty_when_input_missing():
+    """The search-input descriptor query can raise during a teardown
+    window; _get_search_text must swallow rather than crash callers."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    assert screen._get_search_text() == ""
+
+
 async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
     """_initial_focus_first_grid is a no-op once a focus owner exists."""
     from textual.widgets import Input
