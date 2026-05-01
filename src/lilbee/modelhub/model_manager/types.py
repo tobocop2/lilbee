@@ -45,3 +45,12 @@ class RemoteModel:
     family: str
     parameter_size: str
     provider: str = REMOTE_BACKEND_NAME
+
+
+class ValidationResult(Enum):
+    """Outcome of validating a persisted model ref against current state."""
+
+    OK = "ok"
+    NOT_INSTALLED = "not_installed"  # Local ref but no GGUF on disk.
+    NO_KEY = "no_key"  # API ref but no provider key configured.
+    UNKNOWN = "unknown"  # Ref string is malformed or its provider is unknown.

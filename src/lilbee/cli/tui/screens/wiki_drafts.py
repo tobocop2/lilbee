@@ -22,7 +22,6 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
@@ -100,7 +99,7 @@ class WikiDraftsScreen(Screen[None]):
         table.cursor_type = "row"
         yield Horizontal(
             Vertical(
-                NavAwareInput(
+                Input(
                     placeholder=msg.WIKI_DRAFTS_SEARCH_PLACEHOLDER,
                     id="wiki-drafts-search",
                 ),

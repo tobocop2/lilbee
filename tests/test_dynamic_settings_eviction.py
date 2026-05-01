@@ -95,7 +95,7 @@ def test_sampling_param_change_does_not_evict():
         _on_settings_changed_evict_cache(("repeat_penalty", 1.2))
         _on_settings_changed_evict_cache(("seed", 42))
         _on_settings_changed_evict_cache(("max_tokens", 1024))
-        _on_settings_changed_evict_cache(("system_prompt", "You are helpful"))
+        _on_settings_changed_evict_cache(("rag_system_prompt", "You are helpful"))
         assert provider.calls == []
     finally:
         _restore_services()
@@ -164,3 +164,42 @@ async def test_app_subscription_evicts_when_signal_fires(_patch_chat_setup):
             assert provider.calls == [None]
     finally:
         _restore_services()
+
+
+async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup):
+    """Adding an API key republishes on provider_availability_changed_signal.
+
+    Subscribers (catalog, model picker) listen to the higher-level signal
+    instead of duplicating the PROVIDER_API_KEYS whitelist.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        received: list[tuple[str, object]] = []
+        app.provider_availability_changed_signal.subscribe(app, received.append)
+
+        app.settings_changed_signal.publish(("gemini_api_key", "sk-test"))
+        await pilot.pause()
+        assert received == [("gemini_api_key", "sk-test")]
+
+        # Non-key changes do not propagate.
+        app.settings_changed_signal.publish(("temperature", 0.5))
+        await pilot.pause()
+        assert received == [("gemini_api_key", "sk-test")]
+
+
+async def test_provider_availability_signal_fires_for_each_provider_key(_patch_chat_setup):
+    """The whitelist covers every provider key declared on the Config."""
+    from lilbee.core.config.keys import PROVIDER_API_KEYS
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        received: list[tuple[str, object]] = []
+        app.provider_availability_changed_signal.subscribe(app, received.append)
+
+        for key in sorted(PROVIDER_API_KEYS):
+            app.settings_changed_signal.publish((key, "value"))
+            await pilot.pause()
+
+        assert {payload[0] for payload in received} == set(PROVIDER_API_KEYS)

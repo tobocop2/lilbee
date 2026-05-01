@@ -402,7 +402,8 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
-            await pilot.pause()
+            for _ in range(8):
+                await pilot.pause()
             # Focus the filter input explicitly to match the scenario.
             catalog.query_one("#catalog-search", Input).focus()
             await pilot.pause()
@@ -476,7 +477,7 @@ class TestSettingsScreenAsync:
             await pilot.pause()
             app.push_screen(SettingsScreen())
             await pilot.pause()
-            groups = app.screen.query(".setting-group")
+            groups = app.screen.query("TabPane")
             assert len(groups) > 0
 
 
@@ -845,7 +846,8 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert any("Search" in d for d in visible)
+        # Search binding was removed when the settings filter was dropped.
+        assert not any("Search" in d for d in visible)
         assert len(visible) <= 4
 
 

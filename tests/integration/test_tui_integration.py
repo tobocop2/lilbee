@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Footer, Input
+from textual.widgets import DataTable, Footer
 
+from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 
@@ -42,7 +43,7 @@ class _IntegrationChatApp(App[None]):
 
 async def _submit_slash(pilot, app, command: str) -> None:
     """Type a slash command into the chat input and press enter."""
-    inp = app.screen.query_one("#chat-input", Input)
+    inp = app.screen.query_one("#chat-input", ChatInput)
     inp.value = command
     await pilot.press("enter")
     await pilot.pause()
@@ -80,7 +81,7 @@ class TestChatFlow:
 
             cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
             reset_services()
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
 

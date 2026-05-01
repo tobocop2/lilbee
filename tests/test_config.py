@@ -14,7 +14,7 @@ from lilbee.core.config import (
     Config,
     cfg,
 )
-from lilbee.core.config.defaults import _DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
@@ -97,6 +97,19 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.chat_model == ref
 
+    def test_chat_mode_defaults_to_search_when_none_or_empty(self):
+        """The validator coerces None / "" to 'search' so old configs round-trip."""
+        from lilbee.core.config.model import Config as ConfigCls
+
+        assert ConfigCls._normalize_chat_mode(None) == "search"
+        assert ConfigCls._normalize_chat_mode("") == "search"
+
+    def test_chat_mode_rejects_unknown_value(self):
+        from lilbee.core.config.model import Config as ConfigCls
+
+        with pytest.raises(ValueError, match="chat_mode must be"):
+            ConfigCls._normalize_chat_mode("rag")
+
     def test_embedding_model_override(self):
         ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_MODEL": ref}):
@@ -160,10 +173,10 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.max_distance == 1.5
 
-    def test_system_prompt_override(self):
-        with mock.patch.dict(os.environ, {"LILBEE_SYSTEM_PROMPT": "You are a pirate."}):
+    def test_rag_system_prompt_override(self):
+        with mock.patch.dict(os.environ, {"LILBEE_RAG_SYSTEM_PROMPT": "You are a pirate."}):
             c = Config()
-            assert c.system_prompt == "You are a pirate."
+            assert c.rag_system_prompt == "You are a pirate."
 
 
 class TestTomlConfigFile:
@@ -231,24 +244,24 @@ class TestTomlConfigFile:
             c = Config()
             assert c.temperature == 0.9
 
-    def test_system_prompt_from_toml(self, tmp_path):
+    def test_rag_system_prompt_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('system_prompt = "You are a pirate."\n')
+        toml_path.write_text('rag_system_prompt = "You are a pirate."\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.system_prompt == "You are a pirate."
+            assert c.rag_system_prompt == "You are a pirate."
 
-    def test_env_var_overrides_toml_for_system_prompt(self, tmp_path):
+    def test_env_var_overrides_toml_for_rag_system_prompt(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('system_prompt = "Be verbose."\n')
+        toml_path.write_text('rag_system_prompt = "Be verbose."\n')
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
-        env["LILBEE_SYSTEM_PROMPT"] = "Be brief."
+        env["LILBEE_RAG_SYSTEM_PROMPT"] = "Be brief."
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.system_prompt == "Be brief."
+            assert c.rag_system_prompt == "Be brief."
 
     def test_enable_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -383,7 +396,7 @@ class TestEnableOcrConfig:
             assert c.enable_ocr is True
 
     def test_garbage_value_coerces_via_bool(self) -> None:
-        """Unrecognized string falls through _parse_bool and coerces via ``bool()``."""
+        """Unrecognized string falls through parse_bool and coerces via ``bool()``."""
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
             c = Config()
             assert c.enable_ocr is True  # bool("maybe") is True
@@ -580,22 +593,22 @@ class TestTopicThresholdConfig:
 
 class TestParseBool:
     def test_truthy_values(self) -> None:
-        from lilbee.core.config.parsing import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
-            assert _parse_bool(truthy) is True
+            assert parse_bool(truthy) is True
 
     def test_falsy_values(self) -> None:
-        from lilbee.core.config.parsing import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         for falsy in ("false", "FALSE", "0", "no", "  NO  "):
-            assert _parse_bool(falsy) is False
+            assert parse_bool(falsy) is False
 
     def test_invalid_raises(self) -> None:
-        from lilbee.core.config.parsing import _parse_bool
+        from lilbee.core.config.parsing import parse_bool
 
         with pytest.raises(ValueError, match="Invalid boolean"):
-            _parse_bool("maybe")
+            parse_bool("maybe")
 
 
 class TestOcrTimeoutConfig:
@@ -715,7 +728,7 @@ class TestCorsOriginRegexConfig:
     def test_cors_origin_regex_default_equals_constant(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.cors_origin_regex == _DEFAULT_CORS_ORIGIN_REGEX
+            assert c.cors_origin_regex == DEFAULT_CORS_ORIGIN_REGEX
 
 
 class TestLocalDotLilbee:
@@ -918,7 +931,7 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="You are helpful.",
+                rag_system_prompt="You are helpful.",
                 ignore_dirs=frozenset(),
             )
 
@@ -938,11 +951,11 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="You are helpful.",
+                rag_system_prompt="You are helpful.",
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_system_prompt_rejected(self, tmp_path):
+    def test_empty_rag_system_prompt_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
                 data_root=tmp_path,
@@ -958,7 +971,7 @@ class TestEmptyStringValidation:
                 max_embed_chars=2000,
                 top_k=10,
                 max_distance=0.7,
-                system_prompt="",
+                rag_system_prompt="",
                 ignore_dirs=frozenset(),
             )
 
@@ -978,7 +991,7 @@ class TestEmptyStringValidation:
             max_embed_chars=2000,
             top_k=10,
             max_distance=0.7,
-            system_prompt="You are helpful.",
+            rag_system_prompt="You are helpful.",
             ignore_dirs=frozenset(),
             enable_ocr=None,
         )

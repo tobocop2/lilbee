@@ -116,6 +116,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - Never duplicate state across modules (e.g. no `store_mod.LANCEDB_DIR` mirroring `cfg.lancedb_dir`)
 - Prefer dependency injection (pass values as parameters) over reading globals inside functions
 - Access config via `cfg.attribute` (late-bound), never `from lilbee.core.config import SOME_CONSTANT` (early-bound copy)
+- **No `getattr(self, "name", default)` for own attributes.** If `_foo` is part of the class's state, declare it in `__init__` with an explicit type (`self._foo: Foo | None = None`) and access it as `self._foo`. The `getattr`-with-string-default pattern hides the contract, breaks type checking, and turns every typo into a silent fallback. Same rule for `getattr(self, "_flag", False)` style flag checks: declare the flag in `__init__`. The pattern is allowed only when reflecting over genuinely dynamic attributes the class doesn't own (e.g. iterating dataclass fields).
 
 ### Import Discipline
 

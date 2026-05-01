@@ -1,5 +1,6 @@
 """Tests for the Litestar HTTP adapter."""
 
+import asyncio
 import json
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -237,6 +238,82 @@ class TestChatStreamRoute:
         )
         assert resp.status_code == 201
         assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
+
+
+class TestStreamSingleFlightGate:
+    """The chat-streaming endpoints serialize to one in-flight request via _chat_inflight_lock."""
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_concurrent_ask_stream_returns_429(self, mock_stream, client):
+        """A second /api/ask/stream while the first holds the lock returns 429 + Retry-After."""
+        from lilbee.server.routes import search as search_routes
+
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
+            try:
+                resp = client.post("/api/ask/stream", json={"question": "hi"})
+                assert resp.status_code == 429
+                assert resp.headers.get("retry-after") == "1"
+            finally:
+                search_routes._chat_inflight_lock.release()
+        finally:
+            loop.close()
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_concurrent_chat_stream_returns_429(self, mock_stream, client):
+        """A second /api/chat/stream while the first holds the lock returns 429."""
+        from lilbee.server.routes import search as search_routes
+
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
+            try:
+                resp = client.post(
+                    "/api/chat/stream",
+                    json={"question": "hi", "history": []},
+                )
+                assert resp.status_code == 429
+                assert resp.headers.get("retry-after") == "1"
+            finally:
+                search_routes._chat_inflight_lock.release()
+        finally:
+            loop.close()
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_sequential_streams_succeed(self, mock_stream, client):
+        """After the first stream completes, the second one is allowed."""
+        from lilbee.server.routes import search as search_routes
+
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        resp1 = client.post("/api/ask/stream", json={"question": "first"})
+        assert resp1.status_code == 201
+        assert b"event: token" in resp1.content
+        # Lock must have been released by the gated_stream's finally.
+        assert search_routes._chat_inflight_lock.locked() is False
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        resp2 = client.post("/api/ask/stream", json={"question": "second"})
+        assert resp2.status_code == 201
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_lock_released_on_provider_error(self, mock_stream, client):
+        """When the SSE generator raises, the lock is still released for the next caller."""
+        from lilbee.server.routes import search as search_routes
+
+        async def _raising_gen():
+            yield "event: token\ndata: {}\n\n"
+            raise RuntimeError("provider blew up")
+
+        mock_stream.return_value = _raising_gen()
+        import contextlib
+
+        # The TestClient sees the partial response; the generator's finally
+        # block still runs and releases the lock.
+        with contextlib.suppress(Exception):
+            client.post("/api/ask/stream", json={"question": "boom"})
+        assert search_routes._chat_inflight_lock.locked() is False
 
 
 class TestSyncRoute:
@@ -479,13 +556,13 @@ class TestConfigRoute:
     @mock.patch(
         "lilbee.server.handlers.get_config",
         new_callable=AsyncMock,
-        return_value={"chat_model": "qwen3:8b", "system_prompt": "You are helpful."},
+        return_value={"chat_model": "qwen3:8b", "rag_system_prompt": "You are helpful."},
     )
     def test_returns_json(self, mock_cfg, client):
         resp = client.get("/api/config")
         assert resp.status_code == 200
         assert resp.json()["chat_model"] == "qwen3:8b"
-        assert "system_prompt" in resp.json()
+        assert "rag_system_prompt" in resp.json()
 
 
 class TestConfigDefaultsRoute:

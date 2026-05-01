@@ -1,0 +1,29 @@
+ModelList {
+    height: 1fr;
+    border: none;
+    background: transparent;
+    padding: 0 1;
+}
+
+ModelList:focus {
+    border: none;
+}
+
+ModelList > .option-list--option {
+    padding: 0 1 1 1;
+}
+
+ModelList > .option-list--option-disabled {
+    color: $accent;
+    text-style: bold;
+    background: transparent;
+}
+
+ModelList > .option-list--option-highlighted {
+    background: $surface;
+}
+
+ModelList:focus > .option-list--option-highlighted {
+    background: $primary 30%;
+    color: $text;
+}

@@ -15,14 +15,15 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .defaults import (
-    _DEFAULT_CORS_ORIGIN_REGEX,
-    _DEFAULT_SYSTEM_PROMPT,
     DEFAULT_ALLOWED_NER_LABELS,
+    DEFAULT_CORS_ORIGIN_REGEX,
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
+    DEFAULT_GENERAL_SYSTEM_PROMPT,
     DEFAULT_IGNORE_DIRS,
+    DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ClustererBackend, KvCacheType, WikiEntityMode
-from .parsing import _parse_bool
+from .enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from .parsing import parse_bool
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -72,7 +73,13 @@ class Config(BaseSettings):
     # Minimum RRF relevance score for hybrid search results (0.0 = no filtering).
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
-    system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
+    rag_system_prompt: str = ConfigField(
+        default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
+    )
+    general_system_prompt: str = ConfigField(
+        default=DEFAULT_GENERAL_SYSTEM_PROMPT, min_length=1, writable=True
+    )
+    chat_mode: str = ConfigField(default=ChatMode.SEARCH.value, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     # OCR for scanned PDFs via vision-capable chat model.
     # None = auto-detect (use OCR if chat model is vision-capable).
@@ -94,7 +101,7 @@ class Config(BaseSettings):
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
-    cors_origin_regex: str = Field(default=_DEFAULT_CORS_ORIGIN_REGEX)
+    cors_origin_regex: str = Field(default=DEFAULT_CORS_ORIGIN_REGEX)
     # Seconds between SSE heartbeat events when the producer queue is idle.
     # Must stay well below the plugin's STREAM_IDLE_TIMEOUT_MS (120s) so a
     # single long-running vision OCR page can't starve the client into aborting.
@@ -462,6 +469,19 @@ class Config(BaseSettings):
             return None
         return v
 
+    @field_validator("chat_mode", mode="before")
+    @classmethod
+    def _normalize_chat_mode(cls, v: Any) -> str:
+        """Coerce chat_mode to a ChatMode value; default ChatMode.SEARCH."""
+        if v is None or v == "":
+            return ChatMode.SEARCH.value
+        candidate = str(v).strip().lower()
+        try:
+            return ChatMode(candidate).value
+        except ValueError as exc:
+            valid = ", ".join(repr(m.value) for m in ChatMode)
+            raise ValueError(f"chat_mode must be one of {{{valid}}}, got {v!r}") from exc
+
     @field_validator("enable_ocr", mode="before")
     @classmethod
     def _parse_enable_ocr(cls, v: Any) -> bool | None:
@@ -478,7 +498,7 @@ class Config(BaseSettings):
             if v.strip().lower() in ("", "auto", "none"):
                 return None
             try:
-                return _parse_bool(v)
+                return parse_bool(v)
             except ValueError:
                 pass
         return bool(v)
@@ -495,7 +515,7 @@ class Config(BaseSettings):
             if v.strip().lower() in ("", "auto", "none"):
                 return None
             try:
-                return _parse_bool(v)
+                return parse_bool(v)
             except ValueError:
                 return None
         return bool(v)
@@ -527,7 +547,7 @@ class Config(BaseSettings):
             return v
         if isinstance(v, str):
             try:
-                return _parse_bool(v)
+                return parse_bool(v)
             except ValueError:
                 log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
                 return False

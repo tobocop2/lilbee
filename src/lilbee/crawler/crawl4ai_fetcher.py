@@ -11,6 +11,7 @@ import in :mod:`lilbee.crawler.runner`.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import io
 import logging
@@ -349,6 +350,7 @@ if TYPE_CHECKING:
     _: WebFetcher = Crawl4aiFetcher()
 
 
+@functools.cache
 def crawler_available() -> bool:
     """Check if the crawl4ai backend is importable (i.e. the extra is installed)."""
     try:

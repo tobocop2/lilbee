@@ -29,7 +29,7 @@ from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
-    TableRow,
+    LocalCatalogRow,
     catalog_to_row,
     parse_param_label,
 )
@@ -62,9 +62,9 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         return [], []
 
 
-def _installed_name_to_row(name: str, task: str) -> TableRow:
-    """Create a minimal TableRow for an already-installed model."""
-    return TableRow(
+def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
+    """Create a minimal LocalCatalogRow for an already-installed model."""
+    return LocalCatalogRow(
         name=name,
         task=task,
         params=parse_param_label(name),
@@ -88,10 +88,20 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
 
 
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
-    """Return the CatalogModel to download for a non-installed card, or None."""
-    if card and not card.row.installed:
-        return card.row.catalog_model
-    return None
+    """Return the CatalogModel to download for a non-installed card, or None.
+
+    Setup wizard only renders local rows; the isinstance guard narrows
+    the union (CatalogRow = LocalCatalogRow | FrontierCatalogRow) so
+    the .installed / .catalog_model reads are typecheck-clean.
+    """
+    if card is None:
+        return None
+    row = card.row
+    if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+        return None
+    if row.installed:
+        return None
+    return row.catalog_model
 
 
 class SetupWizard(Screen[str | None]):
@@ -228,9 +238,14 @@ class SetupWizard(Screen[str | None]):
             if not recommended:
                 continue
             for card in cards:
-                cm = card.row.catalog_model
+                row = card.row
+                if not isinstance(
+                    row, LocalCatalogRow
+                ):  # pragma: no cover - setup never mounts frontier
+                    continue
+                cm = row.catalog_model
                 if cm and cm.ref == recommended.ref:
-                    self._mark_selection(card, card.row.task)
+                    self._mark_selection(card, row.task)
                     break
 
     def _mark_selection(self, card: ModelCard, task: str) -> None:

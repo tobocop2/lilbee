@@ -14,16 +14,16 @@ typecheck:
 	uv run mypy src/lilbee/
 
 test:
-	uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
+	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n auto
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n logical --dist loadgroup
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist
 
 test-ci-forked:
-	uv run pytest --forked -v -n auto
+	uv run pytest --forked -v -n logical --dist loadgroup
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data import chunk, code_chunker, store, ingest; from lilbee.retrieval import embedder, query"

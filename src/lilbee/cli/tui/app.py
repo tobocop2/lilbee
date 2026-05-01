@@ -41,6 +41,11 @@ DARK_THEMES = (
 )
 
 
+def _view_screen_name(view_name: str) -> str:
+    """Stable install_screen identifier for a top-level view (lower-cased)."""
+    return view_name.lower()
+
+
 def _make_catalog() -> Screen:
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -87,14 +92,20 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
+_MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model", "reranker_model"})
+
+
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
-    # Lazy: llama_cpp provider's transitive imports cost ~500ms.
     from lilbee.providers.llama_cpp.provider import LOAD_AFFECTING_KEYS
 
     key, _value = payload
     if key in LOAD_AFFECTING_KEYS:
         get_services().provider.invalidate_load_cache()
+    if key in _MODEL_REF_KEYS:
+        from lilbee.modelhub.model_info import invalidate_cache
+
+        invalidate_cache()
 
 
 class LilbeeApp(App[None]):
@@ -113,26 +124,12 @@ class LilbeeApp(App[None]):
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
-        # priority=True is required: even though NavAwareInput lets [ and ]
-        # bubble past Input.check_consume_key, Textual's focused Input still
-        # handles printable keys in _on_key before a non-priority ancestor
-        # binding can fire. Both NavAwareInput and priority=True are needed.
-        Binding(
-            "left_square_bracket",
-            "nav_prev",
-            "Prev",
-            show=True,
-            group=_NAV_GROUP,
-            priority=True,
-        ),
-        Binding(
-            "right_square_bracket",
-            "nav_next",
-            "Next",
-            show=True,
-            group=_NAV_GROUP,
-            priority=True,
-        ),
+        # Non-priority: a focused Input or TextArea consumes the printable
+        # before this binding fires, so brackets type literally inside any
+        # input. With no input focused, the bindings reach the app and
+        # navigate. This mirrors vim-style insert vs. normal modes.
+        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
+        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
@@ -143,7 +140,14 @@ class LilbeeApp(App[None]):
         self.active_view = msg.DEFAULT_VIEW
         self._switching = False
         self._theme_index = 0
+        # Names of non-Chat screens already installed via install_screen.
+        # Subsequent visits switch by name to reuse the same instance,
+        # so Footer / signal / worker wiring runs once per session.
+        self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
+        self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
+            self, "provider_availability_changed"
+        )
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
         self.task_bar = TaskBarController(self)
@@ -152,6 +156,7 @@ class LilbeeApp(App[None]):
         yield from ()  # screens compose their own ViewTabs + Footer
 
     def on_mount(self) -> None:
+        self._canonicalize_persisted_models()
         self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the gruvbox default.
@@ -160,6 +165,7 @@ class LilbeeApp(App[None]):
         self._sync_theme_index_to_current()
 
         self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
+        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -168,6 +174,37 @@ class LilbeeApp(App[None]):
         self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
+
+    def _canonicalize_persisted_models(self) -> None:
+        """Swap stale persisted refs to a working fallback for this session."""
+        from lilbee.modelhub.model_manager import (
+            ValidationResult,
+            canonicalize_chat_model,
+            canonicalize_embedding_model,
+        )
+
+        for canon, field, label in (
+            (canonicalize_chat_model(), "chat_model", "Chat"),
+            (canonicalize_embedding_model(), "embedding_model", "Embedding"),
+        ):
+            if canon.status == ValidationResult.OK or canon.original == canon.effective:
+                continue
+            setattr(cfg, field, canon.effective)
+            self.notify(
+                msg.MODEL_FALLBACK_NOTICE.format(
+                    label=label, original=canon.original, effective=canon.effective
+                ),
+                severity="warning",
+                timeout=8,
+            )
+
+    def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
+        """Republish on provider_availability_changed_signal when an API key changes."""
+        from lilbee.core.config.keys import PROVIDER_API_KEYS
+
+        key, value = payload
+        if key in PROVIDER_API_KEYS:
+            self.provider_availability_changed_signal.publish((key, value))
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
@@ -189,6 +226,13 @@ class LilbeeApp(App[None]):
 
     def set_active_model(self, key: str, value: str) -> None:
         """Single write boundary for active model refs."""
+        setattr(cfg, key, value)
+        normalized = getattr(cfg, key)
+        settings.set_value(cfg.data_root, key, normalized)
+        self.settings_changed_signal.publish((key, normalized))
+
+    def set_setting(self, key: str, value: object) -> None:
+        """Single write boundary for non-model settings."""
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         settings.set_value(cfg.data_root, key, normalized)
@@ -224,12 +268,10 @@ class LilbeeApp(App[None]):
         self.exit()
 
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view via lazy screen factories.
+        """Switch to a named view, installing each screen at most once.
 
-        Guards against concurrent switches: ``switch_screen`` is async
-        (processed on the next event-loop tick) but callers read
-        ``active_view`` synchronously. Without a guard, rapid keypresses
-        queue conflicting switches that corrupt the screen stack.
+        Guards against concurrent switches via ``self._switching`` so
+        rapid keypresses don't corrupt the screen stack.
         ``active_view`` is updated after the switch completes.
         """
         if self._switching:
@@ -247,7 +289,11 @@ class LilbeeApp(App[None]):
             if factory is None:
                 self._switching = False
                 return
-            self.switch_screen(factory())
+            screen_name = _view_screen_name(view_name)
+            if screen_name not in self._installed_screen_names:
+                self.install_screen(factory(), name=screen_name)
+                self._installed_screen_names.add(screen_name)
+            self.switch_screen(screen_name)
 
         def _finish() -> None:
             self.active_view = view_name
@@ -286,6 +332,15 @@ def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
     """Route model writes through set_active_model, falling back to direct cfg+settings writes."""
     if isinstance(host_app, LilbeeApp):
         host_app.set_active_model(key, value)
+        return
+    setattr(cfg, key, value)
+    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+
+
+def apply_setting(host_app: App[Any], key: str, value: object) -> None:
+    """Route non-model settings writes through set_setting, falling back to direct writes."""
+    if isinstance(host_app, LilbeeApp):
+        host_app.set_setting(key, value)
         return
     setattr(cfg, key, value)
     settings.set_value(cfg.data_root, key, getattr(cfg, key))

@@ -1281,7 +1281,7 @@ class TestUpdateConfig:
 
     async def test_non_nullable_field_rejects_null(self):
         with pytest.raises(ValueError, match="does not accept null"):
-            await handlers.update_config({"system_prompt": None})
+            await handlers.update_config({"rag_system_prompt": None})
 
     async def test_empty_dict_returns_no_updates(self):
         result = await handlers.update_config({})
@@ -1332,7 +1332,7 @@ class TestUpdateConfig:
         """If second field is invalid, first field should NOT be applied."""
         original_temp = cfg.temperature
         with pytest.raises(ValueError, match="does not accept null"):
-            await handlers.update_config({"temperature": 0.9, "system_prompt": None})
+            await handlers.update_config({"temperature": 0.9, "rag_system_prompt": None})
         # temperature should be unchanged: validation happens before apply
         assert cfg.temperature == original_temp
 
@@ -1503,7 +1503,7 @@ class TestGetConfig:
         result = await handlers.get_config()
         dumped = result.model_dump()
         assert "chat_model" in dumped
-        assert "system_prompt" in dumped
+        assert "rag_system_prompt" in dumped
         assert "remote_base_url" in dumped
         assert "diversity_max_per_source" in dumped
         assert "mmr_lambda" in dumped

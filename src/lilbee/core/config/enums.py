@@ -3,6 +3,13 @@
 from enum import StrEnum
 
 
+class ChatMode(StrEnum):
+    """How chat turns route through retrieval. ``search`` uses retrieval; ``chat`` skips it."""
+
+    SEARCH = "search"
+    CHAT = "chat"
+
+
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
 

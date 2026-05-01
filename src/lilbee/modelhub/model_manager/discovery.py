@@ -92,13 +92,9 @@ def _has_provider_key(cfg_field: str, env_var: str) -> bool:
 def discover_api_models() -> dict[str, list[RemoteModel]]:
     """Return frontier chat models grouped by provider.
 
-    Checks which provider API keys are available (env vars or config),
-    then asks the active provider's backend for each provider's chat
-    catalog. Going through ``SdkLLMProvider.list_chat_models`` ensures
-    ``cfg.json_mode`` suppression is applied before the SDK import,
-    so ``lilbee --json status`` does not leak a debug banner.
-
-    Short-circuits before touching the SDK when no keys are present.
+    Returns whatever the active provider's backend exposes for each
+    configured API key, no curation. Short-circuits before touching
+    the SDK when no keys are present.
     """
     active = [
         (prov, cfg_f, env, label)

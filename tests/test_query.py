@@ -30,6 +30,15 @@ def _disable_concepts():
 
 
 @pytest.fixture(autouse=True)
+def _reset_chat_mode():
+    """Pin chat_mode to 'search' so retrieval-tests are not skipped by stale state."""
+    old = cfg.chat_mode
+    cfg.chat_mode = "search"
+    yield
+    cfg.chat_mode = old
+
+
+@pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so tests never hit real backends."""
     from tests.conftest import make_mock_services
@@ -484,15 +493,18 @@ class TestAskRaw:
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
 
-    def test_no_results(self, mock_svc):
+    def test_no_results_falls_through_to_general_chat(self, mock_svc):
+        """Zero RAG hits route through the general system prompt (no canned
+        message, no citation grammar). Sources stay empty so callers can tell
+        the response was not grounded."""
         mock_svc.store.search.return_value = []
+        mock_svc.provider.chat.return_value = "general answer"
         result = get_services().searcher.ask_raw("anything")
-        assert "No relevant documents" in result.answer
-        # copy no longer blames the user for missing docs when only
-        # this query failed to match.
-        assert "ingesting" not in result.answer
-        assert "for this query" in result.answer
+        assert result.answer == "general answer"
         assert result.sources == []
+        sent = mock_svc.provider.chat.call_args[0][0]
+        assert sent[0]["role"] == "system"
+        assert sent[0]["content"] == cfg.general_system_prompt
 
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -530,10 +542,14 @@ class TestAsk:
         assert "Sources:" in answer
         assert "test.pdf" in answer
 
-    def test_no_results_message(self, mock_svc):
+    def test_no_results_falls_through_to_general_chat(self, mock_svc):
+        """ask() also falls through to general chat when retrieval is empty."""
         mock_svc.store.search.return_value = []
+        mock_svc.provider.chat.return_value = "general answer"
         answer = get_services().searcher.ask("anything")
-        assert "No relevant documents" in answer
+        assert "general answer" in answer
+        # No citations are appended for an ungrounded answer.
+        assert "Sources:" not in answer
 
     def test_ask_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -557,13 +573,15 @@ class TestAskStream:
         assert "Hello world" in combined
         assert "Sources:" in combined
 
-    def test_empty_results_yields_message(self, mock_svc):
+    def test_empty_results_falls_through_to_general_chat(self, mock_svc):
+        """Zero RAG hits stream a general-prompt response, no canned message."""
         mock_svc.store.search.return_value = []
+        mock_svc.provider.chat.return_value = iter(["general", " answer"])
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
-        assert "No relevant documents" in combined
-        # stream copy matches the AskResult copy.
-        assert "ingesting" not in combined
+        assert "general answer" in combined
+        # No Sources block when there are no grounding chunks.
+        assert "Sources:" not in combined
 
     def test_ask_stream_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1433,7 +1451,9 @@ class TestDirectMessagesNoEmbed:
 
 class TestAskRawNoEmbed:
     def test_direct_llm_when_no_embedding(self, mock_svc):
-        """ask_raw without embedding calls LLM directly with warning prefix."""
+        """ask_raw without embedding calls the LLM directly via the general
+        system prompt. No canned chat-only banner is injected by the searcher;
+        the TUI surfaces that mode banner separately."""
         mock_svc.embedder.embedding_available.return_value = False
         mock_svc.provider.chat.return_value = "direct answer"
 
@@ -1446,9 +1466,10 @@ class TestAskRawNoEmbed:
             mock_svc.concepts,
         )
         result = searcher.ask_raw("hello")
-        assert "Chat only" in result.answer
-        assert "direct answer" in result.answer
+        assert result.answer == "direct answer"
         assert result.sources == []
+        sent = mock_svc.provider.chat.call_args[0][0]
+        assert sent[0]["content"] == cfg.general_system_prompt
 
     def test_no_embed_strips_think_tags(self, mock_svc):
         """ask_raw no-embed path strips <think> tags."""
@@ -1468,9 +1489,66 @@ class TestAskRawNoEmbed:
         assert "direct answer" in result.answer
 
 
+class TestAskRawChatMode:
+    """ask_raw consults cfg.chat_mode before consulting the embedder."""
+
+    def test_chat_mode_skips_retrieval_even_when_embedding_ready(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = True
+            mock_svc.provider.chat.return_value = "no-search answer"
+            result = get_services().searcher.ask_raw("any question")
+            assert result.answer == "no-search answer"
+            assert result.sources == []
+            mock_svc.store.search.assert_not_called()
+            sent = mock_svc.provider.chat.call_args[0][0]
+            assert sent[0]["content"] == cfg.general_system_prompt
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_with_results_runs_rag(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.store.search.return_value = [_make_result(chunk="grounded")]
+            mock_svc.provider.chat.return_value = "grounded answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "grounded answer"
+            assert len(result.sources) == 1
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_empty_results_falls_through(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.store.search.return_value = []
+            mock_svc.provider.chat.return_value = "general answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "general answer"
+            assert result.sources == []
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_without_embedding_falls_through(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
+            mock_svc.provider.chat.return_value = "direct answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "direct answer"
+            assert result.sources == []
+            mock_svc.store.search.assert_not_called()
+        finally:
+            cfg.chat_mode = old
+
+
 class TestAskStreamNoEmbed:
     def test_streams_directly_when_no_embedding(self, mock_svc):
-        """ask_stream without embedding streams from LLM directly."""
+        """ask_stream without embedding streams from the LLM directly under
+        the general system prompt; the searcher does not inject a banner."""
         mock_svc.embedder.embedding_available.return_value = False
         mock_svc.provider.chat.return_value = iter(["chunk1", "chunk2"])
 
@@ -1484,9 +1562,7 @@ class TestAskStreamNoEmbed:
         )
         tokens = list(searcher.ask_stream("hello"))
         combined = "".join(st.content for st in tokens)
-        assert "Chat only" in combined
-        assert "chunk1" in combined
-        assert "chunk2" in combined
+        assert combined == "chunk1chunk2"
 
     def test_stream_handles_connection_error(self, mock_svc):
         """ask_stream without embedding handles ConnectionError gracefully."""

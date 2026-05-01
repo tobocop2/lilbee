@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Static
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
@@ -26,7 +25,7 @@ from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_REMOTE,
 )
 from lilbee.cli.tui.screens.catalog_utils import (
-    TableRow,
+    LocalCatalogRow,
     _format_downloads,
     _is_param_count,
     catalog_to_row,
@@ -37,7 +36,8 @@ from lilbee.cli.tui.screens.catalog_utils import (
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
-from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
 from lilbee.core.services import set_services
 from lilbee.modelhub.model_manager import RemoteModel
@@ -104,6 +104,25 @@ def _patch_chat_setup():
         ),
         patch.object(ModelBar, "_scan_models"),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _settings_gates_open():
+    """Open all SettingsScreen feature gates so legacy tests can query
+    every group's editors regardless of which optional extras are
+    installed in the test environment."""
+    with (
+        patch(
+            "lilbee.cli.tui.screens.settings._litellm_installed",
+            return_value=True,
+        ),
+        patch(
+            "lilbee.cli.tui.screens.settings._crawler_installed",
+            return_value=True,
+        ),
+    ):
+        cfg.wiki = True
         yield
 
 
@@ -316,7 +335,7 @@ class TestMatchesSearch:
         assert matches_search(row, "qwen") is False
 
     def test_search_by_quant(self):
-        row = TableRow(
+        row = LocalCatalogRow(
             name="test",
             task="chat",
             params="8B",
@@ -482,23 +501,51 @@ class TestGroupRowsForGrid:
         assert len(experimental.rows) == 1
 
 
+def _make_eager_settings_screen():
+    """SettingsScreen subclass that populates every pane on mount.
+
+    Production lazy-mounts non-active panes on activation; the test
+    suite predates that pattern and queries editors across all panes
+    by id, so this subclass hooks ``on_mount`` to walk pane groups
+    and populate every body before tests query. CSS_PATH is pinned
+    to the original module's directory because Textual otherwise
+    resolves it next to the test file.
+    """
+    import importlib
+    from pathlib import Path
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    src_module = importlib.import_module(SettingsScreen.__module__)
+    css_path = str(Path(src_module.__file__ or "").parent / "settings.tcss")
+
+    class _EagerSettingsScreen(SettingsScreen):
+        CSS_PATH = css_path
+
+        def on_mount(self) -> None:
+            super().on_mount()
+            self.populate_all_panes()
+
+    return _EagerSettingsScreen
+
+
 class SettingsTestApp(App[None]):
+    """Test fixture that pre-populates every Settings pane on mount."""
+
     CSS = ""
 
     def compose(self) -> ComposeResult:
         yield Footer()
 
     def on_mount(self) -> None:
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-
-        self.push_screen(SettingsScreen())
+        self.push_screen(_make_eager_settings_screen()())
 
 
 async def test_settings_screen_mounts_grouped_sections():
     """Settings screen renders grouped sections with setting rows."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        groups = app.screen.query(".setting-group")
+        groups = app.screen.query("TabPane")
         assert len(groups) > 0
         rows = app.screen.query(".setting-row")
         assert len(rows) > 0
@@ -518,35 +565,31 @@ async def test_settings_api_keys_group_shows_plaintext_warning():
         assert "sensitive" in rendered.lower()
 
 
-async def test_settings_search_filters_settings():
-    """Search input filters visible setting rows."""
+async def test_settings_tab_activation_populates_pane():
+    """Activating a settings tab mounts its rows.
+
+    With lazy tab bodies, only the active pane composes its editors
+    on first paint. Switching to another tab triggers
+    ``TabbedContent.TabActivated`` and the pane's body fills in.
+    """
+    from textual.widgets import TabbedContent
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
-        search.value = "top_k"
-        await pilot.pause()
-        visible = [r for r in app.screen.query(".setting-row") if r.display]
-        assert len(visible) >= 1
-        assert any("top_k" in (r.name or "") for r in visible)
-
-
-async def test_settings_search_clears_restores_all():
-    """Clearing search restores all settings."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        search = app.screen.query_one("#settings-search", Input)
-        total = len(app.screen.query(".setting-row"))
-        search.value = "xyznonexistent"
-        await pilot.pause()
-        search.value = ""
-        await pilot.pause()
-        visible = [r for r in app.screen.query(".setting-row") if r.display]
-        assert len(visible) == total
+        await pilot.pause(0.15)
+        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+        # Find a non-active tab; activating it should populate its body.
+        target_pane_id = None
+        for pane in tabbed.query("TabPane"):
+            if pane.id and pane.id != tabbed.active:
+                target_pane_id = pane.id
+                break
+        assert target_pane_id is not None
+        tabbed.active = target_pane_id
+        await pilot.pause(0.15)
+        target_pane = app.screen.query_one(f"#{target_pane_id}")
+        rows = list(target_pane.query(".setting-row"))
+        assert rows, f"activating {target_pane_id} did not mount any rows"
 
 
 async def test_settings_bool_renders_checkbox():
@@ -587,12 +630,9 @@ def test_settings_screen_has_expected_handlers_and_actions() -> None:
         "_on_input_save",
         "_on_checkbox_save",
         "_on_select_save",
-        "_on_search_submitted",
-        "_filter_settings",
         "_persist_value",
         "_parse_value",
         "_refresh_help",
-        "action_focus_search",
         "action_go_back",
         "action_scroll_down",
         "action_scroll_up",
@@ -669,19 +709,22 @@ async def test_settings_checkbox_persist():
 
 
 async def test_settings_tab_reaches_checkbox_and_space_toggles():
-    """Tab walks focus to the checkbox and Space toggles it."""
+    """Tab walks focus to the checkbox in the active group; Space toggles it.
+
+    Settings groups its editors into a TabbedContent, so reaching a
+    given editor requires (a) activating its tab via the TabbedContent
+    API and (b) tab-walking inside the active pane until focus lands
+    on the editor."""
+    from textual.widgets import Checkbox, TabbedContent
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Checkbox
-
+        tabs = app.screen.query_one(TabbedContent)
+        tabs.active = "settings-tab-display"  # group hosting show_reasoning
+        await pilot.pause()
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
-        # Enough presses to cross every focusable setting row in the
-        # current settings map (Models/Ingest/Generation groups +
-        # Retrieval). Bumped from 30 when vision_model was added as a
-        # new writable Models-group entry (each row adds a reset
-        # button + editor field to the tab order).
-        for _ in range(60):
+        for _ in range(20):
             await pilot.press("tab")
             await pilot.pause()
             if app.focused is cb:
@@ -706,7 +749,7 @@ async def test_settings_vim_keys():
         await pilot.press("g")
         await pilot.press("G")
         assert isinstance(app.screen, SettingsScreen)
-        assert app.screen.query(".setting-group")
+        assert app.screen.query("TabPane")
 
 
 async def test_settings_pop_screen():
@@ -754,7 +797,6 @@ async def test_settings_list_editor_can_be_expanded():
 
 async def test_settings_list_editor_saves_on_blur():
     """Typing into the list TextArea and blurring persists the parsed list."""
-    from textual.widgets import Input
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
@@ -764,8 +806,7 @@ async def test_settings_list_editor_saves_on_blur():
         ta.focus()
         await pilot.pause()
         ta.load_text("foo\nbar")
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
+        ta.blur()
         for _ in range(10):
             await pilot.pause()
             if cfg.crawl_exclude_patterns == ["foo", "bar"]:
@@ -775,7 +816,6 @@ async def test_settings_list_editor_saves_on_blur():
 
 async def test_settings_list_editor_strips_blanks():
     """Blank lines and surrounding whitespace are stripped during parsing."""
-    from textual.widgets import Input
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
@@ -785,8 +825,7 @@ async def test_settings_list_editor_strips_blanks():
         ta.focus()
         await pilot.pause()
         ta.load_text("a\n\nb\n")
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
+        ta.blur()
         for _ in range(10):
             await pilot.pause()
             if cfg.crawl_exclude_patterns == ["a", "b"]:
@@ -796,7 +835,7 @@ async def test_settings_list_editor_strips_blanks():
 
 async def test_settings_list_editor_invalid_regex_blocks_save():
     """An invalid regex shows an error and does not mutate cfg."""
-    from textual.widgets import Input, Static
+    from textual.widgets import Static
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
@@ -807,8 +846,7 @@ async def test_settings_list_editor_invalid_regex_blocks_save():
         ta.focus()
         await pilot.pause()
         ta.load_text("[")
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
+        ta.blur()
         err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
         # Focus change → blur handler → regex validation → error widget
         # class toggle are all async. Single pilot.pause is not enough on
@@ -865,7 +903,6 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     After reload, the pydantic `splitlines()` validator then produced a
     one-element list with corrupt contents.
     """
-    from textual.widgets import Input
 
     from lilbee.cli.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -879,7 +916,7 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
         ta.focus()
         await pilot.pause()
         ta.load_text("pat-a\npat-b")
-        app.screen.query_one("#settings-search", Input).focus()
+        ta.blur()
         await pilot.pause()
 
     # Raw TOML value is a newline-joined string (not Python repr of the list).
@@ -1176,7 +1213,7 @@ async def test_ctrl_r_with_no_focus_is_noop():
 
 async def test_ctrl_r_on_non_row_focus_is_noop():
     """action_reset_focused ignores focus that isn't inside a setting row."""
-    from textual.widgets import Input
+    from textual.widgets import Button
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -1184,8 +1221,7 @@ async def test_ctrl_r_on_non_row_focus_is_noop():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        search = screen.query_one("#settings-search", Input)
-        search.focus()
+        screen.query_one("#reset-all-defaults", Button).focus()
         await pilot.pause()
         with patch.object(screen, "_reset_to_default") as mock_reset:
             screen.action_reset_focused()
@@ -1703,8 +1739,15 @@ async def test_status_screen_storage_section(mock_svc):
 
 async def test_status_screen_arch_section(mock_svc):
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         info = app.screen.query_one("#arch-info", Static)
+        # Architecture reads run on a worker; poll until the
+        # placeholder is replaced with real content, capped so a
+        # genuine failure still fails fast.
+        for _ in range(40):
+            await pilot.pause()
+            if "Chat arch" in str(info.render()):
+                break
         rendered = str(info.render())
         assert "Chat arch" in rendered
         assert "Handler" in rendered
@@ -1713,8 +1756,12 @@ async def test_status_screen_arch_section(mock_svc):
 async def test_status_screen_arch_with_vision(mock_svc):
     cfg.chat_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         info = app.screen.query_one("#arch-info", Static)
+        for _ in range(40):
+            await pilot.pause()
+            if "Vision proj" in str(info.render()):
+                break
         rendered = str(info.render())
         assert "Vision proj" in rendered
 
@@ -1885,8 +1932,9 @@ def test_status_read_vision_arch_swallows_errors():
 
 
 def test_status_read_model_arch_import_error():
-    from lilbee.modelhub.model_info import get_model_architecture
+    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
 
+    invalidate_cache()
     with patch(
         "builtins.__import__",
         side_effect=lambda name, *a, **kw: (
@@ -1897,6 +1945,33 @@ def test_status_read_model_arch_import_error():
     ):
         result = get_model_architecture()
     assert result.chat_arch == "unknown"
+
+
+def test_get_model_architecture_caches_within_session():
+    """Repeated calls under the same model refs return the cached instance."""
+    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
+
+    invalidate_cache()
+    first = get_model_architecture()
+    second = get_model_architecture()
+    # Cached identity, not just equal value: a cache hit returns the
+    # exact same object so callers can rely on cheap reads.
+    assert first is second
+
+
+def test_invalidate_cache_forces_reread():
+    """invalidate_cache drops the memoized arch info so the next call
+    re-reads instead of returning the stale instance."""
+    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
+
+    invalidate_cache()
+    first = get_model_architecture()
+    invalidate_cache()
+    second = get_model_architecture()
+    # Different instances after invalidate (re-read happens), even
+    # though the values are equal because nothing changed on disk.
+    assert first is not second
+    assert first == second
 
 
 async def test_app_mounts_chat_screen():
@@ -2022,9 +2097,7 @@ class ChatTestApp(App[None]):
 async def test_chat_screen_renders():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         assert inp is not None
 
 
@@ -2440,9 +2513,7 @@ async def test_chat_slash_set_dispatch():
 async def test_chat_empty_input_ignored():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = ""
         with patch.object(app.screen, "_send_message") as mock_send:
             await _pilot.press("enter")
@@ -2481,8 +2552,8 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen.streaming is False
 
 
-async def test_apply_model_change_cancels_stream_when_streaming():
-    """_apply_model_change cancels stream and defers service reset."""
+async def testapply_model_change_cancels_stream_when_streaming():
+    """apply_model_change cancels stream and defers service reset."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -2491,19 +2562,19 @@ async def test_apply_model_change_cancels_stream_when_streaming():
             patch.object(screen, "action_cancel_stream") as mock_cancel,
             patch.object(screen, "call_later") as mock_later,
         ):
-            screen._apply_model_change()
+            screen.apply_model_change()
             mock_cancel.assert_called_once()
             mock_later.assert_called_once_with(screen._deferred_service_reset)
 
 
-async def test_apply_model_change_resets_immediately_when_not_streaming():
-    """_apply_model_change resets services immediately when not streaming."""
+async def testapply_model_change_resets_immediately_when_not_streaming():
+    """apply_model_change resets services immediately when not streaming."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
         with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
-            screen._apply_model_change()
+            screen.apply_model_change()
             mock_reset.assert_called_once()
 
 
@@ -2564,9 +2635,7 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.pause()
         assert app.screen._insert_mode is True
@@ -2598,9 +2667,7 @@ async def test_chat_refresh_model_bar():
 async def test_chat_input_changed_hides_overlay():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
@@ -2673,23 +2740,21 @@ async def test_chat_slash_delete_dispatch():
             mock_notify.assert_called_once()
 
 
-async def test_chat_action_complete_no_options():
+async def test_chat_action_complete_no_options_inserts_tab():
+    """Tab in chat input with no completion candidates inserts ``\\t``."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        inp.focus()
         inp.value = "hello"
         app.screen.action_complete()
-        assert inp.value == "hello"
+        assert inp.value == "hello\t"
 
 
 async def test_chat_action_complete_with_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -2702,9 +2767,7 @@ async def test_chat_action_complete_with_options():
 async def test_chat_action_complete_with_space():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/model q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -2717,11 +2780,9 @@ async def test_chat_action_complete_with_space():
 async def test_chat_action_complete_cycle():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
 
         inp.value = "/he"
@@ -2742,9 +2803,7 @@ async def test_chat_tab_completes_alias_prefix():
     """Pressing Tab on '/cat' expands to the /catalog alias."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         for key in ("slash", "c", "a", "t"):
             await pilot.press(key)
@@ -2762,9 +2821,8 @@ async def test_chat_action_complete_cycle_no_selection():
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["a", "b"])
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         original = inp.value
         with patch.object(overlay, "cycle_next", return_value=None):
             app.screen.action_complete()
@@ -2775,9 +2833,7 @@ async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "_stream_response"):
-            from textual.widgets import Input
-
-            inp = app.screen.query_one("#chat-input", Input)
+            inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "What is RAG?"
             await _pilot.press("enter")
             assert len(app.screen._history) == 1
@@ -3072,7 +3128,8 @@ async def test_catalog_focus_search():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             screen.action_focus_search()
             await _pilot.pause()
             from textual.widgets import Input
@@ -3148,7 +3205,8 @@ async def test_catalog_vim_keys_in_input():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -3182,7 +3240,8 @@ async def test_catalog_page_down_no_focus():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -3329,6 +3388,155 @@ async def test_catalog_load_more_noop_when_exhausted():
                 assert screen._hf_offset == old_offset
 
 
+async def test_catalog_append_more_hf_to_list_extends_rows_and_options():
+    """Newly-arrived HF rows mount to the list view via append_rows."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._families = []
+            screen._hf_models = []
+            screen._refresh_list()
+            await _pilot.pause()
+            initial = screen._list_widget.option_count
+            new_models = [
+                _make_catalog_model(name=f"new-{i}B", hf_repo=f"org/new-{i}-GGUF", featured=False)
+                for i in range(3)
+            ]
+            screen._append_more_hf_to_list(new_models)
+            await _pilot.pause()
+            assert screen._list_widget.option_count == initial + 3
+            assert len(screen._rows) >= 3
+
+
+async def test_catalog_append_more_hf_to_list_noop_when_no_new_rows():
+    """Empty payload still updates the sort label without mounting rows."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            initial = screen._list_widget.option_count
+            screen._append_more_hf_to_list([])
+            await _pilot.pause()
+            assert screen._list_widget.option_count == initial
+
+
+async def test_catalog_list_count_uses_row_count():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._list_count() == screen._list_widget.row_count
+
+
+async def test_catalog_scroll_prefetch_fires_load_more_near_bottom():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            with (
+                patch.object(
+                    type(screen._list_widget),
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    type(screen._list_widget),
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=95.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen._on_list_scrolled(95.0)
+                assert load_more.called
+
+
+async def test_catalog_scroll_prefetch_skipped_in_grid_view():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            with patch.object(screen, "_load_more") as load_more:
+                screen._on_list_scrolled(99.0)
+                assert not load_more.called
+
+
+async def test_catalog_scroll_prefetch_skipped_during_cooldown():
+    """A second scroll fires within the cooldown window must not re-trigger load."""
+    import time as _time
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = _time.monotonic()
+            with patch.object(screen, "_load_more") as load_more:
+                screen._on_list_scrolled(99.0)
+                assert not load_more.called
+
+
+async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            with (
+                patch.object(
+                    type(screen._list_widget),
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=0.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen._on_list_scrolled(0.0)
+                assert not load_more.called
+
+
 async def test_catalog_load_more_deduplicated_while_in_flight():
     """A second _load_more during an in-flight fetch does not re-advance the offset."""
     from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
@@ -3367,10 +3575,11 @@ async def test_catalog_row_highlighted_prefetches_near_bottom():
             ]
             screen._refresh_list()
             await _pilot.pause()
-            items = list(screen.query(ModelListItem))
-            assert len(items) == 30
+            items_count = screen._list_widget.option_count
+            assert items_count == 30
             # Focus the last item so prefetch trigger fires.
-            items[-1].focus()
+            screen._list_widget.highlighted = screen._list_widget.option_count + -1
+            screen._list_widget.focus()
             await _pilot.pause()
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen._maybe_prefetch_on_nav()
@@ -3427,6 +3636,34 @@ async def test_catalog_sort_label_covers_every_pagination_state():
             assert "for more" not in text.lower()
 
 
+async def test_catalog_get_search_text_returns_empty_when_input_missing():
+    """The search-input descriptor query can raise during a teardown
+    window; _get_search_text must swallow rather than crash callers."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    assert screen._get_search_text() == ""
+
+
+async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
+    """_initial_focus_first_grid is a no-op once a focus owner exists."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen.query_one("#catalog-search", Input).focus()
+            await _pilot.pause()
+            with patch.object(screen, "_focus_first_grid") as fall_through:
+                screen._initial_focus_first_grid()
+                fall_through.assert_not_called()
+
+
 async def test_catalog_get_highlighted_model_name_empty():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -3466,9 +3703,10 @@ async def test_catalog_get_highlighted_with_rows():
             await _pilot.pause()
             # Focus the first list item so _get_highlighted_model_name()
             # picks up the row via the focused ModelListItem.
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[0].focus()
+            items_count = screen._list_widget.option_count
+            assert items_count
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name is not None
@@ -3604,11 +3842,11 @@ async def test_catalog_input_changed_refreshes():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            await pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -3616,6 +3854,8 @@ async def test_catalog_input_changed_refreshes():
                 event = MagicMock(spec=Input.Changed)
                 event.input = inp
                 screen._on_search_changed(event)
+                # Wait for the debounce timer (80 ms) plus a frame.
+                await pilot.pause(0.15)
                 mock_filter.assert_called()
 
 
@@ -3686,9 +3926,8 @@ async def test_chat_stream_response_worker(mock_svc):
     async with app.run_test(size=(120, 40)) as _pilot:
         tokens = [FakeToken("Hello"), FakeToken(" world")]
         mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test question"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3703,9 +3942,8 @@ async def test_chat_stream_response_error_worker(mock_svc):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         mock_svc.searcher.ask_stream = MagicMock(side_effect=Exception("LLM error"))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3728,9 +3966,8 @@ async def test_chat_stream_response_reasoning_worker(mock_svc):
         set_services(mock_svc)
         tokens = [FakeToken("thinking", is_reasoning=True), FakeToken("answer")]
         mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3754,9 +3991,8 @@ async def test_chat_stream_response_inner_exception(mock_svc):
         set_services(mock_svc)
         tokens = [ExplodingToken()]
         mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3894,9 +4130,8 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
             yield FakeToken("end")
 
         mock_svc.searcher.ask_stream = MagicMock(side_effect=slow_stream)
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -3955,9 +4190,7 @@ async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/version"
         with patch("lilbee.app.version.get_version", return_value="1.0.0"):
             await _pilot.press("enter")
@@ -3969,12 +4202,10 @@ async def test_chat_on_input_changed_visible_overlay():
     """Cover the overlay.hide() branch (line 408)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
 
         # Show the overlay first
         overlay.show_completions(["/help", "/models"])
@@ -4018,13 +4249,20 @@ async def test_chat_on_setup_complete_skipped_shows_banner():
 
 async def test_chat_on_setup_complete_skipped_no_banner_when_embedding_ready():
     """Skipping wizard does not show banner when embedding model is already configured."""
+    from lilbee.core.config import cfg as _cfg
+
+    old_mode = _cfg.chat_mode
+    _cfg.chat_mode = "search"
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_embedding_ready", return_value=True):
-            app.screen._on_setup_complete("skipped")
-            await _pilot.pause()
-            banner = app.screen.query_one("#chat-only-banner")
-            assert banner.display is False
+    try:
+        async with app.run_test(size=(120, 40)) as _pilot:
+            with patch.object(app.screen, "_embedding_ready", return_value=True):
+                app.screen._on_setup_complete("skipped")
+                await _pilot.pause()
+                banner = app.screen.query_one("#chat-only-banner")
+                assert banner.display is False
+    finally:
+        _cfg.chat_mode = old_mode
 
 
 async def test_chat_on_setup_complete_success():
@@ -4063,9 +4301,8 @@ async def test_chat_cancel_with_active_worker(mock_svc):
             yield FakeToken("end")
 
         mock_svc.searcher.ask_stream = MagicMock(side_effect=slow_stream)
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
@@ -4093,8 +4330,8 @@ async def test_catalog_refresh_list_empty():
             screen._hf_models = []
             screen._remote_models = []
             screen._refresh_list()
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            assert len(list_container.query(ModelListItem)) == 0
+            list_container = screen.query_one("#catalog-list", ModelList)
+            assert list_container.option_count == 0
 
 
 async def test_catalog_refresh_list_with_models():
@@ -4114,8 +4351,8 @@ async def test_catalog_refresh_list_with_models():
             ]
             screen._hf_has_more = True
             screen._refresh_list()
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            assert len(list_container.query(ModelListItem)) >= 5
+            list_container = screen.query_one("#catalog-list", ModelList)
+            assert list_container.option_count >= 5
 
 
 async def test_catalog_page_down_with_focused_table():
@@ -4134,15 +4371,13 @@ async def test_catalog_page_down_with_focused_table():
             ]
             screen._grid_view = False
             screen._refresh_list()
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[0].focus()
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
-            # Nav actions focus a list item by calling .focus() on the
-            # target; verify the back-to-back pair leaves focus on item 0.
             screen.action_page_down()
             screen.action_page_up()
-            assert items[0].has_focus
+            # The back-to-back pair leaves the highlight on item 0.
+            assert screen._list_widget.highlighted == 0
 
 
 async def test_catalog_action_cursor_with_focused_table():
@@ -4161,13 +4396,12 @@ async def test_catalog_action_cursor_with_focused_table():
             ]
             screen._grid_view = False
             screen._refresh_list()
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[0].focus()
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             screen.action_cursor_down()
             screen.action_cursor_up()
-            assert items[0].has_focus
+            assert screen._list_widget.highlighted == 0
 
 
 async def test_catalog_jump_top_bottom():
@@ -4186,13 +4420,43 @@ async def test_catalog_jump_top_bottom():
             ]
             screen._grid_view = False
             screen._refresh_list()
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[0].focus()
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             screen.action_jump_bottom()
             screen.action_jump_top()
-            assert items[0].has_focus
+            assert screen._list_widget.highlighted == 0
+
+
+async def test_catalog_grid_actions_drive_focused_grid():
+    """Grid-view page/jump actions forward to the focused GridSelect.
+
+    Mocks ``_focused_grid`` so the grid branches in ``action_page_down`` /
+    ``action_page_up`` / ``action_jump_top`` / ``action_jump_bottom`` are
+    exercised deterministically on every xdist shard. A live GridSelect is
+    expensive to mount with the empty patched catalog, and a real grid race
+    is what makes those branches occasionally drop off the Windows-3.11/3.13
+    coverage gate.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._grid_view is True
+            fake_grid = MagicMock()
+            with patch.object(screen, "_focused_grid", return_value=fake_grid):
+                screen.action_page_down()
+                screen.action_page_up()
+                screen.action_jump_top()
+                screen.action_jump_bottom()
+            assert fake_grid.action_cursor_down.call_count >= 1
+            assert fake_grid.action_cursor_up.call_count >= 1
+            fake_grid.highlight_first.assert_called_once()
+            fake_grid.highlight_last.assert_called_once()
 
 
 async def test_chat_vim_j_scrolls_from_chat_log():
@@ -4436,7 +4700,8 @@ async def test_catalog_key_g_G_noop_in_input():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -4504,13 +4769,83 @@ async def test_catalog_delete_installed_model_confirmation():
             await _pilot.pause()
 
             # Focus the last list item (remote model)
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[-1].focus()
+            items_count = screen._list_widget.option_count
+            assert items_count
+            screen._list_widget.highlighted = screen._list_widget.option_count + -1
+            screen._list_widget.focus()
             await _pilot.pause()
 
             screen.action_delete_model()
             assert screen._pending_delete == "test-model:latest"
+
+
+async def test_catalog_delete_with_no_highlight_warns():
+    """action_delete_model toasts when nothing is highlighted to delete."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+            with (
+                patch.object(screen, "_get_highlighted_model_name", return_value=None),
+                patch.object(screen, "notify") as mock_notify,
+            ):
+                screen.action_delete_model()
+                mock_notify.assert_called_once()
+                assert (
+                    "Select" in mock_notify.call_args[0][0]
+                    or "select" in mock_notify.call_args[0][0]
+                )
+
+
+async def test_catalog_grid_renders_hf_overflow_cta():
+    """When more HF rows are returned than the grid budget, an overflow CTA appears."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+
+    def _hf_row(name: str) -> LocalCatalogRow:
+        return LocalCatalogRow(
+            name=name,
+            task="chat",
+            params="--",
+            size="--",
+            quant="--",
+            downloads="--",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref=name,
+            backend="native",
+        )
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+            screen._hf_fetched = True
+            screen._families = []
+            screen._grid_cache_key = ()
+            with patch.object(
+                screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
+            ):
+                screen._refresh_grid()
+                await _pilot.pause()
+            grid_text = " ".join(str(s.render()) for s in screen.query("#catalog-grid > Static"))
+            assert any(c.isdigit() for c in grid_text)
 
 
 async def test_catalog_delete_second_press_confirms():
@@ -4537,9 +4872,10 @@ async def test_catalog_delete_second_press_confirms():
             screen._refresh_list()
             await _pilot.pause()
 
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[-1].focus()
+            items_count = screen._list_widget.option_count
+            assert items_count
+            screen._list_widget.highlighted = screen._list_widget.option_count + -1
+            screen._list_widget.focus()
             await _pilot.pause()
 
             # First press sets pending
@@ -4573,9 +4909,10 @@ async def test_catalog_delete_not_installed():
             screen._refresh_list()
             await _pilot.pause()
 
-            items = list(screen.query(ModelListItem))
-            assert items
-            items[-1].focus()
+            items_count = screen._list_widget.option_count
+            assert items_count
+            screen._list_widget.highlighted = screen._list_widget.option_count + -1
+            screen._list_widget.focus()
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -4780,9 +5117,7 @@ async def test_chat_normal_mode_dims_input():
     """Input widget gets normal-mode class when in normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         assert "normal-mode" not in inp.classes
         app.screen.action_enter_normal_mode()
         await pilot.pause()
@@ -4796,9 +5131,8 @@ async def test_chat_escape_key_enters_normal_mode():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.containers import VerticalScroll
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         log = app.screen.query_one("#chat-log", VerticalScroll)
         assert app.screen._insert_mode is True
         assert inp.has_focus
@@ -4843,13 +5177,11 @@ async def test_chat_enter_key_returns_to_insert_mode():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         assert app.screen._insert_mode is False
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.press("enter")
         await pilot.pause()
@@ -5077,9 +5409,7 @@ async def test_chat_action_complete_next():
     """Ctrl+N (action_complete_next) delegates to action_complete."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -5091,7 +5421,7 @@ async def test_chat_action_complete_next():
 
 async def test_chat_action_complete_next_noop_when_input_unfocused():
     """Ctrl+N must not move focus when the input is not focused."""
-    from textual.widgets import Select
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5099,23 +5429,21 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        chat_sel.focus()
+        chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
+        chat_btn.focus()
         await pilot.pause()
         screen.action_complete_next()
         await pilot.pause()
-        assert chat_sel.has_focus
+        assert chat_btn.has_focus
 
 
 async def test_chat_action_complete_prev_opens_overlay():
     """Ctrl+P (action_complete_prev) opens overlay when not visible."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
         with patch(
@@ -5131,11 +5459,9 @@ async def test_chat_action_complete_prev_cycles_backward():
     """Ctrl+P cycles backward through existing completions."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
 
@@ -5156,9 +5482,7 @@ async def test_chat_action_complete_prev_with_space():
     """Ctrl+P with argument completions sets cmd + selection."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/model q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
@@ -5247,9 +5571,7 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         await pilot.pause()
         app.screen._input_history = ["hello", "world"]
@@ -5343,26 +5665,30 @@ async def test_chat_send_message_tolerates_missing_welcome():
             app.screen.query_one("#chat-welcome", ChatWelcome)
 
 
-async def test_chat_tab_from_input_jumps_to_model_select():
-    """With an empty input and no completions, Tab moves focus to the chat dropdown."""
-    from textual.widgets import Input, Select
+async def test_chat_tab_in_input_inserts_literal_tab():
+    """Tab in a focused chat input inserts ``\\t`` and keeps focus.
 
+    The chat prompt is a TextArea-style widget where Tab is a literal
+    character (matching code editor / IDE conventions). To leave the
+    input via keyboard, users press Escape (normal mode) or click out.
+    """
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#chat-input", Input).focus()
+        inp = screen.query_one("#chat-input", ChatInput)
+        inp.focus()
         await pilot.press("tab")
         await pilot.pause()
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        assert chat_sel.has_focus
+        assert inp.value == "\t"
+        assert inp.has_focus
 
 
-async def test_chat_tab_cycles_between_model_selects():
-    """Tab on a focused Select advances to the next Select."""
-    from textual.widgets import Select
+async def test_chat_tab_cycles_between_model_buttons():
+    """Tab on a focused chat-model button advances to the embed-model button."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5370,34 +5696,45 @@ async def test_chat_tab_cycles_between_model_selects():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#chat-model-select", Select).focus()
+        screen.query_one("#chat-model-button", ModelPickerButton).focus()
+        embed_btn = screen.query_one("#embed-model-button", ModelPickerButton)
         await pilot.press("tab")
-        await pilot.pause()
-        embed_sel = screen.query_one("#embed-model-select", Select)
-        assert embed_sel.has_focus
+        # Poll: the tab keypress travels through several refresh ticks
+        # before the focus watcher updates has_focus on a slow xdist
+        # shard. A single pilot.pause() is not enough.
+        for _ in range(10):
+            await pilot.pause()
+            if embed_btn.has_focus:
+                break
+        assert embed_btn.has_focus
 
 
-async def test_chat_tab_in_normal_mode_jumps_to_model_select():
-    """Tab from the chat log (normal mode) jumps straight to the chat dropdown."""
-    from textual.widgets import Select
+async def test_chat_tab_in_normal_mode_advances_focus():
+    """Tab in chat normal mode steps through the focus chain.
 
+    With insert mode off, Tab no longer inserts a literal character; it
+    advances focus to the next widget so keyboard users can reach every
+    focusable on the screen.
+    """
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        screen = app.screen
         await pilot.press("escape")
         await pilot.pause()
+        before = app.focused
         await pilot.press("tab")
-        await pilot.pause()
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        assert chat_sel.has_focus
+        for _ in range(10):
+            await pilot.pause()
+            if app.focused is not before:
+                break
+        assert app.focused is not before, "Tab did not move focus in normal mode"
 
 
-async def test_chat_enter_on_focused_select_does_not_enter_insert_mode():
-    """Enter on a focused dropdown bubbles to the Select instead of insert mode."""
-    from textual.widgets import Select
+async def test_chat_enter_on_focused_picker_button_does_not_enter_insert_mode():
+    """Enter on the focused chat-model button stays in normal mode."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
@@ -5410,7 +5747,7 @@ async def test_chat_enter_on_focused_select_does_not_enter_insert_mode():
         assert isinstance(screen, ChatScreen)
         await pilot.press("escape")
         await pilot.pause()
-        screen.query_one("#chat-model-select", Select).focus()
+        screen.query_one("#chat-model-button", ModelPickerButton).focus()
         await pilot.pause()
         assert screen._insert_mode is False
         await pilot.press("enter")
@@ -5440,7 +5777,7 @@ async def test_settings_group_titles_present():
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(SettingsScreen())
         await pilot.pause()
-        titles = app.screen.query(".group-title")
+        titles = app.screen.query("Tab")
         assert len(titles) >= 2
 
 
@@ -6765,7 +7102,7 @@ def test_scan_installed_models_exception_returns_empty():
 
 
 def test_installed_name_to_row_creates_row():
-    """_installed_name_to_row creates a TableRow with correct fields."""
+    """_installed_name_to_row creates a LocalCatalogRow with correct fields."""
     from lilbee.cli.tui.screens.setup import _installed_name_to_row
 
     row = _installed_name_to_row("qwen3:8b", "chat")
@@ -7188,8 +7525,11 @@ async def test_fetch_installed_names_exception():
             app.push_screen(screen)
             await _pilot.pause()
             screen._installed_names = set()
+            services = MagicMock()
+            services.model_manager.list_native_identities.side_effect = Exception("fail")
             with patch(
-                "lilbee.cli.tui.screens.catalog.ModelRegistry", side_effect=Exception("fail")
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=services,
             ):
                 screen._fetch_installed_names()
             assert screen._installed_names == set()
@@ -7396,13 +7736,13 @@ async def test_catalog_get_highlighted_variant_name():
             screen._grid_view = False
             # Mount a single ModelListItem and focus it so
             # _get_highlighted_model_name() picks up row.ref via screen.focused.
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            list_container.remove_children()
-            list_container.mount(ModelListItem(row))
+            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
-            items = list(list_container.query(ModelListItem))
-            assert items
-            items[0].focus()
+            items_count = list_container.option_count
+            assert items_count
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name == "org/model-GGUF"
@@ -7423,13 +7763,13 @@ async def test_catalog_get_highlighted_remote_name():
             row = remote_to_row(rm)
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            list_container.remove_children()
-            list_container.mount(ModelListItem(row))
+            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
-            items = list(list_container.query(ModelListItem))
-            assert items
-            items[0].focus()
+            items_count = list_container.option_count
+            assert items_count
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name == "remote:latest"
@@ -7450,13 +7790,13 @@ async def test_catalog_get_highlighted_catalog_name():
             row = catalog_to_row(m, installed=False)
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            list_container.remove_children()
-            list_container.mount(ModelListItem(row))
+            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
-            items = list(list_container.query(ModelListItem))
-            assert items
-            items[0].focus()
+            items_count = list_container.option_count
+            assert items_count
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name == "org/hf-model-GGUF"
@@ -7556,12 +7896,15 @@ async def test_chat_on_setup_complete_completed_with_auto_sync():
 
 async def test_chat_on_setup_complete_hides_banner_when_embedding_ready():
     """_on_setup_complete hides chat-only banner after wizard configures embedding."""
+    from lilbee.core.config import cfg
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # Simulate banner being visible (e.g. from /setup command while in chat-only mode)
-        app.screen._show_chat_only_banner()
+        with patch.object(app.screen, "_embedding_ready", return_value=False):
+            app.screen._refresh_mode_banner()
         assert app.screen.query_one("#chat-only-banner").display is True
         with patch.object(app.screen, "_embedding_ready", return_value=True):
+            cfg.chat_mode = "search"
             app.screen._on_setup_complete("done")
             await _pilot.pause()
             assert app.screen.query_one("#chat-only-banner").display is False
@@ -7571,9 +7914,7 @@ async def test_chat_on_key_insert_mode_unfocused_input():
     """on_key in insert mode with unfocused input redirects printable chars."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        app.screen.query_one("#chat-input", Input)
+        app.screen.query_one("#chat-input", ChatInput)
         # Focus the chat log instead
         app.screen.query_one("#chat-log").focus()
         await pilot.pause()
@@ -7659,9 +8000,8 @@ async def test_chat_on_chat_input_changed_completing():
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["/help"])
         app.screen._completing = True
-        from textual.widgets import Input
 
-        inp = app.screen.query_one("#chat-input", Input)
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/test"
         await pilot.pause()
         # Overlay should still be visible since _completing skips hide
@@ -7964,6 +8304,41 @@ class TaskCenterTestApp(App[None]):
         self.push_screen(TaskCenter())
 
 
+async def test_task_center_advance_tick_skips_when_not_active_screen():
+    """A late tick that fires after the screen is no longer on top must
+    not query a torn-down DOM."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = TaskCenterTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        # Hide the screen by replacing app.screen ownership; the timer
+        # path early-exits without touching widgets.
+        with patch.object(type(app), "screen", new_callable=PropertyMock) as mocked:
+            mocked.return_value = MagicMock()
+            screen._advance_tick()
+            assert mocked.return_value is not screen
+
+
+async def test_task_center_advance_tick_skips_when_stack_empty():
+    """A tick during app teardown raises ScreenStackError on app.screen.
+    The handler must swallow it and exit cleanly."""
+    from textual.app import ScreenStackError
+
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = TaskCenterTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        with patch.object(type(app), "screen", new_callable=PropertyMock) as mocked:
+            mocked.side_effect = ScreenStackError("teardown")
+            screen._advance_tick()
+
+
 async def test_task_center_go_back_non_lilbee_app():
     """action_go_back pops screen on non-LilbeeApp."""
     from lilbee.cli.tui.screens.task_center import TaskCenter
@@ -8249,15 +8624,166 @@ async def test_chat_embedding_ready_false_on_exception():
             assert screen._embedding_ready() is False
 
 
-async def test_chat_hide_banner():
-    """_hide_chat_only_banner hides the banner."""
+async def test_chat_refresh_mode_banner_toggles_visibility():
+    """_refresh_mode_banner shows the banner when embedding is unavailable, hides it otherwise."""
+    from lilbee.core.config import cfg as _cfg
+
+    old_mode = _cfg.chat_mode
+    _cfg.chat_mode = "search"
+    app = ChatTestApp()
+    try:
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            with patch.object(app.screen, "_embedding_ready", return_value=False):
+                app.screen._refresh_mode_banner()
+                assert app.screen.query_one("#chat-only-banner").display is True
+            with patch.object(app.screen, "_embedding_ready", return_value=True):
+                app.screen._refresh_mode_banner()
+                assert app.screen.query_one("#chat-only-banner").display is False
+    finally:
+        _cfg.chat_mode = old_mode
+
+
+async def test_chat_refresh_mode_banner_shows_chat_mode_text_when_chat():
+    """In Chat mode with embedding ready, the banner reflects the chat-mode copy."""
+    from lilbee.cli.tui import messages as chat_msg
+    from lilbee.core.config import cfg
+
+    cfg.chat_mode = "chat"
+    app = ChatTestApp()
+    try:
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            with patch.object(app.screen, "_embedding_ready", return_value=True):
+                app.screen._refresh_mode_banner()
+                banner = app.screen.query_one("#chat-only-banner", Static)
+                assert banner.display is True
+                assert chat_msg.CHAT_MODE_BANNER_CHAT in str(banner.render())
+    finally:
+        cfg.chat_mode = "search"
+
+
+async def test_chat_refresh_mode_banner_no_widget_is_silent():
+    """_refresh_mode_banner returns silently when the banner widget is gone."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        app.screen._show_chat_only_banner()
-        assert app.screen.query_one("#chat-only-banner").display is True
-        app.screen._hide_chat_only_banner()
-        assert app.screen.query_one("#chat-only-banner").display is False
+        app.screen.query_one("#chat-only-banner", Static).remove()
+        await _pilot.pause()
+        app.screen._refresh_mode_banner()
+
+
+async def test_chat_on_settings_changed_repaints_banner_for_chat_mode():
+    """settings_changed_signal payloads on chat_mode trigger banner repaint."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with patch.object(app.screen, "_refresh_mode_banner") as mock_refresh:
+            app.screen._on_settings_changed(("chat_mode", "chat"))
+            mock_refresh.assert_called_once()
+        with patch.object(app.screen, "_refresh_mode_banner") as mock_refresh:
+            app.screen._on_settings_changed(("temperature", 0.5))
+            mock_refresh.assert_not_called()
+
+
+async def test_chat_action_toggle_chat_mode_notifies_label():
+    """F3 keypress flips the toggle and posts a notify with the new label."""
+    from lilbee.cli.tui import messages as chat_msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        with (
+            patch.object(ChatModeToggle, "toggle", return_value=True),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            await pilot.press("f3")
+            await pilot.pause()
+            mock_notify.assert_called_once()
+            assert chat_msg.CHAT_MODE_SET.split(":")[0] in mock_notify.call_args[0][0]
+
+
+async def test_chat_action_toggle_chat_mode_returns_silently_when_disabled():
+    """F3 keypress with the toggle disabled (no embedding) does not notify."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        with (
+            patch.object(ChatModeToggle, "toggle", return_value=False),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            await pilot.press("f3")
+            await pilot.pause()
+            mock_notify.assert_not_called()
+
+
+async def test_chat_action_toggle_chat_mode_returns_silently_when_toggle_missing():
+    """F3 with no ChatModeToggle mounted (e.g. mid-screen-tear) is a no-op.
+
+    Calls the action directly: patching ``screen.query_one`` is too broad
+    for ``pilot.press``, which relies on query_one for binding dispatch.
+    """
+    from textual.css.query import NoMatches
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        screen = app.screen
+        with (
+            patch.object(screen, "query_one", side_effect=NoMatches("no toggle")),
+            patch.object(screen, "notify") as mock_notify,
+        ):
+            screen.action_toggle_chat_mode()
+            mock_notify.assert_not_called()
+
+
+async def test_chat_notify_no_results_uses_warning_severity():
+    """The fall-through helper toasts with severity warning."""
+    from lilbee.cli.tui import messages as chat_msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._notify_no_results()
+            mock_notify.assert_called_once_with(
+                chat_msg.CHAT_MODE_BANNER_SEARCH_NO_RESULTS, severity="warning"
+            )
+
+
+async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_nothing():
+    """In Search mode, a response without a Sources block triggers the toast."""
+    from unittest.mock import MagicMock
+
+    from lilbee.core.config import cfg
+
+    cfg.chat_mode = "search"
+    app = ChatTestApp()
+    try:
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            screen = app.screen
+            widget = MagicMock()
+            with (
+                patch.object(screen, "_embedding_ready", return_value=True),
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *args, **_kw: (
+                        args[1](*args[2:]) if callable(args[1]) else None
+                    ),
+                ),
+                patch.object(screen, "_notify_no_results") as mock_notify,
+            ):
+                screen._finalize_stream(widget, [], ["I couldn't find that in your docs."])
+                mock_notify.assert_called_once()
+    finally:
+        cfg.chat_mode = "search"
 
 
 async def test_chat_f5_opens_setup():
@@ -8545,13 +9071,13 @@ def test_chat_embedding_ready_real_code_false():
     assert hasattr(ChatScreen, "_embedding_ready")
 
 
-def test_on_list_item_selected_calls_select_row():
-    """_on_list_item_selected calls _select_row with the item's row."""
+def test_on_model_list_selected_calls_select_row():
+    """_on_model_list_selected dispatches the row to _select_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
     screen = MagicMock()
-    row = TableRow(
+    row = LocalCatalogRow(
         name="test",
         task="chat",
         params="7B",
@@ -8563,11 +9089,9 @@ def test_on_list_item_selected_calls_select_row():
         sort_downloads=1000,
         sort_size=4.0,
     )
-    item = MagicMock()
-    item.row = row
     event = MagicMock()
-    event.item = item
-    CatalogScreen._on_list_item_selected(screen, event)
+    event.row = row
+    CatalogScreen._on_model_list_selected(screen, event)
     screen._select_row.assert_called_once_with(row)
 
 
@@ -8616,7 +9140,7 @@ def test_make_editor_with_choices():
 
 
 async def test_catalog_fetch_installed_names():
-    """_fetch_installed_names populates _installed_names from registry.
+    """_fetch_installed_names populates _installed_names via ModelManager.
 
     The set carries both the canonical ``hf_repo/filename`` ref and the
     bare ``hf_repo`` so catalog rows whose ref is the repo alone still
@@ -8631,14 +9155,14 @@ async def test_catalog_fetch_installed_names():
             app.push_screen(screen)
             await _pilot.pause()
 
-            mock_manifest = MagicMock()
-            mock_manifest.hf_repo = "org/test-model-GGUF"
-            mock_manifest.gguf_filename = "test.gguf"
-            mock_manifest.ref = "org/test-model-GGUF/test.gguf"
-            mock_registry = MagicMock()
-            mock_registry.list_installed.return_value = [mock_manifest]
-
-            with patch("lilbee.cli.tui.screens.catalog.ModelRegistry", return_value=mock_registry):
+            services = MagicMock()
+            services.model_manager.list_native_identities.return_value = frozenset(
+                {"org/test-model-GGUF/test.gguf", "org/test-model-GGUF"}
+            )
+            with patch(
+                "lilbee.cli.tui.screens.catalog.get_services",
+                return_value=services,
+            ):
                 screen._fetch_installed_names()
             assert "org/test-model-GGUF/test.gguf" in screen._installed_names
             assert "org/test-model-GGUF" in screen._installed_names
@@ -8715,7 +9239,8 @@ async def test_catalog_delete_when_input_focused():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            for _ in range(8):
+                await _pilot.pause()
 
             # Focus the search input
             inp = screen.query_one("#catalog-search")
@@ -8730,7 +9255,7 @@ async def test_catalog_delete_when_input_focused():
 async def test_catalog_get_highlighted_model_name_catalog():
     """_get_highlighted_model_name returns catalog model name."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -8740,7 +9265,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             await _pilot.pause()
 
             cm = _make_catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
-            row = TableRow(
+            row = LocalCatalogRow(
                 name="Qwen3 8B",
                 task="chat",
                 params="8B",
@@ -8756,13 +9281,13 @@ async def test_catalog_get_highlighted_model_name_catalog():
             )
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            list_container.remove_children()
-            list_container.mount(ModelListItem(row))
+            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
-            items = list(list_container.query(ModelListItem))
-            assert items
-            items[0].focus()
+            items_count = list_container.option_count
+            assert items_count
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             result = screen._get_highlighted_model_name()
             assert result == "Qwen/Qwen3-8B-GGUF"
@@ -8771,7 +9296,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
 async def test_catalog_get_highlighted_model_name_fallback_none():
     """_get_highlighted_model_name returns None when row has no model ref."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -8780,7 +9305,7 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             app.push_screen(screen)
             await _pilot.pause()
 
-            row = TableRow(
+            row = LocalCatalogRow(
                 name="orphan",
                 task="chat",
                 params="?",
@@ -8794,13 +9319,13 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             )
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", VerticalScroll)
-            list_container.remove_children()
-            list_container.mount(ModelListItem(row))
+            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
-            items = list(list_container.query(ModelListItem))
-            assert items
-            items[0].focus()
+            items_count = list_container.option_count
+            assert items_count
+            screen._list_widget.highlighted = 0
+            screen._list_widget.focus()
             await _pilot.pause()
             result = screen._get_highlighted_model_name()
             assert result is None
@@ -8826,7 +9351,7 @@ async def test_catalog_browse_more_clicked():
 async def test_catalog_grid_selected_with_model_card():
     """Grid selection with ModelCard delegates to _select_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
     from lilbee.cli.tui.widgets.grid_select import GridSelect
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
@@ -8837,7 +9362,7 @@ async def test_catalog_grid_selected_with_model_card():
             app.push_screen(screen)
             await _pilot.pause()
 
-            row = TableRow(
+            row = LocalCatalogRow(
                 name="card-model",
                 task="chat",
                 params="7B",
@@ -9061,7 +9586,11 @@ async def test_catalog_cycle_sort_noop_when_input_focused():
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await pilot.pause()
+            # Drain the streaming-section call_after_refresh chain so the
+            # later mounts can't pull focus away from #catalog-search after
+            # we focus it below.
+            for _ in range(8):
+                await pilot.pause()
             screen._grid_view = False
             screen.query_one("#catalog-search", Input).focus()
             await pilot.pause()
@@ -9152,7 +9681,6 @@ async def test_catalog_select_first_visible_list_item_installs_match():
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9162,19 +9690,14 @@ async def test_catalog_select_first_visible_list_item_installs_match():
             await _pilot.pause()
             screen._grid_view = False
             screen._refresh_list()
-            items = list(screen.query(ModelListItem))
-            if len(items) < 2:
-                return  # Not enough rows to exercise the visible-match walk
-            for item in items:
-                item.display = False
-            target = items[1]
-            target.display = True
+            await _pilot.pause()
+            if screen._list_widget.option_count == 0:
+                return  # No rows to exercise
             with patch.object(screen, "_select_row") as install:
                 screen._select_first_visible_list_item()
                 for _ in range(5):
                     await _pilot.pause()
                 assert install.called
-                assert install.call_args.args[0] is target.row
 
 
 async def test_catalog_focus_list_item_empty_is_noop():
@@ -9192,7 +9715,7 @@ async def test_catalog_focus_list_item_empty_is_noop():
             screen._hf_models = []
             screen._remote_models = []
             screen._refresh_list()
-            assert not screen._list_items()
+            assert screen._list_widget.option_count == 0
             focus_before = screen.focused
             screen._focus_list_item(0)
             assert screen.focused is focus_before
@@ -9245,10 +9768,9 @@ def test_catalog_get_highlighted_name_non_model_card_child():
     assert CatalogScreen._get_highlighted_model_name(screen) is None
 
 
-async def test_catalog_focused_list_index_value_error_path():
-    """_focused_list_index returns None when the focused item is not in query results."""
+async def test_catalog_focused_list_index_returns_highlighted():
+    """_focused_list_index returns the ModelList's highlighted index, or None."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -9257,25 +9779,15 @@ async def test_catalog_focused_list_index_value_error_path():
             app.push_screen(screen)
             await pilot.pause()
             screen._grid_view = False
-            # Focus a fabricated ModelListItem that is not mounted in the screen.
-            dangling = ModelListItem(
-                TableRow(
-                    name="dangling",
-                    task="chat",
-                    params="1B",
-                    size="1.0 GB",
-                    quant="Q4_K_M",
-                    downloads="--",
-                    featured=False,
-                    installed=False,
-                    sort_downloads=0,
-                    sort_size=1.0,
-                )
-            )
-            # Directly stub `focused` with the dangling item so the list.index
-            # call in _focused_list_index raises ValueError.
-            screen.focused = dangling  # type: ignore[assignment]
             assert screen._focused_list_index() is None
+            screen._families = []
+            screen._hf_models = [
+                _make_catalog_model(name=f"m-{i}B", featured=False) for i in range(3)
+            ]
+            screen._refresh_list()
+            await pilot.pause()
+            screen._list_widget.highlighted = 1
+            assert screen._focused_list_index() == 1
 
 
 # =============================================================================

@@ -1286,19 +1286,25 @@ class TestRoutingProvider:
 
 
 class TestLitellmAvailable:
+    """Exercises the un-patched ``litellm_available`` import probe."""
+
     @pytest.mark.real_litellm_probe
     def test_returns_false_when_not_installed(self) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
+        litellm_available.cache_clear()
         with mock.patch.dict("sys.modules", {"litellm": None}):
             assert litellm_available() is False
+        litellm_available.cache_clear()
 
     @pytest.mark.real_litellm_probe
     def test_returns_true_when_module_present(self) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
+        litellm_available.cache_clear()
         with mock.patch.dict("sys.modules", {"litellm": mock.MagicMock()}):
             assert litellm_available() is True
+        litellm_available.cache_clear()
 
 
 class TestRequireLitellm:

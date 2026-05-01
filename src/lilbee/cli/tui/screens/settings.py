@@ -6,7 +6,9 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import Any, ClassVar
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import ClassVar
 
 from textual import on
 from textual.app import ComposeResult
@@ -15,13 +17,22 @@ from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Collapsible,
+    Input,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+    TextArea,
+)
 
 from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
@@ -50,6 +61,36 @@ _LIST_ERROR_VISIBLE_CLASS = "-visible"
 _API_KEYS_GROUP = "API-Keys"
 _API_KEYS_WARNING_CLASS = "api-keys-warning"
 _CONFIG_TOML_FILENAME = "config.toml"
+
+
+@dataclass(frozen=True)
+class _PaneGroup:
+    """One settings tab: pane id, group label, ordered settings."""
+
+    pane_id: str
+    group_name: str
+    items: list[tuple[str, SettingDef]]
+
+
+class _LazyGroupBody(VerticalGroup):
+    """Pane-body container that mounts its rows on first activation."""
+
+    def __init__(self, *, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._populated = False
+
+    @property
+    def populated(self) -> bool:
+        return self._populated
+
+    def populate(self, build: Callable[[], list[Widget]]) -> None:
+        """Build and mount this pane's row widgets exactly once."""
+        if self._populated:
+            return
+        self._populated = True
+        widgets = build()
+        if widgets:
+            self.mount_all(widgets)
 
 
 def _config_toml_path() -> str:
@@ -95,12 +136,7 @@ def _env_var_name(key: str) -> str:
 
 
 def _env_pill(key: str) -> Content | None:
-    """Return a warning pill showing the literal env var when it's set.
-
-    The pill appears only when the user has exported the corresponding
-    env var, signalling that TUI edits won't persist because the env
-    wins on next launch.
-    """
+    """Pill warning that an env var is overriding TUI edits, or None."""
     env_name = _env_var_name(key)
     if os.environ.get(env_name) is None:
         return None
@@ -133,10 +169,32 @@ def _stringify_default(default: object) -> str:
     return str(default)
 
 
+_FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
+    "API-Keys": lambda: _litellm_installed(),
+    "Crawling": lambda: _crawler_installed(),
+    "Wiki": lambda: bool(cfg.wiki),
+}
+
+
+def _litellm_installed() -> bool:
+    from lilbee.providers.litellm_sdk import litellm_available
+
+    return litellm_available()
+
+
+def _crawler_installed() -> bool:
+    from lilbee.crawler import crawler_available
+
+    return crawler_available()
+
+
 def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
-    """Group settings by their group field, preserving insertion order."""
+    """Group settings by group field, hiding entries gated by unavailable features."""
     groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
     for key, defn in SETTINGS_MAP.items():
+        gate = _FEATURE_GATED_GROUPS.get(defn.group)
+        if gate is not None and not gate():
+            continue
         groups[defn.group].append((key, defn))
     return dict(groups)
 
@@ -202,12 +260,10 @@ def _make_checkbox(key: str, value: str) -> Checkbox:
     )
 
 
-def _make_input(key: str, value: str) -> NavAwareInput:
+def _make_input(key: str, value: str) -> Input:
     """Create an Input widget for string/number settings."""
     display = "" if value == "None" else value.replace(" (model default)", "")
-    return NavAwareInput(
-        value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}"
-    )
+    return Input(value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}")
 
 
 class SettingsScreen(Screen[None]):
@@ -223,7 +279,9 @@ class SettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
-        Binding("slash", "focus_search", "Search", show=True),
+        # Tab walks every focusable on the screen (reset-all button,
+        # the group Tabs strip, then editors inside the active
+        # TabPane). Use ←/→ to switch tabs while focus is on the strip.
         Binding("tab", "app.focus_next", "Next field", show=True),
         Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
         Binding("ctrl+r", "reset_focused", "Reset", show=False),
@@ -232,6 +290,16 @@ class SettingsScreen(Screen[None]):
         Binding("g", "scroll_home", "Top", show=False),
         Binding("G", "scroll_end", "End", show=False),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Group definitions for lazy-mount on tab activation. Indexed
+        # by pane id so the activated-pane handler can look up its
+        # bundle in O(1). ``_eagerly_populate`` is the pane id whose
+        # body gets populated in on_mount (the active-by-default first
+        # pane); the rest fill in on first activation.
+        self._pane_groups: dict[str, _PaneGroup] = {}
+        self._eagerly_populate: str | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -244,84 +312,104 @@ class SettingsScreen(Screen[None]):
         with TopBars():
             yield ViewTabs()
             with Horizontal(id="settings-top-row"):
-                yield NavAwareInput(
-                    placeholder="Filter settings...",
-                    id="settings-search",
-                )
                 yield Button(
                     msg.SETTINGS_RESET_ALL_LABEL,
                     id="reset-all-defaults",
                     classes="reset-all-button",
                 )
-        with VerticalScroll(id="settings-scroll"):
-            yield from self._compose_groups()
+        with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
+            yield from self._compose_group_tabs()
         with BottomBars():
             yield TaskBar()
             yield Footer()
 
-    def _compose_groups(self) -> ComposeResult:
-        """Yield grouped setting sections."""
+    def _compose_group_tabs(self) -> ComposeResult:
+        """Yield one TabPane per setting group; bodies populate on activation."""
+        first = True
         for group_name, items in _group_settings().items():
-            with VerticalGroup(classes="setting-group", id=f"group-{group_name.lower()}"):
-                yield Static(group_name, classes="group-title")
-                if group_name == _API_KEYS_GROUP:
-                    yield Static(
-                        msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
-                        classes=_API_KEYS_WARNING_CLASS,
-                    )
-                for key, defn in items:
-                    yield from self._compose_setting(key, defn)
+            pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
+            self._pane_groups[pane_id] = _PaneGroup(
+                pane_id=pane_id, group_name=group_name, items=items
+            )
+            yield TabPane(
+                group_name,
+                _LazyGroupBody(id=f"{pane_id}-body"),
+                id=pane_id,
+            )
+            # The first pane is the one TabbedContent activates by
+            # default; populate it eagerly so a user landing on
+            # Settings sees content on first paint instead of an empty
+            # active pane that fills in one frame later.
+            if first:
+                first = False
+                self._eagerly_populate = pane_id
 
-    def _compose_setting(self, key: str, defn: SettingDef) -> ComposeResult:
-        """Yield widgets for a single setting row."""
-        with VerticalGroup(
+    def on_mount(self) -> None:
+        """Populate the active pane's body so first paint shows content."""
+        if self._eagerly_populate is not None:
+            self._populate_pane(self._eagerly_populate)
+
+    @on(TabbedContent.TabActivated)
+    def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Populate the activated pane's body on first activation."""
+        pane = event.pane
+        if pane is None or pane.id is None:
+            return
+        self._populate_pane(pane.id)
+
+    def populate_all_panes(self) -> None:
+        """Force every tab body to populate now (test/agent helper)."""
+        for pane_id in self._pane_groups:
+            self._populate_pane(pane_id)
+
+    def _populate_pane(self, pane_id: str) -> None:
+        """Populate a pane's body if known and the body widget is mounted."""
+        group = self._pane_groups.get(pane_id)
+        if group is None:
+            return
+        try:
+            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+        except Exception:
+            log.debug("pane body %s not yet mounted", pane_id, exc_info=True)
+            return
+        body.populate(lambda: self._build_pane_widgets(group))
+
+    def _build_pane_widgets(self, group: _PaneGroup) -> list[Widget]:
+        """Return the body widgets for one settings tab."""
+        widgets: list[Widget] = []
+        if group.group_name == _API_KEYS_GROUP:
+            widgets.append(
+                Static(
+                    msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
+                    classes=_API_KEYS_WARNING_CLASS,
+                )
+            )
+        for key, defn in group.items:
+            widgets.append(self._build_setting_row(key, defn))
+        return widgets
+
+    def _build_setting_row(self, key: str, defn: SettingDef) -> VerticalGroup:
+        """Construct one setting row with its title, help, editor, and reset."""
+        title = Static(_title_content(key, defn), classes="setting-title")
+        help_widget = Static(_help_content(key, defn), classes="setting-help")
+        children: list[Widget] = [title, help_widget]
+        if defn.writable:
+            editor_row = Horizontal(
+                _make_editor(key, defn),
+                Button(
+                    _RESET_BUTTON_LABEL,
+                    id=f"{_RESET_BUTTON_ID_PREFIX}{key}",
+                    classes="setting-reset-button",
+                    tooltip=msg.SETTINGS_RESET_TO_DEFAULT_TOOLTIP,
+                ),
+                classes="setting-editor-row",
+            )
+            children.append(editor_row)
+        return VerticalGroup(
+            *children,
             classes="setting-row",
-            name=f"{defn.group.lower()} {key}",
             id=f"{_ROW_ID_PREFIX}{key}",
-        ):
-            yield Static(_title_content(key, defn), classes="setting-title")
-            yield Static(_help_content(key, defn), classes="setting-help")
-            if defn.writable:
-                with Horizontal(classes="setting-editor-row"):
-                    yield _make_editor(key, defn)
-                    yield Button(
-                        _RESET_BUTTON_LABEL,
-                        id=f"{_RESET_BUTTON_ID_PREFIX}{key}",
-                        classes="setting-reset-button",
-                        tooltip=msg.SETTINGS_RESET_TO_DEFAULT_TOOLTIP,
-                    )
-
-    @on(Input.Submitted, "#settings-search")
-    def _on_search_submitted(self) -> None:
-        """Blur the search input when Enter is pressed."""
-        self.query_one("#settings-scroll", VerticalScroll).focus()
-
-    @on(Input.Changed, "#settings-search")
-    def _filter_settings(self, event: Input.Changed) -> None:
-        """Filter visible settings based on search input."""
-        term = event.value.strip().lower()
-        for group, rows in self._filter_index():
-            visible_count = 0
-            for row in rows:
-                matches = not term or term in (row.name or "")
-                row.display = matches
-                if matches:
-                    visible_count += 1
-            group.display = visible_count > 0
-
-    def _filter_index(self) -> list[tuple[Any, list[Any]]]:
-        """Lazy cache of (group, rows) for the filter handler.
-
-        One DOM walk at first keystroke, O(1) lookups after.
-        """
-        cached: list[tuple[Any, list[Any]]] | None = getattr(self, "_settings_filter_index", None)
-        if cached is not None:
-            return cached
-        index: list[tuple[Any, list[Any]]] = [
-            (group, list(group.query(".setting-row"))) for group in self.query(".setting-group")
-        ]
-        self._settings_filter_index = index
-        return index
+        )
 
     @on(Input.Submitted, ".setting-editor")
     @on(Input.Blurred, ".setting-editor")
@@ -627,15 +715,7 @@ class SettingsScreen(Screen[None]):
             else:
                 widget.load_text("" if value is None else str(value))
 
-    def action_focus_search(self) -> None:
-        """Focus the search input -- bound to / key."""
-        self.query_one("#settings-search", Input).focus()
-
     def action_go_back(self) -> None:
-        search = self.query_one("#settings-search", Input)
-        if self.focused is search:  # Escape from filter → blur, don't leave
-            self.query_one("#settings-scroll", VerticalScroll).focus()
-            return
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp

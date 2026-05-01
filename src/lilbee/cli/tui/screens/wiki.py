@@ -19,7 +19,6 @@ from textual.widgets import Input, Markdown, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.wiki.browse import read_page
@@ -112,7 +111,7 @@ class WikiScreen(Screen[None]):
         tree.show_root = False
         yield Horizontal(
             Vertical(
-                NavAwareInput(
+                Input(
                     placeholder=msg.WIKI_SEARCH_PLACEHOLDER,
                     id="wiki-search",
                 ),

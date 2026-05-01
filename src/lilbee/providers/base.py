@@ -84,8 +84,9 @@ class LLMProvider(Protocol):
     def list_chat_models(self, provider: str) -> list[str]:
         """List frontier chat models the provider is aware of for *provider*.
 
-        Returns ``[]`` when the backend has no static catalog (for
-        example, native llama-cpp has no notion of external API catalogs).
+        Returns the unfiltered upstream catalog (whatever litellm
+        exposes for API providers; an empty list for backends like
+        native llama-cpp that have no notion of external catalogs).
         """
         ...
 

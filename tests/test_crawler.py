@@ -50,6 +50,12 @@ def isolated_env(tmp_path, monkeypatch, request):
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    # Disable periodic sync by default. The drain step in the runner's
+    # finally-block waits for a real ingest to complete; on slow CI
+    # runners (ubuntu 3.11) the embedding cold-start blows the
+    # pytest-timeout. Tests that exercise periodic sync explicitly set
+    # crawl_sync_interval to a non-zero value themselves.
+    cfg.crawl_sync_interval = 0
     cls = request.cls.__name__ if request.cls else ""
     if cls != "TestPlaywrightBrowserCheck":
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
@@ -207,18 +213,24 @@ def _no_dns(monkeypatch):
 
 
 class TestCrawlerAvailable:
+    """Exercises the un-patched ``crawler_available`` import probe."""
+
     def test_returns_true_when_installed(self):
         from lilbee.crawler import crawler_available
 
+        crawler_available.cache_clear()
         mock_crawl4ai = MagicMock()
         with patch.dict("sys.modules", {"crawl4ai": mock_crawl4ai}):
             assert crawler_available() is True
+        crawler_available.cache_clear()
 
     def test_returns_false_when_not_installed(self):
         from lilbee.crawler import crawler_available
 
+        crawler_available.cache_clear()
         with patch.dict("sys.modules", {"crawl4ai": None}):
             assert crawler_available() is False
+        crawler_available.cache_clear()
 
 
 class TestIsUrl:

@@ -18,6 +18,37 @@ from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import detect_backend_name
 
 
+class TestNativeIdentitiesCache:
+    """``list_native_identities`` memoizes against ``list_installed`` errors
+    and within the TTL window. Ensures both branches execute."""
+
+    def test_returns_cached_within_ttl(self) -> None:
+        from lilbee.modelhub.model_manager.core import ModelManager as MM
+
+        mgr = MM(Path("/nonexistent"))
+        fake_registry = mock.MagicMock()
+        m = mock.MagicMock()
+        m.ref = "test/m"
+        m.hf_repo = "test/m"
+        fake_registry.list_installed.return_value = [m]
+        mgr._registry = fake_registry  # type: ignore[assignment]
+        first = mgr.list_native_identities()
+        # Second call within TTL must hit the cache, not call list_installed again.
+        second = mgr.list_native_identities()
+        assert first is second
+        assert fake_registry.list_installed.call_count == 1
+
+    def test_swallows_registry_error(self) -> None:
+        from lilbee.modelhub.model_manager.core import ModelManager as MM
+
+        mgr = MM(Path("/nonexistent"))
+        fake_registry = mock.MagicMock()
+        fake_registry.list_installed.side_effect = OSError("permission denied")
+        mgr._registry = fake_registry  # type: ignore[assignment]
+        result = mgr.list_native_identities()
+        assert result == frozenset()
+
+
 class TestModelSource:
     def test_native_value(self) -> None:
         assert ModelSource.NATIVE.value == "native"
@@ -944,6 +975,8 @@ class TestDiscoverApiModels:
         cfg.gemini_api_key = ""
 
         with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+            # Test arbitrary upstream ids; pin  so curation
+            # doesn't filter them.
             result = discover_api_models()
 
         assert "OpenAI" in result

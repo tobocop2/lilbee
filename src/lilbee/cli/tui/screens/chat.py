@@ -12,14 +12,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from textual import on, work
+from textual import getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
+from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Select, Static
+from textual.widgets import Footer, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
@@ -28,17 +30,19 @@ from textual.worker import get_current_worker as _get_worker
 from lilbee.app.version import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model
+from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp, apply_active_model
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
+from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
+from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
 from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
@@ -120,6 +124,8 @@ class ChatScreen(Screen[None]):
     CSS_PATH = "chat.tcss"
     AUTO_FOCUS = "#chat-input"
 
+    streaming: reactive[bool] = reactive(False)
+
     HELP = (
         "# Chat\n\n"
         "Ask questions about your knowledge base.\n\n"
@@ -128,6 +134,13 @@ class ChatScreen(Screen[None]):
     )
 
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
+
+    # Hot-path widget refs. ``getters.query_one`` is a typed class-level
+    # descriptor that resolves via Textual's indexed DOM lookup on every
+    # access. It is O(1) for id selectors, so no cache is needed.
+    _chat_input = getters.query_one("#chat-input", ChatInput)
+    _chat_log = getters.query_one("#chat-log", VerticalScroll)
+    _completion_overlay = getters.query_one("#completion-overlay", CompletionOverlay)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
@@ -142,11 +155,15 @@ class ChatScreen(Screen[None]):
         Binding("k", "vim_scroll_up", "k up", show=False, group=_SCROLL_GROUP),
         Binding("g", "vim_scroll_home", "g top", show=False, group=_SCROLL_GROUP),
         Binding("G", "vim_scroll_end", "G bottom", show=False, group=_SCROLL_GROUP),
-        Binding("up", "history_prev", "Up", show=False),
-        Binding("down", "history_next", "Down", show=False),
+        # priority=True keeps history navigation fast-path winning over the
+        # ChatInput's TextArea cursor_up/_down. Multi-line cursor movement
+        # inside the prompt still works via PgUp/PgDn/Home/End.
+        Binding("up", "history_prev", "Up", show=False, priority=True),
+        Binding("down", "history_next", "Down", show=False, priority=True),
         Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
+        Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
@@ -155,7 +172,6 @@ class ChatScreen(Screen[None]):
         self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
-        self.streaming = False
         self._insert_mode: bool = True
         self._completing = False
         self._sync_active: bool = False
@@ -169,7 +185,6 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
         from lilbee.cli.tui.widgets.top_bars import TopBars
 
         with TopBars():
@@ -182,10 +197,9 @@ class ChatScreen(Screen[None]):
         yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
-                yield NavAwareInput(
-                    placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                yield ChatInput(
+                    placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
-                    suggester=SlashSuggester(use_cache=False),
                 )
                 yield ModelBar(id="model-bar")
             yield TaskBar()
@@ -193,15 +207,15 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_input_style()
-        self.query_one("#chat-only-banner", Static).display = False
+        self._refresh_mode_banner()
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif not self._embedding_ready():
-            self._show_chat_only_banner()
-        elif self._auto_sync:
+        elif self._auto_sync and self._embedding_ready():
             self._run_sync()
+        if isinstance(self.app, LilbeeApp):
+            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
@@ -212,7 +226,7 @@ class ChatScreen(Screen[None]):
         # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
         # via [/] navigation needs an explicit focus restore.
         with contextlib.suppress(Exception):
-            self.set_focus(self.query_one("#chat-input", Input))
+            self.set_focus(self._chat_input)
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
@@ -242,21 +256,30 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if result == "skipped" and not self._embedding_ready():
-            self._show_chat_only_banner()
-        elif self._embedding_ready():
-            self._hide_chat_only_banner()
-            if self._auto_sync:
-                self._run_sync()
+        if self._embedding_ready() and self._auto_sync:
+            self._run_sync()
+        self._refresh_mode_banner()
         self.refresh_model_bar()
 
-    def _show_chat_only_banner(self) -> None:
-        """Show the persistent chat-only banner."""
-        self.query_one("#chat-only-banner", Static).display = True
+    def _refresh_mode_banner(self) -> None:
+        """Show the right banner for the current embedding+mode state."""
+        try:
+            banner = self.query_one("#chat-only-banner", Static)
+        except NoMatches:
+            return
+        if not self._embedding_ready():
+            banner.update(msg.CHAT_ONLY_BANNER)
+            banner.display = True
+        elif cfg.chat_mode == ChatMode.CHAT.value:
+            banner.update(msg.CHAT_MODE_BANNER_CHAT)
+            banner.display = True
+        else:
+            banner.display = False
 
-    def _hide_chat_only_banner(self) -> None:
-        """Hide the chat-only banner."""
-        self.query_one("#chat-only-banner", Static).display = False
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        key, _value = payload
+        if key in {"chat_mode", "embedding_model"}:
+            self._refresh_mode_banner()
 
     def action_open_setup(self) -> None:
         """Open the setup wizard."""
@@ -265,12 +288,12 @@ class ChatScreen(Screen[None]):
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
-        self.query_one("#chat-input", Input).focus()
+        self._chat_input.focus()
         self._update_input_style()
 
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         if self._insert_mode:
             inp.remove_class("normal-mode")
         else:
@@ -279,8 +302,6 @@ class ChatScreen(Screen[None]):
 
     def _update_mode_indicator(self) -> None:
         """Update the ViewTabs mode text to reflect the current mode."""
-        from textual.css.query import NoMatches
-
         with contextlib.suppress(NoMatches):
             bar = self.query_one(ViewTabs)
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
@@ -291,36 +312,42 @@ class ChatScreen(Screen[None]):
 
         if not isinstance(event, Key):
             return
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         if self._insert_mode:
             if not inp.has_focus and event.is_printable and event.character:
                 inp.focus()
-                inp.insert_text_at_cursor(event.character)
+                inp.insert(event.character)
                 event.prevent_default()
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select handle Enter / i / a / o itself.
-            if isinstance(self.focused, Select):
+            # Let a focused Select / picker button handle Enter / i / a / o itself.
+            if isinstance(self.focused, (Select, ModelPickerButton)):
                 return
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
             return
 
-    @on(Input.Submitted, "#chat-input")
-    def _on_chat_submitted(self, event: Input.Submitted) -> None:
+    @on(ChatInput.Submitted, "#chat-input")
+    def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
+        if not self._insert_mode:
+            # Vim-style: Enter in normal mode flips back to insert without
+            # submitting whatever empty / stale text the input still holds.
+            self._enter_insert_mode()
+            return
         text = event.value.strip()
         if not text:
             return
-        event.input.value = ""
+        event.chat_input.value = ""
         self._input_history.append(text)
         self._history_index = -1
 
         if text.startswith("/"):
             self._handle_slash(text)
             return
-
+        if self.streaming:
+            return
         self._send_message(text)
 
     def _handle_slash(self, text: str) -> None:
@@ -332,6 +359,38 @@ class ChatScreen(Screen[None]):
             getattr(self, handler_name)(args)
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
+
+    def _set_streaming(self, value: bool) -> None:
+        """Main-thread setter so worker-thread paths can route through ``call_from_thread``."""
+        self.streaming = value
+
+    def watch_streaming(self, streaming: bool) -> None:
+        if streaming:
+            self._enter_streaming_state()
+        else:
+            self._exit_streaming_state()
+
+    def _enter_streaming_state(self) -> None:
+        self.add_class("streaming")
+        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_STREAMING
+        # Both cancel paths and the natural finalize write streaming=False;
+        # reactive dedupe makes the watcher a no-op on equal values, so the
+        # button mount happens exactly once per streaming session.
+        with contextlib.suppress(Exception):
+            self.query_one("#chat-prompt-area", PromptArea).mount(
+                ChatStopButton(button_id="chat-stop")
+            )
+
+    def _exit_streaming_state(self) -> None:
+        self.remove_class("streaming")
+        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
+        for w in self.query("#chat-stop"):
+            w.remove()
+
+    @on(ChatStopButton.Pressed)
+    def _on_chat_stop_pressed(self, event: ChatStopButton.Pressed) -> None:
+        event.stop()
+        self.action_cancel_stream()
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -432,7 +491,7 @@ class ChatScreen(Screen[None]):
         for worker in self.workers:
             worker.cancel()
         self.streaming = False
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._chat_log
         chat_log.remove_children()
         with self._history_lock:
             self._history.clear()
@@ -556,8 +615,25 @@ class ChatScreen(Screen[None]):
                     )
                 reporter.update(pct, detail)
             elif event_type == EventType.CRAWL_PAGE and isinstance(data, CrawlPageEvent):
-                pct = int(data.current * 100 / data.total) if data.total > 0 else 50
-                reporter.update(pct, f"[{data.current}/{data.total}]: {data.url}")
+                # Discovery hasn't resolved a sitemap yet (data.total <= 0):
+                # show the indeterminate spinner with a count, not a parked
+                # 50% bar that looks frozen. Switch to a determinate bar as
+                # soon as the total is known.
+                if data.total > 0:
+                    pct = int(data.current * 100 / data.total)
+                    reporter.update(
+                        pct,
+                        msg.CMD_CRAWL_PAGE.format(
+                            current=data.current, total=data.total, url=data.url
+                        ),
+                        indeterminate=False,
+                    )
+                else:  # pragma: no cover - live crawl without sitemap
+                    reporter.update(
+                        0,
+                        msg.CMD_CRAWL_PAGE_INDETERMINATE.format(current=data.current, url=data.url),
+                        indeterminate=True,
+                    )
 
         paths = asyncio_loop.run(
             crawl_and_save(
@@ -572,6 +648,9 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Catalog")
+            return
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         self.app.push_screen(CatalogScreen())
@@ -634,7 +713,7 @@ class ChatScreen(Screen[None]):
             apply_active_model(self.app, "chat_model", args)
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
-            self._apply_model_change()
+            self.apply_model_change()
             self.refresh_model_bar()
         else:
             from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -731,6 +810,9 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Settings")
+            return
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         self.app.push_screen(SettingsScreen())
@@ -741,13 +823,14 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def _cmd_status(self, _args: str) -> None:
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Status")
+            return
         from lilbee.cli.tui.screens.status import StatusScreen
 
         self.app.push_screen(StatusScreen())
 
     def _cmd_theme(self, args: str) -> None:
-        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
-
         if args and isinstance(self.app, LilbeeApp):
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
@@ -762,8 +845,6 @@ class ChatScreen(Screen[None]):
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
-        from lilbee.cli.tui.app import LilbeeApp
-
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Wiki")
 
@@ -771,7 +852,7 @@ class ChatScreen(Screen[None]):
         """Send a user message and stream the response."""
         from textual.css.query import NoMatches
 
-        log = self.query_one("#chat-log", VerticalScroll)
+        log = self._chat_log
         with contextlib.suppress(NoMatches):
             log.query_one("#chat-welcome", ChatWelcome).remove()
         log.mount(UserMessage(text))
@@ -879,7 +960,9 @@ class ChatScreen(Screen[None]):
         self, widget: AssistantMessage, sources: list[str], response_parts: list[str]
     ) -> None:
         """Persist the assistant turn and update the widget. Always runs."""
-        self.streaming = False
+        # _stream_response runs in a worker thread; reactive setters mutate
+        # widgets, so the streaming flag must flip on the main thread.
+        call_from_thread(self, self._set_streaming, False)
         full_response = "".join(response_parts)
         if full_response:
             with self._history_lock:
@@ -887,6 +970,16 @@ class ChatScreen(Screen[None]):
                 self._trim_history()
         call_from_thread(self, widget.finish, sources)
         call_from_thread(self, self._scroll_to_bottom)
+        if (
+            cfg.chat_mode == ChatMode.SEARCH.value
+            and self._embedding_ready()
+            and full_response
+            and "\n\nSources:\n" not in full_response
+        ):
+            call_from_thread(self, self._notify_no_results)
+
+    def _notify_no_results(self) -> None:
+        self.notify(msg.CHAT_MODE_BANNER_SEARCH_NO_RESULTS, severity="warning")
 
     def _trim_history(self) -> None:
         """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
@@ -894,17 +987,17 @@ class ChatScreen(Screen[None]):
             self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
 
     def _scroll_to_bottom(self) -> None:
-        log_widget = self.query_one("#chat-log", VerticalScroll)
+        log_widget = self._chat_log
         # Only auto-scroll while the user is still tailing the output.
         # If they scrolled up to read, don't yank them back.
         if log_widget.max_scroll_y - log_widget.scroll_y < _AUTO_SCROLL_TAIL_LINES:
             log_widget.scroll_end(animate=False)
 
     def action_scroll_up(self) -> None:
-        self.query_one("#chat-log", VerticalScroll).scroll_page_up()
+        self._chat_log.scroll_page_up()
 
     def action_scroll_down(self) -> None:
-        self.query_one("#chat-log", VerticalScroll).scroll_page_down()
+        self._chat_log.scroll_page_down()
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
@@ -913,11 +1006,11 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self.streaming = False
             return
-        if isinstance(self.focused, Select):
-            self.query_one("#chat-input", Input).focus()
+        if isinstance(self.focused, (Select, ModelPickerButton)):
+            self._chat_input.focus()
             return
         self._insert_mode = False
-        self.query_one("#chat-log", VerticalScroll).focus()
+        self._chat_log.focus()
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
@@ -927,11 +1020,11 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self.streaming = False
             return
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         if inp.has_focus:
-            self.query_one("#chat-log", VerticalScroll).focus()
+            self._chat_log.focus()
 
-    def _apply_model_change(self) -> None:
+    def apply_model_change(self) -> None:
         """Cancel active stream (if any) and reset services for the new model."""
         if self.streaming:
             self.action_cancel_stream()
@@ -950,7 +1043,7 @@ class ChatScreen(Screen[None]):
         """Toggle between Markdown and plain-text rendering for chat responses."""
         cfg.markdown_rendering = not cfg.markdown_rendering
         use_md = cfg.markdown_rendering
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._chat_log
         for widget in chat_log.query(AssistantMessage):
             await widget.rebuild_content_widget(use_md)
         label = "Markdown" if use_md else "Plain text"
@@ -1017,43 +1110,62 @@ class ChatScreen(Screen[None]):
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/"
             inp.action_end()
 
     def action_focus_model_bar(self) -> None:
-        """Focus the first Select in the model bar (normal mode only)."""
+        """Focus the chat-model picker button in the model bar (normal mode only)."""
         if self._insert_mode:
             raise SkipAction()
-        import contextlib
+        with contextlib.suppress(NoMatches):
+            self.query_one("#chat-model-button", ModelPickerButton).focus()
 
-        with contextlib.suppress(Exception):
-            self.query_one("#chat-model-select", Select).focus()
+    def action_toggle_chat_mode(self) -> None:
+        """F3: flip between Search and Chat mode."""
+        try:
+            toggle = self.query_one(ChatModeToggle)
+        except NoMatches:
+            return
+        if not toggle.toggle():
+            return
+        label = (
+            msg.CHAT_MODE_SEARCH_LABEL
+            if cfg.chat_mode == ChatMode.SEARCH.value
+            else msg.CHAT_MODE_CHAT_LABEL
+        )
+        self.notify(msg.CHAT_MODE_SET.format(label=label))
 
     def action_complete(self) -> None:
-        """Tab: cycle autocomplete in input, else focus the next model dropdown."""
-        inp = self.query_one("#chat-input", Input)
-        if not inp.has_focus:
-            if isinstance(self.focused, Select):
-                self.screen.focus_next()
-            else:
-                self.query_one("#chat-model-select", Select).focus()
-            return
-        if not self._cycle_completion_forward(inp):
+        """Tab: cycle autocomplete, insert a literal tab, or advance focus.
+
+        - Insert mode + chat input focused + completion overlay open:
+          cycle the next completion candidate.
+        - Insert mode + chat input focused + no completion: insert
+          ``\\t`` so users can type tab characters directly.
+        - Normal mode or focus elsewhere: advance through the focus
+          chain so Tab still walks every focusable widget.
+        """
+        inp = self._chat_input
+        if not self._insert_mode or not inp.has_focus:
             self.screen.focus_next()
+            return
+        if self._cycle_completion_forward(inp):
+            return
+        inp.insert("\t")
 
     def action_complete_next(self) -> None:
         """Ctrl+N: show completions or cycle forward."""
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         if not inp.has_focus:
             return
         self._cycle_completion_forward(inp)
 
-    def _cycle_completion_forward(self, inp: Input) -> bool:
+    def _cycle_completion_forward(self, inp: ChatInput) -> bool:
         """Show or cycle forward through autocomplete; returns True if it acted."""
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        overlay = self._completion_overlay
 
         if overlay.is_visible:
             selection = overlay.cycle_next()
@@ -1084,8 +1196,8 @@ class ChatScreen(Screen[None]):
 
     def action_complete_prev(self) -> None:
         """Ctrl+P: cycle backward through completions."""
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
-        inp = self.query_one("#chat-input", Input)
+        overlay = self._completion_overlay
+        inp = self._chat_input
 
         if overlay.is_visible:
             selection = overlay.cycle_prev()
@@ -1115,7 +1227,7 @@ class ChatScreen(Screen[None]):
         """Up arrow: recall previous input history entry."""
         if not self._insert_mode:
             raise SkipAction()
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         if not inp.has_focus or not self._input_history:
             raise SkipAction()
         if self._history_index == -1:
@@ -1131,7 +1243,7 @@ class ChatScreen(Screen[None]):
         """Down arrow: recall next input history entry."""
         if not self._insert_mode:
             raise SkipAction()
-        inp = self.query_one("#chat-input", Input)
+        inp = self._chat_input
         if not inp.has_focus or self._history_index == -1:
             raise SkipAction()
         if self._history_index < len(self._input_history) - 1:
@@ -1142,12 +1254,12 @@ class ChatScreen(Screen[None]):
             self._history_index = -1
             inp.value = ""
 
-    @on(Input.Changed, "#chat-input")
-    def _on_chat_input_changed(self, event: Input.Changed) -> None:
+    @on(ChatInput.Changed, "#chat-input")
+    def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Hide completion overlay when input changes manually."""
         if self._completing:
             return
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        overlay = self._completion_overlay
         if overlay.is_visible:
             overlay.hide()
 
@@ -1159,34 +1271,34 @@ class ChatScreen(Screen[None]):
         """Vim j: scroll down in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_down()
+        self._chat_log.scroll_down()
 
     def action_vim_scroll_up(self) -> None:
         """Vim k: scroll up in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_up()
+        self._chat_log.scroll_up()
 
     def action_vim_scroll_home(self) -> None:
         """Vim g: scroll to top in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_home()
+        self._chat_log.scroll_home()
 
     def action_vim_scroll_end(self) -> None:
         """Vim G: scroll to bottom in normal mode."""
         if self._insert_mode:
             raise SkipAction()
-        self.query_one("#chat-log", VerticalScroll).scroll_end()
+        self._chat_log.scroll_end()
 
     def action_half_page_down(self) -> None:
         """Ctrl-D: half-page down (vim style)."""
-        log_widget = self.query_one("#chat-log", VerticalScroll)
+        log_widget = self._chat_log
         half = max(1, log_widget.size.height // 2)
         log_widget.scroll_relative(y=half)
 
     def action_half_page_up(self) -> None:
         """Ctrl-U: half-page up (vim style)."""
-        log_widget = self.query_one("#chat-log", VerticalScroll)
+        log_widget = self._chat_log
         half = max(1, log_widget.size.height // 2)
         log_widget.scroll_relative(y=-half)
