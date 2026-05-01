@@ -1,4 +1,4 @@
-"""Tests for model_manager.py — model lifecycle management across sources."""
+"""Tests for model_manager.py: model lifecycle management across sources."""
 
 from collections.abc import Iterator
 from pathlib import Path
@@ -7,17 +7,46 @@ from unittest import mock
 import httpx
 import pytest
 
-from lilbee.model_manager import (
+from lilbee.modelhub.model_manager import (
     ModelManager,
     ModelSource,
-    ModelTask,
     RemoteModel,
-    _has_provider_key,
     discover_api_models,
-    get_model_manager,
-    reset_model_manager,
 )
+from lilbee.modelhub.model_manager.discovery import _has_provider_key
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import detect_backend_name
+
+
+class TestNativeIdentitiesCache:
+    """``list_native_identities`` memoizes against ``list_installed`` errors
+    and within the TTL window. Ensures both branches execute."""
+
+    def test_returns_cached_within_ttl(self) -> None:
+        from lilbee.modelhub.model_manager.core import ModelManager as MM
+
+        mgr = MM(Path("/nonexistent"))
+        fake_registry = mock.MagicMock()
+        m = mock.MagicMock()
+        m.ref = "test/m"
+        m.hf_repo = "test/m"
+        fake_registry.list_installed.return_value = [m]
+        mgr._registry = fake_registry  # type: ignore[assignment]
+        first = mgr.list_native_identities()
+        # Second call within TTL must hit the cache, not call list_installed again.
+        second = mgr.list_native_identities()
+        assert first is second
+        assert fake_registry.list_installed.call_count == 1
+
+    def test_swallows_registry_error(self) -> None:
+        from lilbee.modelhub.model_manager.core import ModelManager as MM
+
+        mgr = MM(Path("/nonexistent"))
+        fake_registry = mock.MagicMock()
+        fake_registry.list_installed.side_effect = OSError("permission denied")
+        mgr._registry = fake_registry  # type: ignore[assignment]
+        result = mgr.list_native_identities()
+        assert result == frozenset()
 
 
 class TestModelSource:
@@ -53,7 +82,7 @@ def _install_registry_model(
     repo: str = "org/repo-GGUF",
 ) -> str:
     """Install a model into the registry; return the canonical ref string."""
-    from lilbee.registry import ModelManifest, ModelRegistry
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
     source = tmp_path / filename
     source.write_bytes(data)
@@ -189,13 +218,13 @@ class TestModelManagerListInstalled:
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
-        import lilbee.model_manager as mm_mod
+        from lilbee.modelhub.model_manager import core as mm_core
 
         with (
             mock.patch("httpx.get", return_value=mock_response) as mock_get,
-            mock.patch.object(mm_mod.time, "monotonic") as mock_clock,
+            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
         ):
-            # One clock tick per list_installed call — second tick is past TTL.
+            # One clock tick per list_installed call: second tick is past TTL.
             mock_clock.side_effect = [0.0, 100.0]
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
             mgr.list_installed(ModelSource.REMOTE)
@@ -621,40 +650,49 @@ class TestModelManagerRemove:
         assert not model_file.exists()
 
 
-class TestSingleton:
+class TestServicesIntegration:
+    """``ModelManager`` lifecycle inside the ``Services`` container."""
+
     def setup_method(self) -> None:
-        reset_model_manager()
+        from lilbee.core.services import reset_services
+
+        reset_services()
 
     def teardown_method(self) -> None:
-        reset_model_manager()
+        from lilbee.core.services import reset_services
 
-    def test_creates_singleton(self, tmp_path: Path) -> None:
-        from lilbee.config import cfg
+        reset_services()
+
+    def test_services_holds_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
-        mgr = get_model_manager()
+        mgr = get_services().model_manager
         assert isinstance(mgr, ModelManager)
         assert mgr._models_dir == tmp_path / "models"
         assert mgr._remote_base_url == "http://localhost:11434"
 
-    def test_returns_same_instance(self, tmp_path: Path) -> None:
-        from lilbee.config import cfg
+    def test_services_returns_same_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
-        mgr1 = get_model_manager()
-        mgr2 = get_model_manager()
+        mgr1 = get_services().model_manager
+        mgr2 = get_services().model_manager
         assert mgr1 is mgr2
 
-    def test_reset_creates_new_instance(self, tmp_path: Path) -> None:
-        from lilbee.config import cfg
+    def test_reset_services_creates_new_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.core.services import get_services, reset_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
-        mgr1 = get_model_manager()
-        reset_model_manager()
-        mgr2 = get_model_manager()
+        mgr1 = get_services().model_manager
+        reset_services()
+        mgr2 = get_services().model_manager
         assert mgr1 is not mgr2
 
 
@@ -704,7 +742,7 @@ class TestIsNativeRegistry:
 class TestRemoveNativeRegistry:
     def test_remove_native_from_registry(self, tmp_path: Path) -> None:
         """_remove_native removes the manifest from the registry."""
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -748,42 +786,42 @@ class TestDetectProvider:
 class TestClassifyRemoteTask:
     def test_bge_reranker_classified_as_rerank(self) -> None:
         """bge-reranker-* classifies as rerank despite bge being in _EMBEDDING_FAMILIES."""
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-reranker-base", "bge") == ModelTask.RERANK
         assert _classify_remote_task("bge-reranker-large:latest", "bge") == ModelTask.RERANK
 
     def test_bge_m3_classified_as_embedding(self) -> None:
         """Regular bge embedding models still classify as EMBEDDING."""
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-m3:latest", "bge") == ModelTask.EMBEDDING
 
     def test_cross_encoder_classified_as_rerank(self) -> None:
         """cross-encoder/* sentence-transformers rerankers hit the reranker path."""
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("cross-encoder/ms-marco-MiniLM-L-6-v2", "") == ModelTask.RERANK
 
     def test_chat_model_classified_as_chat(self) -> None:
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("qwen3:8b", "qwen") == ModelTask.CHAT
 
     def test_vision_model_classified_as_vision(self) -> None:
-        from lilbee.model_manager import _classify_remote_task
-        from lilbee.models import ModelTask
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
+        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("llava:13b", "llama") == ModelTask.VISION
 
 
 class TestRemoteModelProvider:
     def test_classify_remote_models_sets_provider(self) -> None:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {
@@ -800,7 +838,7 @@ class TestRemoteModelProvider:
         assert result[0].provider == "Ollama"
 
     def test_classify_remote_models_openai_provider(self) -> None:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {
@@ -825,14 +863,14 @@ class TestHasProviderKey:
         assert _has_provider_key("openai_api_key", "OPENAI_API_KEY") is True
 
     def test_env_var_absent_config_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg.openai_api_key = "sk-from-config"
         assert _has_provider_key("openai_api_key", "OPENAI_API_KEY") is True
 
     def test_neither_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         cfg.anthropic_api_key = ""
@@ -852,8 +890,8 @@ class TestDiscoverApiModels:
         # sys.modules["litellm"] patch these tests rely on can take effect.
         # Developers whose config.toml pins llm_provider="llama-cpp" would
         # otherwise see these tests fail locally while passing in CI.
-        from lilbee.config import cfg
-        from lilbee.services import reset_services
+        from lilbee.core.config import cfg
+        from lilbee.core.services import reset_services
 
         cfg.llm_provider = "auto"
         reset_services()
@@ -881,7 +919,7 @@ class TestDiscoverApiModels:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.anthropic_api_key = ""
         cfg.gemini_api_key = ""
@@ -908,7 +946,7 @@ class TestDiscoverApiModels:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.openai_api_key = ""
         cfg.anthropic_api_key = ""
@@ -932,11 +970,13 @@ class TestDiscoverApiModels:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.gemini_api_key = ""
 
         with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+            # Test arbitrary upstream ids; pin  so curation
+            # doesn't filter them.
             result = discover_api_models()
 
         assert "OpenAI" in result
@@ -950,7 +990,7 @@ class TestDiscoverApiModels:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         cfg.openai_api_key = ""
         cfg.gemini_api_key = ""

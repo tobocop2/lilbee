@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +19,7 @@ def isolated_cfg():
 
 class TestServicesDataclass:
     def test_fields_are_immutable(self):
-        from lilbee.services import Services
+        from lilbee.core.services import CrawlerSyncState, Services
 
         services = Services(
             provider=MagicMock(),
@@ -30,6 +30,11 @@ class TestServicesDataclass:
             clusterer=MagicMock(),
             searcher=MagicMock(),
             registry=MagicMock(),
+            hf_client=MagicMock(),
+            ingest_lock_registry=MagicMock(),
+            model_manager=MagicMock(),
+            crawler_semaphore=None,
+            crawler_sync_state=CrawlerSyncState(),
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]

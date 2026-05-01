@@ -95,7 +95,7 @@ async def test_taskbar_queued_only_uses_muted_copy() -> None:
             app.task_bar.queue.advance(TaskType.DOWNLOAD.value)
             app.task_bar.queue.complete_task(tid)
         tid_queued = app.task_bar.queue.enqueue(lambda: None, "waiting", TaskType.DOWNLOAD.value)
-        # Don't advance — it stays queued (capacity unused because the
+        # Don't advance: it stays queued (capacity unused because the
         # first two are DONE not ACTIVE; advance promotes next active).
         bar = app.query_one(TaskBar)
         bar._refresh_display()

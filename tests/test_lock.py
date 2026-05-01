@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.lock import (
+from lilbee.core.config import cfg
+from lilbee.runtime.lock import (
     LockTimeoutError,
     _lock_path,
     write_lock,
@@ -33,7 +33,7 @@ class TestWriteLock:
     def test_releases_on_error(self):
         with pytest.raises(RuntimeError, match="boom"), write_lock(timeout=2):
             raise RuntimeError("boom")
-        # Lock should be released — a subsequent write lock should succeed
+        # Lock should be released: a subsequent write lock should succeed
         with write_lock(timeout=1):
             pass
 
@@ -93,7 +93,7 @@ class TestWriteLock:
 
     def test_mutex_timeout(self):
         """write_lock raises when the in-process mutex times out."""
-        from lilbee.lock import _write_mutex
+        from lilbee.runtime.lock import _write_mutex
 
         _write_mutex.acquire()
         try:

@@ -20,9 +20,9 @@ import pytest
 os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 
 from lilbee.catalog import CatalogModel
-from lilbee.config import cfg
-from lilbee.ingest import file_hash
-from lilbee.store import CitationRecord
+from lilbee.core.config import cfg
+from lilbee.data.ingest import file_hash
+from lilbee.data.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -62,7 +62,7 @@ _patch_executor_daemon_threads()
 # Silence stray lancedb thread shutdown errors globally so they can't wedge
 # the test runner via threading.excepthook propagation on ubuntu 3.11.
 if sys.version_info < (3, 12):
-    from lilbee.store import install_lancedb_thread_error_suppressor
+    from lilbee.data.store import install_lancedb_thread_error_suppressor
 
     install_lancedb_thread_error_suppressor()
 
@@ -131,13 +131,27 @@ def _assume_litellm_available(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_services_after_test():
+    """Drop any Services container ``set_services()`` left around.
+
+    Tests that inject a mock via ``set_services(make_mock_services(...))``
+    would otherwise leak into the next test's ``get_services()`` call,
+    producing confusing cross-test failures.
+    """
+    yield
+    from lilbee.core.services import set_services
+
+    set_services(None)
+
+
+@pytest.fixture(autouse=True)
 def _ignore_user_global_config(monkeypatch):
     """Skip the platform-default config.toml for unit tests.
 
     A developer's persisted ``~/Library/Application Support/lilbee/config.toml``
     can hold values from a previous schema. ``Config()`` would crash at
     construction. Setting this env var tells ``settings_customise_sources``
-    not to add the toml source — env + defaults only.
+    not to add the toml source: env + defaults only.
     """
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
 
@@ -187,53 +201,64 @@ def _isolate_cfg(tmp_path, request):
     cfg.clear_model_defaults()
 
 
+def _default_store_mock():
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.add_chunks.side_effect = lambda records: len(records)
+    return store
+
+
+def _default_embedder_mock():
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    return embedder
+
+
+def _default_reranker_mock():
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    return reranker
+
+
+def _default_concepts_mock():
+    concepts = MagicMock()
+    concepts.get_graph.return_value = False
+    return concepts
+
+
+def _default_clusterer_mock():
+    clusterer = MagicMock()
+    clusterer.available.return_value = False
+    clusterer.get_clusters.return_value = []
+    return clusterer
+
+
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs."""
+    from lilbee.catalog.hf_client import HfClient
+    from lilbee.core.services import CrawlerSyncState, Services
     from lilbee.providers.base import LLMProvider
-    from lilbee.query import Searcher
-    from lilbee.services import Services
+    from lilbee.retrieval.query import Searcher
+    from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = overrides.pop("provider", None)
-    if provider is None:
-        provider = MagicMock(spec=LLMProvider)
-
-    store = overrides.pop("store", None)
-    if store is None:
-        store = MagicMock()
-        store.search.return_value = []
-        store.bm25_probe.return_value = []
-        store.get_sources.return_value = []
-        store.add_chunks.side_effect = lambda records: len(records)
-
-    embedder = overrides.pop("embedder", None)
-    if embedder is None:
-        embedder = MagicMock()
-        embedder.embed.return_value = [0.1] * 768
-        embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-
-    reranker = overrides.pop("reranker", None)
-    if reranker is None:
-        reranker = MagicMock()
-        reranker.rerank.side_effect = lambda q, r, **kw: r
-
-    concepts = overrides.pop("concepts", None)
-    if concepts is None:
-        concepts = MagicMock()
-        concepts.get_graph.return_value = False
-
-    clusterer = overrides.pop("clusterer", None)
-    if clusterer is None:
-        clusterer = MagicMock()
-        clusterer.available.return_value = False
-        clusterer.get_clusters.return_value = []
-
-    searcher = overrides.pop("searcher", None)
-    if searcher is None:
-        searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
-
-    registry = overrides.pop("registry", None)
-    if registry is None:
-        registry = MagicMock()
+    provider = overrides.pop("provider", None) or MagicMock(spec=LLMProvider)
+    store = overrides.pop("store", None) or _default_store_mock()
+    embedder = overrides.pop("embedder", None) or _default_embedder_mock()
+    reranker = overrides.pop("reranker", None) or _default_reranker_mock()
+    concepts = overrides.pop("concepts", None) or _default_concepts_mock()
+    clusterer = overrides.pop("clusterer", None) or _default_clusterer_mock()
+    searcher = overrides.pop("searcher", None) or Searcher(
+        cfg, provider, store, embedder, reranker, concepts
+    )
+    registry = overrides.pop("registry", None) or MagicMock()
+    hf_client = overrides.pop("hf_client", None) or HfClient()
+    ingest_lock_registry = overrides.pop("ingest_lock_registry", None) or IngestLockRegistry()
+    model_manager = overrides.pop("model_manager", None) or MagicMock()
+    crawler_semaphore = overrides.pop("crawler_semaphore", None)
+    crawler_sync_state = overrides.pop("crawler_sync_state", None) or CrawlerSyncState()
 
     return Services(
         provider=provider,
@@ -244,6 +269,11 @@ def make_mock_services(**overrides):
         clusterer=clusterer,
         searcher=searcher,
         registry=registry,
+        hf_client=hf_client,
+        ingest_lock_registry=ingest_lock_registry,
+        model_manager=model_manager,
+        crawler_semaphore=crawler_semaphore,
+        crawler_sync_state=crawler_sync_state,
     )
 
 

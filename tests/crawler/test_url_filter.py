@@ -20,7 +20,7 @@ from lilbee.crawler.url_filter import (
     require_valid_crawl_url,
     validate_crawl_url,
 )
-from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
 
 @pytest.fixture(autouse=True)

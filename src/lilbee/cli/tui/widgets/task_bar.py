@@ -30,13 +30,13 @@ from textual.app import ComposeResult
 from textual.timer import Timer
 from textual.widgets import Label, Static
 
-from lilbee import asyncio_loop
-from lilbee.cancellation import TaskCancelled
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
-from lilbee.progress import EventType, SetupProgressEvent
+from lilbee.runtime import asyncio_loop
+from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -88,16 +88,16 @@ class ProgressReporter:
         return task is not None and task.status == TaskStatus.CANCELLED
 
     def check_cancelled(self) -> None:
-        """Raise ``TaskCancelled`` if the task was cancelled from the UI."""
+        """Raise ``TaskCancelledError`` if the task was cancelled from the UI."""
         if self.cancelled:
-            raise TaskCancelled
+            raise TaskCancelledError
 
     def update(
         self, progress: float, detail: str = "", *, indeterminate: bool | None = None
     ) -> None:
         """Write a progress snapshot to the shared queue.
 
-        Raises ``TaskCancelled`` first if the UI cancelled the task, so
+        Raises ``TaskCancelledError`` first if the UI cancelled the task, so
         callers can use ``update`` as both a progress write and a cancel
         checkpoint.
         """
@@ -144,7 +144,7 @@ class TaskBarController:
     ``LilbeeApp.__init__``. All task lifecycle methods
     (add/update/complete/fail/cancel) go through here so every ``TaskBar``
     widget sees the same state, and every long-running op is spawned by
-    this controller — never by a screen that may dismiss mid-flight.
+    this controller: never by a screen that may dismiss mid-flight.
     """
 
     def __init__(self, app: App[Any]) -> None:
@@ -262,7 +262,7 @@ class TaskBarController:
 
         On success (target returns normally) the queue marks the task DONE
         and ``on_success`` (if provided) runs after on the same worker
-        thread. On ``TaskCancelled`` the task is marked CANCELLED. On any
+        thread. On ``TaskCancelledError`` the task is marked CANCELLED. On any
         other exception the task is marked FAILED with ``str(exc)`` as
         detail. Rows linger in the Task Center under their final status
         until the user presses capital ``C`` to clear; the bottom bar
@@ -307,7 +307,7 @@ class TaskBarController:
         reporter = ProgressReporter(self, task_id)
         try:
             target(reporter)
-        except TaskCancelled:
+        except TaskCancelledError:
             log.info("Task %s cancelled", task_id)
             self._post_finalize(task_id, TaskOutcome.CANCELLED, "", task_type)
         except Exception as exc:
@@ -330,7 +330,7 @@ class TaskBarController:
 
         Main-thread execution matters because ``set_timer`` (used for the
         flash-then-remove cycle) isn't safe from workers. ``call_from_thread``
-        targets ``self.app`` — the App is long-lived; screens are not.
+        targets ``self.app``: the App is long-lived; screens are not.
         """
         call_from_thread(self.app, self._finalize_task, task_id, outcome, detail, task_type)
 
@@ -383,9 +383,9 @@ class TaskBarController:
     def start_download(self, model: CatalogModel) -> str:
         """Enqueue a model download and spawn a background worker.
 
-        Thin specialization of ``start_task`` that wires the HuggingFace
-        ``download_model`` API and translates ``PermissionError`` into a
-        friendly "repo requires login" message — gated repos are a common
+        Thin specialization of ``start_task`` that wires the shared
+        ``pull_model_data`` use-case and translates ``PermissionError`` into a
+        friendly "repo requires login" message: gated repos are a common
         failure mode and the raw exception text is opaque.
         """
         return self.start_task(
@@ -403,14 +403,15 @@ def _download_target(reporter: ProgressReporter, model: CatalogModel) -> None:
     ``PermissionError`` into the gated-repo friendly message so every call
     site (wizard, catalog, chat) gets consistent error UX.
     """
-    from lilbee.catalog import DownloadProgress, download_model, make_download_callback
+    from lilbee.app.models import pull_model_data
+    from lilbee.catalog import DownloadProgress
+    from lilbee.modelhub.model_manager import ModelSource
 
     def _on_progress(p: DownloadProgress) -> None:
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
 
-    callback = make_download_callback(_on_progress)
     try:
-        download_model(model, on_progress=callback)
+        pull_model_data(model.ref, ModelSource.NATIVE, on_update=_on_progress)
     except PermissionError as exc:
         raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
 
@@ -441,6 +442,16 @@ class TaskBar(Static):
         # recent work; without this gate the bar would re-flash the same
         # task every poll because ``history[-1]`` keeps matching.
         self._flashed_ids: set[str] = set()
+        # Fingerprint of the most recently painted label state. Each
+        # tick fires at 10 Hz; if nothing visible has changed (no new
+        # tasks, no progress shift, no pulse-phase flip) the heavy
+        # ``Label.update`` -- which re-segments + re-styles the line --
+        # is skipped. Visible idle cost drops from "every tick" to "on
+        # actual change", recovering ~5-8 ms/sec on idle screens.
+        self._last_render_fingerprint: tuple[object, ...] | None = None
+        # Poll handle. Set in on_mount and cleared in on_unmount; declared
+        # here so on_unmount can read it directly without a getattr fallback.
+        self._interval: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("", id="task-status-label")
@@ -452,12 +463,11 @@ class TaskBar(Static):
         # interval firing against a detached widget, racing with the new
         # TaskBar and occasionally setting ``display=False`` on the live
         # instance (bb-3uzp).
-        self._interval: Timer | None = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+        self._interval = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
 
     def on_unmount(self) -> None:
-        interval = getattr(self, "_interval", None)
-        if interval is not None:
-            interval.stop()
+        if self._interval is not None:
+            self._interval.stop()
             self._interval = None
 
     @property
@@ -559,14 +569,28 @@ class TaskBar(Static):
 
         if not active and not queued and not in_flash and self._flash_outcome is None:
             self.display = False
+            self._last_render_fingerprint = None
             return
 
         self.display = True
         dot_color, summary = self._compose_segments(active, queued)
-        hint = f"[i dim]{self._hint_copy()}[/]"
-        dot = f"[{dot_color}]{_DOT_GLYPH}[/]"
-        label_text = f" {dot}  {summary}    {hint}"
+        hint_text = self._hint_copy()
+        # Fingerprint captures every variable the label content depends
+        # on. Recomputing it is essentially free; the win comes from
+        # skipping ``Label.update`` when nothing visible has changed,
+        # since update re-segments and re-styles the whole line.
+        fingerprint: tuple[object, ...] = (
+            dot_color,
+            summary,
+            hint_text,
+            in_flash,
+            self._flash_outcome,
+        )
+        if fingerprint == self._last_render_fingerprint:
+            return
+        self._last_render_fingerprint = fingerprint
 
+        label_text = f" [{dot_color}]{_DOT_GLYPH}[/]  {summary}    [i dim]{hint_text}[/]"
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)

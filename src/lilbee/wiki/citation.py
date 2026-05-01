@@ -1,12 +1,12 @@
 """Parse, render, and verify wiki citations.
 
-Pure functions — no LLM dependency. Operates on markdown text and citation records.
+Pure functions: no LLM dependency. Operates on markdown text and citation records.
 """
 
 from dataclasses import dataclass
 from enum import Enum
 
-from lilbee.store import CitationRecord
+from lilbee.data.store import CitationRecord
 from lilbee.wiki.grammar import (
     CITATION_BLOCK_COMMENT,
     CITATION_BLOCK_SEP,
@@ -76,7 +76,7 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
 
 def verify_citation(citation: CitationRecord, source_text: str) -> CitationStatus:
     """Check whether a citation's excerpt exists in the source text.
-    Does not check hash staleness or source existence — caller handles those
+    Does not check hash staleness or source existence: caller handles those
     by comparing ``citation.source_hash`` against the current file hash and
     checking file presence.
     """

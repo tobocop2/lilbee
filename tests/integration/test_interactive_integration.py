@@ -21,9 +21,9 @@ from typer.testing import CliRunner
 
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
 from lilbee.cli.app import app
-from lilbee.config import cfg
-from lilbee.services import reset_services as reset_provider
-from lilbee.system import canonical_models_dir
+from lilbee.core.config import cfg
+from lilbee.core.services import reset_services as reset_provider
+from lilbee.core.system import canonical_models_dir
 from tests.integration.conftest import skip_if_small_chat_model
 
 pytestmark = pytest.mark.slow
@@ -185,7 +185,7 @@ def isolated_env(tmp_path, real_models):
     os.environ["LILBEE_DATA"] = str(tmp_path)
 
     # Serialize async ingestion to avoid concurrent llama.cpp calls (not thread-safe)
-    _max_concurrent_patch = mock.patch("lilbee.ingest._MAX_CONCURRENT", 1)
+    _max_concurrent_patch = mock.patch("lilbee.data.ingest.pipeline._MAX_CONCURRENT", 1)
     _max_concurrent_patch.start()
 
     yield tmp_path
@@ -220,7 +220,7 @@ def _write_all_docs():
 @pytest.fixture
 def sync_fn(run_async):
     """Real ingest.sync wrapped to run on the shared session loop."""
-    from lilbee.ingest import sync
+    from lilbee.data.ingest import sync
 
     def _run():
         return run_async(sync(quiet=True))

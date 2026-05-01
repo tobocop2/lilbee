@@ -1,9 +1,9 @@
-"""First-run setup — single-screen model picker with RAM-based recommendations.
+"""First-run setup: single-screen model picker with RAM-based recommendations.
 
 The wizard mirrors the catalog's grid aesthetic: one ``GridSelect`` per
 section (chat, embed), pressing Enter on a card installs that model
 immediately via ``TaskBarController.start_download``. No separate
-Install & Go button, no Browse, no Skip — pick what you want, press
+Install & Go button, no Browse, no Skip: pick what you want, press
 Esc when done. Downloads continue under the app-level controller, so
 dismissing the wizard while they're in flight is fine.
 
@@ -29,15 +29,15 @@ from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
-    TableRow,
+    LocalCatalogRow,
     catalog_to_row,
     parse_param_label,
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
-from lilbee.config import cfg
-from lilbee.models import ModelTask, get_system_ram_gb
-from lilbee.services import get_services, reset_services
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services, reset_services
+from lilbee.modelhub.models import ModelTask, get_system_ram_gb
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ SETUP_CHAT_GRID_ID = "setup-chat-grid"
 def _scan_installed_models() -> tuple[list[str], list[str]]:
     """List installed models from the registry, split into chat vs embedding."""
     try:
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         chat: list[str] = []
@@ -62,9 +62,9 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         return [], []
 
 
-def _installed_name_to_row(name: str, task: str) -> TableRow:
-    """Create a minimal TableRow for an already-installed model."""
-    return TableRow(
+def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
+    """Create a minimal LocalCatalogRow for an already-installed model."""
+    return LocalCatalogRow(
         name=name,
         task=task,
         params=parse_param_label(name),
@@ -88,14 +88,24 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
 
 
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
-    """Return the CatalogModel to download for a non-installed card, or None."""
-    if card and not card.row.installed:
-        return card.row.catalog_model
-    return None
+    """Return the CatalogModel to download for a non-installed card, or None.
+
+    Setup wizard only renders local rows; the isinstance guard narrows
+    the union (CatalogRow = LocalCatalogRow | FrontierCatalogRow) so
+    the .installed / .catalog_model reads are typecheck-clean.
+    """
+    if card is None:
+        return None
+    row = card.row
+    if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+        return None
+    if row.installed:
+        return None
+    return row.catalog_model
 
 
 class SetupWizard(Screen[str | None]):
-    """First-run setup — pick chat + embedding, Enter installs, Esc exits.
+    """First-run setup: pick chat + embedding, Enter installs, Esc exits.
 
     Each card you press Enter on:
       1. Becomes the saved selection for its task (chat or embedding).
@@ -228,9 +238,14 @@ class SetupWizard(Screen[str | None]):
             if not recommended:
                 continue
             for card in cards:
-                cm = card.row.catalog_model
+                row = card.row
+                if not isinstance(
+                    row, LocalCatalogRow
+                ):  # pragma: no cover - setup never mounts frontier
+                    continue
+                cm = row.catalog_model
                 if cm and cm.ref == recommended.ref:
-                    self._mark_selection(card, card.row.task)
+                    self._mark_selection(card, row.task)
                     break
 
     def _mark_selection(self, card: ModelCard, task: str) -> None:

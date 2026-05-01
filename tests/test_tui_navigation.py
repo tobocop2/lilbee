@@ -1,4 +1,4 @@
-"""Navigation flow tests — verify keyboard-driven TUI interactions.
+"""Navigation flow tests: verify keyboard-driven TUI interactions.
 
 Every test uses pilot.press() to simulate actual keystrokes, never
 action_* methods directly. This catches key resolution, focus routing,
@@ -19,7 +19,8 @@ from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
-from lilbee.config import cfg
+from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -81,7 +82,7 @@ async def test_bracket_keys_cycle_all_screens():
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
-        # Chat starts in insert mode — Escape to normal mode first
+        # Chat starts in insert mode: Escape to normal mode first
         await pilot.press("escape")
         await pilot.pause()
 
@@ -94,27 +95,28 @@ async def test_bracket_keys_cycle_all_screens():
             )
 
 
-async def test_bracket_keys_work_with_chat_input_focused():
-    """Pressing ] with the chat input focused must switch screens, not insert text."""
+async def test_bracket_keys_typed_literally_when_chat_input_focused():
+    """Pressing [ or ] with the chat input focused must insert text, not switch screens."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
-        chat_input = app.screen.query_one("#chat-input", Input)
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
         assert chat_input.has_focus, "Chat input should auto-focus on mount"
         assert chat_input.value == ""
 
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
         await pilot.press("right_square_bracket")
         await pilot.pause()
 
-        assert isinstance(app.screen, CatalogScreen), (
-            f"Expected CatalogScreen after ], got {type(app.screen).__name__}"
+        assert isinstance(app.screen, ChatScreen), (
+            f"Brackets must not navigate while chat input has focus, "
+            f"got {type(app.screen).__name__}"
         )
-        # The original chat_input reference must still be unchanged — the ]
-        # keypress must not have been typed into it before the screen switched.
-        assert chat_input.value == "", (
-            f"] was typed into chat input instead of navigating (value={chat_input.value!r})"
+        assert chat_input.value == "[]", (
+            f"Brackets must type literally with input focused, got value={chat_input.value!r}"
         )
 
 
@@ -150,66 +152,80 @@ async def test_bracket_keys_work_from_settings():
         assert isinstance(app.screen, TaskCenter)
 
 
-async def test_settings_filter_not_focused_on_mount():
-    """Settings should focus scroll container, not the search Input."""
+async def test_bracket_keys_typed_literally_when_catalog_search_focused():
+    """Brackets in catalog search input must insert text, not switch screens."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await pilot.pause()
+
+        search = app.screen.query_one("#catalog-search", Input)
+        search.focus()
+        await pilot.pause()
+        assert search.has_focus
+
+        await pilot.press("left_square_bracket")
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CatalogScreen), (
+            "Brackets must not navigate while catalog search has focus"
+        )
+        assert search.value == "[]", f"Brackets must type literally; got {search.value!r}"
+
+
+async def test_settings_escape_returns_to_chat():
+    """Escape on Settings switches back to Chat (no filter input to blur)."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause()
-
-        search = app.screen.query_one("#settings-search", Input)
-        assert app.screen.focused is not search
-
-
-async def test_settings_slash_focuses_filter():
-    """/ focuses the filter, Enter blurs it."""
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause()
-
-        await pilot.press("slash")
-        await pilot.pause()
-        search = app.screen.query_one("#settings-search", Input)
-        assert app.screen.focused is search
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen.focused is not search
-
-
-async def test_settings_escape_from_filter_stays():
-    """Escape from filter blurs it but stays on Settings."""
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause()
-
-        await pilot.press("slash")
-        await pilot.pause()
-        assert isinstance(app.screen.focused, Input)
+        assert isinstance(app.screen, SettingsScreen)
 
         await pilot.press("escape")
         await pilot.pause()
-        assert isinstance(app.screen, SettingsScreen)
-        assert not isinstance(app.screen.focused, Input)
+        # action_go_back routes back to Chat under LilbeeApp.
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert isinstance(app.screen, ChatScreen)
 
 
-async def test_settings_jk_scrolls_not_types():
-    """j should scroll, not type into the filter input."""
+async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():
+    """/models from Chat under LilbeeApp must use switch_view, not push_screen."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        app.switch_view("Settings")
+        chat = app.screen
+        assert isinstance(chat, ChatScreen)
+        chat._handle_slash("/models")
         await pilot.pause()
+        assert isinstance(app.screen, CatalogScreen)
 
-        await pilot.press("j")
+
+async def test_slash_settings_routes_through_switch_view_under_lilbee_app():
+    """/settings under LilbeeApp must use switch_view, not push_screen."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        search = app.screen.query_one("#settings-search", Input)
-        assert search.value == ""
+        chat = app.screen
+        assert isinstance(chat, ChatScreen)
+        chat._handle_slash("/settings")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+
+
+async def test_slash_status_routes_through_switch_view_under_lilbee_app():
+    """/status under LilbeeApp must use switch_view, not push_screen."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat = app.screen
+        assert isinstance(chat, ChatScreen)
+        chat._handle_slash("/status")
+        await pilot.pause()
+        assert isinstance(app.screen, StatusScreen)
 
 
 async def test_grid_arrows_stay_on_catalog():
@@ -280,42 +296,42 @@ async def test_catalog_nav_noop_when_search_focused():
         assert isinstance(screen.focused, Input)
 
 
-async def test_chat_tab_focuses_model_select_when_input_not_focused():
-    """Tab from outside the input jumps to the chat model dropdown."""
-    from textual.widgets import Select
+async def test_chat_tab_outside_input_advances_focus():
+    """Tab from outside the chat input advances the focus chain.
 
+    The dedicated jump-to-model-bar shortcut is ``m`` (see
+    ``Binding("m", "focus_model_bar", ...)``); Tab is the universal
+    walk-the-chain key, not a shortcut to the model dropdown.
+    """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Escape to normal mode -- input loses focus
+        # Escape to normal mode: input loses focus
         await pilot.press("escape")
         await pilot.pause()
-
+        before = app.focused
         screen = app.screen
         screen.action_complete()
         await pilot.pause()
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        assert chat_sel.has_focus
+        assert app.focused is not before, "Tab in normal mode did not advance focus"
 
 
-async def test_chat_escape_from_model_select():
-    """Escape from a model Select returns to chat input."""
+async def test_chat_escape_from_model_picker_button():
+    """Escape from the focused chat-model picker button returns to chat input."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
 
-        # Focus model bar
         await pilot.press("escape")
         await pilot.pause()
         screen.action_focus_model_bar()
         await pilot.pause()
 
-        from textual.widgets import Select
+        assert isinstance(screen.focused, ModelPickerButton)
 
-        assert isinstance(screen.focused, Select)
-
-        # Escape should return to chat input
         await pilot.press("escape")
         await pilot.pause()
         assert screen.focused is not None

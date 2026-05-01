@@ -7,7 +7,7 @@ from textual.suggester import Suggester
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.cli.tui.command_registry import completion_names
-from lilbee.services import get_services
+from lilbee.core.services import get_services
 
 _SLASH_COMMANDS = completion_names()
 
@@ -58,7 +58,7 @@ class SlashSuggester(Suggester):
 
     def _get_model_names(self) -> list[str]:
         try:
-            from lilbee.models import list_installed_models
+            from lilbee.modelhub.models import list_installed_models
 
             return list_installed_models()
         except Exception:

@@ -7,7 +7,7 @@ from typing import Union, get_args, get_origin
 
 from pydantic.fields import FieldInfo
 
-from lilbee.config import Config
+from lilbee.core.config import Config
 
 MODEL_ROLE_FIELDS: frozenset[str] = frozenset(
     {"chat_model", "embedding_model", "vision_model", "reranker_model"}

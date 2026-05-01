@@ -1,4 +1,4 @@
-"""Integration tests for web crawling — real crawl4ai against a local HTTP server.
+"""Integration tests for web crawling: real crawl4ai against a local HTTP server.
 
 These tests exercise the full pipeline: crawl4ai fetches real HTML from a local
 pytest-httpserver, saves as markdown, and verifies the files land correctly.
@@ -15,8 +15,7 @@ import pytest
 
 crawl4ai = pytest.importorskip("crawl4ai")
 
-from lilbee.config import cfg  # noqa: E402
-from lilbee.crawler import api as crawler_api  # noqa: E402
+from lilbee.core.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
     crawl_and_save,
     load_crawl_metadata,
@@ -24,7 +23,7 @@ from lilbee.crawler import (  # noqa: E402
 )
 from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
 from lilbee.crawler.save import _save_single_result  # noqa: E402
-from lilbee.progress import EventType  # noqa: E402
+from lilbee.runtime.progress import EventType  # noqa: E402
 
 HOME_HTML = """\
 <html><head><title>Home</title></head>
@@ -69,13 +68,15 @@ def isolated_env(tmp_path):
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.crawl_timeout = 15
-    # Fully reset crawler state (semaphore, sync timer, background tasks)
-    # so no integration test leaks mutable state into a neighbour.
-    crawler_api._state.reset()
+    # Reset services so the crawler semaphore + sync state are fresh for
+    # every integration test.
+    from lilbee.core.services import reset_services
+
+    reset_services()
     yield tmp_path
     for name, val in snapshot.items():
         setattr(cfg, name, val)
-    crawler_api._state.reset()
+    reset_services()
 
 
 @pytest.fixture()
@@ -165,7 +166,7 @@ class TestRecursiveCrawl:
 
 class TestContentChangeDetection:
     async def test_unchanged_content_skips_save(self, test_site, allow_localhost):
-        """Crawl same URL twice with same content — second skips save."""
+        """Crawl same URL twice with same content: second skips save."""
         url = str(test_site.url_for("/"))
         paths1 = await crawl_and_save(url, depth=0)
         assert len(paths1) == 1
@@ -180,7 +181,7 @@ class TestContentChangeDetection:
         assert paths1[0].stat().st_mtime == mtime1
 
     async def test_changed_content_updates_file(self, httpserver, allow_localhost):
-        """Crawl URL, change server content, crawl again — file updated."""
+        """Crawl URL, change server content, crawl again: file updated."""
         httpserver.expect_request("/changing").respond_with_data(
             "<html><body><h1>Version 1</h1><p>Original content.</p></body></html>",
             content_type="text/html",
@@ -270,7 +271,7 @@ class TestErrors:
         # crawl4ai may return success=False or empty markdown for 404s
         # Either way, crawl_and_save should not raise
         paths = await crawl_and_save(url, depth=0)
-        # May be 0 (failed) or 1 (crawl4ai returned something) — just verify no crash
+        # May be 0 (failed) or 1 (crawl4ai returned something): just verify no crash
         assert isinstance(paths, list)
 
     async def test_crawl_unreachable_host(self):
@@ -304,7 +305,9 @@ class TestCrawlConcurrency:
             httpserver.expect_request(f"/conc{i}").respond_with_handler(slow_handler)
 
         cfg.crawl_max_concurrent = 2
-        crawler_api._state.semaphore = None
+        from lilbee.core.services import reset_services
+
+        reset_services()
 
         urls = [str(httpserver.url_for(f"/conc{i}")) for i in range(3)]
         tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]
@@ -328,7 +331,9 @@ class TestCrawlConcurrency:
             )
 
         cfg.crawl_max_concurrent = 0
-        crawler_api._state.semaphore = None
+        from lilbee.core.services import reset_services
+
+        reset_services()
 
         urls = [str(httpserver.url_for(f"/par{i}")) for i in range(3)]
         tasks = [asyncio.create_task(crawl_and_save(url, depth=0)) for url in urls]

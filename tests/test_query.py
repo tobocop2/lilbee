@@ -1,14 +1,13 @@
-"""Tests for the RAG query pipeline (mocked — no live server needed)."""
+"""Tests for the RAG query pipeline (mocked: no live server needed)."""
 
 import pytest
 
-import lilbee.services as svc_mod
-from lilbee.config import cfg
-from lilbee.query import (
+import lilbee.core.services as svc_mod
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+from lilbee.data.store import SearchChunk
+from lilbee.retrieval.query import (
     Searcher,
-    _extract_cited_indices,
-    _format_citation,
-    _relevance_weight,
     build_context,
     deduplicate_sources,
     filter_results,
@@ -16,8 +15,8 @@ from lilbee.query import (
     sort_by_relevance,
     strip_llm_citations,
 )
-from lilbee.services import get_services
-from lilbee.store import SearchChunk
+from lilbee.retrieval.query.dedup import _relevance_weight
+from lilbee.retrieval.query.formatting import _extract_cited_indices, _format_citation
 from tests.conftest import make_citation
 
 
@@ -28,6 +27,15 @@ def _disable_concepts():
     cfg.concept_graph = False
     yield
     cfg.concept_graph = old
+
+
+@pytest.fixture(autouse=True)
+def _reset_chat_mode():
+    """Pin chat_mode to 'search' so retrieval-tests are not skipped by stale state."""
+    old = cfg.chat_mode
+    cfg.chat_mode = "search"
+    yield
+    cfg.chat_mode = old
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +83,7 @@ class TestDisplaySourcePath:
     """source citations render absolute paths with ~ expansion."""
 
     def test_expands_under_documents_dir(self, tmp_path):
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
         result = display_source_path("_web/example.com/index.md")
@@ -86,7 +94,7 @@ class TestDisplaySourcePath:
     def test_substitutes_home_with_tilde(self, tmp_path, monkeypatch):
         from pathlib import Path as _Path
 
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         # Force documents_dir under the home directory so ~ substitution fires.
         cfg.documents_dir = _Path.home() / ".lilbee-fixes-content-test" / "docs"
@@ -97,7 +105,7 @@ class TestDisplaySourcePath:
     def test_falls_back_to_raw_on_resolve_failure(self, tmp_path, monkeypatch):
         from pathlib import Path as _Path
 
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
 
@@ -112,7 +120,7 @@ class TestDisplaySourcePath:
         """When the resolved path is not under ``Path.home()``, fall through to str(resolved)."""
         from pathlib import Path as _Path
 
-        from lilbee.query import display_source_path
+        from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
         (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
@@ -209,7 +217,7 @@ class TestSortByRelevance:
 
 class TestDiversifySources:
     def test_caps_per_source(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [
             _make_result(source="a.md", distance=0.1),
@@ -224,7 +232,7 @@ class TestDiversifySources:
         assert any(r.source == "b.md" for r in diverse)
 
     def test_preserves_order(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [
             _make_result(source="a.md", distance=0.1),
@@ -237,12 +245,12 @@ class TestDiversifySources:
         assert len(diverse) == 2
 
     def test_empty_input(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         assert diversify_sources([]) == []
 
     def test_default_cap_is_three(self):
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [_make_result(source="a.md", distance=float(i) / 10) for i in range(5)]
         diverse = diversify_sources(results)
@@ -257,7 +265,7 @@ class TestDiversifySources:
         side independently. With ``max_per_source=1`` both sides still
         surface together.
         """
-        from lilbee.query import diversify_sources
+        from lilbee.retrieval.query import diversify_sources
 
         results = [
             _make_result(source="wiki/summaries/doc.md", chunk_type="wiki", distance=0.1),
@@ -485,15 +493,18 @@ class TestAskRaw:
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
 
-    def test_no_results(self, mock_svc):
+    def test_no_results_falls_through_to_general_chat(self, mock_svc):
+        """Zero RAG hits route through the general system prompt (no canned
+        message, no citation grammar). Sources stay empty so callers can tell
+        the response was not grounded."""
         mock_svc.store.search.return_value = []
+        mock_svc.provider.chat.return_value = "general answer"
         result = get_services().searcher.ask_raw("anything")
-        assert "No relevant documents" in result.answer
-        # copy no longer blames the user for missing docs when only
-        # this query failed to match.
-        assert "ingesting" not in result.answer
-        assert "for this query" in result.answer
+        assert result.answer == "general answer"
         assert result.sources == []
+        sent = mock_svc.provider.chat.call_args[0][0]
+        assert sent[0]["role"] == "system"
+        assert sent[0]["content"] == cfg.general_system_prompt
 
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -531,10 +542,14 @@ class TestAsk:
         assert "Sources:" in answer
         assert "test.pdf" in answer
 
-    def test_no_results_message(self, mock_svc):
+    def test_no_results_falls_through_to_general_chat(self, mock_svc):
+        """ask() also falls through to general chat when retrieval is empty."""
         mock_svc.store.search.return_value = []
+        mock_svc.provider.chat.return_value = "general answer"
         answer = get_services().searcher.ask("anything")
-        assert "No relevant documents" in answer
+        assert "general answer" in answer
+        # No citations are appended for an ungrounded answer.
+        assert "Sources:" not in answer
 
     def test_ask_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -558,13 +573,15 @@ class TestAskStream:
         assert "Hello world" in combined
         assert "Sources:" in combined
 
-    def test_empty_results_yields_message(self, mock_svc):
+    def test_empty_results_falls_through_to_general_chat(self, mock_svc):
+        """Zero RAG hits stream a general-prompt response, no canned message."""
         mock_svc.store.search.return_value = []
+        mock_svc.provider.chat.return_value = iter(["general", " answer"])
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
-        assert "No relevant documents" in combined
-        # stream copy matches the AskResult copy.
-        assert "ingesting" not in combined
+        assert "general answer" in combined
+        # No Sources block when there are no grounding chunks.
+        assert "Sources:" not in combined
 
     def test_ask_stream_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1434,7 +1451,9 @@ class TestDirectMessagesNoEmbed:
 
 class TestAskRawNoEmbed:
     def test_direct_llm_when_no_embedding(self, mock_svc):
-        """ask_raw without embedding calls LLM directly with warning prefix."""
+        """ask_raw without embedding calls the LLM directly via the general
+        system prompt. No canned chat-only banner is injected by the searcher;
+        the TUI surfaces that mode banner separately."""
         mock_svc.embedder.embedding_available.return_value = False
         mock_svc.provider.chat.return_value = "direct answer"
 
@@ -1447,9 +1466,10 @@ class TestAskRawNoEmbed:
             mock_svc.concepts,
         )
         result = searcher.ask_raw("hello")
-        assert "Chat only" in result.answer
-        assert "direct answer" in result.answer
+        assert result.answer == "direct answer"
         assert result.sources == []
+        sent = mock_svc.provider.chat.call_args[0][0]
+        assert sent[0]["content"] == cfg.general_system_prompt
 
     def test_no_embed_strips_think_tags(self, mock_svc):
         """ask_raw no-embed path strips <think> tags."""
@@ -1469,9 +1489,66 @@ class TestAskRawNoEmbed:
         assert "direct answer" in result.answer
 
 
+class TestAskRawChatMode:
+    """ask_raw consults cfg.chat_mode before consulting the embedder."""
+
+    def test_chat_mode_skips_retrieval_even_when_embedding_ready(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = True
+            mock_svc.provider.chat.return_value = "no-search answer"
+            result = get_services().searcher.ask_raw("any question")
+            assert result.answer == "no-search answer"
+            assert result.sources == []
+            mock_svc.store.search.assert_not_called()
+            sent = mock_svc.provider.chat.call_args[0][0]
+            assert sent[0]["content"] == cfg.general_system_prompt
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_with_results_runs_rag(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.store.search.return_value = [_make_result(chunk="grounded")]
+            mock_svc.provider.chat.return_value = "grounded answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "grounded answer"
+            assert len(result.sources) == 1
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_empty_results_falls_through(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.store.search.return_value = []
+            mock_svc.provider.chat.return_value = "general answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "general answer"
+            assert result.sources == []
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_without_embedding_falls_through(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
+            mock_svc.provider.chat.return_value = "direct answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "direct answer"
+            assert result.sources == []
+            mock_svc.store.search.assert_not_called()
+        finally:
+            cfg.chat_mode = old
+
+
 class TestAskStreamNoEmbed:
     def test_streams_directly_when_no_embedding(self, mock_svc):
-        """ask_stream without embedding streams from LLM directly."""
+        """ask_stream without embedding streams from the LLM directly under
+        the general system prompt; the searcher does not inject a banner."""
         mock_svc.embedder.embedding_available.return_value = False
         mock_svc.provider.chat.return_value = iter(["chunk1", "chunk2"])
 
@@ -1485,9 +1562,7 @@ class TestAskStreamNoEmbed:
         )
         tokens = list(searcher.ask_stream("hello"))
         combined = "".join(st.content for st in tokens)
-        assert "Chat only" in combined
-        assert "chunk1" in combined
-        assert "chunk2" in combined
+        assert combined == "chunk1chunk2"
 
     def test_stream_handles_connection_error(self, mock_svc):
         """ask_stream without embedding handles ConnectionError gracefully."""

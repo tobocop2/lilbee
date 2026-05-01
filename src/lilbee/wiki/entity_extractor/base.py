@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from lilbee.store import SearchChunk
+    from lilbee.data.store import SearchChunk
 
 
 class EntityKind(StrEnum):

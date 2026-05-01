@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 import pytest
 from litestar.testing import AsyncTestClient
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import set_services
 from lilbee.server import auth as _auth_mod
 from lilbee.server.handlers import MAX_ADD_FILES
-from lilbee.services import set_services
 from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 
@@ -58,11 +58,11 @@ def reset_ingest_locks():
     Locks are bound to the event loop; leaking them across tests produces
     cryptic 'attached to a different loop' errors.
     """
-    from lilbee.server.handlers import _reset_ingest_locks
+    from lilbee.core.services import get_services
 
-    _reset_ingest_locks()
+    get_services().ingest_lock_registry.reset()
     yield
-    _reset_ingest_locks()
+    get_services().ingest_lock_registry.reset()
 
 
 def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks: int = 1):
@@ -209,12 +209,12 @@ class TestAddEndpoint:
         cfg.sse_heartbeat_interval = 0.2
 
         async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
-            from lilbee.ingest import SyncResult
+            from lilbee.data.ingest import SyncResult
 
             await asyncio.sleep(0.6)
             return SyncResult(added=["slow.txt"])
 
-        with mock.patch("lilbee.ingest.sync", side_effect=slow_sync):
+        with mock.patch("lilbee.data.ingest.sync", side_effect=slow_sync):
             async with AsyncTestClient(create_app()) as client:
                 resp = await client.post(
                     "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
@@ -365,33 +365,33 @@ class TestAddIngestMutex:
 
     async def test_try_acquire_rejects_while_held(self, isolated_env):
         """A second ``_try_acquire_source`` for a held name returns ``None``."""
-        from lilbee.server.handlers import _try_acquire_source
+        from lilbee.core.services import get_services
 
-        first = await _try_acquire_source("doc.txt")
+        first = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert first is not None
         try:
-            second = await _try_acquire_source("doc.txt")
+            second = await get_services().ingest_lock_registry.try_acquire("doc.txt")
             assert second is None
         finally:
             first.release()
 
     async def test_try_acquire_succeeds_after_release(self, isolated_env):
         """Once released, the same name can be acquired again."""
-        from lilbee.server.handlers import _try_acquire_source
+        from lilbee.core.services import get_services
 
-        first = await _try_acquire_source("doc.txt")
+        first = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert first is not None
         first.release()
-        second = await _try_acquire_source("doc.txt")
+        second = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert second is not None
         second.release()
 
     async def test_try_acquire_distinct_names_run_parallel(self, isolated_env):
         """Locks for different source names are independent."""
-        from lilbee.server.handlers import _try_acquire_source
+        from lilbee.core.services import get_services
 
-        a = await _try_acquire_source("a.txt")
-        b = await _try_acquire_source("b.txt")
+        a = await get_services().ingest_lock_registry.try_acquire("a.txt")
+        b = await get_services().ingest_lock_registry.try_acquire("b.txt")
         assert a is not None
         assert b is not None
         a.release()
@@ -399,30 +399,32 @@ class TestAddIngestMutex:
 
     async def test_canonical_name_matches_basename(self, isolated_env):
         """Canonical source names match what ``copy_files`` writes on disk."""
-        from lilbee.server.handlers import _canonical_source_name
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-        assert _canonical_source_name("/some/path/doc.txt") == "doc.txt"
-        assert _canonical_source_name("doc.txt") == "doc.txt"
+        assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
+        assert IngestLockRegistry.canonical_source_name("doc.txt") == "doc.txt"
 
     async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
         """Duplicate paths in one request collapse to a single acquired lock."""
-        from lilbee.server.handlers import _acquire_add_locks, _release_add_locks
+        from lilbee.core.services import get_services
 
-        acquired, busy = await _acquire_add_locks(["/x/doc.txt", "/y/doc.txt"])
+        registry = get_services().ingest_lock_registry
+        acquired, busy = await registry.acquire(["/x/doc.txt", "/y/doc.txt"])
         try:
             assert busy == []
             assert [name for name, _ in acquired] == ["doc.txt"]
         finally:
-            _release_add_locks(acquired)
+            registry.release(acquired)
 
     async def test_second_concurrent_add_emits_already_ingesting(self, isolated_env, tmp_path):
         """Second /api/add for a held source yields already_ingesting, no done."""
-        from lilbee.server.handlers import _try_acquire_source, add_files_stream
+        from lilbee.core.services import get_services
+        from lilbee.server.handlers import add_files_stream
 
         src = tmp_path / "holdme.txt"
         src.write_text("payload")
 
-        lock = await _try_acquire_source("holdme.txt")
+        lock = await get_services().ingest_lock_registry.try_acquire("holdme.txt")
         assert lock is not None
         try:
             events = await self._collect(add_files_stream({"paths": [str(src)]}))
@@ -435,14 +437,15 @@ class TestAddIngestMutex:
 
     async def test_partial_contention_partitions_paths(self, isolated_env, tmp_path):
         """Held paths emit already_ingesting; free paths still run to done."""
-        from lilbee.server.handlers import _try_acquire_source, add_files_stream
+        from lilbee.core.services import get_services
+        from lilbee.server.handlers import add_files_stream
 
         held = tmp_path / "held.txt"
         held.write_text("held payload")
         free = tmp_path / "free.txt"
         free.write_text("free payload")
 
-        lock = await _try_acquire_source("held.txt")
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
         assert lock is not None
         try:
             with mock.patch(
@@ -460,7 +463,7 @@ class TestAddIngestMutex:
         assert "done" in event_types
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
-        """Disjoint sources do not contend — both requests complete with done."""
+        """Disjoint sources do not contend: both requests complete with done."""
         from lilbee.server.handlers import add_files_stream
 
         a = tmp_path / "a.txt"
@@ -487,7 +490,8 @@ class TestAddIngestMutex:
 
     async def test_mutex_released_on_exception(self, isolated_env, tmp_path):
         """If ingest raises, the source mutex is released so retries succeed."""
-        from lilbee.server.handlers import _try_acquire_source, add_files_stream
+        from lilbee.core.services import get_services
+        from lilbee.server.handlers import add_files_stream
 
         src = tmp_path / "boom.txt"
         src.write_text("contents")
@@ -495,18 +499,19 @@ class TestAddIngestMutex:
         async def _boom(*_args, **_kwargs):
             raise RuntimeError("ingest exploded")
 
-        with mock.patch("lilbee.ingest.sync", new=_boom):
+        with mock.patch("lilbee.data.ingest.sync", new=_boom):
             events = await self._collect(add_files_stream({"paths": [str(src)]}))
 
         assert any(t == "error" for t, _ in events)
 
-        retry = await _try_acquire_source("boom.txt")
+        retry = await get_services().ingest_lock_registry.try_acquire("boom.txt")
         assert retry is not None
         retry.release()
 
     async def test_mutex_released_on_task_cancellation(self, isolated_env, tmp_path):
         """Task cancellation during ingest still releases the source mutex."""
-        from lilbee.server.handlers import _try_acquire_source, add_files_stream
+        from lilbee.core.services import get_services
+        from lilbee.server.handlers import add_files_stream
 
         src = tmp_path / "slow.txt"
         src.write_text("contents")
@@ -515,7 +520,7 @@ class TestAddIngestMutex:
             await asyncio.sleep(30)
 
         gen = add_files_stream({"paths": [str(src)]})
-        with mock.patch("lilbee.ingest.sync", new=_hang):
+        with mock.patch("lilbee.data.ingest.sync", new=_hang):
             outer = asyncio.create_task(gen.__anext__())
             await asyncio.sleep(0.05)
             outer.cancel()
@@ -523,7 +528,7 @@ class TestAddIngestMutex:
                 await outer
             await gen.aclose()
 
-        retry = await _try_acquire_source("slow.txt")
+        retry = await get_services().ingest_lock_registry.try_acquire("slow.txt")
         assert retry is not None
         retry.release()
 
@@ -532,9 +537,9 @@ class TestAddIngestHardening:
     """Option-A hardening: ``sync()`` always passes ``needs_cleanup=True``."""
 
     async def test_new_file_triggers_cleanup(self, isolated_env, tmp_path, mock_svc):
-        """New files still call delete_by_source before adding — closes the
+        """New files still call delete_by_source before adding: closes the
         orphaned-chunks race when a prior ingest died before upsert_source."""
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         src = isolated_env / "fresh.txt"
         src.write_text("Fresh content.")
@@ -557,7 +562,7 @@ class TestAddIngestHardening:
         """If a prior run left chunks without an ``upsert_source`` record,
         the retry path removes them before re-adding.
         """
-        from lilbee.ingest import sync
+        from lilbee.data.ingest import sync
 
         src = isolated_env / "orphan.txt"
         src.write_text("Recovered content.")

@@ -1,9 +1,9 @@
 """Protocol for web-fetcher backends.
 
-The orchestration layer (``api.py``) calls into a ``WebFetcher``
+The orchestration layer (``runner.py``) calls into a ``WebFetcher``
 instance; the adapter (``crawl4ai_fetcher.py``) implements this
 Protocol. Migrating to a different SDK is a one-file swap: delete
-the adapter, add a new one, change the import in ``api.py``.
+the adapter, add a new one, change the import in ``runner.py``.
 
 Lifecycle:
 
@@ -36,7 +36,7 @@ class WebFetcher(Protocol):
     """Backend contract for fetching web pages as markdown.
 
     Implementations must honour ``CancelToken`` promptly inside
-    ``fetch_recursive`` so the streaming loop in ``api.py`` can
+    ``fetch_recursive`` so the streaming loop in ``runner.py`` can
     abort without waiting for an in-flight batch to drain.
 
     Lifecycle ordering:

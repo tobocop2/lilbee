@@ -4,10 +4,6 @@ SettingsScreen {
         margin: 0 1;
     }
 
-    #settings-top-row #settings-search {
-        width: 1fr;
-    }
-
     .reset-all-button {
         width: auto;
         margin-left: 1;
@@ -18,37 +14,32 @@ SettingsScreen {
         padding: 0 1;
     }
 
-    .setting-group {
-        border-left: thick $surface-lighten-2;
-        border-top: solid $surface-lighten-2;
-        border-right: solid $surface-lighten-2;
-        border-bottom: solid $surface-lighten-2;
-        padding: 0 1;
-        margin-bottom: 1;
-
-        &:focus-within {
-            border-left: thick $primary;
-        }
-
-        &:last-child {
-            margin-bottom: 0;
-        }
-    }
-
-    .group-title {
+    /* Settings sub-tabs adopt the same airline-pill aesthetic as the
+     * top ViewTabs strip: active tab gets a bold accent underline,
+     * inactive tabs stay muted. Two navigation levels speak the same
+     * dialect.
+     */
+    #settings-tabs Tab {
+        padding: 0 2;
         color: $text-muted;
+    }
+    #settings-tabs Tab.-active {
+        color: $primary;
         text-style: bold;
-        padding: 0 0 1 0;
+        background: $surface;
+    }
+    #settings-tabs Tabs:focus Tab.-active {
+        color: $accent;
+        text-style: bold underline;
+    }
+    #settings-tabs Underline {
+        color: $primary;
     }
 
     .api-keys-warning {
         color: $warning;
         text-style: italic;
         padding: 0 0 1 1;
-    }
-
-    .setting-group:focus-within .group-title {
-        color: $primary;
     }
 
     .setting-row {

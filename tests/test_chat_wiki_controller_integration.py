@@ -73,7 +73,7 @@ async def test_catalog_enqueue_download_without_lilbee_app_notifies() -> None:
         def compose(self) -> ComposeResult:
             yield Footer()
 
-    # Run under a plain app — CatalogScreen.app won't be a LilbeeApp.
+    # Run under a plain app: CatalogScreen.app won't be a LilbeeApp.
     with patch("lilbee.cli.tui.screens.catalog.get_catalog"):
         app = _PlainApp()
         async with app.run_test() as pilot:
@@ -118,7 +118,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
 
         copy_result = CopyResult(copied=[str(src)], skipped=[])
 
@@ -126,14 +126,16 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         exc: list[BaseException] = []
 
-        from lilbee.ingest import SyncResult
+        from lilbee.data.ingest import SyncResult
 
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-                    patch("lilbee.ingest.sync", new=MagicMock(return_value=None)),
-                    patch("lilbee.asyncio_loop.run", new=MagicMock(return_value=SyncResult())),
+                    patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+                    patch("lilbee.data.ingest.sync", new=MagicMock(return_value=None)),
+                    patch(
+                        "lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=SyncResult())
+                    ),
                 ):
                     screen._do_add(src, reporter)
             except BaseException as e:  # pragma: no cover
@@ -164,7 +166,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
 
         copy_result = CopyResult(copied=[str(src)], skipped=[])
 
@@ -176,12 +178,12 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", new=mock_copy),
+                    patch("lilbee.app.ingest.copy_files", new=mock_copy),
                     patch(
-                        "lilbee.asyncio_loop.run",
+                        "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
-                                "lilbee.ingest", fromlist=["SyncResult"]
+                                "lilbee.data.ingest", fromlist=["SyncResult"]
                             ).SyncResult()
                         ),
                     ),
@@ -217,7 +219,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
 
         copy_result = CopyResult(copied=[str(src)], skipped=["exists.pdf"])
 
@@ -229,12 +231,12 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", new=mock_copy),
+                    patch("lilbee.app.ingest.copy_files", new=mock_copy),
                     patch(
-                        "lilbee.asyncio_loop.run",
+                        "lilbee.runtime.asyncio_loop.run",
                         new=MagicMock(
                             return_value=__import__(
-                                "lilbee.ingest", fromlist=["SyncResult"]
+                                "lilbee.data.ingest", fromlist=["SyncResult"]
                             ).SyncResult()
                         ),
                     ),
@@ -260,7 +262,7 @@ def test_do_crawl_reports_setup_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EventType, SetupProgressEvent
+    from lilbee.runtime.progress import EventType, SetupProgressEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -303,7 +305,7 @@ def test_do_crawl_reports_page_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import CrawlPageEvent, EventType
+    from lilbee.runtime.progress import CrawlPageEvent, EventType
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -339,12 +341,12 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EmbedEvent, EventType, FileDoneEvent, FileStartEvent
+    from lilbee.runtime.progress import EmbedEvent, EventType, FileDoneEvent, FileStartEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
     async def fake_sync(*, quiet, on_progress):
         on_progress(
@@ -359,7 +361,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:  # pragma: no cover - re-raised
             exc.append(e)
@@ -377,8 +379,8 @@ def test_do_sync_done_event_reports_completion() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.ingest import SyncResult
-    from lilbee.progress import EventType, SyncDoneEvent
+    from lilbee.data.ingest import SyncResult
+    from lilbee.runtime.progress import EventType, SyncDoneEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -394,7 +396,7 @@ def test_do_sync_done_event_reports_completion() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:  # pragma: no cover - re-raised
             exc.append(e)
@@ -421,7 +423,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.ingest import SyncResult
+    from lilbee.data.ingest import SyncResult
 
     screen = ChatScreen.__new__(ChatScreen)
     screen._auto_sync = True  # type: ignore[attr-defined]
@@ -434,7 +436,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:
             captured.append(e)
@@ -465,7 +467,7 @@ def test_do_sync_translates_cancellation() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:
             captured.append(e)
@@ -517,7 +519,7 @@ async def test_cmd_add_submits_task_to_controller(tmp_path: Path) -> None:
 async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) -> None:
     """A duplicate in documents_dir opens ConfirmDialog; confirm spawns the task."""
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.config import cfg as _cfg
+    from lilbee.core.config import cfg as _cfg
 
     # Seed a copy already in documents_dir so _cmd_add detects a duplicate.
     _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -558,7 +560,7 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
 async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) -> None:
     """When the user answers No to the overwrite dialog, no task is spawned."""
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.config import cfg as _cfg
+    from lilbee.core.config import cfg as _cfg
 
     _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     (_cfg.documents_dir / "doc.pdf").write_bytes(b"existing")
@@ -697,14 +699,14 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EventType, FileStartEvent
+    from lilbee.runtime.progress import EventType, FileStartEvent
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from lilbee.cli.helpers import CopyResult
+    from lilbee.app.ingest import CopyResult
 
     copy_result = CopyResult(copied=[str(src)], skipped=[])
 
@@ -720,8 +722,8 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
-                patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-                patch("lilbee.ingest.sync", side_effect=fake_sync),
+                patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+                patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
                 screen._do_add(src, reporter)
         except BaseException as e:  # pragma: no cover
@@ -757,7 +759,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.progress import EmbedEvent, EventType
+    from lilbee.runtime.progress import EmbedEvent, EventType
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -770,7 +772,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
 
     def _worker() -> None:
         try:
-            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
         except BaseException as e:  # pragma: no cover
             exc.append(e)

@@ -12,10 +12,11 @@ back cleanly on error.
 from __future__ import annotations
 
 import re
+from http import HTTPStatus
 from urllib.parse import urlparse
 
 from lilbee.crawler.url_filter import host_in_scope
-from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
 # Sitemap lookups are best-effort progress hints; never block the actual crawl.
 _SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0
@@ -33,7 +34,7 @@ def _fetch_sitemap_text(start_url: str) -> str | None:
         resp = httpx.get(sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=True)
     except (httpx.HTTPError, OSError):
         return None
-    if resp.status_code >= 400:
+    if resp.status_code >= HTTPStatus.BAD_REQUEST:
         return None
     return resp.text
 

@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lilbee.store import Store
-from lilbee.wiki.gen import index_wiki_page
+from lilbee.data.store import Store
+from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     CONCEPTS_SUBDIR,
     DRAFTS_SUBDIR,
@@ -34,11 +34,6 @@ from lilbee.wiki.shared import (
     parse_frontmatter,
 )
 
-# Re-export the kind constants from wiki.shared so existing imports
-# (``from lilbee.wiki.drafts import PENDING_KIND_PARSE``) keep working.
-# Their canonical home is :mod:`lilbee.wiki.shared` — the writer side
-# in :mod:`lilbee.wiki.gen` would create a circular import if it
-# reached into this module for them.
 __all__ = [
     "PENDING_KIND_COLLISION",
     "PENDING_KIND_DRIFT",
@@ -58,13 +53,13 @@ _DRIFT_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Phase D: batched-generation pending markers. The per-source batched
-# call writes one of these when the parser could not recover a
-# requested section, or when two sources proposed the same concept
-# slug and the second write lost the race. The keyword phrases live
-# in ``wiki.shared`` so writer (gen) and reader (drafts) agree on the
-# exact wording; this regex adds the ``<!--`` wrapper plus ``\s+`` in
-# place of each literal space, so the reader tolerates double-space
+# Batched-generation pending markers. The per-source batched call
+# writes one of these when the parser could not recover a requested
+# section, or when two sources proposed the same concept slug and the
+# second write lost the race. The keyword phrases live in
+# ``wiki.shared`` so writer (generation) and reader (drafts) agree on
+# the exact wording; this regex adds the ``<!--`` wrapper plus ``\s+``
+# in place of each literal space, so the reader tolerates double-space
 # variations in cached markers. Keywords carry no regex metacharacters
 # so ``re.escape`` is unnecessary.
 _PARSE_KEYWORD_PATTERN = PENDING_MARKER_KEYWORD_PARSE.replace(" ", r"\s+")
@@ -94,7 +89,7 @@ _PUBLISHED_SUBDIRS: tuple[str, ...] = (
 class DraftInfo:
     """Metadata about a single draft, surfaced in ``wiki drafts list``.
 
-    Phase D: ``pending_kind`` distinguishes drift drafts (None) from
+    ``pending_kind`` distinguishes drift drafts (None) from
     batched-generation markers (``"parse"``, ``"collision"``). Callers
     can render the kind in the list view and branch on it when
     deciding how to surface the draft (e.g. a collision needs the
@@ -214,11 +209,10 @@ def _strip_pending_markers(text: str) -> str:
 def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
     """Single-pass read: parse kind, drift ratio, and return marker-stripped body.
 
-    ``list_drafts`` used to run five ``.sub()`` traversals per draft
-    (two for pending-marker stripping, three across the drift helpers
-    and their callers). This helper does three ``.sub()`` passes plus
-    the three ``.search()`` scans needed to detect which markers are
-    present, returning kind, drift ratio, and stripped body together.
+    Three ``.sub()`` passes (one per pending-parse, pending-collision, and
+    drift markers) plus three ``.search()`` scans needed to classify which
+    markers are present, returning kind, drift ratio, and stripped body
+    together so callers don't reparse the body once per attribute.
     """
     pending_kind = _parse_pending_kind(text)
     drift = _parse_drift_ratio(text)
@@ -302,7 +296,7 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
       published counterpart (or ``summaries/`` when unpaired),
       re-index, delete the draft.
     - **PENDING-PARSE** (batched-generation parser could not recover
-      a section): accepting is a no-op on the published side — the
+      a section): accepting is a no-op on the published side: the
       marker has no body to accept. The marker is deleted and the
       user is told to run ``wiki build`` to regenerate. Returns an
       ``AcceptResult`` with ``reindexed_chunks=0`` and
@@ -315,7 +309,7 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     Sequence for drift/collision: write the published file first,
     re-index next, delete the draft last. If the re-index raises
     (chunker, embedder, LanceDB contention), the draft file stays
-    on disk so the user can retry ``accept`` — ``index_wiki_page``
+    on disk so the user can retry ``accept``: ``index_wiki_page``
     is idempotent on the same ``wiki_source`` (``clear_table`` +
     re-write).
 
@@ -373,7 +367,7 @@ def reject_draft(slug: str, wiki_root: Path) -> None:
 
 
 def _reindex_accepted_page(target: Path, wiki_root: Path, store: Store) -> int:
-    """Re-index *target* via :func:`lilbee.wiki.gen.index_wiki_page`.
+    """Re-index *target* via :func:`lilbee.wiki.page.index_wiki_page`.
 
     Returns the number of ``chunk_type="wiki"`` rows written. Routes
     through the same chunk / embed / clear-and-rewrite path as initial

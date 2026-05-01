@@ -1,4 +1,4 @@
-"""Tests for wiki browse module — page listing, reading, and resolution."""
+"""Tests for wiki browse module: page listing, reading, and resolution."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Integration tests for PDF extraction — scanned documents, OCR fallbacks.
+"""Integration tests for PDF extraction: scanned documents, OCR fallbacks.
 
 Uses a rasterized PDF fixture (no selectable text) to exercise the full
 extraction pipeline including Tesseract OCR and vision model fallbacks.
@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.ingest import sync
-from lilbee.services import get_services
-from lilbee.services import reset_services as reset_provider
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+from lilbee.core.services import reset_services as reset_provider
+from lilbee.data.ingest import sync
 
 pytestmark = pytest.mark.slow
 
@@ -35,7 +35,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     Uses llama-cpp with real models so the full RAG pipeline works.
     """
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
-    from lilbee.model_manager import reset_model_manager
+    from lilbee.core.services import reset_services
     from tests.integration.conftest import _resolve_installed_ref
 
     snapshot = cfg.model_copy()
@@ -60,7 +60,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     cfg.concept_graph = False
     cfg.hyde = False
     reset_provider()
-    reset_model_manager()
+    reset_services()
 
     # Download embedding model
     embed_entry = FEATURED_EMBEDDING[0]
@@ -78,7 +78,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     }
 
     reset_provider()
-    reset_model_manager()
+    reset_services()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -160,7 +160,7 @@ class TestTesseractOcrFallback:
 def _vision_model_available() -> bool:
     """Check if a vision model is configured and its file exists locally."""
     try:
-        from lilbee.providers.llama_cpp_provider import resolve_model_path
+        from lilbee.providers.llama_cpp.provider import resolve_model_path
 
         if not cfg.vision_model:
             return False

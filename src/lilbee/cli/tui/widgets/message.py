@@ -13,7 +13,7 @@ from textual.widgets import Collapsible, Markdown, Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 # Minimum interval (seconds) between markdown widget updates during streaming
 _MD_UPDATE_INTERVAL = 0.1
@@ -54,6 +54,7 @@ class AssistantMessage(Vertical):
         self._reasoning_static: Static | None = None
         self._citation_widget: Static | None = None
         self._last_md_update: float = 0.0
+        self._last_reasoning_update: float = 0.0
         self._use_markdown: bool = cfg.markdown_rendering
 
     def compose(self) -> ComposeResult:
@@ -96,11 +97,14 @@ class AssistantMessage(Vertical):
         await old.remove()
 
     def append_reasoning(self, text: str) -> None:
-        """Append reasoning token (shown in collapsible)."""
+        """Append a reasoning token; debounced at ``_MD_UPDATE_INTERVAL``."""
         self._reasoning_parts.append(text)
+        now = time.monotonic()
+        ready = now - self._last_reasoning_update >= _MD_UPDATE_INTERVAL
         if self._reasoning_widget is not None:
             self._reasoning_widget.collapsed = False
-            if self._reasoning_static is not None:
+            if self._reasoning_static is not None and ready:
+                self._last_reasoning_update = now
                 self._reasoning_static.update("".join(self._reasoning_parts))
 
     def append_content(self, text: str) -> None:
@@ -119,6 +123,8 @@ class AssistantMessage(Vertical):
             self._content_widget.update("".join(self._content_parts))
             self.refresh()
         if self._reasoning_widget is not None and self._reasoning_parts:
+            if self._reasoning_static is not None:
+                self._reasoning_static.update("".join(self._reasoning_parts))
             token_count = len("".join(self._reasoning_parts).split())
             self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)
         elif self._reasoning_widget is not None:

@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
     SetupDoneEvent,
@@ -23,11 +23,11 @@ from lilbee.progress import (
 )
 
 
-class CrawlerBrowserMissing(RuntimeError):
+class CrawlerBrowserError(RuntimeError):
     """Playwright is installed but its Chromium browser binary is not."""
 
 
-class CrawlerBackendMissing(RuntimeError):
+class CrawlerBackendError(RuntimeError):
     """The ``crawler`` extra (crawl4ai) was never installed."""
 
 
@@ -185,13 +185,13 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
 
     Falls back to ``[sys.executable, '-m', 'playwright']`` if the driver
     can't be resolved (defensive against unusual playwright builds);
-    raises :class:`CrawlerBrowserMissing` only if even that lookup
+    raises :class:`CrawlerBrowserError` only if even that lookup
     fails.
     """
     try:
         from playwright._impl._driver import compute_driver_executable, get_driver_env
     except ImportError as exc:
-        raise CrawlerBrowserMissing(_PLAYWRIGHT_MISSING_HINT) from exc
+        raise CrawlerBrowserError(_PLAYWRIGHT_MISSING_HINT) from exc
     try:
         driver_exe, driver_cli = compute_driver_executable()
     except Exception:
@@ -210,7 +210,7 @@ async def bootstrap_chromium(
     ``setup_start`` before spawning, ``setup_progress`` for each
     recognizable progress line on stdout, and ``setup_done`` on exit
     (``success=False`` + the subprocess stderr tail on failure). Raises
-    :class:`CrawlerBrowserMissing` with the tail so task workers route
+    :class:`CrawlerBrowserError` with the tail so task workers route
     to FAILED cleanly.
 
     Invokes Playwright's bundled Node driver directly so the call works
@@ -225,7 +225,7 @@ async def bootstrap_chromium(
 
     try:
         runner, runner_env = _resolve_playwright_runner()
-    except CrawlerBrowserMissing as exc:
+    except CrawlerBrowserError as exc:
         _emit_setup_done(on_progress, success=False, error=str(exc))
         raise
 
@@ -252,6 +252,6 @@ async def bootstrap_chromium(
     if returncode != 0:
         tail = "\n".join(stderr_tail[-10:]) or f"exit code {returncode}"
         _emit_setup_done(on_progress, success=False, error=tail)
-        raise CrawlerBrowserMissing(f"Chromium bootstrap failed (exit {returncode}): {tail}")
+        raise CrawlerBrowserError(f"Chromium bootstrap failed (exit {returncode}): {tail}")
 
     _emit_setup_done(on_progress, success=True, error=None)

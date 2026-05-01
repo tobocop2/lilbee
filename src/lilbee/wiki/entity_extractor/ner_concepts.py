@@ -1,8 +1,8 @@
 """spaCy NER entity extractor (default strategy).
 
-Phase D removed the noun-chunk "concept" path from this extractor. The
-per-source batched call in :mod:`lilbee.wiki.gen` now proposes concept
-pages through the LLM. This module produces typed NER entities only.
+Produces typed NER entities only. LLM-curated concept pages are
+proposed downstream by the per-source batched call in
+:mod:`lilbee.wiki.generation`.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from lilbee.wiki.entity_extractor.base import (
 from lilbee.wiki.shared import is_valid_label, make_slug
 
 if TYPE_CHECKING:
-    from lilbee.config import Config
+    from lilbee.core.config import Config
+    from lilbee.data.store import SearchChunk
     from lilbee.providers.base import LLMProvider
-    from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
 
@@ -66,11 +66,8 @@ def pre_clean_for_ner(text: str) -> str:
 class NerConceptsExtractor:
     """Emit typed NER entities (``EntityKind.ENTITY`` only).
 
-    Phase D removed the noun-chunk concept loop: LLM-curated concept
-    pages are produced downstream by the per-source batched call in
-    :mod:`lilbee.wiki.gen`. The class name is kept for backwards
-    compatibility at the factory dispatch site; the implementation
-    emits only ``EntityKind.ENTITY`` records now.
+    LLM-curated concept pages are produced downstream by the per-source
+    batched call in :mod:`lilbee.wiki.generation`.
     """
 
     def __init__(self, provider: LLMProvider, config: Config) -> None:
@@ -88,10 +85,7 @@ class NerConceptsExtractor:
         allowed_ent_types = self._config.concept_allowed_ent_types
 
         debug_enabled = log.isEnabledFor(logging.DEBUG)
-        # Per-pass funnel counters; emitted once after the loop so the
-        # DEBUG trace captures the whole corpus in one line instead of
-        # one per chunk.
-        funnel = {
+        funnel: dict[str, int] = {
             "raw_ents": 0,
             "type_filter_dropped": 0,
             "label_sanity_dropped_entities": 0,
@@ -100,23 +94,9 @@ class NerConceptsExtractor:
         cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
         for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
             ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
-            for ent in doc.ents:
-                funnel["raw_ents"] += 1
-                if ent.label_ not in allowed_ent_types:
-                    funnel["type_filter_dropped"] += 1
-                    continue
-                surface = ent.text.strip()
-                if not is_valid_label(surface):
-                    funnel["label_sanity_dropped_entities"] += 1
-                    if debug_enabled:
-                        log.debug("label-sanity: rejected entity %r", surface)
-                    continue
-                key = _normalize(surface)
-                rec = entity_records.setdefault(
-                    key, _Aggregate(label=surface, type_hint=ent.label_)
-                )
-                rec.refs.add(ref)
-                funnel["kept_entity_surfaces"] += 1
+            _accumulate_doc_entities(
+                doc, ref, entity_records, allowed_ent_types, funnel, debug_enabled
+            )
 
         if debug_enabled:
             log.debug(
@@ -135,6 +115,32 @@ class NerConceptsExtractor:
                 results.append(record)
         results.sort(key=lambda e: (e.kind.value, e.slug))
         return results
+
+
+def _accumulate_doc_entities(
+    doc: Any,
+    ref: ChunkRef,
+    entity_records: dict[str, _Aggregate],
+    allowed_ent_types: set[str] | frozenset[str],
+    funnel: dict[str, int],
+    debug_enabled: bool,
+) -> None:
+    """Fold one spaCy doc's entities into ``entity_records`` (mutated in place)."""
+    for ent in doc.ents:
+        funnel["raw_ents"] += 1
+        if ent.label_ not in allowed_ent_types:
+            funnel["type_filter_dropped"] += 1
+            continue
+        surface = ent.text.strip()
+        if not is_valid_label(surface):
+            funnel["label_sanity_dropped_entities"] += 1
+            if debug_enabled:
+                log.debug("label-sanity: rejected entity %r", surface)
+            continue
+        key = _normalize(surface)
+        rec = entity_records.setdefault(key, _Aggregate(label=surface, type_hint=ent.label_))
+        rec.refs.add(ref)
+        funnel["kept_entity_surfaces"] += 1
 
 
 class _Aggregate:
@@ -177,7 +183,7 @@ def _make_record(agg: _Aggregate, kind: EntityKind, min_mentions: int) -> Extrac
 def _load_spacy() -> Any | None:
     """Load the shared spaCy pipeline, or return None if unavailable."""
     try:
-        from lilbee.concepts import load_spacy_pipeline
+        from lilbee.retrieval.concepts import load_spacy_pipeline
     except ImportError:
         log.warning("Entity extraction disabled: lilbee.concepts unavailable")
         return None

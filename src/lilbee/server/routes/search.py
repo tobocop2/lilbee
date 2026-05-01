@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator
+
 from litestar import get, post
 from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
 
-from lilbee.query import ChatMessage as ChatMessageDict
-from lilbee.results import DocumentResult
+from lilbee.core.results import DocumentResult
+from lilbee.data.store import scope_to_chunk_type
+from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
@@ -16,7 +20,42 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
 )
-from lilbee.store import scope_to_chunk_type
+
+# Process-wide lock that gates the two streaming chat endpoints to one
+# in-flight request at a time. The llama-cpp provider already serializes
+# concurrent chat() calls under a thread lock, so a second concurrent
+# stream blocks the client for many seconds with no feedback. Returning
+# 429 + Retry-After fast lets clients surface a real error and decide.
+# The lock binds to the worker's running event loop on first acquire.
+_chat_inflight_lock = asyncio.Lock()
+
+
+def _acquire_chat_lock_or_raise() -> None:
+    """Non-blocking acquire on the running loop thread; raise 429 on contention.
+
+    Race-free because route handlers run on a single event loop thread and
+    ``Lock.acquire()`` on a free lock returns synchronously without yielding.
+    The check + acquire is atomic from the loop's perspective, no ``await``
+    can intervene between the two calls.
+    """
+    if _chat_inflight_lock.locked():
+        raise HTTPException(status_code=429, headers={"Retry-After": "1"})
+
+
+async def _gated_stream(
+    generator: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    """Wrap *generator* so the chat lock is released when the stream ends.
+
+    The lock must already be held when this is called. Release happens on
+    natural completion, exception, and client-disconnect (GeneratorExit
+    fires the ``finally`` block).
+    """
+    try:
+        async for chunk in generator:
+            yield chunk
+    finally:
+        _chat_inflight_lock.release()
 
 
 @get("/api/search")
@@ -58,12 +97,16 @@ async def ask_route(data: AskRequest) -> AskResponse:
 @post("/api/ask/stream")
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
+    _acquire_chat_lock_or_raise()
+    await _chat_inflight_lock.acquire()
     return Stream(
-        handlers.ask_stream(
-            question=data.question,
-            top_k=data.top_k,
-            options=data.options,
-            chunk_type=data.chunk_type,
+        _gated_stream(
+            handlers.ask_stream(
+                question=data.question,
+                top_k=data.top_k,
+                options=data.options,
+                chunk_type=data.chunk_type,
+            ),
         ),
         media_type="text/event-stream",
     )
@@ -87,16 +130,20 @@ async def chat_route(data: ChatRequest) -> AskResponse:
 @post("/api/chat/stream")
 async def chat_stream_route(data: ChatRequest) -> Stream:
     """Streaming SSE version of chat with conversation history."""
+    _acquire_chat_lock_or_raise()
+    await _chat_inflight_lock.acquire()
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
     return Stream(
-        handlers.chat_stream(
-            question=data.question,
-            history=history,
-            top_k=data.top_k,
-            options=data.options,
-            chunk_type=data.chunk_type,
+        _gated_stream(
+            handlers.chat_stream(
+                question=data.question,
+                history=history,
+                top_k=data.top_k,
+                options=data.options,
+                chunk_type=data.chunk_type,
+            ),
         ),
         media_type="text/event-stream",
     )

@@ -1,6 +1,6 @@
 """Tests for persistent settings (config.toml)."""
 
-from lilbee import settings
+from lilbee.core import settings
 
 
 class TestLoad:
@@ -112,7 +112,7 @@ class TestTomlEscaping:
         assert settings.get(tmp_path, "key") == ""
 
     def test_escape_toml_string_function(self):
-        from lilbee.settings import _escape_toml_string
+        from lilbee.core.settings import _escape_toml_string
 
         assert _escape_toml_string('say "hi"') == r"say \"hi\""
         assert _escape_toml_string(r"C:\path") == r"C:\\path"
@@ -145,7 +145,7 @@ class TestMemoryTuningSettingsMap:
 
     def test_kv_cache_type_in_settings_map(self):
         from lilbee.cli.settings_map import SETTINGS_MAP
-        from lilbee.config import KvCacheType
+        from lilbee.core.config.enums import KvCacheType
 
         defn = SETTINGS_MAP["kv_cache_type"]
         assert defn.writable is True

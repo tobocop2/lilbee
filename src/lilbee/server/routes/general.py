@@ -1,4 +1,4 @@
-"""General routes — health, status, config."""
+"""General routes: health, status, config."""
 
 from __future__ import annotations
 

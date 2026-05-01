@@ -1,5 +1,6 @@
 """Tests for the Litestar HTTP adapter."""
 
+import asyncio
 import json
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -8,9 +9,9 @@ import pytest
 from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
-from lilbee.config import cfg
-from lilbee.models import ModelTask
-from lilbee.server.handlers import format_task_mismatch
+from lilbee.core.config import cfg
+from lilbee.core.config.validators import TaskMismatchError
+from lilbee.modelhub.models import ModelTask
 
 
 @pytest.fixture(autouse=True)
@@ -239,6 +240,82 @@ class TestChatStreamRoute:
         assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
 
 
+class TestStreamSingleFlightGate:
+    """The chat-streaming endpoints serialize to one in-flight request via _chat_inflight_lock."""
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_concurrent_ask_stream_returns_429(self, mock_stream, client):
+        """A second /api/ask/stream while the first holds the lock returns 429 + Retry-After."""
+        from lilbee.server.routes import search as search_routes
+
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
+            try:
+                resp = client.post("/api/ask/stream", json={"question": "hi"})
+                assert resp.status_code == 429
+                assert resp.headers.get("retry-after") == "1"
+            finally:
+                search_routes._chat_inflight_lock.release()
+        finally:
+            loop.close()
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_concurrent_chat_stream_returns_429(self, mock_stream, client):
+        """A second /api/chat/stream while the first holds the lock returns 429."""
+        from lilbee.server.routes import search as search_routes
+
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
+            try:
+                resp = client.post(
+                    "/api/chat/stream",
+                    json={"question": "hi", "history": []},
+                )
+                assert resp.status_code == 429
+                assert resp.headers.get("retry-after") == "1"
+            finally:
+                search_routes._chat_inflight_lock.release()
+        finally:
+            loop.close()
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_sequential_streams_succeed(self, mock_stream, client):
+        """After the first stream completes, the second one is allowed."""
+        from lilbee.server.routes import search as search_routes
+
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        resp1 = client.post("/api/ask/stream", json={"question": "first"})
+        assert resp1.status_code == 201
+        assert b"event: token" in resp1.content
+        # Lock must have been released by the gated_stream's finally.
+        assert search_routes._chat_inflight_lock.locked() is False
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        resp2 = client.post("/api/ask/stream", json={"question": "second"})
+        assert resp2.status_code == 201
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_lock_released_on_provider_error(self, mock_stream, client):
+        """When the SSE generator raises, the lock is still released for the next caller."""
+        from lilbee.server.routes import search as search_routes
+
+        async def _raising_gen():
+            yield "event: token\ndata: {}\n\n"
+            raise RuntimeError("provider blew up")
+
+        mock_stream.return_value = _raising_gen()
+        import contextlib
+
+        # The TestClient sees the partial response; the generator's finally
+        # block still runs and releases the lock.
+        with contextlib.suppress(Exception):
+            client.post("/api/ask/stream", json={"question": "boom"})
+        assert search_routes._chat_inflight_lock.locked() is False
+
+
 class TestSyncRoute:
     @mock.patch("lilbee.server.handlers.sync_stream")
     def test_returns_sse(self, mock_stream, client):
@@ -357,9 +434,7 @@ class TestSetVisionModelRoute:
     @mock.patch(
         "lilbee.server.handlers.set_vision_model",
         new_callable=AsyncMock,
-        side_effect=ValueError(
-            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.VISION)
-        ),
+        side_effect=TaskMismatchError("qwen3:0.6b", ModelTask.CHAT, ModelTask.VISION),
     )
     def test_returns_422_for_task_mismatch(self, mock_set, client):
         resp = client.put("/api/models/vision", json={"model": "qwen3:0.6b"})
@@ -392,17 +467,15 @@ class TestSetRerankerModelRoute:
     @mock.patch(
         "lilbee.server.handlers.set_reranker_model",
         new_callable=AsyncMock,
-        side_effect=ValueError(
-            format_task_mismatch("qwen3:0.6b", ModelTask.CHAT, ModelTask.RERANK)
-        ),
+        side_effect=TaskMismatchError("qwen3:0.6b", ModelTask.CHAT, ModelTask.RERANK),
     )
     def test_returns_422_for_task_mismatch(self, mock_set, client):
         resp = client.put("/api/models/reranker", json={"model": "qwen3:0.6b"})
         assert resp.status_code == 422
         assert "not rerank" in resp.json()["detail"]
 
-    @mock.patch("lilbee.server.handlers._require_model_available")
-    @mock.patch("lilbee.server.handlers._set_model", new_callable=AsyncMock)
+    @mock.patch("lilbee.server.handlers.models._require_model_available")
+    @mock.patch("lilbee.server.handlers.models._set_model", new_callable=AsyncMock)
     def test_route_resolves_bare_repo_to_installed_quant(self, mock_set, mock_available, client):
         """POSTing a bare ``hf_repo`` resolves to whichever quant is installed.
 
@@ -483,18 +556,18 @@ class TestConfigRoute:
     @mock.patch(
         "lilbee.server.handlers.get_config",
         new_callable=AsyncMock,
-        return_value={"chat_model": "qwen3:8b", "system_prompt": "You are helpful."},
+        return_value={"chat_model": "qwen3:8b", "rag_system_prompt": "You are helpful."},
     )
     def test_returns_json(self, mock_cfg, client):
         resp = client.get("/api/config")
         assert resp.status_code == 200
         assert resp.json()["chat_model"] == "qwen3:8b"
-        assert "system_prompt" in resp.json()
+        assert "rag_system_prompt" in resp.json()
 
 
 class TestConfigDefaultsRoute:
     def test_returns_writable_defaults(self, client):
-        from lilbee.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         resp = client.get("/api/config/defaults")
         assert resp.status_code == 200
@@ -510,7 +583,7 @@ class TestConfigDefaultsRoute:
         # Model role defaults surface so UI reset affordances can restore
         # them via PUT /api/models/<role>, even though the fields are
         # non-writable on PATCH /api/config.
-        assert data["chat_model"] == "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        assert data["chat_model"] == "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
         # Wiki cfg fields are writable and appear with their declared defaults.
         assert data["wiki_prune_raw"] is False
         assert data["wiki_embedding_faithfulness_threshold"] == 0.5
@@ -561,7 +634,7 @@ class TestConfigUpdateRoute:
         _inner()
 
     def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
-        # Invalid character class — `p-a` is a backwards range; should be rejected
+        # Invalid character class: `p-a` is a backwards range; should be rejected
         # at PATCH time rather than crashing the next crawl with an opaque error.
         resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
         assert resp.status_code == 400
@@ -844,12 +917,15 @@ class TestCrawlRoute:
 class TestSetupCrawlerRoutes:
     """bb-wq8g: GET /setup/crawler/status + POST /setup/crawler."""
 
+    @mock.patch("lilbee.server.routes.setup.crawler_available", return_value=True)
     @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=True)
-    def test_status_when_installed(self, _mock, client):
+    def test_status_when_installed(self, _mock_chromium, _mock_pkg, client):
         resp = client.get("/setup/crawler/status")
         assert resp.status_code == 200
         body = resp.json()
         assert body["installed"] is True
+        assert body["package_installed"] is True
+        assert body["chromium_installed"] is True
         assert body["component"] == "chromium"
         assert "browsers_path" in body
 
@@ -861,7 +937,7 @@ class TestSetupCrawlerRoutes:
 
     def test_post_setup_crawler_streams_setup_events(self, client):
         """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
-        from lilbee.progress import EventType, SetupDoneEvent, SetupStartEvent
+        from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupStartEvent
 
         async def _fake_bootstrap(on_progress=None):
             if on_progress is not None:
@@ -880,10 +956,10 @@ class TestSetupCrawlerRoutes:
 
     def test_post_setup_crawler_emits_error_when_bootstrap_raises(self, client):
         """Non-zero-exit bootstrap routes through sse_error before done."""
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         async def _fake_bootstrap(on_progress=None):
-            raise CrawlerBrowserMissing("network unreachable")
+            raise CrawlerBrowserError("network unreachable")
 
         with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
             resp = client.post("/setup/crawler")
@@ -1023,7 +1099,7 @@ class TestSessionManagerPersistence:
         assert len(token) >= 32
 
     def test_returns_none_when_path_unreadable(self, fresh_manager, tmp_path):
-        # _read_persisted_token swallows OSError and returns None — covered
+        # _read_persisted_token swallows OSError and returns None, covered
         # by passing a path that is a directory (read_text raises IsADirectoryError,
         # an OSError subclass).
         from lilbee.server.auth import SessionManager
@@ -1037,7 +1113,7 @@ class TestSessionManagerPersistence:
         """Two _lifespan invocations against the same data_dir reuse the token.
 
         Simulates ``lilbee serve`` restart: after the first lifespan exits,
-        ``cleanup()`` removes server.json — so by design a fresh token is
+        ``cleanup()`` removes server.json, so by design a fresh token is
         generated next time. This regression test pins the contract: if the
         cleanup hook is suppressed (e.g. crash exit), the next startup
         REUSES the persisted token rather than rotating.
@@ -1048,7 +1124,7 @@ class TestSessionManagerPersistence:
         mock_svc = mock.MagicMock()
         mock_get_svc.return_value = mock_svc
 
-        # First "serve" — generate fresh.
+        # First "serve": generate fresh.
         async with _lifespan(mock.MagicMock()):
             first = auth_mod.session_manager.token
         assert first is not None
@@ -1060,7 +1136,7 @@ class TestSessionManagerPersistence:
         auth_mod.server_json_path().write_text(json.dumps({"token": first}))
         auth_mod.session_manager.token = None
 
-        # Second "serve" — must reuse the same token.
+        # Second "serve": must reuse the same token.
         async with _lifespan(mock.MagicMock()):
             second = auth_mod.session_manager.token
         assert second == first
