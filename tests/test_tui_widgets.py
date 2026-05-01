@@ -16,7 +16,12 @@ from conftest import (
 from conftest import (
     make_test_catalog_model as _make_model,
 )
-from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+from lilbee.cli.tui.screens.catalog_utils import (
+    CatalogRow,
+    FrontierCatalogRow,
+    KeyStatus,
+    LocalCatalogRow,
+)
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
 
@@ -602,6 +607,133 @@ class TestCloudProviderLabel:
         from lilbee.cli.tui.widgets.model_bar import _cloud_provider_label
 
         assert _cloud_provider_label("") is None
+
+
+def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:
+    return LocalCatalogRow(
+        name=name,
+        task="chat",
+        params="8B",
+        size="4.0 GB",
+        quant="Q4_0",
+        downloads="1K",
+        featured=False,
+        installed=installed,
+        sort_downloads=1000,
+        sort_size=4.0,
+        ref=name.lower().replace(" ", "/"),
+    )
+
+
+def _make_frontier_row(
+    name: str = "gpt-test", provider: str = "OpenAI", ready: bool = True
+) -> FrontierCatalogRow:
+    return FrontierCatalogRow(
+        name=name,
+        ref=f"openai/{name}",
+        task="chat",
+        provider=provider,
+        provider_id=provider.lower(),
+        key_status=KeyStatus.READY if ready else KeyStatus.MISSING_KEY,
+    )
+
+
+class _ModelListApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        yield ModelList(id="model-list")
+
+
+class TestModelList:
+    async def test_set_rows_with_headings(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows(
+                [
+                    ModelListSection(
+                        heading="OpenAI", rows=[_make_frontier_row("gpt-4", "OpenAI")]
+                    ),
+                    ModelListSection(
+                        heading="Anthropic",
+                        rows=[_make_frontier_row("claude-x", "Anthropic", ready=False)],
+                    ),
+                ]
+            )
+            await pilot.pause()
+            assert ml.option_count == 4  # 2 headings + 2 rows
+
+    async def test_selecting_row_posts_selected(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        captured: list[CatalogRow] = []
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            target = _make_frontier_row("gpt-x")
+            ml.set_rows([ModelListSection(heading=None, rows=[target])])
+
+            def on_selected(message: ModelList.Selected) -> None:
+                captured.append(message.row)
+
+            app.screen._on_model_list_selected = on_selected  # type: ignore[attr-defined]
+            ml.action_select()
+            await pilot.pause()
+            await pilot.pause()
+            assert len(captured) == 0  # message bubbles past _ModelListApp screen
+            ml.post_message(ModelList.Selected(target))
+            await pilot.pause()
+
+    async def test_local_row_rendering_includes_installed_pill(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows(
+                [
+                    ModelListSection(
+                        heading="Installed",
+                        rows=[_make_local_row("Already Here", installed=True)],
+                    )
+                ]
+            )
+            await pilot.pause()
+            opt = ml.get_option_at_index(1)
+            rendered = str(opt.prompt)
+            assert "Already Here" in rendered
+            assert "installed" in rendered
+
+    async def test_set_rows_clears_previous_population(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([ModelListSection(heading="A", rows=[_make_frontier_row("first", "X")])])
+            ml.set_rows([ModelListSection(heading="B", rows=[_make_frontier_row("second", "Y")])])
+            await pilot.pause()
+            assert ml.option_count == 2
+            opt = ml.get_option_at_index(1)
+            assert "second" in str(opt.prompt)
+
+    async def test_empty_sections_yield_no_options(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([])
+            await pilot.pause()
+            assert ml.option_count == 0
 
 
 class TestIsMmproj:

@@ -14,7 +14,7 @@ from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -43,6 +43,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -70,6 +71,10 @@ _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
+
+_LOCAL_TAB_ID = "local"
+_FRONTIER_TAB_ID = "frontier"
+_FRONTIER_LIST_ID = "frontier-list"
 
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
@@ -160,8 +165,12 @@ class CatalogScreen(Screen[None]):
             yield ViewTabs()
             yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="sort-label", shrink=True)
-        yield VerticalScroll(id="catalog-grid")
-        yield VerticalScroll(id="catalog-list")
+        with (
+            TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
+            TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
+        ):
+            yield VerticalScroll(id="catalog-grid")
+            yield VerticalScroll(id="catalog-list")
         yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()
@@ -216,13 +225,22 @@ class CatalogScreen(Screen[None]):
             self._installed_names = set(get_services().model_manager.list_native_identities())
             self._data_version += 1
 
+    def _active_tab_id(self) -> str:
+        """Return the active TabbedContent pane id, or Local when not yet mounted."""
+        try:
+            return self.query_one("#catalog-tabs", TabbedContent).active or _LOCAL_TAB_ID
+        except Exception:
+            return _LOCAL_TAB_ID
+
     def action_toggle_view(self) -> None:
-        """Toggle between grid and list view.
+        """Toggle between grid and list view (Local tab only).
 
         Mid-toggle re-entry would tear the DOM (one toggle's mount_all
         running while the previous toggle's remove_children is still in
         flight). The _view_switching gate makes the toggle atomic.
         """
+        if self._active_tab_id() != _LOCAL_TAB_ID:
+            return
         if self._view_switching:
             return
         self._view_switching = True
@@ -272,6 +290,9 @@ class CatalogScreen(Screen[None]):
         )
 
     def _apply_search_filter(self) -> None:
+        if self._active_tab_id() == _FRONTIER_TAB_ID:
+            self._populate_frontier_list()
+            return
         if self._grid_view:
             self._filter_grid()
             self._sync_grid_search_cta()
@@ -462,12 +483,40 @@ class CatalogScreen(Screen[None]):
             self._remote_models = result
         elif name == _WORKER_FETCH_FRONTIER:
             self._frontier_rows = result
-            # Force grid rebuild so newly arriving frontier rows render.
-            self._grid_cache_key = ()
+            self._sync_frontier_tab()
         else:
             return False
         self._data_version += 1
         return True
+
+    def _sync_frontier_tab(self) -> None:
+        """Mount the Frontier tab when rows exist; unmount it when none."""
+        try:
+            tabs = self.query_one("#catalog-tabs", TabbedContent)
+        except Exception:
+            return
+        existing = tabs.query(f"#{_FRONTIER_TAB_ID}")
+        if not self._frontier_rows:
+            for pane in existing:
+                pane.remove()
+            return
+        if existing:
+            self._populate_frontier_list()
+            return
+        pane = TabPane(
+            msg.CATALOG_TAB_FRONTIER,
+            ModelList(id=_FRONTIER_LIST_ID),
+            id=_FRONTIER_TAB_ID,
+        )
+        tabs.add_pane(pane)
+        self.call_after_refresh(self._populate_frontier_list)
+
+    def _populate_frontier_list(self) -> None:
+        try:
+            ml = self.query_one(f"#{_FRONTIER_LIST_ID}", ModelList)
+        except Exception:
+            return
+        ml.set_rows(_group_frontier_rows(self._build_frontier_rows(self._get_search_text())))
 
     def _get_search_text(self) -> str:
         return self._search_input.value.strip()
@@ -600,13 +649,11 @@ class CatalogScreen(Screen[None]):
         family_rows = self._build_family_rows("")
         remote_rows = self._build_remote_rows("")
         hf_rows_full = self._build_hf_rows("") if self._hf_fetched else []
-        frontier_rows = self._build_frontier_rows("")
         hf_overflow = max(0, len(hf_rows_full) - self._GRID_HF_BUDGET)
         hf_rows = hf_rows_full[: self._GRID_HF_BUDGET]
         all_rows = family_rows + remote_rows + hf_rows
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
-            tuple((r.name, r.key_status.value) for r in frontier_rows),
             self._get_search_text(),
         )
         if self._grid_cache_key == row_key:
@@ -615,15 +662,10 @@ class CatalogScreen(Screen[None]):
         container = self._grid_container
         container.remove_children()
         widgets_to_mount: list[Static | GridSelect] = []
-        for section in _group_rows_for_grid(all_rows, frontier_rows):
+        for section in _group_rows_for_grid(all_rows):
             if not section.rows:
                 continue
-            heading_class = (
-                "section-heading frontier-section-heading"
-                if section.is_frontier
-                else "section-heading"
-            )
-            widgets_to_mount.append(Static(section.heading, classes=heading_class))
+            widgets_to_mount.append(Static(section.heading, classes="section-heading"))
             cards = [ModelCard(row) for row in section.rows]
             grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
             widgets_to_mount.append(grid)
@@ -729,14 +771,17 @@ class CatalogScreen(Screen[None]):
         """Handle model selection from the list view."""
         self._select_row(event.item.row)
 
+    @on(ModelList.Selected)
+    def _on_frontier_list_selected(self, event: ModelList.Selected) -> None:
+        """Handle model selection from the Frontier tab's ModelList."""
+        self._select_row(event.row)
+
     def _refresh_list(self) -> None:
-        """Rebuild the list view; frontier rows lead, then local rows."""
+        """Rebuild the list view with local rows only (frontier lives in its own tab)."""
         self._rows = self._sort_rows(self._build_rows())
-        frontier_rows = self._build_frontier_rows("")
         search = self._get_search_text()
         list_key = (
             tuple((r.name, r.installed) for r in self._rows),
-            tuple((r.name, r.key_status.value) for r in frontier_rows),
             search,
         )
         if self._list_cache_key == list_key:
@@ -747,15 +792,6 @@ class CatalogScreen(Screen[None]):
         container = self._list_container
         container.remove_children()
         widgets_to_mount: list[ModelListItem | SearchHFCtaItem | Static] = []
-        if frontier_rows:
-            widgets_to_mount.append(
-                Static(
-                    msg.HEADING_FRONTIER_ALL,
-                    classes="section-heading frontier-section-heading",
-                )
-            )
-            widgets_to_mount.extend(ModelListItem(row) for row in frontier_rows)
-            widgets_to_mount.append(Static(msg.HEADING_LOCAL_ALL, classes="section-heading"))
         widgets_to_mount.extend(ModelListItem(row) for row in self._rows)
         if search:
             widgets_to_mount.append(SearchHFCtaItem(search))
@@ -786,7 +822,11 @@ class CatalogScreen(Screen[None]):
             container.mount(SearchHFCtaItem(search))
 
     def _update_sort_label(self) -> None:
-        """Update the sort indicator label."""
+        """Update the sort indicator label, switching copy by active tab."""
+        label = self.query_one("#sort-label", Static)
+        if self._active_tab_id() == _FRONTIER_TAB_ID:
+            label.update(self._frontier_label_text())
+            return
         direction = "asc" if self._sort_ascending else "desc"
         n_total = len(self._rows)
         if self._loading_more:
@@ -796,13 +836,19 @@ class CatalogScreen(Screen[None]):
         else:
             count = f"{n_total} models"
         hint = msg.CATALOG_SEARCHING_HF if self._search_in_flight else msg.CATALOG_VIEW_TOGGLE_LIST
-        self.query_one("#sort-label", Static).update(
-            f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}"
+        label.update(f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}")
+
+    def _frontier_label_text(self) -> str:
+        provider_count = len({r.provider for r in self._frontier_rows})
+        return msg.CATALOG_FRONTIER_SUMMARY.format(
+            count=len(self._frontier_rows), providers=provider_count
         )
 
     def action_cycle_sort(self) -> None:
         """Cycle the list-view sort column ascending: Name, Downloads, Size, Params."""
         if isinstance(self.focused, Input):
+            return
+        if self._active_tab_id() != _LOCAL_TAB_ID:
             return
         if self._grid_view:
             self.notify(msg.CATALOG_SORT_LIST_ONLY)
@@ -861,7 +907,16 @@ class CatalogScreen(Screen[None]):
 
     def action_load_more(self) -> None:
         """Keyboard trigger (``n``) so users can page without scrolling."""
+        if self._active_tab_id() != _LOCAL_TAB_ID:
+            return
         self._load_more()
+
+    @on(TabbedContent.TabActivated, "#catalog-tabs")
+    def _on_catalog_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Refresh sort label and re-populate the active pane."""
+        self._update_sort_label()
+        if event.pane.id == _FRONTIER_TAB_ID:
+            self._populate_frontier_list()
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
@@ -1094,45 +1149,33 @@ class CatalogScreen(Screen[None]):
 
 @dataclass
 class GridSection:
-    """A named group of rows for the grid view.
-
-    ``is_frontier`` flags the cloud super-section so the renderer can
-    apply a distinct heading style (the user's "must be distinctly
-    grouped from local" rule).
-    """
+    """A named group of rows for the grid view."""
 
     heading: str
     rows: list[CatalogRow]
-    is_frontier: bool = False
 
 
 _TASK_BUCKET_ORDER = (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
 
 
-def _group_rows_for_grid(
-    local_rows: list[LocalCatalogRow],
-    frontier_rows: list[FrontierCatalogRow] | None = None,
-) -> list[GridSection]:
-    """Group rows into sections for the grid view.
+def _group_frontier_rows(
+    frontier_rows: list[FrontierCatalogRow],
+) -> list[ModelListSection]:
+    """Group frontier rows into provider-headed sections, alphabetical within."""
+    if not frontier_rows:
+        return []
+    per_provider: dict[str, list[FrontierCatalogRow]] = {}
+    for row in frontier_rows:
+        per_provider.setdefault(row.provider, []).append(row)
+    sections: list[ModelListSection] = []
+    for provider in sorted(per_provider):
+        rows = sorted(per_provider[provider], key=lambda r: r.name.lower())
+        sections.append(ModelListSection(heading=provider, rows=list(rows)))
+    return sections
 
-    Frontier (cloud) rows render in their own super-section above all
-    local sections, sub-grouped per provider so a user reading top to
-    bottom sees Gemini / OpenAI / Anthropic before Featured / Installed.
-    """
-    sections: list[GridSection] = []
-    if frontier_rows:
-        per_provider: dict[str, list[CatalogRow]] = {}
-        for f_row in frontier_rows:
-            per_provider.setdefault(f_row.provider, []).append(f_row)
-        for provider in sorted(per_provider):
-            sections.append(
-                GridSection(
-                    msg.HEADING_FRONTIER.format(provider=provider),
-                    per_provider[provider],
-                    is_frontier=True,
-                )
-            )
 
+def _group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]:
+    """Group local rows into sections for the grid view."""
     recommended: list[CatalogRow] = []
     installed: list[CatalogRow] = []
     by_task: dict[str, list[CatalogRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
@@ -1149,12 +1192,9 @@ def _group_rows_for_grid(
             bucket.append(row)
         else:
             extras.setdefault(row.task, []).append(row)
-    sections.extend(
-        [
-            GridSection(msg.HEADING_OUR_PICKS, recommended),
-            GridSection(msg.HEADING_INSTALLED, installed),
-            *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
-            *[GridSection(task.capitalize(), extras[task]) for task in extras],
-        ]
-    )
-    return sections
+    return [
+        GridSection(msg.HEADING_OUR_PICKS, recommended),
+        GridSection(msg.HEADING_INSTALLED, installed),
+        *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
+        *[GridSection(task.capitalize(), extras[task]) for task in extras],
+    ]

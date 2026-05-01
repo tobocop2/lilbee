@@ -77,21 +77,82 @@ class TestRowTypes:
 
 
 class TestGroupRowsForGrid:
-    def test_frontier_super_section_appears_first(self) -> None:
+    def test_grid_groups_only_local_rows(self) -> None:
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
 
-        local = [_local("Qwen3", featured=True)]
-        frontier = [_frontier("gemini-2.0-flash"), _frontier("gpt-4o", provider="OpenAI")]
-        sections = _group_rows_for_grid(local, frontier)
-
+        local = [_local("Qwen3", featured=True), _local("Llama", installed=True)]
+        sections = _group_rows_for_grid(local)
         non_empty = [s for s in sections if s.rows]
-        assert non_empty[0].is_frontier is True
-        # Both providers get their own subsection, sorted alphabetically.
-        provider_headings = [s.heading for s in non_empty if s.is_frontier]
-        assert provider_headings[0].endswith("Gemini")
-        assert provider_headings[1].endswith("OpenAI")
-        # Local sections follow.
-        assert non_empty[-1].is_frontier is False
+        headings = [s.heading for s in non_empty]
+        assert "Our picks" in headings
+        assert "Installed" in headings
+
+
+class TestGroupFrontierRows:
+    def test_provider_sections_alphabetical_within_group(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_frontier_rows
+
+        rows = [
+            _frontier("gpt-4o", provider="OpenAI"),
+            _frontier("gemini-2.0-flash", provider="Gemini"),
+            _frontier("gemini-1.5-pro", provider="Gemini"),
+        ]
+        sections = _group_frontier_rows(rows)
+        assert [s.heading for s in sections] == ["Gemini", "OpenAI"]
+        assert [r.name for r in sections[0].rows] == ["gemini-1.5-pro", "gemini-2.0-flash"]
+        assert [r.name for r in sections[1].rows] == ["gpt-4o"]
+
+    def test_empty_input_returns_empty_list(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_frontier_rows
+
+        assert _group_frontier_rows([]) == []
+
+
+class TestSyncFrontierTab:
+    """Frontier TabPane is mounted iff at least one frontier row is cached."""
+
+    async def test_tab_absent_until_rows_arrive(self, monkeypatch) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            assert not tabs.query("#frontier")
+            screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            assert tabs.query("#frontier")
+
+    async def test_tab_removed_when_rows_clear(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import TabbedContent
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            screen._frontier_rows = [_frontier("gemini-2.0-flash")]
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            assert tabs.query("#frontier")
+            screen._frontier_rows = []
+            screen._sync_frontier_tab()
+            await pilot.pause()
+            assert not tabs.query("#frontier")
 
 
 class TestBuildFrontierRows:
