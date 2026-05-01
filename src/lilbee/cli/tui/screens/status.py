@@ -162,22 +162,24 @@ class StatusScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
-        # Cheap synchronous paint: config from cfg + arch from disk
-        # (the latter reads a small JSON file). The expensive bits
-        # (LanceDB get_sources, which is several seconds on cold caches)
-        # land via a worker.
+        # ``cfg`` reads are in-memory and cheap. Anything that touches
+        # disk runs in a worker so the screen paints instantly.
+        # ``get_model_architecture`` opens up to three GGUF files and
+        # parses their headers (~hundreds of ms each cold); ``get_sources``
+        # reads LanceDB (seconds on cold caches).
         self._load_config()
-        self._load_arch()
-        self._show_loading_placeholder()
+        self._show_loading_placeholders()
         self._fetch_sources_worker()
+        self._fetch_arch_worker()
 
-    def _show_loading_placeholder(self) -> None:
-        """Surface a 'Loading…' marker before the sources worker returns."""
+    def _show_loading_placeholders(self) -> None:
+        """Surface a 'Loading…' marker for sections backed by workers."""
         table = self.query_one("#docs-table", DataTable)
         table.add_columns("Document", "Chunks")
         table.cursor_type = "row"
         table.add_row("Loading...", "")
         self.query_one("#storage-info", Static).update(Content.styled("Loading...", "$text-muted"))
+        self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
     @work(thread=True, name="status_fetch_sources", exit_on_error=False)
     def _fetch_sources_worker(self) -> list[SourceRecord]:
@@ -187,16 +189,31 @@ class StatusScreen(Screen[None]):
             log.debug("Failed to read store for status screen", exc_info=True)
             return []
 
+    @work(thread=True, name="status_fetch_arch", exit_on_error=False)
+    def _fetch_arch_worker(self) -> ModelArchInfo:
+        try:
+            return get_model_architecture()
+        except Exception:
+            log.debug("Failed to read model architecture for status", exc_info=True)
+            return ModelArchInfo()
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
             return
-        if event.worker.name != "status_fetch_sources":
-            return
-        sources = event.worker.result
-        if not isinstance(sources, list):
-            sources = []
-        self._load_documents(sources)
-        self._load_storage(len(sources))
+        if event.worker.name == "status_fetch_sources":
+            sources = event.worker.result
+            if not isinstance(sources, list):
+                sources = []
+            self._load_documents(sources)
+            self._load_storage(len(sources))
+        elif event.worker.name == "status_fetch_arch":
+            arch = event.worker.result
+            if isinstance(arch, ModelArchInfo):
+                self._load_arch(arch)
+
+    def _load_arch(self, info: ModelArchInfo) -> None:
+        """Populate the model architecture section from worker result."""
+        self.query_one("#arch-info", Static).update(_build_arch_content(info))
 
     def _load_config(self) -> None:
         """Populate the configuration section."""
@@ -220,11 +237,6 @@ class StatusScreen(Screen[None]):
             return
         for src in sources:
             table.add_row(src.get("filename", "?"), str(src.get("chunk_count", 0)))
-
-    def _load_arch(self) -> None:
-        """Populate the model architecture section."""
-        info = get_model_architecture()
-        self.query_one("#arch-info", Static).update(_build_arch_content(info))
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""
