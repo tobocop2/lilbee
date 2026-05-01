@@ -417,10 +417,9 @@ class CatalogScreen(Screen[None]):
         on mount and on every signal-driven refresh; the worker keeps
         the screen responsive."""
         from lilbee.modelhub.model_manager import discover_api_models
-        from lilbee.providers.curated_models import curated_ids
 
         try:
-            groups = discover_api_models(mode="all")
+            groups = discover_api_models()
         except Exception:
             log.debug("discover_api_models failed in worker", exc_info=True)
             return []
@@ -428,20 +427,14 @@ class CatalogScreen(Screen[None]):
         rows: list[FrontierCatalogRow] = []
         for display_name, models in groups.items():
             provider_id = display_name.lower()
-            curated = set(curated_ids(provider_id))
             key_field = f"{provider_id}_api_key"
             has_key = bool(getattr(cfg, key_field, ""))
             status = KeyStatus.READY if has_key else KeyStatus.MISSING_KEY
             for rm in models:
                 rows.append(
-                    frontier_row_from_remote(
-                        rm,
-                        provider_id=provider_id,
-                        key_status=status,
-                        is_curated=rm.name in curated,
-                    )
+                    frontier_row_from_remote(rm, provider_id=provider_id, key_status=status)
                 )
-        rows.sort(key=lambda r: (not r.is_curated, r.provider, r.name.lower()))
+        rows.sort(key=lambda r: (r.provider, r.name.lower()))
         return rows
 
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)

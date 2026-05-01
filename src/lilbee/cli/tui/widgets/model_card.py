@@ -93,8 +93,6 @@ def _compose_local(row: LocalCatalogRow) -> ComposeResult:
 def _compose_frontier(row: FrontierCatalogRow) -> ComposeResult:
     yield widgets.Label(row.name, id="card-name")
     with containers.HorizontalGroup(id="card-pills"):
-        if row.is_curated:
-            yield widgets.Label(pill("recent", "$warning", "$text"), id="card-pick")
         yield widgets.Label(pill(row.provider, "$accent", "$text"), id="card-backend")
         yield widgets.Label(_key_status_pill(row.key_status), id="card-status")
     info = Content.styled(f"Cloud via {row.provider} API", "$text-muted")

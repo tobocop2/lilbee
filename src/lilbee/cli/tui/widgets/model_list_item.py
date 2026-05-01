@@ -104,14 +104,13 @@ def _build_local_head(row: LocalCatalogRow) -> Content:
 
 def _build_frontier_head(row: FrontierCatalogRow) -> Content:
     """Bold name + provider pill + key-status pill."""
-    parts: list[Content] = []
-    if row.is_curated:
-        parts.append(Content.styled(f"{FEATURED_STAR} ", "$warning"))
-    parts.append(Content.styled(row.name, "bold"))
-    parts.append(Content("  "))
-    parts.append(pill(row.provider, "$accent", "$text"))
-    parts.append(Content(" "))
-    parts.append(_key_status_pill(row.key_status))
+    parts: list[Content] = [
+        Content.styled(row.name, "bold"),
+        Content("  "),
+        pill(row.provider, "$accent", "$text"),
+        Content(" "),
+        _key_status_pill(row.key_status),
+    ]
     return Content.assemble(*parts)
 
 

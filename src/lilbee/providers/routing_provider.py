@@ -87,12 +87,12 @@ class RoutingProvider(LLMProvider):
             return sorted(native)
         return sorted(native | remote)
 
-    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
+    def list_chat_models(self, provider: str) -> list[str]:
         """Delegate to the SDK backend; native llama-cpp has no catalog."""
         sdk = self._get_sdk_provider()
         if not sdk.available():
             return []
-        return sdk.list_chat_models(provider, mode=mode)
+        return sdk.list_chat_models(provider)
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull via the SDK backend if installed, otherwise raise."""

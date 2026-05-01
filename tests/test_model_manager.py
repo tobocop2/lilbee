@@ -975,9 +975,9 @@ class TestDiscoverApiModels:
         cfg.gemini_api_key = ""
 
         with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
-            # Test arbitrary upstream ids; pin mode="all" so curation
+            # Test arbitrary upstream ids; pin  so curation
             # doesn't filter them.
-            result = discover_api_models(mode="all")
+            result = discover_api_models()
 
         assert "OpenAI" in result
         assert "Anthropic" in result
@@ -996,7 +996,7 @@ class TestDiscoverApiModels:
         cfg.gemini_api_key = ""
 
         with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
-            result = discover_api_models(mode="all")
+            result = discover_api_models()
 
         model = result["Anthropic"][0]
         assert model.provider == "Anthropic"

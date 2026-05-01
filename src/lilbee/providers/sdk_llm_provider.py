@@ -165,16 +165,15 @@ class SdkLLMProvider(LLMProvider):
                 f"Listing models failed: {exc}", provider=self._backend.provider_name
             ) from exc
 
-    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
+    def list_chat_models(self, provider: str) -> list[str]:
         """List frontier chat models known to the backend for *provider*.
 
         Initializes the backend first so ``cfg.json_mode`` suppression is
-        applied before the SDK import inside the backend runs. ``mode``
-        passes through to the backend; see :meth:`SDKBackend.list_chat_models`.
+        applied before the SDK import inside the backend runs.
         """
         self._ensure_initialized()
         try:
-            return self._backend.list_chat_models(provider, mode=mode)
+            return self._backend.list_chat_models(provider)
         except NotImplementedError:
             return []
         except ProviderError:

@@ -31,7 +31,6 @@ def _frontier(
         provider=provider,
         provider_id=provider.lower(),
         key_status=status,
-        is_curated=True,
     )
 
 

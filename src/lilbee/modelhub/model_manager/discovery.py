@@ -89,26 +89,13 @@ def _has_provider_key(cfg_field: str, env_var: str) -> bool:
     return bool(getattr(cfg, cfg_field, ""))
 
 
-def discover_api_models(*, mode: str | None = None) -> dict[str, list[RemoteModel]]:
+def discover_api_models() -> dict[str, list[RemoteModel]]:
     """Return frontier chat models grouped by provider.
 
-    ``mode="curated"`` returns the per-provider curated short list (the
-    picker's default surface). ``mode="all"`` returns the full litellm
-    catalog (consumed by the catalog screen and the picker's "Show all"
-    affordance). When ``mode`` is ``None`` (default) the choice follows
-    ``cfg.show_all_api_models``.
-
-    Checks which provider API keys are available (env vars or config),
-    then asks the active provider's backend for each provider's chat
-    catalog. Going through ``SdkLLMProvider.list_chat_models`` ensures
-    ``cfg.json_mode`` suppression is applied before the SDK import,
-    so ``lilbee --json status`` does not leak a debug banner.
-
-    Short-circuits before touching the SDK when no keys are present.
+    Returns whatever the active provider's backend exposes for each
+    configured API key, no curation. Short-circuits before touching
+    the SDK when no keys are present.
     """
-    if mode is None:
-        mode = "all" if cfg.show_all_api_models else "curated"
-
     active = [
         (prov, cfg_f, env, label)
         for prov, cfg_f, env, label in PROVIDER_KEYS
@@ -129,7 +116,7 @@ def discover_api_models(*, mode: str | None = None) -> dict[str, list[RemoteMode
                 parameter_size="",
                 provider=display_name,
             )
-            for model_name in provider.list_chat_models(prov, mode=mode)
+            for model_name in provider.list_chat_models(prov)
         ]
         if chat_models:
             result[display_name] = chat_models

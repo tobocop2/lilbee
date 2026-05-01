@@ -1204,7 +1204,7 @@ class TestRoutingProvider:
         result = rp.list_chat_models("openai")
 
         assert result == ["openai/gpt-4o", "openai/gpt-4o-mini"]
-        mock_sdk.list_chat_models.assert_called_once_with("openai", mode="curated")
+        mock_sdk.list_chat_models.assert_called_once_with("openai")
 
     def test_show_model_delegates_by_prefix(self) -> None:
         rp = self._make_provider()

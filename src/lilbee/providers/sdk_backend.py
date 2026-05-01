@@ -201,13 +201,11 @@ class LlmSdkBackend(Protocol):
         """List model identifiers visible to the backend. Return [] if unsupported."""
         ...
 
-    def list_chat_models(self, provider: str, *, mode: str = "curated") -> list[str]:
+    def list_chat_models(self, provider: str) -> list[str]:
         """List chat-mode models from the SDK's catalog for *provider*.
 
-        ``mode="curated"`` returns the per-provider curated short list;
-        ``mode="all"`` returns the unfiltered upstream catalog. Backends
-        without a notion of frontier providers ignore the parameter and
-        return ``[]``.
+        Returns the unfiltered upstream catalog. Backends without a
+        notion of frontier providers return ``[]``.
 
         Unlike ``list_models``, this is a static pricing/capability table,
         not a runtime HTTP probe.

@@ -75,7 +75,6 @@ class FrontierCatalogRow:
     provider: str  # Display label, e.g. "Gemini" / "OpenAI" / "Anthropic".
     provider_id: str  # Canonical id used for the API key field, e.g. "gemini".
     key_status: KeyStatus
-    is_curated: bool
 
 
 # Sealed union: any catalog renderer dispatches on isinstance of these
@@ -191,7 +190,7 @@ def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
 
 
 def frontier_row_from_remote(
-    rm: RemoteModel, *, provider_id: str, key_status: KeyStatus, is_curated: bool
+    rm: RemoteModel, *, provider_id: str, key_status: KeyStatus
 ) -> FrontierCatalogRow:
     """Convert a discovered cloud chat model to a FrontierCatalogRow."""
     return FrontierCatalogRow(
@@ -201,7 +200,6 @@ def frontier_row_from_remote(
         provider=rm.provider,
         provider_id=provider_id,
         key_status=key_status,
-        is_curated=is_curated,
     )
 
 

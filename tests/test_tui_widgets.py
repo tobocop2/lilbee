@@ -3051,7 +3051,6 @@ class TestModelCardBuildHelpers:
             provider="Gemini",
             provider_id="gemini",
             key_status=KeyStatus.READY,
-            is_curated=True,
         )
         card = ModelCard(row)
         assert card.has_class("-frontier")
@@ -3080,7 +3079,6 @@ class TestModelCardBuildHelpers:
             provider="OpenAI",
             provider_id="openai",
             key_status=KeyStatus.MISSING_KEY,
-            is_curated=False,
         )
 
         class _Probe(App[None]):
@@ -4396,7 +4394,6 @@ class TestModelListItem:
             provider="Gemini",
             provider_id="gemini",
             key_status=KeyStatus.READY,
-            is_curated=True,
         )
         item = ModelListItem(row)
         assert item.has_class("-frontier")
@@ -4419,11 +4416,10 @@ class TestModelListItem:
         row = _make_list_row(installed=False, sort_downloads=0)
         assert _build_local_status(row) is None
 
-    def test_build_frontier_head_curated_includes_star(self) -> None:
-        """A curated frontier row prefixes its head line with the featured star."""
+    def test_build_frontier_head_renders_provider_and_key_status(self) -> None:
+        """Frontier head: bold name + provider pill + key-status pill."""
         from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
         from lilbee.cli.tui.widgets.model_list_item import _build_frontier_head
-        from lilbee.modelhub.models import FEATURED_STAR
 
         row = FrontierCatalogRow(
             name="gpt-4o",
@@ -4432,10 +4428,11 @@ class TestModelListItem:
             provider="OpenAI",
             provider_id="openai",
             key_status=KeyStatus.MISSING_KEY,
-            is_curated=True,
         )
         head = _build_frontier_head(row)
-        assert FEATURED_STAR in head.plain
+        assert "gpt-4o" in head.plain
+        assert "OpenAI" in head.plain
+        assert "needs key" in head.plain
 
     async def test_compose_frontier_yields_head_and_meta(self) -> None:
         """ModelListItem.compose for a FrontierCatalogRow renders the
@@ -4452,7 +4449,6 @@ class TestModelListItem:
             provider="Anthropic",
             provider_id="anthropic",
             key_status=KeyStatus.READY,
-            is_curated=False,
         )
 
         class _Probe(App[None]):

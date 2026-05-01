@@ -75,7 +75,6 @@ class TestSetupPendingDownload:
             provider="Anthropic",
             provider_id="anthropic",
             key_status=KeyStatus.READY,
-            is_curated=False,
         )
         card = ModelCard(row)
         assert _pending_download(card) is None
@@ -184,12 +183,10 @@ class TestCatalogUtilsFrontierFromRemote:
             family="gemini",
             parameter_size="--",
         )
-        row = frontier_row_from_remote(
-            rm, provider_id="gemini", key_status=KeyStatus.READY, is_curated=True
-        )
+        row = frontier_row_from_remote(rm, provider_id="gemini", key_status=KeyStatus.READY)
         assert isinstance(row, FrontierCatalogRow)
         assert row.provider == "Gemini"
-        assert row.is_curated is True
+        assert row.key_status == KeyStatus.READY
 
 
 class TestCatalogVimNavListView:
@@ -295,38 +292,6 @@ class TestSettingsTabActivatedEdges:
             event2 = mock.MagicMock()
             event2.pane = mock.MagicMock(id=None)
             screen._on_tab_activated(event2)
-
-
-class TestModelCardFrontierCurated:
-    """ModelCard.compose for a curated FrontierCatalogRow yields the
-    'recent' star pill (line 97)."""
-
-    async def test_curated_frontier_renders_recent_pill(self) -> None:
-        from textual.app import App, ComposeResult
-
-        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-
-        row = FrontierCatalogRow(
-            name="gemini-2.0-flash",
-            ref="gemini-2.0-flash",
-            task="chat",
-            provider="Gemini",
-            provider_id="gemini",
-            key_status=KeyStatus.READY,
-            is_curated=True,
-        )
-
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ModelCard(row)
-
-        async with _Probe().run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            card = pilot.app.query_one(ModelCard)
-            # The curated branch yields a Label with id="card-pick".
-            pick = card.query_one("#card-pick")
-            assert "recent" in str(pick.render()).lower()
 
 
 class TestStatusArchWorkerError:
@@ -442,7 +407,6 @@ class TestCatalogSelectFrontierRow:
                     provider="Gemini",
                     provider_id="gemini",
                     key_status=KeyStatus.READY,
-                    is_curated=False,
                 )
                 screen._select_frontier_row(row)
                 apply_model.assert_called_once()
@@ -481,7 +445,6 @@ class TestCatalogSelectFrontierRow:
                     provider="OpenAI",
                     provider_id="openai",
                     key_status=KeyStatus.MISSING_KEY,
-                    is_curated=False,
                 )
                 screen._select_frontier_row(row)
                 assert notifications, "missing-key path must notify the user"
