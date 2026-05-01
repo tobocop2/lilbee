@@ -158,7 +158,7 @@ class ChatScreen(Screen[None]):
         Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
-        Binding("f3", "toggle_chat_mode", "Search/Chat", show=True),
+        Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
@@ -958,7 +958,7 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self.streaming = False
             return
-        if isinstance(self.focused, Select):
+        if isinstance(self.focused, (Select, ModelPickerButton)):
             self._chat_input.focus()
             return
         self._insert_mode = False

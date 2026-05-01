@@ -82,12 +82,10 @@ class ModelPickerModal(ModalScreen[str | None]):
         *,
         scope: PickerScope,
         options: list[ModelOption],
-        current: str = "",
     ) -> None:
         super().__init__()
         self._scope: PickerScope = scope
         self._options = _PickerOptions(options=options)
-        self._current = current
 
     def compose(self) -> ComposeResult:
         title = (

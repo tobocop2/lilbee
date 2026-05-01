@@ -221,15 +221,13 @@ class ModelPickerButton(Static, can_focus=True):
         super().__init__(id=button_id)
         self._scope: Literal["chat", "embed"] = scope
         self._options: list[ModelOption] = []
-        self._model_ref: str = ""
 
     def on_mount(self) -> None:
         self._refresh()
 
-    def set_options(self, options: list[ModelOption], current: str) -> None:
-        """Update the options pool and current ref. Repaints the label."""
+    def set_options(self, options: list[ModelOption]) -> None:
+        """Update the options pool. Repaints the label from cfg."""
         self._options = options
-        self._model_ref = current
         if self.is_mounted:
             self._refresh()
 
@@ -243,13 +241,10 @@ class ModelPickerButton(Static, can_focus=True):
         self.open_picker()
 
     def open_picker(self) -> None:
+        # Lazy import: model_picker imports ModelOption from this module.
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        modal = ModelPickerModal(
-            scope=self._scope,
-            options=self._options,
-            current=cfg.chat_model if self._scope == "chat" else cfg.embedding_model,
-        )
+        modal = ModelPickerModal(scope=self._scope, options=self._options)
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
@@ -377,15 +372,11 @@ class ModelBar(Widget, can_focus=False):
         embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
         chat_fingerprint = _options_fingerprint(chat_opts, cfg.chat_model)
         if chat_fingerprint != self._chat_options_cache:
-            self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton).set_options(
-                chat_opts, cfg.chat_model
-            )
+            self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton).set_options(chat_opts)
             self._chat_options_cache = chat_fingerprint
         embed_fingerprint = _options_fingerprint(embed_opts, cfg.embedding_model)
         if embed_fingerprint != self._embed_options_cache:
-            self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton).set_options(
-                embed_opts, cfg.embedding_model
-            )
+            self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton).set_options(embed_opts)
             self._embed_options_cache = embed_fingerprint
         self._refresh_cloud_warning()
         self._refresh_chat_mode_toggle()

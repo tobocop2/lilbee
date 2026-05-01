@@ -280,24 +280,22 @@ async def test_chat_tab_outside_input_advances_focus():
         assert app.focused is not before, "Tab in normal mode did not advance focus"
 
 
-async def test_chat_escape_from_model_select():
-    """Escape from a model Select returns to chat input."""
+async def test_chat_escape_from_model_picker_button():
+    """Escape from the focused chat-model picker button returns to chat input."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
 
-        # Focus model bar
         await pilot.press("escape")
         await pilot.pause()
         screen.action_focus_model_bar()
         await pilot.pause()
 
-        from textual.widgets import Select
+        assert isinstance(screen.focused, ModelPickerButton)
 
-        assert isinstance(screen.focused, Select)
-
-        # Escape should return to chat input
         await pilot.press("escape")
         await pilot.pause()
         assert screen.focused is not None

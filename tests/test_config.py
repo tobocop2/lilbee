@@ -97,6 +97,19 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.chat_model == ref
 
+    def test_chat_mode_defaults_to_search_when_none_or_empty(self):
+        """The validator coerces None / "" to 'search' so old configs round-trip."""
+        from lilbee.core.config.model import Config as ConfigCls
+
+        assert ConfigCls._normalize_chat_mode(None) == "search"
+        assert ConfigCls._normalize_chat_mode("") == "search"
+
+    def test_chat_mode_rejects_unknown_value(self):
+        from lilbee.core.config.model import Config as ConfigCls
+
+        with pytest.raises(ValueError, match="chat_mode must be"):
+            ConfigCls._normalize_chat_mode("rag")
+
     def test_embedding_model_override(self):
         ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_MODEL": ref}):

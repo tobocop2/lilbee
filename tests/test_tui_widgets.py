@@ -735,7 +735,7 @@ class TestModelPickerModal:
     """ModelPickerModal filters options by typed search and dismisses with selected ref."""
 
     async def test_modal_dismisses_with_selected_ref(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import App
         from textual.widgets import Button
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -769,7 +769,7 @@ class TestModelPickerModal:
             assert "qwen3-0.6b" in results
 
     async def test_modal_filters_options_by_search(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import App
         from textual.widgets import Button, Input
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -798,7 +798,7 @@ class TestModelPickerModal:
             assert ml.option_count == 1
 
     async def test_modal_escape_dismisses_with_none(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import App
         from textual.widgets import Button
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -823,6 +823,83 @@ class TestModelPickerModal:
             await pilot.press("escape")
             await pilot.pause()
             assert results == [None]
+
+    async def test_modal_enter_in_search_picks_first_match(self) -> None:
+        from textual.app import App
+        from textual.widgets import Button, Input
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+
+        opts = [ModelOption("Qwen3 0.6B", "qwen3-0.6b")]
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        app = _App()
+        results: list[str | None] = []
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.push_screen(
+                ModelPickerModal(scope="chat", options=opts),
+                lambda v: results.append(v),
+            )
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ModelPickerModal)
+            modal.query_one("#picker-list").highlighted = 0
+            inp = modal.query_one("#picker-search", Input)
+            await pilot.click(inp)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert results == ["qwen3-0.6b"]
+
+    async def test_modal_enter_with_empty_list_is_noop(self) -> None:
+        from textual.app import App
+        from textual.widgets import Button, Input
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        app = _App()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.push_screen(ModelPickerModal(scope="chat", options=[]))
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ModelPickerModal)
+            inp = modal.query_one("#picker-search", Input)
+            await pilot.click(inp)
+            await pilot.press("enter")
+            await pilot.pause()
+            # Modal stays open with no selection.
+            assert isinstance(app.screen, ModelPickerModal)
+
+    async def test_modal_action_focus_search_focuses_input(self) -> None:
+        from textual.app import App
+        from textual.widgets import Button, Input
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        app = _App()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.push_screen(ModelPickerModal(scope="embed", options=[ModelOption("X", "x")]))
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ModelPickerModal)
+            modal.query_one("#picker-list").focus()
+            await pilot.pause()
+            modal.action_focus_search()
+            await pilot.pause()
+            assert isinstance(app.focused, Input)
 
 
 class TestModelList:
@@ -889,6 +966,61 @@ class TestModelList:
             rendered = str(opt.prompt)
             assert "Already Here" in rendered
             assert "installed" in rendered
+
+    async def test_local_row_renders_featured_star_and_backend_pill(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        row = LocalCatalogRow(
+            name="Featured Model",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_0",
+            downloads="--",
+            featured=True,
+            installed=False,
+            sort_downloads=0,
+            sort_size=4.0,
+            ref="featured/ref",
+            backend="native",
+        )
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([ModelListSection(heading=None, rows=[row])])
+            await pilot.pause()
+            rendered = str(ml.get_option_at_index(0).prompt)
+            assert "Featured Model" in rendered
+            assert "native" in rendered
+
+    async def test_selected_event_with_unknown_option_id_is_dropped(self) -> None:
+        from textual.widgets import OptionList
+        from textual.widgets.option_list import Option
+
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            evt = OptionList.OptionSelected(option_list=ml, option=Option("x", id="ghost"), index=0)
+            ml._on_option_selected(evt)
+            await pilot.pause()
+
+    async def test_selected_event_with_no_option_id_is_dropped(self) -> None:
+        from textual.widgets import OptionList
+        from textual.widgets.option_list import Option
+
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            evt = OptionList.OptionSelected(option_list=ml, option=Option("x"), index=0)
+            ml._on_option_selected(evt)
+            await pilot.pause()
 
     async def test_set_rows_clears_previous_population(self) -> None:
         from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
