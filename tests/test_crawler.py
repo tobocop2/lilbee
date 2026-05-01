@@ -213,18 +213,29 @@ def _no_dns(monkeypatch):
 
 
 class TestCrawlerAvailable:
+    """Drives the un-patched crawler_available directly to confirm the import probe.
+
+    The function is memoized (functools.cache) so the first hit locks the
+    answer for the rest of the process. Each test clears the cache before
+    flipping sys.modules so the next call re-runs the import probe.
+    """
+
     def test_returns_true_when_installed(self):
         from lilbee.crawler import crawler_available
 
+        crawler_available.cache_clear()
         mock_crawl4ai = MagicMock()
         with patch.dict("sys.modules", {"crawl4ai": mock_crawl4ai}):
             assert crawler_available() is True
+        crawler_available.cache_clear()
 
     def test_returns_false_when_not_installed(self):
         from lilbee.crawler import crawler_available
 
+        crawler_available.cache_clear()
         with patch.dict("sys.modules", {"crawl4ai": None}):
             assert crawler_available() is False
+        crawler_available.cache_clear()
 
 
 class TestIsUrl:

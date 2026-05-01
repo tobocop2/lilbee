@@ -12,6 +12,7 @@ content-parts schema for images) lives here. The semantic layer in
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -45,6 +46,7 @@ def _is_ollama(base_url: str) -> bool:
     return any(p in url_lower for p in _OLLAMA_URL_PATTERNS)
 
 
+@functools.cache
 def litellm_available() -> bool:
     """Return True if ``litellm`` can be imported."""
     try:

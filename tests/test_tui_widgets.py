@@ -74,6 +74,31 @@ class TestAssistantMessageAsync:
             assert am._reasoning_widget is not None
             assert am._reasoning_widget.collapsed is False
 
+    async def test_append_reasoning_debounces_static_updates(self) -> None:
+        """Reasoning bursts should not paint the Static on every token.
+
+        Mirrors the content debounce: append_reasoning called twice in
+        quick succession only triggers one Static.update; finish() then
+        flushes whatever the debounce held back.
+        """
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am._reasoning_static is not None
+            with mock.patch.object(am._reasoning_static, "update") as mock_update:
+                am.append_reasoning("a ")
+                am.append_reasoning("b ")
+                am.append_reasoning("c ")
+                # All three append in well under the 0.1s debounce window,
+                # so only the first should have triggered an update.
+                assert mock_update.call_count == 1
+                am.finish(sources=None)
+                # finish() flushes the buffered tail.
+                assert mock_update.call_count == 2
+                last_call_text = mock_update.call_args_list[-1].args[0]
+                assert last_call_text == "a b c "
+
     async def test_append_content_updates_markdown(self) -> None:
         app = _MsgApp()
         async with app.run_test() as pilot:
