@@ -73,7 +73,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │ ┌───────────────────────────────────────────────────────────┐ │
  │ │ Ask anything...                                           │ │
  │ │                                                           │ │
- │ │ Chat: [Qwen3 0.6B v]    Embed: [Nomic v1.5 v]             │ │
+ │ │ Chat [Qwen3 0.6B]  Embed [Nomic v1.5]   [Search|Chat]     │ │
  │ └───────────────────────────────────────────────────────────┘ │
  │ SYNC vault   [============------------]  42%                  │
  └───────────────────────────────────────────────────────────────┘
@@ -121,11 +121,12 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  └───────────────────────────────────────────────┘
 ```
 
-**Model catalog.** Browse, install, and switch roles without leaving the terminal. `*` indicates the developer's recommendation for each role.
+**Model catalog.** Browse, install, and switch roles without leaving the terminal. The Local sub-tab covers anything you can run on this machine (native GGUF and any locally-running SDK provider). The Frontier sub-tab appears when at least one cloud-provider API key is configured and lists what each provider exposes, grouped by Anthropic, Gemini, OpenAI, and so on. `*` indicates the developer's recommendation for each role.
 
 ```
  ┌─ Model Catalog ───────────────────────────────────┐
- │ [All tasks v] [All sizes v] [Featured v]          │
+ │ [ Local | Frontier ]                              │
+ │ [All tasks v] [All sizes v]                       │
  │ search...                       [Grid | List]     │
  │                                                   │
  │ Our picks                                         │
@@ -145,6 +146,8 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
  │                  [Load more]                      │
  └───────────────────────────────────────────────────┘
 ```
+
+Picking a row on Frontier sets that model as the active chat model. Frontier listings come straight from the SDK backend's view of each provider; lilbee does not curate or filter the list.
 
 ## What you can do with it
 
@@ -183,6 +186,8 @@ or `uv tool install --prerelease=allow 'lilbee[litellm]''
 ## TUI
 
 `lilbee` with no args (or `lilbee chat`) launches a full Textual terminal app. Chat streams replies with clickable citations. A Task Center tracks every background job (sync, crawl, wiki build, model pull) and lets you cancel them with `/cancel`. Other screens cover the model catalog (`/models`), settings (`/settings`), first-time setup wizard (`/setup`), and the auto-built wiki (`/wiki`). Tab completion works for slash commands, file paths, model names, setting keys, and themes.
+
+The model bar above the prompt has searchable pickers for the active chat and embedding models (click or press Enter on the button to open a modal with a search box and a virtualized list; type to filter, Enter to pick, Escape to cancel). Next to the pickers is a Search / Chat toggle (also bound to F3). In Search mode every prompt runs through document retrieval; in Chat mode retrieval is skipped and the model answers directly. Search mode falls through to a chat answer when nothing relevant is indexed, and shows a one-time toast when that happens. The toggle is forced to Chat and disabled when no embedding model is configured.
 
 See [Previews](#previews) for a visual and the [slash-command reference](docs/usage.md#slash-commands) for the full list.
 
