@@ -136,6 +136,11 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
         self._loading_more: bool = False
         self._grid_cache_key: tuple = ()
+        # Mirror cache for list view. Toggling grid <-> list every keystroke
+        # in stress QA used to remove + remount ~300 ModelListItems even
+        # when nothing had changed; the cache key keeps remount on real
+        # data churn (sort, frontier delta, install/uninstall) only.
+        self._list_cache_key: tuple = ()
         self._search_in_flight: bool = False
         # Frontier rows are populated by a worker (litellm import + key
         # checks block the UI thread for hundreds of ms). Empty until the
@@ -778,6 +783,21 @@ class CatalogScreen(Screen[None]):
         """Rebuild the list view; frontier rows lead, then local rows."""
         self._rows = self._sort_rows(self._build_rows())
         frontier_rows = self._build_frontier_rows("")
+        search = self._get_search_text()
+        # Same shape as _grid_cache_key: any change in row composition,
+        # frontier key-status, or active search term forces a remount;
+        # toggle-only (grid -> list -> grid with no data churn) is a
+        # cache hit so we keep the existing widget tree.
+        list_key = (
+            tuple((r.name, r.installed) for r in self._rows),
+            tuple((r.name, r.key_status.value) for r in frontier_rows),
+            search,
+        )
+        if self._list_cache_key == list_key:
+            self._update_sort_label()
+            return
+        self._list_cache_key = list_key
+
         container = self._list_container
         container.remove_children()
         widgets_to_mount: list[ModelListItem | SearchHFCtaItem | Static] = []
@@ -791,7 +811,6 @@ class CatalogScreen(Screen[None]):
             widgets_to_mount.extend(ModelListItem(row) for row in frontier_rows)
             widgets_to_mount.append(Static(msg.HEADING_LOCAL_ALL, classes="section-heading"))
         widgets_to_mount.extend(ModelListItem(row) for row in self._rows)
-        search = self._get_search_text()
         if search:
             widgets_to_mount.append(SearchHFCtaItem(search))
         if widgets_to_mount:
