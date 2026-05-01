@@ -61,7 +61,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
       - name: Upload site artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: site-content
           path: site/
@@ -101,7 +101,7 @@ jobs:
 
       - name: Download wheel artifacts
         if: steps.wheels.outputs.run-id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: "wheel-*"
           path: artifacts/
@@ -121,7 +121,7 @@ jobs:
           fi
 
       - name: Upload wheel-indexes artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-indexes-content
           path: wheel-indexes/
@@ -136,13 +136,13 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Download site artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: site-content
           path: site/
 
       - name: Download wheel-indexes artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheel-indexes-content
           path: wheel-indexes/
@@ -156,10 +156,10 @@ jobs:
           fi
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site/
 

@@ -173,7 +173,7 @@ jobs:
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
         id: ollama-bin-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: C:\ollama
           key: ollama-bin-${{ runner.os }}-v1
@@ -214,7 +214,7 @@ jobs:
 
       - name: Restore Playwright cache
         id: pw-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
@@ -230,41 +230,41 @@ jobs:
 
       - name: Save Playwright cache
         if: steps.pw-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
 
       - name: Cache GGUF models (Linux)
         if: runner.os == 'Linux'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/share/lilbee/models
           key: gguf-models-Linux-v4
 
       - name: Cache GGUF models (macOS)
         if: runner.os == 'macOS'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/Library/Application Support/lilbee/models
           key: gguf-models-macOS-v4
 
       - name: Cache GGUF models (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~\AppData\Local\lilbee\models
           key: gguf-models-Windows-v4
 
       - name: Cache HuggingFace models
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface/hub
           key: hf-models-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: hf-models-${{ runner.os }}-
 
       - name: Cache Ollama models
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ollama/models
           key: ollama-models-${{ runner.os }}-qwen3-nomic-v1
@@ -291,7 +291,7 @@ jobs:
 
       - name: Save Ollama binary cache (Windows)
         if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: C:\ollama
           key: ollama-bin-${{ runner.os }}-v1
