@@ -5666,9 +5666,15 @@ async def test_chat_tab_cycles_between_model_buttons():
         await pilot.pause()
         screen = app.screen
         screen.query_one("#chat-model-button", ModelPickerButton).focus()
-        await pilot.press("tab")
-        await pilot.pause()
         embed_btn = screen.query_one("#embed-model-button", ModelPickerButton)
+        await pilot.press("tab")
+        # Poll: the tab keypress travels through several refresh ticks
+        # before the focus watcher updates has_focus on a slow xdist
+        # shard. A single pilot.pause() is not enough.
+        for _ in range(10):
+            await pilot.pause()
+            if embed_btn.has_focus:
+                break
         assert embed_btn.has_focus
 
 
@@ -5688,7 +5694,10 @@ async def test_chat_tab_in_normal_mode_advances_focus():
         await pilot.pause()
         before = app.focused
         await pilot.press("tab")
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if app.focused is not before:
+                break
         assert app.focused is not before, "Tab did not move focus in normal mode"
 
 
