@@ -75,12 +75,7 @@ class TestAssistantMessageAsync:
             assert am._reasoning_widget.collapsed is False
 
     async def test_append_reasoning_debounces_static_updates(self) -> None:
-        """Reasoning bursts should not paint the Static on every token.
-
-        Mirrors the content debounce: append_reasoning called twice in
-        quick succession only triggers one Static.update; finish() then
-        flushes whatever the debounce held back.
-        """
+        """Reasoning bursts collapse to one ``Static.update``; ``finish`` flushes the tail."""
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()

@@ -1286,12 +1286,7 @@ class TestRoutingProvider:
 
 
 class TestLitellmAvailable:
-    """Drives the un-patched litellm_available directly to confirm the import probe.
-
-    The function is memoized (functools.cache) so the first hit locks the
-    answer for the rest of the process. Each test clears the cache before
-    flipping sys.modules so the next call re-runs the import probe.
-    """
+    """Exercises the un-patched ``litellm_available`` import probe."""
 
     @pytest.mark.real_litellm_probe
     def test_returns_false_when_not_installed(self) -> None:

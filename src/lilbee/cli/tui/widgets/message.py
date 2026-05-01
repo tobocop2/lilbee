@@ -97,15 +97,7 @@ class AssistantMessage(Vertical):
         await old.remove()
 
     def append_reasoning(self, text: str) -> None:
-        """Append reasoning token (debounced collapsible updates).
-
-        Reasoning models (qwen3, deepseek-r1) burst hundreds of <think>
-        tokens in seconds. Without the debounce, every token rebuilds the
-        full reasoning string and re-paints the Static, which on a real
-        terminal soft-locks the UI thread for the duration of the
-        thinking phase. Mirror the content debounce; finish() flushes
-        the tail held back by the last debounce window.
-        """
+        """Append a reasoning token; debounced at ``_MD_UPDATE_INTERVAL``."""
         self._reasoning_parts.append(text)
         now = time.monotonic()
         ready = now - self._last_reasoning_update >= _MD_UPDATE_INTERVAL
@@ -132,9 +124,6 @@ class AssistantMessage(Vertical):
             self.refresh()
         if self._reasoning_widget is not None and self._reasoning_parts:
             if self._reasoning_static is not None:
-                # Flush any tokens that the debounce in append_reasoning
-                # held back so the final reasoning text matches the model
-                # output exactly.
                 self._reasoning_static.update("".join(self._reasoning_parts))
             token_count = len("".join(self._reasoning_parts).split())
             self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)

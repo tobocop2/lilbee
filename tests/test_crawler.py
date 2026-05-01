@@ -213,12 +213,7 @@ def _no_dns(monkeypatch):
 
 
 class TestCrawlerAvailable:
-    """Drives the un-patched crawler_available directly to confirm the import probe.
-
-    The function is memoized (functools.cache) so the first hit locks the
-    answer for the rest of the process. Each test clears the cache before
-    flipping sys.modules so the next call re-runs the import probe.
-    """
+    """Exercises the un-patched ``crawler_available`` import probe."""
 
     def test_returns_true_when_installed(self):
         from lilbee.crawler import crawler_available
