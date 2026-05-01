@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
+from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ClustererBackend, KvCacheType, WikiEntityMode
 
@@ -216,6 +217,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Display",
         help_text="TUI color theme. Cycle with Ctrl+T; the active theme persists across sessions.",
+        choices=tuple(DARK_THEMES),
     ),
     "wiki": SettingDef(
         bool,

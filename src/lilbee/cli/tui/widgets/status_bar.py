@@ -127,12 +127,15 @@ class ViewTabs(Widget):
         self._update_trailing()
 
     def _update_trailing(self) -> None:
+        from lilbee.catalog import display_label_for_ref
+
         parts: list[Content | str | tuple[str, str]] = []
         # ModelBar already shows the active chat model on the chat screen,
         # so the pill would just duplicate it there. Show it everywhere else.
         if cfg.chat_model and self.active_view != msg.DEFAULT_VIEW:
+            label = display_label_for_ref(cfg.chat_model) or cfg.chat_model
             parts.append("  ")
-            parts.append(pill(f" {cfg.chat_model} ", "$accent", "$text"))
+            parts.append(pill(f" {label} ", "$accent", "$text"))
         if self.mode_text:
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")
