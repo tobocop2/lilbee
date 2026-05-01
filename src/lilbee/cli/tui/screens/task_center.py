@@ -23,6 +23,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Footer, Label
 
 from lilbee.cli.tui import messages as msg
@@ -107,20 +108,25 @@ class TaskCenter(Screen[None]):
     def on_mount(self) -> None:
         self._tick: int = 0
         self._rows: dict[str, TaskRow] = {}
+        self._tick_timer: Timer | None = None
         self._refresh_rows()
         self._focus_initial_row()
-        self.set_interval(_TICK_INTERVAL_SECONDS, self._advance_tick)
 
     def on_show(self) -> None:
-        # Subscribe while visible; install_screen keeps this instance
-        # alive across switch_view, so anchoring on on_mount would leave
-        # a dead subscription firing into a detached DOM.
+        # Subscribe + tick only while visible; install_screen keeps this
+        # instance alive across switch_view, so anchoring either on
+        # on_mount would fire into a detached DOM after navigating away.
         self.app.task_bar.queue.subscribe(self._on_queue_change)
+        if self._tick_timer is None:
+            self._tick_timer = self.set_interval(_TICK_INTERVAL_SECONDS, self._advance_tick)
         self._refresh_rows()
 
     def on_hide(self) -> None:
         with contextlib.suppress(Exception):
             self.app.task_bar.queue.unsubscribe(self._on_queue_change)
+        if self._tick_timer is not None:
+            self._tick_timer.stop()
+            self._tick_timer = None
 
     def _on_queue_change(self) -> None:
         """Queue notification: post a thread-safe message to the screen."""

@@ -525,6 +525,20 @@ class TestModelBar:
                 assert toggle.toggle() is False
                 assert cfg.chat_mode == "chat"
 
+    async def test_chat_mode_toggle_action_flip_mode_invokes_toggle(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_flip_mode()
+                assert cfg.chat_mode == "chat"
+
     async def test_chat_mode_toggle_repaints_when_embedding_set(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
 
@@ -855,6 +869,34 @@ class TestModelPickerModal:
             await pilot.pause()
             assert "qwen3-0.6b" in results
 
+    async def test_modal_consecutive_keystrokes_stop_prior_debounce_timer(self) -> None:
+        from textual.app import App
+        from textual.widgets import Button, Input
+
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        opts = [ModelOption("Qwen3 0.6B", "qwen3-0.6b"), ModelOption("Llama 8B", "llama-8b")]
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield Button("anchor")
+
+        app = _App()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.push_screen(ModelPickerModal(scope="chat", options=opts))
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ModelPickerModal)
+            inp = modal.query_one("#picker-search", Input)
+            inp.value = "q"
+            await pilot.pause(0.02)
+            inp.value = "qw"
+            await pilot.pause(0.15)
+            ml = modal.query_one("#picker-list", ModelList)
+            assert ml.option_count == 1
+
     async def test_modal_filters_options_by_search(self) -> None:
         from textual.app import App
         from textual.widgets import Button, Input
@@ -1136,6 +1178,67 @@ class TestModelList:
             ml.set_rows([])
             await pilot.pause()
             assert ml.option_count == 0
+
+    async def test_append_rows_extends_existing_population(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([ModelListSection(heading=None, rows=[_make_frontier_row("a", "X")])])
+            ml.append_rows([_make_frontier_row("b", "X"), _make_frontier_row("c", "X")])
+            await pilot.pause()
+            assert ml.row_count == 3
+            assert "c" in str(ml.get_option_at_index(2).prompt)
+
+    async def test_append_rows_with_empty_list_is_noop(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([ModelListSection(heading=None, rows=[_make_frontier_row("a", "X")])])
+            ml.append_rows([])
+            await pilot.pause()
+            assert ml.row_count == 1
+
+    async def test_highlighted_row_returns_none_when_no_selection(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.highlighted = None
+            assert ml.highlighted_row() is None
+
+    async def test_highlighted_row_returns_none_on_index_error(self) -> None:
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([ModelListSection(heading=None, rows=[_make_frontier_row("a", "X")])])
+            ml.highlighted = 0
+            with mock.patch.object(ml, "get_option_at_index", side_effect=IndexError):
+                assert ml.highlighted_row() is None
+
+    async def test_highlighted_row_returns_none_for_option_without_id(self) -> None:
+        from textual.widgets.option_list import Option
+
+        from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+
+        app = _ModelListApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ml = app.query_one(ModelList)
+            ml.set_rows([ModelListSection(heading=None, rows=[_make_frontier_row("a", "X")])])
+            ml.highlighted = 0
+            with mock.patch.object(ml, "get_option_at_index", return_value=Option("ghost")):
+                assert ml.highlighted_row() is None
 
 
 class TestIsMmproj:
@@ -4366,3 +4469,19 @@ class TestSearchHFCtaItem:
         item.on_click(_make_click(item))
         assert focus_calls == [True]
         assert received and received[0].term == "phi-3"
+
+    async def test_compose_yields_label_with_term(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield SearchHFCtaItem("phi-3")
+
+        app = _App()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            label = app.query_one("#cta-label", Static)
+            assert "phi-3" in str(label.render())

@@ -192,6 +192,42 @@ async def test_settings_escape_returns_to_chat():
         assert isinstance(app.screen, ChatScreen)
 
 
+async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():
+    """/models from Chat under LilbeeApp must use switch_view, not push_screen."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat = app.screen
+        assert isinstance(chat, ChatScreen)
+        chat._handle_slash("/models")
+        await pilot.pause()
+        assert isinstance(app.screen, CatalogScreen)
+
+
+async def test_slash_settings_routes_through_switch_view_under_lilbee_app():
+    """/settings under LilbeeApp must use switch_view, not push_screen."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat = app.screen
+        assert isinstance(chat, ChatScreen)
+        chat._handle_slash("/settings")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+
+
+async def test_slash_status_routes_through_switch_view_under_lilbee_app():
+    """/status under LilbeeApp must use switch_view, not push_screen."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat = app.screen
+        assert isinstance(chat, ChatScreen)
+        chat._handle_slash("/status")
+        await pilot.pause()
+        assert isinstance(app.screen, StatusScreen)
+
+
 async def test_grid_arrows_stay_on_catalog():
     """Right arrow in catalog grid mode should move grid cursor, not switch screens."""
     app = LilbeeApp()

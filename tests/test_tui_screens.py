@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -3383,6 +3383,155 @@ async def test_catalog_load_more_noop_when_exhausted():
                 screen._load_more()
                 assert not fetch.called
                 assert screen._hf_offset == old_offset
+
+
+async def test_catalog_append_more_hf_to_list_extends_rows_and_options():
+    """Newly-arrived HF rows mount to the list view via append_rows."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._families = []
+            screen._hf_models = []
+            screen._refresh_list()
+            await _pilot.pause()
+            initial = screen._list_widget.option_count
+            new_models = [
+                _make_catalog_model(name=f"new-{i}B", hf_repo=f"org/new-{i}-GGUF", featured=False)
+                for i in range(3)
+            ]
+            screen._append_more_hf_to_list(new_models)
+            await _pilot.pause()
+            assert screen._list_widget.option_count == initial + 3
+            assert len(screen._rows) >= 3
+
+
+async def test_catalog_append_more_hf_to_list_noop_when_no_new_rows():
+    """Empty payload still updates the sort label without mounting rows."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            initial = screen._list_widget.option_count
+            screen._append_more_hf_to_list([])
+            await _pilot.pause()
+            assert screen._list_widget.option_count == initial
+
+
+async def test_catalog_list_count_uses_row_count():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._list_count() == screen._list_widget.row_count
+
+
+async def test_catalog_scroll_prefetch_fires_load_more_near_bottom():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            with (
+                patch.object(
+                    type(screen._list_widget),
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    type(screen._list_widget),
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=95.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen._on_list_scrolled(95.0)
+                assert load_more.called
+
+
+async def test_catalog_scroll_prefetch_skipped_in_grid_view():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            with patch.object(screen, "_load_more") as load_more:
+                screen._on_list_scrolled(99.0)
+                assert not load_more.called
+
+
+async def test_catalog_scroll_prefetch_skipped_during_cooldown():
+    """A second scroll fires within the cooldown window must not re-trigger load."""
+    import time as _time
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = _time.monotonic()
+            with patch.object(screen, "_load_more") as load_more:
+                screen._on_list_scrolled(99.0)
+                assert not load_more.called
+
+
+async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            with (
+                patch.object(
+                    type(screen._list_widget),
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=0.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen._on_list_scrolled(0.0)
+                assert not load_more.called
 
 
 async def test_catalog_load_more_deduplicated_while_in_flight():
