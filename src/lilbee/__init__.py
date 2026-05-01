@@ -1,4 +1,4 @@
-"""lilbee — Local RAG knowledge base."""
+"""lilbee: local knowledge base."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 # leak cursor escapes into the TUI. Our custom tqdm_class is NOT a subclass
 # of huggingface_hub.utils.tqdm, so huggingface_hub's `_create_progress_bar`
 # instantiates it directly without honoring this flag. Download callbacks
-# continue to fire. See lilbee/catalog.py::_CallbackProgressBar.
+# continue to fire. See lilbee/catalog/download_progress.py::_CallbackProgressBar.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
@@ -91,7 +91,8 @@ def _shrink_hf_download_chunk_size() -> None:
 
 _shrink_hf_download_chunk_size()
 
-from typing import TYPE_CHECKING  # noqa: E402 — must follow HF environment / constants setup above
+# Must follow HF environment / constants setup above.
+from typing import TYPE_CHECKING  # noqa: E402
 
 if TYPE_CHECKING:
     from lilbee.api import Lilbee

@@ -38,7 +38,11 @@ node_modules/
 *.mp4
 PLAN.md
 .DS_Store
-scripts/
+scripts/*
+!scripts/check_style_rules.py
+!scripts/qa/
+scripts/qa/*
+!scripts/qa/*.py
 .DS_Store
 .superpowers/
 tools/qa-binary.sh

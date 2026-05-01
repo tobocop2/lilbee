@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.security import validate_path_within
 from lilbee.crawler.models import CrawlResult
-from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 

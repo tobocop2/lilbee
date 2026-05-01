@@ -7,7 +7,7 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
@@ -20,6 +20,11 @@ CMD_ADD_ERROR = "Error: {error}"
 CMD_CRAWL_USAGE = "Usage: /crawl <url> [--depth N] [--max-pages N]"
 CMD_CRAWL_STARTED = "Crawling {url}..."
 CMD_CRAWL_PAGE = "Crawling [{current}/{total}]: {url}"
+CMD_CRAWL_PAGE_INDETERMINATE = "Crawling... ({current} pages so far): {url}"
+MODEL_FALLBACK_NOTICE = (
+    "{label} model {original!r} is unavailable; using {effective!r} for this session. "
+    "Pick a different model or restore the original to clear this notice."
+)
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."
@@ -75,11 +80,17 @@ CRAWL_DIALOG_INVALID_URL = "Invalid URL: {error}"
 CRAWL_DIALOG_INVALID_NUMBER = "{field} must be a positive integer or blank"
 EMBEDDING_MISSING = (
     "No embedding model, search disabled. "
-    "Run /models to install one, or: lilbee models install nomic-embed-text"
+    "Run /pull to install one, or: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 )
 THEME_SET = "Theme: {name}"
 HEADING_OUR_PICKS = "Our picks"
 HEADING_INSTALLED = "Installed"
+CATALOG_TAB_LOCAL = "Local"
+CATALOG_TAB_FRONTIER = "Frontier"
+CATALOG_FRONTIER_SUMMARY = "{count} cloud models across {providers} providers"
+CATALOG_GRID_OVERFLOW = "+{count} more on HF. Press v for the full list view"
+CATALOG_USING_FRONTIER = "Using {name} via the {provider} API"
+CATALOG_NEEDS_KEY = "{provider} needs an API key. Set {key_field} in Settings to enable this model."
 CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_NO_TASK_BAR = "Cannot download: task bar not found"
@@ -100,7 +111,9 @@ CATALOG_BROWSE_MORE = "Browse more models →"
 CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
-CHAT_INPUT_PLACEHOLDER = "Ask a question or type / for commands"
+CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask a question or type / for commands"
+CHAT_INPUT_PLACEHOLDER_STREAMING = "Generating response… (Esc to stop)"
+CHAT_STOP_BUTTON_LABEL = "■ Stop"
 CHAT_ONLY_BANNER = "Chat only, no document search. Press F5 to set up embedding model."
 CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local search engine and personal encyclopedia."
@@ -164,7 +177,7 @@ SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
 SETUP_INTRO = (
     "lilbee needs two models to work: one for chat and one for search. "
-    "Pick one of each below — highlight a card and press [b]Enter[/b] to install. "
+    "Pick one of each below: highlight a card and press [b]Enter[/b] to install. "
     "Downloads continue in the background, so you can keep picking or press [b]Esc[/b] when done."
 )
 SETUP_HEADING_CHAT = "Chat Models"
@@ -215,3 +228,21 @@ SETTINGS_API_KEYS_WARNING = (
 MODEL_BAR_CLOUD_PROVIDER_WARNING = (
     "Chat prompts are being sent to {provider}. Do not share sensitive data."
 )
+CHAT_MODE_SEARCH_LABEL = "Search"
+CHAT_MODE_CHAT_LABEL = "Chat"
+CHAT_MODE_TOGGLE_TOOLTIP = (
+    "Search runs your question through document retrieval. "
+    "Chat skips retrieval and answers directly. Click or press F3 to flip."
+)
+CHAT_MODE_TOGGLE_DISABLED_TOOLTIP = (
+    "Search needs an embedding model. Install one to enable Search mode."
+)
+CHAT_MODE_BANNER_CHAT = "Chat mode, no document search."
+CHAT_MODE_BANNER_SEARCH_NO_RESULTS = (
+    "Search returned 0 results, falling back to chat for this turn."
+)
+CHAT_MODE_SET = "Mode: {label}"
+MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
+MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"
+MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
+MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"

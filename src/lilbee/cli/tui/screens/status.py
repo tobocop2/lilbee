@@ -1,4 +1,4 @@
-"""Status screen — knowledge base info with collapsible sections."""
+"""Status screen: knowledge base info with collapsible sections."""
 
 from __future__ import annotations
 
@@ -6,18 +6,20 @@ import logging
 from pathlib import Path
 from typing import ClassVar
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
 from textual.widgets import Collapsible, DataTable, Static
+from textual.worker import Worker, WorkerState
 
 from lilbee.cli.tui.pill import pill
-from lilbee.config import cfg
-from lilbee.model_info import ModelArchInfo, get_model_architecture
-from lilbee.services import get_services
-from lilbee.store import SourceRecord
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+from lilbee.data.store import SourceRecord
+from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
 
@@ -160,29 +162,72 @@ class StatusScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
+        # ``cfg`` reads are in-memory and cheap. Anything that touches
+        # disk runs in a worker so the screen paints instantly.
+        # ``get_model_architecture`` opens up to three GGUF files and
+        # parses their headers (~hundreds of ms each cold); ``get_sources``
+        # reads LanceDB (seconds on cold caches).
         self._load_config()
-        sources = self._fetch_sources()
-        self._load_documents(sources)
-        self._load_arch()
-        self._load_storage(len(sources))
+        self._show_loading_placeholders()
+        self._fetch_sources_worker()
+        self._fetch_arch_worker()
 
-    def _fetch_sources(self) -> list[SourceRecord]:
-        """Fetch sources once from the store."""
+    def _show_loading_placeholders(self) -> None:
+        """Surface a 'Loading…' marker for sections backed by workers."""
+        table = self.query_one("#docs-table", DataTable)
+        table.add_columns("Document", "Chunks")
+        table.cursor_type = "row"
+        table.add_row("Loading...", "")
+        self.query_one("#storage-info", Static).update(Content.styled("Loading...", "$text-muted"))
+        self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
+
+    @work(thread=True, name="status_fetch_sources", exit_on_error=False)
+    def _fetch_sources_worker(self) -> list[SourceRecord]:
         try:
             return get_services().store.get_sources()
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
             return []
 
+    @work(thread=True, name="status_fetch_arch", exit_on_error=False)
+    def _fetch_arch_worker(self) -> ModelArchInfo:
+        try:
+            return get_model_architecture()
+        except Exception:
+            log.debug("Failed to read model architecture for status", exc_info=True)
+            return ModelArchInfo()
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.state != WorkerState.SUCCESS:
+            return
+        if event.worker.name == "status_fetch_sources":
+            sources = event.worker.result
+            if not isinstance(sources, list):
+                sources = []
+            self._load_documents(sources)
+            self._load_storage(len(sources))
+        elif event.worker.name == "status_fetch_arch":
+            arch = event.worker.result
+            if isinstance(arch, ModelArchInfo):
+                self._load_arch(arch)
+
+    def _load_arch(self, info: ModelArchInfo) -> None:
+        """Populate the model architecture section from worker result."""
+        self.query_one("#arch-info", Static).update(_build_arch_content(info))
+
     def _load_config(self) -> None:
         """Populate the configuration section."""
         self.query_one("#config-info", Static).update(_build_config_content())
 
     def _load_documents(self, sources: list[SourceRecord]) -> None:
-        """Populate the documents table."""
+        """Populate the documents table.
+
+        Replaces any 'Loading...' placeholder that on_mount put up
+        while the worker was in flight. Columns stay; only the rows
+        get rebuilt against the real source list.
+        """
         table = self.query_one("#docs-table", DataTable)
-        table.add_columns("Document", "Chunks")
-        table.cursor_type = "row"
+        table.clear()
         self._fill_doc_rows(table, sources)
 
     def _fill_doc_rows(self, table: DataTable, sources: list[SourceRecord]) -> None:
@@ -192,11 +237,6 @@ class StatusScreen(Screen[None]):
             return
         for src in sources:
             table.add_row(src.get("filename", "?"), str(src.get("chunk_count", 0)))
-
-    def _load_arch(self) -> None:
-        """Populate the model architecture section."""
-        info = get_model_architecture()
-        self.query_one("#arch-info", Static).update(_build_arch_content(info))
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from litestar.testing import AsyncTestClient
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.server import auth as _auth_mod
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
@@ -225,7 +225,7 @@ class TestWikiEnabled:
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_wiki.return_value = []
-        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.core.services.get_services", lambda: mock_svc)
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "cited")
         async with AsyncTestClient(_create_app()) as client:
@@ -238,7 +238,7 @@ class TestWikiEnabled:
     async def test_page_citations_missing_page(self, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
 
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.core.services.get_services", make_mock_services)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/summaries/nope/citations", headers=_h())
         assert resp.status_code == 404
@@ -248,7 +248,7 @@ class TestWikiEnabled:
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_source.return_value = []
-        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.core.services.get_services", lambda: mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get(
                 "/api/wiki/citations", params={"source": "test.txt"}, headers=_h()
@@ -276,8 +276,8 @@ class TestWikiEnabled:
         assert resp.status_code == 200
         drafts = resp.json()
         assert len(drafts) == 1
-        # The Phase D DraftInfo slug is relative to the drafts subdir, not
-        # the wiki root — matches the CLI / service-layer contract.
+        # The DraftInfo slug is relative to the drafts subdir, not the
+        # wiki root: matches the CLI / service-layer contract.
         assert drafts[0]["slug"] == "failed-page"
         assert drafts[0]["pending_kind"] is None
         assert drafts[0]["faithfulness_score"] == 0.9
@@ -287,7 +287,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.core.services.get_services", make_mock_services)
         monkeypatch.setattr(
             lint_mod,
             "lint_all",
@@ -329,7 +329,7 @@ class TestWikiEnabled:
         assert body["paths"] == ["wiki/concepts/x.md"]
 
     async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
-        """Concurrent build calls don't run in parallel — the lock serializes them.
+        """Concurrent build calls don't run in parallel: the lock serializes them.
 
         Asserts that ``run_full_build`` is invoked from a non-loop thread
         (so an LLM-blocking build won't freeze the event loop) and that
@@ -422,7 +422,7 @@ class TestWikiEnabled:
             services.store = None
             return services
 
-        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.core.services.get_services", make_mock_services)
         monkeypatch.setattr("lilbee.server.wiki.svc_mod.get_services", make_mock_services)
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
@@ -481,7 +481,7 @@ def _make_draft(
 
 
 class TestWikiDraftsEndpoints:
-    """Phase D draft review endpoints: list (upgraded), diff, accept, reject."""
+    """Draft review endpoints: list (upgraded), diff, accept, reject."""
 
     @pytest.fixture(autouse=True)
     def enable_wiki(self):

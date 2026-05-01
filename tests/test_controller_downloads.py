@@ -3,7 +3,7 @@
 The worker thread writes progress directly to the shared TaskQueue
 (lock-protected), so progress survives any screen navigation. Completion
 is posted back to the main thread via ``call_from_thread(app, ...)`` so
-the 2-second flash-then-remove cycle actually runs — the previous
+the 2-second flash-then-remove cycle actually runs: the previous
 direct-queue-update path leaked task state indefinitely.
 
 Tests cover both the generic ``start_task`` API and the typed
@@ -25,7 +25,7 @@ from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar import (
     ProgressReporter,
     TaskBarController,
-    TaskCancelled,
+    TaskCancelledError,
 )
 
 
@@ -207,16 +207,16 @@ async def test_progress_reporter_update_raises_when_cancelled() -> None:
         controller.queue.cancel(task_id)
         reporter = ProgressReporter(controller, task_id)
 
-        with pytest.raises(TaskCancelled):
+        with pytest.raises(TaskCancelledError):
             reporter.update(0, "nope")
 
 
 @pytest.mark.asyncio
 async def test_finalize_task_cancelled_branch_routes_through_queue() -> None:
-    """Worker-thread TaskCancelled must land as a CANCELLED status via _finalize_task.
+    """Worker-thread TaskCancelledError must land as a CANCELLED status via _finalize_task.
 
     The finalize path has a distinct branch per TaskOutcome; the
-    CANCELLED branch is reached when a worker raises TaskCancelled
+    CANCELLED branch is reached when a worker raises TaskCancelledError
     (i.e. the user pressed ``c`` mid-flight and reporter.update hit
     the cancel gate). Without this test, macOS CI spotted lines
     306-307 of ``task_bar.py`` uncovered.

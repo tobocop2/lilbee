@@ -1,17 +1,33 @@
-"""Catalog data types, row builders, and formatting helpers."""
+"""Catalog data types, row builders, and formatting helpers.
+
+The catalog renders two distinct row shapes side by side: locally
+installed / installable GGUFs (``LocalCatalogRow``) and cloud chat
+models accessed through a provider's API (``FrontierCatalogRow``).
+They share enough surface area that grouping and search reuse the
+same helpers, but they carry different metadata and pull from
+different sources, so they're separate types under a sealed
+``CatalogRow`` union rather than a single optional-fields dataclass.
+"""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
-from lilbee.model_manager import RemoteModel
+from lilbee.modelhub.model_manager import RemoteModel
+
+# SI thresholds for short download counts ("12.3M" / "456K") and binary
+# thresholds for sizes ("4.2 GB" / "768 MB").
+_DOWNLOADS_PER_M = 1_000_000
+_DOWNLOADS_PER_K = 1_000
+_MB_PER_GB = 1024
 
 
 @dataclass
-class TableRow:
-    """A row in the catalog grid or list view with source metadata.
+class LocalCatalogRow:
+    """A row in the catalog backed by a local GGUF (installable or installed).
 
     ``name`` is the human-readable display label (e.g. "Qwen3 0.6B").
     ``ref`` is the canonical identifier used for config persistence:
@@ -37,6 +53,35 @@ class TableRow:
     remote_model: RemoteModel | None = None
 
 
+class KeyStatus(Enum):
+    """Whether the user has the API key needed to use a frontier model."""
+
+    READY = "ready"
+    MISSING_KEY = "missing_key"
+
+
+@dataclass
+class FrontierCatalogRow:
+    """A row in the catalog backed by a cloud provider's chat API.
+
+    Frontier rows skip the local-model fields (size on disk, quant,
+    GGUF filename) because they don't apply: the model lives on the
+    provider's infrastructure.
+    """
+
+    name: str
+    ref: str
+    task: str
+    provider: str  # Display label, e.g. "Gemini" / "OpenAI" / "Anthropic".
+    provider_id: str  # Canonical id used for the API key field, e.g. "gemini".
+    key_status: KeyStatus
+
+
+# Sealed union: any catalog renderer dispatches on isinstance of these
+# two types and exhaustively handles both.
+CatalogRow = LocalCatalogRow | FrontierCatalogRow
+
+
 def parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
     from lilbee.catalog import PARAM_COUNT_RE
@@ -46,10 +91,10 @@ def parse_param_label(name: str) -> str:
 
 
 def _format_downloads(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}K"
+    if n >= _DOWNLOADS_PER_M:
+        return f"{n / _DOWNLOADS_PER_M:.1f}M"
+    if n >= _DOWNLOADS_PER_K:
+        return f"{n / _DOWNLOADS_PER_K:.0f}K"
     return str(n)
 
 
@@ -57,8 +102,8 @@ def _format_size_mb(size_mb: int) -> str:
     """Format size in MB to a human-readable string."""
     if size_mb == 0:
         return "--"
-    if size_mb >= 1024:
-        return f"{size_mb / 1024:.1f} GB"
+    if size_mb >= _MB_PER_GB:
+        return f"{size_mb / _MB_PER_GB:.1f} GB"
     return f"{size_mb} MB"
 
 
@@ -74,15 +119,15 @@ def _is_param_count(label: str) -> bool:
     return bool(PARAM_COUNT_RE.fullmatch(label))
 
 
-def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
-    """Convert a ModelVariant + family to a TableRow."""
+def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> LocalCatalogRow:
+    """Convert a ModelVariant + family to a LocalCatalogRow."""
     # Avoid duplicating the param count when the family name already ends with it.
     if v.param_count and not f.name.endswith(v.param_count):
         label = f"{f.name} {v.param_count}"
     else:
         label = f.name
     params = v.param_count if _is_param_count(v.param_count) else "--"
-    return TableRow(
+    return LocalCatalogRow(
         name=label,
         task=f.task,
         params=params,
@@ -100,10 +145,10 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow
     )
 
 
-def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
-    """Convert a CatalogModel to a TableRow."""
+def catalog_to_row(m: CatalogModel, installed: bool) -> LocalCatalogRow:
+    """Convert a CatalogModel to a LocalCatalogRow."""
     quant = extract_quant(m.gguf_filename)
-    return TableRow(
+    return LocalCatalogRow(
         name=m.display_name,
         task=m.task,
         params=parse_param_label(m.display_name),
@@ -120,9 +165,14 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
     )
 
 
-def remote_to_row(rm: RemoteModel) -> TableRow:
-    """Convert a RemoteModel to a TableRow."""
-    return TableRow(
+def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
+    """Convert a RemoteModel to a LocalCatalogRow.
+
+    Remote/Ollama models live on a local-network backend and present the
+    same operational shape as installed GGUFs (no API key gating, name
+    suffices as ref). They render through the local row path.
+    """
+    return LocalCatalogRow(
         name=rm.name,
         task=rm.task,
         params=rm.parameter_size or "--",
@@ -139,15 +189,32 @@ def remote_to_row(rm: RemoteModel) -> TableRow:
     )
 
 
-# Column sort key extractors
+def frontier_row_from_remote(
+    rm: RemoteModel, *, provider_id: str, key_status: KeyStatus
+) -> FrontierCatalogRow:
+    """Convert a discovered cloud chat model to a FrontierCatalogRow."""
+    return FrontierCatalogRow(
+        name=rm.name,
+        ref=rm.name,
+        task=rm.task,
+        provider=rm.provider,
+        provider_id=provider_id,
+        key_status=key_status,
+    )
+
+
+# Column sort key extractors. Frontier rows fold into Name sort (the
+# only sort the picker exposes today); the other keys read fields that
+# only LocalCatalogRow carries, so the catalog screen sorts local and
+# frontier rows independently and concatenates them.
 SORT_KEYS = {
     "Name": lambda r: r.name.lower(),
-    "Task": lambda r: r.task,
-    "Backend": lambda r: r.backend.lower(),
-    "Params": lambda r: _param_sort_value(r.params),
-    "Size": lambda r: r.sort_size,
-    "Quant": lambda r: r.quant,
-    "Downloads": lambda r: r.sort_downloads,
+    "Task": lambda r: getattr(r, "task", ""),
+    "Backend": lambda r: getattr(r, "backend", "").lower(),
+    "Params": lambda r: _param_sort_value(getattr(r, "params", "")),
+    "Size": lambda r: getattr(r, "sort_size", 0.0),
+    "Quant": lambda r: getattr(r, "quant", ""),
+    "Downloads": lambda r: getattr(r, "sort_downloads", 0),
 }
 
 
@@ -157,11 +224,21 @@ def _param_sort_value(params: str) -> float:
     return float(match.group(1)) if match else 0.0
 
 
-def matches_search(row: TableRow, search: str) -> bool:
-    """Return True if the row matches the search text (hyphen/underscore-insensitive)."""
+def matches_search(row: CatalogRow, search: str) -> bool:
+    """Return True if the row matches the search text (hyphen/underscore-insensitive).
+
+    Local rows match against name/task/params/quant/backend; frontier
+    rows match against name + provider so users can type "gemini" and
+    see every Gemini model regardless of suffix.
+    """
     if not search:
         return True
     needle = _normalize_for_search(search)
+    if isinstance(row, FrontierCatalogRow):
+        return any(
+            needle in _normalize_for_search(field)
+            for field in (row.name, row.provider, row.provider_id)
+        )
     return any(
         needle in _normalize_for_search(field)
         for field in (row.name, row.task, row.params, row.quant, row.backend)

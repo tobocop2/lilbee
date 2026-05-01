@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from conftest import make_citation, source_hash, write_source, write_wiki_page
-from lilbee.config import cfg
-from lilbee.store import Store
+from lilbee.core.config import cfg
+from lilbee.data.store import Store
 from lilbee.wiki.prune import (
     PruneAction,
     PruneRecord,
@@ -360,6 +360,6 @@ class TestPruneWiki:
 
     def test_uses_default_config_when_none(self, tmp_path: Path):
         store = MagicMock(spec=Store)
-        # Should not raise — uses cfg as default
+        # Should not raise: uses cfg as default
         report = prune_wiki(store, config=None)
         assert isinstance(report, PruneReport)

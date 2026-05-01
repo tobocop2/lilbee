@@ -35,7 +35,6 @@
     border-bottom: solid $surface-lighten-2;
 }
 
-/* View toggle: hide inactive view */
 CatalogScreen.-grid-view #catalog-list { display: none; }
 CatalogScreen.-grid-view #sort-label { display: none; }
 CatalogScreen.-grid-view #model-detail { display: none; }

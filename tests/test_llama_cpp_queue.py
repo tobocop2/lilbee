@@ -13,15 +13,15 @@ from unittest import mock
 import pytest
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.llama_cpp_provider import import_llama_cpp
+from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
 
 
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    from lilbee.services import reset_services
+    from lilbee.core.services import reset_services
 
     reset_services()
     yield
@@ -39,7 +39,7 @@ def models_dir(tmp_path: Path) -> Path:
     cfg.chat_model = TEST_LOCAL_REF
     cfg.subprocess_embed = False
     patcher = mock.patch(
-        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=lambda m: models / f"{m.rsplit('/', 1)[-1]}",
     )
     patcher.start()
@@ -64,7 +64,7 @@ def _make_embed_response(vectors: list[list[float]]) -> dict[str, Any]:
 class TestEmbedQueue:
     def test_single_embed_request(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """One embed call returns the correct vectors."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.side_effect = [
@@ -84,7 +84,7 @@ class TestEmbedQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Multiple concurrent embed calls are collected into fewer dispatch rounds."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         batch_sizes: list[int] = []
         batch_lock = threading.Lock()
@@ -128,7 +128,7 @@ class TestEmbedQueue:
 
     def test_embed_error_propagates(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """If create_embedding raises, all futures in the batch get the exception."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.side_effect = RuntimeError("GPU out of memory")
@@ -160,7 +160,7 @@ class TestEmbedQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """All concurrent embed requests are dispatched and return results."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         texts_received: list[list[str]] = []
 
@@ -194,7 +194,7 @@ class TestEmbedQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Single-threaded sequential usage works fine."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.return_value = _make_embed_response([[1.0, 2.0]])
@@ -213,7 +213,7 @@ class TestEmbedQueue:
 class TestChatLock:
     def test_chat_returns_string(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Basic chat returns a string through the lock."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_chat_completion.return_value = {
@@ -229,7 +229,7 @@ class TestChatLock:
 
     def test_chat_serialized(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Concurrent chat calls are serialized (no overlapping execution)."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         active = threading.Event()
         overlap_detected = threading.Event()
@@ -260,7 +260,7 @@ class TestChatLock:
         for t in threads:
             t.join(timeout=5)
 
-        assert not overlap_detected.is_set(), "Chat calls overlapped — lock not working"
+        assert not overlap_detected.is_set(), "Chat calls overlapped: lock not working"
         for r in results:
             assert r == "ok"
         provider.shutdown()
@@ -269,7 +269,7 @@ class TestChatLock:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Streaming chat works and holds the lock until iteration completes."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         stream_chunks = [
             {"choices": [{"delta": {"content": "Hello"}}]},
@@ -300,7 +300,7 @@ class TestRerankQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """rerank() returns one float per candidate in input order."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
@@ -324,7 +324,7 @@ class TestRerankQueue:
         ``pooling_type=LLAMA_POOLING_TYPE_RANK`` fail with ``llama_decode
         returned -1``.
         """
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_EMBED_REF
         instance = mock.MagicMock()
@@ -349,7 +349,7 @@ class TestRerankQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Empty candidate list short-circuits without touching the model."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = TEST_EMBED_REF
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
@@ -363,7 +363,7 @@ class TestRerankQueue:
     ) -> None:
         """Calling rerank() with no reranker_model surfaces a ProviderError."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.reranker_model = ""
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
@@ -377,7 +377,7 @@ class TestRerankQueue:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """rerank and embed on the same model produce separate Llama loads."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         cfg.embedding_model = TEST_EMBED_REF
         cfg.reranker_model = TEST_EMBED_REF
@@ -398,7 +398,7 @@ class TestRerankQueue:
 class TestShutdown:
     def test_shutdown_stops_worker(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """Shutdown sentinel stops the background worker thread."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
 
@@ -412,7 +412,7 @@ class TestShutdown:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Sentinel arriving while collecting a batch stops the worker cleanly."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
 
         instance = mock.MagicMock()
         instance.create_embedding.return_value = _make_embed_response([[1.0]])
@@ -430,10 +430,10 @@ class TestShutdown:
         # during the batch window of the second request.
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import _EmbedRequest
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
 
         fut: Future[list[list[float]]] = Future()
-        provider._embed_queue.put(_EmbedRequest(texts=["world"], future=fut))
+        provider._embed_queue.put(EmbedRequest(texts=["world"], future=fut))
         provider._embed_queue.put(None)
 
         # The worker should process "world" then see sentinel and exit
@@ -445,7 +445,7 @@ class TestShutdown:
 
 class TestLockedStreamIteratorClose:
     def test_close_releases_lock(self):
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         lock = threading.Lock()
         lock.acquire()
@@ -456,7 +456,7 @@ class TestLockedStreamIteratorClose:
 
     def test_close_drain_cap_does_not_hang_on_runaway_model(self):
         """A runaway model (never-closing <think>) must not block close() forever."""
-        from lilbee.providers.llama_cpp_provider import (
+        from lilbee.providers.llama_cpp.provider import (
             _LOCKED_STREAM_DRAIN_CAP,
             _LockedStreamIterator,
         )
@@ -483,7 +483,7 @@ class TestLockedStreamIteratorExceptionRelease:
     def test_non_stop_iteration_exception_releases_lock(self):
         """When the underlying response raises a non-StopIteration exception,
         the lock is released and the exception propagates."""
-        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
 
         def exploding_iter():
             yield {"choices": [{"delta": {"content": "ok"}}]}
@@ -494,7 +494,7 @@ class TestLockedStreamIteratorExceptionRelease:
         stream = _LockedStreamIterator(exploding_iter(), lock)
         # First call succeeds
         assert next(stream) == "ok"
-        # Second call hits the ValueError — lock should be released
+        # Second call hits the ValueError: lock should be released
         with pytest.raises(ValueError, match="boom"):
             next(stream)
         assert lock.acquire(blocking=False)
@@ -525,14 +525,14 @@ class TestVisionModel:
     def test_find_mmproj_raises_when_missing(self, models_dir: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         with pytest.raises(ProviderError, match="mmproj"):
             find_mmproj_for_model(models_dir / "test-model.gguf")
 
     def test_find_mmproj_finds_by_name(self, models_dir: Path) -> None:
         """find_mmproj_for_model finds mmproj files in the models directory."""
-        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
+        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
 
         mmproj = models_dir / "model-mmproj-f16.gguf"
         mmproj.write_bytes(b"fake")
@@ -610,7 +610,7 @@ class TestVisionModel:
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is None, load_llama passes n_ctx=0 and n_batch from metadata."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = None
@@ -628,7 +628,7 @@ class TestLoadLlamaNCtx:
 
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is set, embedding load clamps to the model's training context."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = 8192
@@ -644,7 +644,7 @@ class TestLoadLlamaNCtx:
 
     def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama passes embedding flag correctly."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
 
         mock_llama_cpp.Llama.return_value.metadata = {}
@@ -662,7 +662,7 @@ class TestLoadLlamaNCtx:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """num_ctx=None on chat mode never lets a 128K training window dictate KV size."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = None
@@ -684,7 +684,7 @@ class TestLoadLlamaNCtx:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """num_ctx=None on chat mode uses the training context when smaller than the cap."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = None
@@ -702,7 +702,7 @@ class TestLoadLlamaNCtx:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """Embedding models still get n_ctx=0 (full training context); regression guard."""
-        from lilbee.providers.llama_cpp_provider import load_llama
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import MODE_EMBED
 
         cfg.num_ctx = None
@@ -722,7 +722,7 @@ class TestProviderInvalidateLoadCache:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """invalidate_load_cache() with no path drops every cached model."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
         from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
 
         cfg.num_ctx = 8192
@@ -743,7 +743,7 @@ class TestProviderInvalidateLoadCache:
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
         """invalidate_load_cache(path) leaves entries for other paths intact."""
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.providers.llama_cpp import LlamaCppProvider
         from lilbee.providers.model_cache import MODE_CHAT
 
         cfg.num_ctx = 8192
@@ -810,7 +810,7 @@ class TestProviderInvalidateLoadCache:
 class TestSuppressStderrThreadSafety:
     def test_concurrent_suppress_native_stderr_no_corruption(self) -> None:
         """B3: suppress_native_stderr serializes fd 2 manipulation via _STDERR_LOCK."""
-        from lilbee.providers.llama_cpp_provider import suppress_native_stderr
+        from lilbee.providers.llama_cpp.log_dispatch import suppress_native_stderr
 
         results: list[int] = []
         errors: list[Exception] = []
@@ -835,7 +835,7 @@ class TestSuppressStderrThreadSafety:
 
     def test_suppress_native_stderr_uses_lock(self) -> None:
         """B3: Verify suppress_native_stderr acquires _STDERR_LOCK."""
-        from lilbee.providers.llama_cpp_provider import _STDERR_LOCK, suppress_native_stderr
+        from lilbee.providers.llama_cpp.log_dispatch import _STDERR_LOCK, suppress_native_stderr
 
         lock_was_held = []
 
@@ -894,3 +894,99 @@ class TestImportLlamaCpp:
 
         with pytest.raises(OSError, match="libsomethingelse"):
             import_llama_cpp()
+
+
+class TestAbortCallbackWiring:
+    """Every Llama construction site wires the abort_callback so Ctrl+C can interrupt ggml."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_abort_flag(self) -> None:
+        from lilbee.providers.llama_cpp.abort_signal import clear_abort
+
+        clear_abort()
+        yield
+        clear_abort()
+
+    def test_construct_llama_passes_abort_callback(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``_construct_llama`` injects ``abort_callback`` into every Llama() call."""
+        from lilbee.providers.llama_cpp.abort_signal import abort_callback as expected_cb
+        from lilbee.providers.llama_cpp.provider import load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = 2048
+        mock_llama_cpp.Llama.return_value.metadata = {}
+
+        load_llama(models_dir / "test-model.gguf", mode=MODE_CHAT)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is expected_cb
+
+    def test_read_gguf_metadata_passes_abort_callback(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``read_gguf_metadata`` wires the abort flag into its vocab-only Llama load."""
+        from lilbee.providers.llama_cpp.abort_signal import abort_callback as expected_cb
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        read_gguf_metadata(models_dir / "test-model.gguf")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is expected_cb
+        assert call_kwargs["vocab_only"] is True
+
+    def test_load_vision_llama_passes_abort_callback(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``load_vision_llama`` wires the abort flag into the vision Llama load."""
+        from lilbee.providers.llama_cpp.abort_signal import abort_callback as expected_cb
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+        with mock.patch(
+            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+            return_value=mock.MagicMock(),
+        ):
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is expected_cb
+
+    def test_chat_iterator_releases_lock_when_stream_returns_early(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """A stream that polls ``abort_callback`` and returns early frees the chat lock."""
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.llama_cpp.abort_signal import (
+            abort_callback as cb,
+        )
+        from lilbee.providers.llama_cpp.abort_signal import (
+            request_abort,
+        )
+
+        def streaming_response() -> Any:
+            yield {"choices": [{"delta": {"content": "first"}}]}
+            # Simulate ggml polling abort_callback every chunk; flip the flag
+            # mid-stream and verify the next iteration honors it.
+            request_abort()
+            if cb():
+                return
+            yield {"choices": [{"delta": {"content": "should-not-emit"}}]}  # pragma: no cover
+
+        instance = mock.MagicMock()
+        instance.create_chat_completion.return_value = streaming_response()
+        mock_llama_cpp.Llama.return_value = instance
+
+        provider = LlamaCppProvider()
+        try:
+            result = provider.chat([{"role": "user", "content": "hi"}], stream=True)
+            tokens = list(result)
+            assert tokens == ["first"]
+            # Lock must be released after a clean stream stop.
+            assert provider._chat_lock.acquire(blocking=False)
+            provider._chat_lock.release()
+        finally:
+            provider.shutdown()

@@ -1,4 +1,4 @@
-"""lilbee HTTP server — framework-agnostic handlers + Litestar adapter."""
+"""lilbee HTTP server: framework-agnostic handlers + Litestar adapter."""
 
 
 def create_app():  # type: ignore[no-untyped-def]

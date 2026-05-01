@@ -17,8 +17,8 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
-from lilbee.config import cfg
-from lilbee.services import set_services
+from lilbee.core.config import cfg
+from lilbee.core.services import set_services
 
 
 @pytest.fixture(autouse=True)

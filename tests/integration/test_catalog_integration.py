@@ -1,4 +1,4 @@
-"""Integration tests for catalog — verifies featured models against real HF API.
+"""Integration tests for catalog: verifies featured models against real HF API.
 
 Run with:
     uv run pytest tests/integration/test_catalog_integration.py -v -m slow

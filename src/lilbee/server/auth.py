@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class SessionManager:
         return hmac.compare_digest(auth_header, f"Bearer {self.token}")
 
 
-# Singleton instance — used by AuthMiddleware and the app lifespan.
+# Singleton instance: used by AuthMiddleware and the app lifespan.
 session_manager = SessionManager()
 
 
