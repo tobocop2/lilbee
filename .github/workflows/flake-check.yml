@@ -27,7 +27,7 @@ jobs:
             system: aarch64-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: DeterminateSystems/nix-installer-action@main
       - name: nix flake check
         run: nix flake check --all-systems
