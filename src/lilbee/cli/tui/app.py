@@ -96,6 +96,9 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
+_MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model"})
+
+
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
     # Lazy: llama_cpp provider's transitive imports cost ~500ms.
@@ -104,6 +107,13 @@ def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     key, _value = payload
     if key in LOAD_AFFECTING_KEYS:
         get_services().provider.invalidate_load_cache()
+    if key in _MODEL_REF_KEYS:
+        # Architecture cache is keyed on the active refs; a swap
+        # would otherwise return stale metadata until the screen
+        # was rebuilt.
+        from lilbee.modelhub.model_info import invalidate_cache
+
+        invalidate_cache()
 
 
 class LilbeeApp(App[None]):

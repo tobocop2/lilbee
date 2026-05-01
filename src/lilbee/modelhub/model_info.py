@@ -20,12 +20,40 @@ class ModelArchInfo:
     active_handler: str = "not loaded"
 
 
+# Cache: (chat_model_ref, embed_model_ref, vision_model_ref) -> ModelArchInfo.
+# Reading GGUF headers is hundreds of ms cold (file open + parse + first
+# llama_cpp import); the result is stable as long as the configured refs
+# stay the same. Status screen visits, MCP status calls, and any other
+# read-side caller share this cache. ``invalidate_cache`` lets settings
+# updates clear it explicitly when a model ref changes.
+_arch_cache: dict[tuple[str, str, str], ModelArchInfo] = {}
+
+
+def _cache_key() -> tuple[str, str, str]:
+    return (
+        cfg.chat_model or "",
+        cfg.embedding_model or "",
+        getattr(cfg, "vision_model", "") or "",
+    )
+
+
+def invalidate_cache() -> None:
+    """Drop the architecture cache. Call when a model ref changes."""
+    _arch_cache.clear()
+
+
 def get_model_architecture() -> ModelArchInfo:
     """Return architecture metadata for the currently configured models.
-    Reads GGUF headers for chat, embedding, and (optionally) vision models.
-    Falls back gracefully if llama-cpp-python is not installed or models
-    are not available.
+
+    Memoized on (chat_model, embed_model, vision_model). First call
+    reads GGUF headers for each; subsequent calls under the same refs
+    return the cached result instantly. Falls back gracefully if
+    llama-cpp-python is not installed or models are not available.
     """
+    key = _cache_key()
+    cached = _arch_cache.get(key)
+    if cached is not None:
+        return cached
     info = ModelArchInfo()
     try:
         import lilbee.providers.llama_cpp  # noqa: F401
@@ -35,6 +63,7 @@ def get_model_architecture() -> ModelArchInfo:
         info = _read_vision_arch(info)
     except ImportError:
         pass
+    _arch_cache[key] = info
     return info
 
 
