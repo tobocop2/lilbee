@@ -53,7 +53,7 @@ class TestSplashE2EWithPTY:
 
 
 class TestSplashE2ENonTTY:
-    """Tests running without a TTY — animation should be suppressed."""
+    """Tests running without a TTY: animation should be suppressed."""
 
     def test_no_animation_in_pipe(self) -> None:
         """When stdout/stderr are pipes (not a TTY), no animation should appear."""
@@ -80,10 +80,10 @@ class TestSplashE2ENonTTY:
 class TestSplashSubprocessLifecycle:
     """Tests that the splash subprocess starts and stops reliably."""
 
-    @patch("lilbee.splash._should_skip", return_value=False)
+    @patch("lilbee.runtime.splash._should_skip", return_value=False)
     def test_start_stop_no_orphan(self, _mock_skip: object) -> None:
         """Starting and stopping should leave no orphan process."""
-        from lilbee.splash import start, stop
+        from lilbee.runtime.splash import start, stop
 
         handle = start()
         assert handle is not None
@@ -95,10 +95,10 @@ class TestSplashSubprocessLifecycle:
             with pytest.raises(OSError):
                 os.kill(pid, 0)
 
-    @patch("lilbee.splash._should_skip", return_value=False)
+    @patch("lilbee.runtime.splash._should_skip", return_value=False)
     def test_child_exits_on_parent_fd_close(self, _mock_skip: object) -> None:
         """Child should exit when the parent's write fd is closed."""
-        from lilbee.splash import start
+        from lilbee.runtime.splash import start
 
         handle = start()
         assert handle is not None

@@ -316,7 +316,7 @@ class TestListDraftsWithOnlyDriftMarker:
 
 
 class TestPendingKindDetection:
-    """Phase D: batched-generation markers surface via ``pending_kind``."""
+    """Batched-generation markers surface via ``pending_kind``."""
 
     def test_pending_parse_marker_surfaces_kind(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"

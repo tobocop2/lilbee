@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -15,12 +14,13 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.signal import Signal
 
-from lilbee import settings
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.config import cfg
-from lilbee.services import get_services, reset_services
+from lilbee.core import settings
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services
+from lilbee.providers.llama_cpp.abort_signal import request_abort
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,11 @@ DARK_THEMES = (
     "solarized-dark",
     "textual-dark",
 )
+
+
+def _view_screen_name(view_name: str) -> str:
+    """Stable install_screen identifier for a top-level view (lower-cased)."""
+    return view_name.lower()
 
 
 def _make_catalog() -> Screen:
@@ -87,28 +92,20 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
+_MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model", "reranker_model"})
+
+
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
-    # Lazy: llama_cpp_provider's transitive imports cost ~500ms.
-    from lilbee.providers.llama_cpp_provider import LOAD_AFFECTING_KEYS
+    from lilbee.providers.llama_cpp.provider import LOAD_AFFECTING_KEYS
 
     key, _value = payload
     if key in LOAD_AFFECTING_KEYS:
         get_services().provider.invalidate_load_cache()
+    if key in _MODEL_REF_KEYS:
+        from lilbee.modelhub.model_info import invalidate_cache
 
-
-def _restore_terminal_via_driver(app: App[None]) -> None:
-    """Run Textual's own ``Driver.stop_application_mode`` before ``os._exit``. (bb-6b86)
-
-    TODO bb-4ik2: this whole helper goes away once inference is interruptible
-    via llama_cpp's abort_callback. ``app.exit()`` will reach Textual's normal
-    teardown and ``_force_quit`` / ``os._exit`` are no longer needed.
-    """
-    driver = getattr(app, "_driver", None)
-    if driver is None:
-        return
-    with contextlib.suppress(Exception):
-        driver.stop_application_mode()
+        invalidate_cache()
 
 
 class LilbeeApp(App[None]):
@@ -127,26 +124,12 @@ class LilbeeApp(App[None]):
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
-        # priority=True is required: even though NavAwareInput lets [ and ]
-        # bubble past Input.check_consume_key, Textual's focused Input still
-        # handles printable keys in _on_key before a non-priority ancestor
-        # binding can fire. Both NavAwareInput and priority=True are needed.
-        Binding(
-            "left_square_bracket",
-            "nav_prev",
-            "Prev",
-            show=True,
-            group=_NAV_GROUP,
-            priority=True,
-        ),
-        Binding(
-            "right_square_bracket",
-            "nav_next",
-            "Next",
-            show=True,
-            group=_NAV_GROUP,
-            priority=True,
-        ),
+        # Non-priority: a focused Input or TextArea consumes the printable
+        # before this binding fires, so brackets type literally inside any
+        # input. With no input focused, the bindings reach the app and
+        # navigate. This mirrors vim-style insert vs. normal modes.
+        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
+        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
@@ -157,8 +140,14 @@ class LilbeeApp(App[None]):
         self.active_view = msg.DEFAULT_VIEW
         self._switching = False
         self._theme_index = 0
-        self.last_quit_time: float = 0.0
+        # Names of non-Chat screens already installed via install_screen.
+        # Subsequent visits switch by name to reuse the same instance,
+        # so Footer / signal / worker wiring runs once per session.
+        self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
+        self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
+            self, "provider_availability_changed"
+        )
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
         self.task_bar = TaskBarController(self)
@@ -167,7 +156,8 @@ class LilbeeApp(App[None]):
         yield from ()  # screens compose their own ViewTabs + Footer
 
     def on_mount(self) -> None:
-        self.title = f"lilbee — {cfg.chat_model}"
+        self._canonicalize_persisted_models()
+        self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the gruvbox default.
         persisted = cfg.theme or _DEFAULT_THEME
@@ -175,6 +165,7 @@ class LilbeeApp(App[None]):
         self._sync_theme_index_to_current()
 
         self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
+        self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -183,6 +174,37 @@ class LilbeeApp(App[None]):
         self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
+
+    def _canonicalize_persisted_models(self) -> None:
+        """Swap stale persisted refs to a working fallback for this session."""
+        from lilbee.modelhub.model_manager import (
+            ValidationResult,
+            canonicalize_chat_model,
+            canonicalize_embedding_model,
+        )
+
+        for canon, field, label in (
+            (canonicalize_chat_model(), "chat_model", "Chat"),
+            (canonicalize_embedding_model(), "embedding_model", "Embedding"),
+        ):
+            if canon.status == ValidationResult.OK or canon.original == canon.effective:
+                continue
+            setattr(cfg, field, canon.effective)
+            self.notify(
+                msg.MODEL_FALLBACK_NOTICE.format(
+                    label=label, original=canon.original, effective=canon.effective
+                ),
+                severity="warning",
+                timeout=8,
+            )
+
+    def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
+        """Republish on provider_availability_changed_signal when an API key changes."""
+        from lilbee.core.config.keys import PROVIDER_API_KEYS
+
+        key, value = payload
+        if key in PROVIDER_API_KEYS:
+            self.provider_availability_changed_signal.publish((key, value))
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
@@ -203,32 +225,29 @@ class LilbeeApp(App[None]):
         settings.set_value(cfg.data_root, "theme", name)
 
     def set_active_model(self, key: str, value: str) -> None:
-        """Single write boundary for active model refs; persists the
-        post-validator value so subscribers see the normalized form."""
+        """Single write boundary for active model refs."""
+        setattr(cfg, key, value)
+        normalized = getattr(cfg, key)
+        settings.set_value(cfg.data_root, key, normalized)
+        self.settings_changed_signal.publish((key, normalized))
+
+    def set_setting(self, key: str, value: object) -> None:
+        """Single write boundary for non-model settings."""
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         settings.set_value(cfg.data_root, key, normalized)
         self.settings_changed_signal.publish((key, normalized))
 
     def _sync_theme_index_to_current(self) -> None:
-        """Align the cycle index with the active theme so Ctrl+T moves from there."""
+        """Align cycle index with the active theme."""
         try:
             self._theme_index = DARK_THEMES.index(self.theme)
         except ValueError:
             self._theme_index = 0
 
     async def action_quit(self) -> None:
-        """Context-aware Ctrl+C: cancel active task > cancel stream > quit.
-        On second Ctrl+C (within 2s), force-exits via os._exit to handle
-        cases where the GIL is held by native code.
-        """
-        import time
-
-        now = time.monotonic()
-        if now - self.last_quit_time < 2.0:
-            self._force_quit()
-            return
-        self.last_quit_time = now
+        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        request_abort()
 
         if not self.task_bar.queue.is_empty:
             active = self.task_bar.queue.active_task
@@ -248,25 +267,11 @@ class LilbeeApp(App[None]):
             return
         self.exit()
 
-    def _force_quit(self) -> None:
-        """Force-exit when normal quit is blocked (e.g. GIL held by native code).
-
-        Run Textual's driver teardown first so the next shell command
-        isn't fed alt-screen / paste / focus / kitty-keyboard escape
-        bytes. (bb-6b86)
-        """
-        with contextlib.suppress(Exception):
-            reset_services()
-        _restore_terminal_via_driver(self)
-        os._exit(1)
-
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view via lazy screen factories.
+        """Switch to a named view, installing each screen at most once.
 
-        Guards against concurrent switches: ``switch_screen`` is async
-        (processed on the next event-loop tick) but callers read
-        ``active_view`` synchronously. Without a guard, rapid keypresses
-        queue conflicting switches that corrupt the screen stack.
+        Guards against concurrent switches via ``self._switching`` so
+        rapid keypresses don't corrupt the screen stack.
         ``active_view`` is updated after the switch completes.
         """
         if self._switching:
@@ -284,7 +289,11 @@ class LilbeeApp(App[None]):
             if factory is None:
                 self._switching = False
                 return
-            self.switch_screen(factory())
+            screen_name = _view_screen_name(view_name)
+            if screen_name not in self._installed_screen_names:
+                self.install_screen(factory(), name=screen_name)
+                self._installed_screen_names.add(screen_name)
+            self.switch_screen(screen_name)
 
         def _finish() -> None:
             self.active_view = view_name
@@ -320,9 +329,18 @@ class LilbeeApp(App[None]):
 
 
 def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
-    """Route model writes through LilbeeApp.set_active_model; bare-App fallback for tests."""
+    """Route model writes through set_active_model, falling back to direct cfg+settings writes."""
     if isinstance(host_app, LilbeeApp):
         host_app.set_active_model(key, value)
+        return
+    setattr(cfg, key, value)
+    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+
+
+def apply_setting(host_app: App[Any], key: str, value: object) -> None:
+    """Route non-model settings writes through set_setting, falling back to direct writes."""
+    if isinstance(host_app, LilbeeApp):
+        host_app.set_setting(key, value)
         return
     setattr(cfg, key, value)
     settings.set_value(cfg.data_root, key, getattr(cfg, key))

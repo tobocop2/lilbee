@@ -1,13 +1,10 @@
 """Tests for the wiki link-rewriter and persist/finalize helpers.
 
-Phase D removed the per-entity and per-concept dispatch that used to
-live here (``generate_concept_page`` / ``generate_entity_page`` / the
-noun-chunk-driven ``_gather_chunks_for_label`` path). The remaining
-coverage targets the still-live helpers: ``_entity_surface_map``,
-``_augment_surface_map_with_existing_pages``, ``_persist_and_finalize``,
-``_generate_page`` progress events, and that ``build_wiki`` still
-rewrites [[links]] across the wiki tree after its per-source batched
-calls complete.
+Coverage targets: ``_entity_surface_map``,
+``_augment_surface_map_with_existing_pages``, ``persist_and_finalize``,
+``generate_page`` progress events, and that ``build_wiki`` rewrites
+[[links]] across the wiki tree after its per-source batched calls
+complete.
 """
 
 from __future__ import annotations
@@ -17,32 +14,33 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.store import SearchChunk
+from lilbee.core.config import cfg
+from lilbee.data.store import SearchChunk
+from lilbee.wiki.batch import hash_existing_sources
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.gen import (
+from lilbee.wiki.generation import (
     _augment_surface_map_with_existing_pages,
     _entity_surface_map,
-    _hash_existing_sources,
     build_wiki,
 )
 
 
 @pytest.fixture(autouse=True)
 def _stub_wiki_index_services(monkeypatch):
-    """Stub ``get_services`` inside ``wiki.gen`` so tests that drive
-    ``_persist_and_finalize`` don't hit the real provider when the
-    wiki-body indexer runs.
+    """Stub ``get_services`` inside the wiki page + quality modules so tests
+    that drive ``persist_and_finalize`` don't hit the real provider when the
+    wiki-body indexer or the embedding faithfulness scorer runs.
     """
     svc = MagicMock()
     svc.embedder.embed_batch.side_effect = lambda texts, **kw: [
         [0.1] * cfg.embedding_dim for _ in texts
     ]
-    monkeypatch.setattr("lilbee.wiki.gen.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.page.get_services", lambda: svc)
+    monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
     return svc
 
 
@@ -64,14 +62,14 @@ def _chunk(source: str, index: int, text: str) -> SearchChunk:
 class TestHashExistingSources:
     def test_skips_missing_files(self, tmp_path: Path) -> None:
         (tmp_path / "present.txt").write_text("hello")
-        result = _hash_existing_sources(["present.txt", "missing.txt"], tmp_path)
+        result = hash_existing_sources(["present.txt", "missing.txt"], tmp_path)
         assert "present.txt" in result
         assert "missing.txt" not in result
 
     def test_returns_hashes_for_existing(self, tmp_path: Path) -> None:
         (tmp_path / "a.txt").write_text("alpha")
         (tmp_path / "b.txt").write_text("beta")
-        result = _hash_existing_sources(["a.txt", "b.txt"], tmp_path)
+        result = hash_existing_sources(["a.txt", "b.txt"], tmp_path)
         assert set(result) == {"a.txt", "b.txt"}
         assert result["a.txt"] != result["b.txt"]
 
@@ -80,7 +78,7 @@ class TestPersistAndFinalize:
     """wiki_prune_raw drops the raw chunks once a page lands successfully."""
 
     def test_prune_raw_deletes_source_chunks(self, tmp_path: Path) -> None:
-        from lilbee.wiki.gen import _persist_and_finalize
+        from lilbee.wiki.persistence import persist_and_finalize
         from lilbee.wiki.shared import PageTarget
 
         cfg.wiki_prune_raw = True
@@ -96,7 +94,7 @@ class TestPersistAndFinalize:
             label="braking",
         )
         store = MagicMock()
-        _persist_and_finalize(
+        persist_and_finalize(
             "# braking\n\nbody.\n",
             target,
             verified=[],
@@ -109,10 +107,10 @@ class TestPersistAndFinalize:
 
 
 class TestGeneratePageProgress:
-    """_generate_page forwards progress events to the on_progress callback."""
+    """generate_page forwards progress events to the on_progress callback."""
 
     def test_progress_callback_receives_generating_stage(self, tmp_path: Path) -> None:
-        from lilbee.wiki.gen import _generate_page
+        from lilbee.wiki.page import generate_page
 
         cfg.data_root = tmp_path
         (tmp_path / cfg.wiki_dir).mkdir(parents=True, exist_ok=True)
@@ -120,7 +118,7 @@ class TestGeneratePageProgress:
         provider = MagicMock()
         provider.get_capabilities.return_value = []
         provider.chat.side_effect = RuntimeError("simulated")
-        _generate_page(
+        generate_page(
             label="topic",
             prompt="p",
             chunks=[_chunk("a.txt", 0, "body")],
@@ -187,7 +185,7 @@ class TestSurfaceMapHelpers:
         assert mapping["tire pressure"] == "custom-slug"
 
 
-def _write_phase_d_sentinel(tmp_path: Path) -> None:
+def _write_legacy_concepts_sentinel(tmp_path: Path) -> None:
     """Skip the one-time migration so pre-existing concept fixtures
     stay where the test wrote them."""
     sentinel = cfg.data_dir / ".phase-d-migrated"
@@ -200,7 +198,7 @@ class TestBuildWikiRewritesLinks:
 
     def test_rewrites_existing_pages(self, tmp_path: Path) -> None:
         cfg.data_root = tmp_path
-        _write_phase_d_sentinel(tmp_path)
+        _write_legacy_concepts_sentinel(tmp_path)
         wiki_root = tmp_path / cfg.wiki_dir
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "summaries").mkdir()
@@ -220,7 +218,7 @@ class TestBuildWikiRewritesLinks:
             ),
         ]
         # Prevent the per-source batch from actually calling the LLM.
-        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]):
+        with patch("lilbee.wiki.generation.generate_source_batch", return_value=[]):
             build_wiki(entities, MagicMock(), MagicMock(), cfg)
 
         concept_body = (wiki_root / "concepts" / "braking.md").read_text()
@@ -233,7 +231,7 @@ class TestBuildWikiRewritesLinks:
         (tmp_path / cfg.wiki_dir).mkdir(parents=True, exist_ok=True)
         store = MagicMock()
         store.get_sources.return_value = []
-        with patch("lilbee.wiki.gen._generate_source_batch") as batch:
+        with patch("lilbee.wiki.generation.generate_source_batch") as batch:
             build_wiki([], MagicMock(), store, cfg)
         batch.assert_not_called()
 
@@ -242,7 +240,7 @@ class TestBuildWikiRewritesLinks:
         rewriter is actively editing it with OTHER slugs.
         """
         cfg.data_root = tmp_path
-        _write_phase_d_sentinel(tmp_path)
+        _write_legacy_concepts_sentinel(tmp_path)
         wiki_root = tmp_path / cfg.wiki_dir
         (wiki_root / "concepts").mkdir(parents=True)
         (wiki_root / "concepts" / "braking.md").write_text(
@@ -257,7 +255,7 @@ class TestBuildWikiRewritesLinks:
                 chunk_refs=(ChunkRef("a.txt", 1),),
             ),
         ]
-        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]):
+        with patch("lilbee.wiki.generation.generate_source_batch", return_value=[]):
             build_wiki(entities, MagicMock(), MagicMock(), cfg)
         body = (wiki_root / "concepts" / "braking.md").read_text()
         assert "[[henry-ford]]" in body
@@ -278,6 +276,6 @@ class TestBuildWikiDefaults:
         )
         store = MagicMock()
         store.get_chunks_by_source.return_value = [_chunk("a.txt", 0, "body")]
-        with patch("lilbee.wiki.gen._generate_source_batch", return_value=[]) as batch:
+        with patch("lilbee.wiki.generation.generate_source_batch", return_value=[]) as batch:
             build_wiki([rec], MagicMock(), store, None)
         batch.assert_called_once()

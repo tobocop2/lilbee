@@ -30,6 +30,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
+          # x86_64 build cap at AVX baseline (Sandy Bridge 2011+) so ggml
+          # doesn't bake AVX2/FMA/BMI2 into a wheel that the runner pool's
+          # weakest CPU can't run. See tools/wheel-build/cmake_args.sh for
+          # the full rationale (CPU_ALL_VARIANTS + BACKEND_DL builds but
+          # llama-cpp-python's binding never registers the dynamic backends).
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF
@@ -187,6 +192,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
+          # x86_64 builds cap at AVX baseline so ggml doesn't bake AVX2/FMA/BMI2
+          # into a wheel that crashes on the runner pool's weaker CPUs. See
+          # tools/wheel-build/cmake_args.sh for why CPU_ALL_VARIANTS + BACKEND_DL
+          # isn't viable with llama-cpp-python's Python binding.
           CMAKE_ARGS: >-
             -DGGML_METAL=OFF
             -DGGML_NATIVE=OFF

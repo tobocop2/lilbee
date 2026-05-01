@@ -1,4 +1,4 @@
-"""Tests for registry.py — manifest-keyed by (hf_repo, gguf_filename)."""
+"""Tests for registry.py: manifest-keyed by (hf_repo, gguf_filename)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.registry import (
+from lilbee.modelhub.registry import (
     ModelManifest,
     ModelRegistry,
     _sha256_file,
@@ -332,7 +332,7 @@ class TestModelRegistryWriteManifestErrors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If os.replace fails, the temp file is unlinked instead of leaking."""
-        from lilbee import registry as registry_mod
+        from lilbee.modelhub import registry as registry_mod
 
         registry = ModelRegistry(tmp_path)
         manifest = _make_manifest()

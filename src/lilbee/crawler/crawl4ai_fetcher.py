@@ -5,12 +5,13 @@ THIS IS THE ONLY FILE IN THE PROJECT THAT IMPORTS ``crawl4ai``.
 Swapping to a different web-fetching SDK is a one-file change:
 delete this module, add a replacement that implements
 :class:`lilbee.crawler.fetcher.WebFetcher`, and update the one
-import in :mod:`lilbee.crawler.api`.
+import in :mod:`lilbee.crawler.runner`.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import io
 import logging
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from lilbee.crawler import bootstrap
-from lilbee.crawler.bootstrap import CrawlerBrowserMissing
+from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
@@ -98,7 +99,7 @@ class _LilbeeAsyncCrawler:
 async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
     """Open a crawler.
 
-    Raises :class:`CrawlerBrowserMissing` early if the Chromium binary
+    Raises :class:`CrawlerBrowserError` early if the Chromium binary
     hasn't been downloaded. Without this guard Playwright prints a full
     ASCII install banner that leaks into the TUI.
 
@@ -108,7 +109,7 @@ async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> Async
     one, so it passes None and gets a bare AsyncWebCrawler.
     """
     if not bootstrap.chromium_installed():
-        raise CrawlerBrowserMissing(
+        raise CrawlerBrowserError(
             "Playwright Chromium browser not installed. "
             "Run 'uv run playwright install chromium' to enable /crawl."
         )
@@ -218,7 +219,7 @@ class Crawl4aiFetcher:
 
     Migrating off crawl4ai means replacing this class with another
     :class:`WebFetcher` implementor (e.g. a ``KreuzcrawlFetcher``) and
-    updating the one construction site in :mod:`lilbee.crawler.api`.
+    updating the one construction site in :mod:`lilbee.crawler.runner`.
     """
 
     def __init__(self, *, quiet: bool = False) -> None:
@@ -349,6 +350,7 @@ if TYPE_CHECKING:
     _: WebFetcher = Crawl4aiFetcher()
 
 
+@functools.cache
 def crawler_available() -> bool:
     """Check if the crawl4ai backend is importable (i.e. the extra is installed)."""
     try:

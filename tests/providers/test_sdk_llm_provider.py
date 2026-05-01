@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.sdk_backend import (
     CompletionRequest,

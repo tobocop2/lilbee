@@ -16,12 +16,15 @@ from textual.widgets.option_list import Option
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.cli.tui.command_registry import completion_names
-from lilbee.services import get_services
+from lilbee.core.services import get_services
 
 log = logging.getLogger(__name__)
 
 _SLASH_COMMANDS = completion_names()
 _MAX_VISIBLE = 8  # max dropdown items shown at once
+# Hard cap on path completions surfaced for /add so a deep directory doesn't
+# stall the dropdown rebuild.
+_MAX_PATH_COMPLETIONS = 20
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 
@@ -54,7 +57,7 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
 
 def _model_options() -> list[str]:
     try:
-        from lilbee.models import list_installed_models
+        from lilbee.modelhub.models import list_installed_models
 
         return list_installed_models()
     except Exception:
@@ -105,7 +108,7 @@ def _path_options(partial: str = "") -> list[str]:
             if p.is_dir():
                 display = display.rstrip("/") + "/"
             results.append(display)
-            if len(results) >= 20:
+            if len(results) >= _MAX_PATH_COMPLETIONS:
                 break
         return results
     except Exception:

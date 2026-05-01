@@ -204,7 +204,9 @@ class LlmSdkBackend(Protocol):
     def list_chat_models(self, provider: str) -> list[str]:
         """List chat-mode models from the SDK's catalog for *provider*.
 
-        Return ``[]`` if the backend has no catalog of frontier models.
+        Returns the unfiltered upstream catalog. Backends without a
+        notion of frontier providers return ``[]``.
+
         Unlike ``list_models``, this is a static pricing/capability table,
         not a runtime HTTP probe.
         """

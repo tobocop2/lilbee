@@ -16,7 +16,7 @@ from conftest import (
 from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture(autouse=True)
@@ -157,7 +157,7 @@ class TestTaskBarUnit:
 class TestRemoteClassification:
     @mock.patch("httpx.get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         mock_get.return_value = mock.MagicMock(
             status_code=200,
@@ -243,7 +243,11 @@ class TestChatScreenAsync:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.action_push_help()
+            # Escape out of the chat Input so ? routes to the binding instead
+            # of being typed as a character.
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("question_mark")
             await pilot.pause()
             assert app.screen.query("HelpPanel")
 
@@ -376,7 +380,7 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
-            catalog.action_go_back()
+            await pilot.press("escape")
             await pilot.pause()
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
@@ -398,7 +402,8 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
-            await pilot.pause()
+            for _ in range(8):
+                await pilot.pause()
             # Focus the filter input explicitly to match the scenario.
             catalog.query_one("#catalog-search", Input).focus()
             await pilot.pause()
@@ -472,7 +477,7 @@ class TestSettingsScreenAsync:
             await pilot.pause()
             app.push_screen(SettingsScreen())
             await pilot.pause()
-            groups = app.screen.query(".setting-group")
+            groups = app.screen.query("TabPane")
             assert len(groups) > 0
 
 
@@ -487,7 +492,7 @@ class TestStatusScreenAsync:
         mock_svc.store.get_sources.return_value = []
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
-        from lilbee.services import set_services
+        from lilbee.core.services import set_services
 
         set_services(mock_svc)
         try:
@@ -525,9 +530,9 @@ class TestCLIIntegration:
         """TTY environment launches TUI."""
         mock_stdin.isatty.return_value = True
         mock_stdout.isatty.return_value = True
-        from lilbee.cli.commands import chat
+        from lilbee.cli.commands.search_chat import chat
 
-        with mock.patch("lilbee.cli.commands.apply_overrides"):
+        with mock.patch("lilbee.cli.commands.search_chat.apply_overrides"):
             chat(
                 data_dir=None,
                 model=None,
@@ -587,7 +592,7 @@ class TestThemes:
 class TestDetectRemoteEmbeddings:
     @mock.patch("httpx.get")
     def test_detects_bert_family(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import detect_remote_embedding_models
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         mock_get.return_value = mock.MagicMock(
             status_code=200,
@@ -604,7 +609,7 @@ class TestDetectRemoteEmbeddings:
 
     @mock.patch("httpx.get", side_effect=Exception("connection refused"))
     def test_returns_empty_on_error(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import detect_remote_embedding_models
+        from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         assert detect_remote_embedding_models() == []
 
@@ -669,7 +674,7 @@ class TestSetupWizard:
 
 class TestCanonicalModelsDir:
     def test_returns_platform_path(self) -> None:
-        from lilbee.system import canonical_models_dir
+        from lilbee.core.system import canonical_models_dir
 
         result = canonical_models_dir()
         assert result.name == "models"
@@ -678,7 +683,7 @@ class TestCanonicalModelsDir:
 
 class TestRemoteToRow:
     def test_creates(self) -> None:
-        from lilbee.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager import RemoteModel
 
         rm = RemoteModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
         row = remote_to_row(rm)
@@ -841,7 +846,8 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert any("Search" in d for d in visible)
+        # Search binding was removed when the settings filter was dropped.
+        assert not any("Search" in d for d in visible)
         assert len(visible) <= 4
 
 

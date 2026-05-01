@@ -80,7 +80,7 @@ class TestDispatchModuleInvocation:
     def test_returns_false_when_not_frozen(self) -> None:
         with (
             mock.patch.object(main_mod.sys, "frozen", False, create=True),
-            mock.patch.object(main_mod.sys, "argv", ["bin", "-m", "lilbee.system"]),
+            mock.patch.object(main_mod.sys, "argv", ["bin", "-m", "lilbee.core.system"]),
         ):
             assert main_mod._dispatch_module_invocation() is False
 
@@ -106,7 +106,7 @@ class TestDispatchModuleInvocation:
             assert main_mod._dispatch_module_invocation() is False
 
     def test_routes_lilbee_module_through_runpy(self) -> None:
-        argv_in = ["bin", "-m", "lilbee.system", "extra"]
+        argv_in = ["bin", "-m", "lilbee.core.system", "extra"]
         captured: dict[str, object] = {}
 
         def fake_run_module(name: str, *, run_name: str, alter_sys: bool) -> None:
@@ -122,7 +122,7 @@ class TestDispatchModuleInvocation:
         ):
             assert main_mod._dispatch_module_invocation() is True
 
-        assert captured["name"] == "lilbee.system"
+        assert captured["name"] == "lilbee.core.system"
         assert captured["run_name"] == "__main__"
         assert captured["alter_sys"] is True
-        assert captured["argv_at_call"] == ["lilbee.system", "extra"]
+        assert captured["argv_at_call"] == ["lilbee.core.system", "extra"]

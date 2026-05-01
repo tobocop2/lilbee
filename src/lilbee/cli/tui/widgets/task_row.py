@@ -40,7 +40,7 @@ _STATUS_CLASS: dict[TaskStatus, str] = {
 
 _STATUS_CLASSES: tuple[str, ...] = tuple(_STATUS_CLASS.values())
 
-# Pill palette — background color per task type. Sync/add/remove share
+# Pill palette: background color per task type. Sync/add/remove share
 # $secondary (data-mutating ops), download uses $accent (network), wiki
 # uses $warning (CPU-heavy generation), crawl uses $primary (external).
 _TASK_TYPE_BG: dict[str, str] = {
@@ -54,7 +54,7 @@ _TASK_TYPE_BG: dict[str, str] = {
 }
 _TASK_TYPE_BG_FALLBACK = "$primary"
 
-# Pill palette — status badge. QUEUED is muted so only the running ones
+# Pill palette: status badge. QUEUED is muted so only the running ones
 # pop; DONE / FAILED / CANCELLED use brightened backgrounds so terminal
 # states stand out against the matching left-rail color.
 _STATUS_BG: dict[TaskStatus, str] = {

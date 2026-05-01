@@ -8,9 +8,10 @@ from litestar.params import Parameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
+from lilbee.core.config.validators import TaskMismatchError
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
-from lilbee.server.handlers import ModelsResponse
+from lilbee.server.handlers import ModelsResponse, format_task_mismatch
 from lilbee.server.models import (
     ExternalModelsResponse,
     ModelsCatalogResponse,
@@ -20,6 +21,13 @@ from lilbee.server.models import (
     SetModelRequest,
     SetModelResponse,
 )
+
+
+def _task_mismatch_detail(exc: ValueError) -> str:
+    """Format a 422 detail string, expanding TaskMismatchError into HTTP guidance."""
+    if isinstance(exc, TaskMismatchError):
+        return format_task_mismatch(exc.ref, exc.entry_task, exc.expected_task)
+    return str(exc)
 
 
 class PullRequest(BaseModel):
@@ -49,7 +57,7 @@ async def models_set_chat_route(data: SetModelRequest) -> SetModelResponse:
     try:
         return await handlers.set_chat_model(model=data.model)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_task_mismatch_detail(exc)) from exc
 
 
 @put("/api/models/embedding")
@@ -58,7 +66,7 @@ async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
     try:
         return await handlers.set_embedding_model(model=data.model)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_task_mismatch_detail(exc)) from exc
 
 
 @put("/api/models/vision")
@@ -67,7 +75,7 @@ async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
     try:
         return await handlers.set_vision_model(model=data.model)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_task_mismatch_detail(exc)) from exc
 
 
 @put("/api/models/reranker")
@@ -76,7 +84,7 @@ async def models_set_reranker_route(data: SetModelRequest) -> SetModelResponse:
     try:
         return await handlers.set_reranker_model(model=data.model)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_task_mismatch_detail(exc)) from exc
 
 
 @get("/api/models/catalog")

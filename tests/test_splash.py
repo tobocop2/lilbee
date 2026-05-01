@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lilbee._splash_runner import (
+from lilbee.runtime._splash_runner import (
     BEE_LINES,
     LOGO_WIDTH,
     apply_color,
@@ -17,7 +17,7 @@ from lilbee._splash_runner import (
     move_up_and_clear,
     render_frame,
 )
-from lilbee.splash import (
+from lilbee.runtime.splash import (
     _SPLASH_FD_ENV,
     _should_skip,
     dismiss,
@@ -28,19 +28,19 @@ from lilbee.splash import (
 
 class TestShouldSkip:
     def test_not_tty(self) -> None:
-        with patch("lilbee.splash.os.isatty", return_value=False):
+        with patch("lilbee.runtime.splash.os.isatty", return_value=False):
             assert _should_skip() is True
 
     def test_env_var_set(self) -> None:
         with (
-            patch("lilbee.splash.os.isatty", return_value=True),
+            patch("lilbee.runtime.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {"LILBEE_NO_SPLASH": "1"}),
         ):
             assert _should_skip() is True
 
     def test_tty_no_env_var(self) -> None:
         with (
-            patch("lilbee.splash.os.isatty", return_value=True),
+            patch("lilbee.runtime.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {}, clear=True),
         ):
             assert _should_skip() is False
@@ -48,14 +48,14 @@ class TestShouldSkip:
 
 class TestStartStop:
     def test_start_returns_none_when_skipped(self) -> None:
-        with patch("lilbee.splash._should_skip", return_value=True):
+        with patch("lilbee.runtime.splash._should_skip", return_value=True):
             assert start() is None
 
     def test_stop_none_is_noop(self) -> None:
         stop(None)
 
     def test_start_and_stop(self) -> None:
-        with patch("lilbee.splash._should_skip", return_value=False):
+        with patch("lilbee.runtime.splash._should_skip", return_value=False):
             handle = start()
             assert handle is not None
             assert handle.process.poll() is None  # still running
@@ -65,7 +65,7 @@ class TestStartStop:
             assert _SPLASH_FD_ENV not in os.environ
 
     def test_start_sets_env_var(self) -> None:
-        with patch("lilbee.splash._should_skip", return_value=False):
+        with patch("lilbee.runtime.splash._should_skip", return_value=False):
             handle = start()
             assert handle is not None
             assert _SPLASH_FD_ENV in os.environ
@@ -76,7 +76,7 @@ class TestStartStop:
 
 class TestDismiss:
     def test_dismiss_no_env_var_no_handle(self) -> None:
-        import lilbee.splash as splash_mod
+        import lilbee.runtime.splash as splash_mod
 
         original = splash_mod._active_handle
         splash_mod._active_handle = None
@@ -90,7 +90,7 @@ class TestDismiss:
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
         os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        import lilbee.splash as splash_mod
+        import lilbee.runtime.splash as splash_mod
 
         original = splash_mod._active_handle
         splash_mod._active_handle = None
@@ -107,7 +107,7 @@ class TestDismiss:
         os.close(read_fd)
         os.close(write_fd)
         os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        import lilbee.splash as splash_mod
+        import lilbee.runtime.splash as splash_mod
 
         original = splash_mod._active_handle
         splash_mod._active_handle = None
@@ -121,11 +121,11 @@ class TestDismiss:
         """dismiss() waits for the subprocess and clears _active_handle
         so atexit does not re-run stop() while Textual owns the terminal.
         """
-        import lilbee.splash as splash_mod
+        import lilbee.runtime.splash as splash_mod
 
         original = splash_mod._active_handle
         try:
-            with patch("lilbee.splash._should_skip", return_value=False):
+            with patch("lilbee.runtime.splash._should_skip", return_value=False):
                 handle = start()
                 assert handle is not None
                 splash_mod._active_handle = handle
@@ -144,8 +144,8 @@ class TestDismiss:
         import subprocess
         from unittest.mock import MagicMock
 
-        import lilbee.splash as splash_mod
-        from lilbee.splash import SplashHandle
+        import lilbee.runtime.splash as splash_mod
+        from lilbee.runtime.splash import SplashHandle
 
         original = splash_mod._active_handle
         mock_proc = MagicMock()
@@ -264,13 +264,13 @@ class TestStopTimeout:
         import subprocess
         from unittest.mock import MagicMock
 
-        from lilbee.splash import SplashHandle, stop
+        from lilbee.runtime.splash import SplashHandle, stop
 
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
         handle = SplashHandle(process=mock_proc, write_fd=-1)
 
-        with patch("lilbee.splash._close_write_fd"):
+        with patch("lilbee.runtime.splash._close_write_fd"):
             stop(handle)
 
         mock_proc.kill.assert_called_once()
@@ -280,7 +280,7 @@ class TestStopTimeout:
 class TestRestoreCursor:
     def test_restore_cursor_oserror(self) -> None:
         """_restore_cursor handles OSError from stderr."""
-        from lilbee.splash import _restore_cursor
+        from lilbee.runtime.splash import _restore_cursor
 
         with patch("sys.stderr") as mock_stderr:
             mock_stderr.write.side_effect = OSError("broken pipe")
@@ -290,14 +290,14 @@ class TestRestoreCursor:
 class TestAtexitCleanup:
     def test_atexit_calls_stop(self) -> None:
         """_atexit_cleanup calls stop when handle is active."""
-        import lilbee.splash as splash_mod
-        from lilbee.splash import _atexit_cleanup
+        import lilbee.runtime.splash as splash_mod
+        from lilbee.runtime.splash import _atexit_cleanup
 
         mock_handle = object()
         original = splash_mod._active_handle
         splash_mod._active_handle = mock_handle
         try:
-            with patch("lilbee.splash.stop") as mock_stop:
+            with patch("lilbee.runtime.splash.stop") as mock_stop:
                 _atexit_cleanup()
                 mock_stop.assert_called_once_with(mock_handle)
         finally:
@@ -305,13 +305,13 @@ class TestAtexitCleanup:
 
     def test_atexit_noop_when_none(self) -> None:
         """_atexit_cleanup is a no-op when no active handle."""
-        import lilbee.splash as splash_mod
-        from lilbee.splash import _atexit_cleanup
+        import lilbee.runtime.splash as splash_mod
+        from lilbee.runtime.splash import _atexit_cleanup
 
         original = splash_mod._active_handle
         splash_mod._active_handle = None
         try:
-            with patch("lilbee.splash.stop") as mock_stop:
+            with patch("lilbee.runtime.splash.stop") as mock_stop:
                 _atexit_cleanup()
                 mock_stop.assert_not_called()
         finally:

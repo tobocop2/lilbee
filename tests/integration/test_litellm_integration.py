@@ -12,7 +12,7 @@ import pytest
 
 litellm = pytest.importorskip("litellm")
 
-from lilbee.config import cfg  # noqa: E402
+from lilbee.core.config import cfg  # noqa: E402
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
 

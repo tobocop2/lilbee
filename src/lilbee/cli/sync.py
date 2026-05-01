@@ -9,11 +9,17 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 from lilbee.cli import theme
-from lilbee.ingest import sync
-from lilbee.progress import EventType, ExtractEvent, FileStartEvent, ProgressEvent, SyncDoneEvent
+from lilbee.data.ingest import sync
+from lilbee.runtime.progress import (
+    EventType,
+    ExtractEvent,
+    FileStartEvent,
+    ProgressEvent,
+    SyncDoneEvent,
+)
 
 if TYPE_CHECKING:
-    from lilbee.progress import DetailedProgressCallback
+    from lilbee.runtime.progress import DetailedProgressCallback
 
 
 def _format_sync_summary(added: int, updated: int, removed: int, failed: int) -> str | None:
@@ -66,7 +72,7 @@ def shutdown_executor() -> None:
 
 
 def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = False) -> None:
-    """Callback attached to background sync futures — logs errors."""
+    """Callback attached to background sync futures: logs errors."""
     exc = future.exception()
     if exc is None:
         return
@@ -83,7 +89,7 @@ def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = Fal
 class SyncStatus:
     """Thread-safe holder for background sync status text.
     The background sync callback writes here; prompt_toolkit's
-    ``bottom_toolbar`` reads it on every render cycle — no cursor
+    ``bottom_toolbar`` reads it on every render cycle: no cursor
     manipulation, no flickering.
     """
 

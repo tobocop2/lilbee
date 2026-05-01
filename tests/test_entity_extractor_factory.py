@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.cli.settings_map import SETTINGS_MAP
-from lilbee.config import WikiEntityMode, cfg
+from lilbee.core.config import WikiEntityMode, cfg
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityExtractor,
@@ -107,7 +107,7 @@ class TestConfigPlumbing:
         assert set(entry.choices) == {m.value for m in WikiEntityMode}
 
     def test_wiki_entity_mode_renamed_to_ner_entities(self) -> None:
-        """Phase D hard rename: NER_CONCEPTS is gone, NER_ENTITIES is the default.
+        """The default mode is NER_ENTITIES; NER_CONCEPTS is not accepted.
 
         No alias shim: an old env var value `ner_concepts` raises a
         ValidationError at assignment. Acceptable because the enum

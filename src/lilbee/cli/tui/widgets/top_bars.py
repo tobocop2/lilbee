@@ -1,8 +1,4 @@
-"""Vertical container docked to the screen's top edge.
-
-Mirrors BottomBars: Textual's ``dock: top`` does not stack siblings,
-so multiple top-docked widgets need a single Vertical wrapper.
-"""
+"""Vertical container docked to the screen's top edge."""
 
 from __future__ import annotations
 

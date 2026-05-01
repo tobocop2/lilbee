@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.ingest import _incremental_wiki_update
+from lilbee.core.config import cfg
+from lilbee.data.ingest.pipeline import _incremental_wiki_update
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
     EntityKind,
@@ -49,7 +49,7 @@ def _install_service_stubs(
     services = MagicMock()
     services.store.get_sources.return_value = []
     services.store.get_chunks_by_source.return_value = []
-    monkeypatch.setattr("lilbee.ingest.get_services", lambda: services)
+    monkeypatch.setattr("lilbee.data.ingest.pipeline.get_services", lambda: services)
     return extractor, services
 
 
@@ -179,9 +179,8 @@ class TestIncrementalWikiUpdate:
     async def test_build_wiki_extract_concepts_false_on_incremental(
         self, monkeypatch: pytest.MonkeyPatch, _isolated_wiki: Path
     ) -> None:
-        """Phase D: the incremental hook passes ``extract_concepts=False``
-        so a sync does not churn LLM-curated concept slugs per source
-        touch.
+        """The incremental hook passes ``extract_concepts=False`` so a
+        sync does not churn LLM-curated concept slugs per source touch.
         """
         cfg.wiki_ingest_update_cap = 10
         touched = _entity("braking", EntityKind.ENTITY, ["changed.txt"])

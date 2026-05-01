@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from lilbee.config import WikiEntityMode
+from lilbee.core.config import WikiEntityMode
 from lilbee.wiki.entity_extractor.base import EntityExtractor
 from lilbee.wiki.entity_extractor.llm_tagged import LlmTaggedExtractor
 from lilbee.wiki.entity_extractor.ner_concepts import NerConceptsExtractor
@@ -15,7 +15,7 @@ from lilbee.wiki.entity_extractor.ner_concepts_plus_llm_types import (
 )
 
 if TYPE_CHECKING:
-    from lilbee.config import Config
+    from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
 
 log = logging.getLogger(__name__)

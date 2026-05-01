@@ -1,38 +1,38 @@
-"""Model status bar — Select dropdowns for chat and embedding models."""
+"""Model status bar: pill buttons for chat / embedding plus mode + scope."""
 
 from __future__ import annotations
 
 import contextlib
 import logging
 from pathlib import Path
-from typing import ClassVar, NamedTuple
+from typing import ClassVar, Literal, NamedTuple
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Select, Static
-from textual.widgets._select import SelectCurrent
 
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model
+from lilbee.cli.tui.app import apply_active_model, apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.config import cfg
-from lilbee.models import ModelTask
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
+from lilbee.core.services import get_services, reset_services
+from lilbee.data.store import SearchScope
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
 from lilbee.providers.sdk_backend import (
     OLLAMA_BACKEND_NAME,
     PROVIDER_KEYS,
     detect_backend_name,
 )
-from lilbee.services import get_services, reset_services
-from lilbee.store import SearchScope
+from lilbee.retrieval.embedder import is_model_available
 
 log = logging.getLogger(__name__)
-
-_DISABLED = Select.NULL
 
 _MMPROJ_MARKER = "mmproj"
 
@@ -40,18 +40,16 @@ _CLOUD_WARNING_ID = "cloud-provider-warning"
 _CLOUD_WARNING_CLASS = "cloud-warning"
 _CLOUD_WARNING_VISIBLE_CLASS = "-visible"
 
+_CHAT_MODEL_BUTTON_ID = "chat-model-button"
+_EMBED_MODEL_BUTTON_ID = "embed-model-button"
+
 # Routing-name -> display-label map derived from PROVIDER_KEYS. Any new
 # entry added there lights up the warning without further changes here.
 _CLOUD_PROVIDER_LABELS: dict[str, str] = {name: label for name, _, _, label in PROVIDER_KEYS}
 
 
 def _cloud_provider_label(chat_model: str) -> str | None:
-    """Return the provider display label for cloud-routed models, else None.
-
-    Local models and Ollama (remote but user-local) return None. Anything
-    classified as an API provider by ``parse_model_ref`` returns the
-    matching label from PROVIDER_KEYS.
-    """
+    """Return the provider display label for cloud-routed models, else None."""
     if not chat_model:
         return None
     ref = parse_model_ref(chat_model)
@@ -73,10 +71,7 @@ def _is_mmproj(name: str) -> bool:
 
 
 def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
-    """Classify installed models into (chat, embedding) lists.
-    Uses registry manifests for native models and the SDK backend's
-    backend metadata for remote models. Filters out mmproj files.
-    """
+    """Classify installed models into (chat, embedding) lists, dropping mmproj."""
     buckets: dict[ModelTask, list[ModelOption]] = {task: [] for task in ModelTask}
     seen: set[str] = set()
 
@@ -96,11 +91,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
 def _lookup_bucket(
     buckets: dict[ModelTask, list[ModelOption]], task: str, ref: str
 ) -> list[ModelOption] | None:
-    """Return the bucket for *task*, or None if *task* is not a known ModelTask.
-
-    Unknown tasks from forward-compat manifests are dropped rather than
-    silently misclassified into chat.
-    """
+    """Return the bucket for *task*, or None if it is not a known ModelTask."""
     try:
         key = ModelTask(task)
     except ValueError:
@@ -121,7 +112,7 @@ def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
-        from lilbee.registry import ModelRegistry
+        from lilbee.modelhub.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         manifests = registry.list_installed()
@@ -146,18 +137,17 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (Ollama / OpenAI-compatible) models to buckets, prefixed for routing.
+    """Add remote (Ollama / OpenAI-compatible) models, prefixed for routing.
 
-    Skipped entirely when the SDK extra (``lilbee[litellm]``) isn't installed:
-    surfacing a model the SDK can't actually serve only sets the user up
-    for a runtime traceback when they pick it. (bb-ezwy)
+    Skipped when the litellm extra is not installed -- surfacing a model
+    the SDK cannot route is a guaranteed runtime error.
     """
     from lilbee.providers.litellm_sdk import litellm_available
 
     if not litellm_available():
         return
     try:
-        from lilbee.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_remote_models
 
         base_url = cfg.remote_base_url
         is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
@@ -180,18 +170,13 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket.
-
-    Same litellm guard as ``_collect_remote_models``: API providers
-    require the SDK to route a turn; without it, surfacing them just
-    invites a runtime traceback. (bb-ezwy)
-    """
+    """Add frontier API chat models. Skipped without litellm (cannot route)."""
     from lilbee.providers.litellm_sdk import litellm_available
 
     if not litellm_available():
         return
     try:
-        from lilbee.model_manager import discover_api_models
+        from lilbee.modelhub.model_manager import discover_api_models
 
         # API discovery returns only chat-capable refs; revisit if providers
         # expose embedding/vision/rerank.
@@ -210,48 +195,17 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         log.debug("Could not discover API models", exc_info=True)
 
 
-def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
-    """Populate a Select with *opts*; show *default* with ``(not installed)``
-    when it isn't in the list, and pass unparseable defaults through unchanged."""
-    if default:
-        try:
-            ref = parse_model_ref(default)
-        except ValueError:
-            ref = None
-        if ref is not None:
-            default = ref.for_openai_prefix()
-    if default and not any(o.ref == default for o in opts):
-        shown = display_label_for_ref(default) or default
-        opts.insert(0, ModelOption(f"{shown} (not installed)", default))
-    sel.set_options(opts)
-    if default:
-        sel.value = default
-    _refresh_select_label(sel, opts, default)
+def _options_fingerprint(opts: list[ModelOption], default: str) -> tuple[tuple[str, str], ...]:
+    """Hashable fingerprint of (options, active default) for cache hits."""
+    return ((default, default), *((o.label, o.ref) for o in opts))
 
-
-def _refresh_select_label(sel: Select, opts: list[ModelOption], value: str) -> None:
-    """Push the matching option's label into ``SelectCurrent``.
-
-    Textual's ``Select.set_options`` updates the option list but doesn't
-    re-render ``SelectCurrent`` if the existing ``value`` still matches
-    an option — the reactive watcher short-circuits on ``old == new``.
-    That meant a freshly-labelled option (e.g. ``"<ref> (not installed)"``)
-    kept the compose-time bare-ref label on screen. Poke the inner
-    widget directly so the visible label matches what tests assert.
-    """
-    if not value:
-        return
-    with contextlib.suppress(Exception):
-        current = sel.query_one(SelectCurrent)
-        for label, ref_value in opts:
-            if ref_value == value:
-                current.update(label)
-                return
-
-
-_SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 
 _CSS_FILE = Path(__file__).parent / "model_bar.tcss"
+
+_CHAT_MODE_TOGGLE_ID = "chat-mode-toggle"
+_CHAT_MODE_DISABLED_CLASS = "-disabled"
+_CHAT_MODE_SEARCH_CLASS = "-search"
+_CHAT_MODE_CHAT_CLASS = "-chat"
 
 # Presentation labels for the scope toggle. Values match ``SearchScope``
 # so the widget's ``.value`` feeds directly into ``scope_to_chunk_type``.
@@ -262,6 +216,128 @@ _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+class ModelPickerButton(Static, can_focus=True):
+    """Pill button that opens a ModelPickerModal scoped to chat or embed."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "open_picker", "Pick model", show=False),
+        Binding("space", "open_picker", "Pick model", show=False),
+    ]
+
+    def __init__(self, *, scope: Literal["chat", "embed"], button_id: str) -> None:
+        super().__init__(id=button_id)
+        self._scope: Literal["chat", "embed"] = scope
+        self._options: list[ModelOption] = []
+
+    def on_mount(self) -> None:
+        self._refresh()
+
+    def set_options(self, options: list[ModelOption]) -> None:
+        """Update the options pool. Repaints the label from cfg."""
+        self._options = options
+        if self.is_mounted:
+            self._refresh()
+
+    def _refresh(self) -> None:
+        ref = cfg.chat_model if self._scope == "chat" else cfg.embedding_model
+        label = display_label_for_ref(ref) or ref or "(none)"
+        self.update(label)
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.open_picker()
+
+    def action_open_picker(self) -> None:
+        self.open_picker()
+
+    def open_picker(self) -> None:
+        # Lazy import: model_picker imports ModelOption from this module.
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+
+        modal = ModelPickerModal(scope=self._scope, options=self._options)
+        self.app.push_screen(modal, self._on_picker_dismissed)
+
+    def _on_picker_dismissed(self, ref: str | None) -> None:
+        if not ref:
+            return
+        if self._scope == "chat":
+            if ref == cfg.chat_model:
+                return
+            apply_active_model(self.app, "chat_model", ref)
+        else:
+            if ref == cfg.embedding_model:
+                return
+            get_services().store.initialize_meta_if_legacy()
+            apply_active_model(self.app, "embedding_model", ref)
+        self._refresh()
+        bar = self.screen.query(ModelBar)
+        for b in bar:
+            b._after_model_change()
+
+
+class ChatModeToggle(Static, can_focus=True):
+    """Two-state pill toggling cfg.chat_mode between 'search' and 'chat'."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "flip_mode", "Toggle mode", show=False),
+        Binding("space", "flip_mode", "Toggle mode", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id=_CHAT_MODE_TOGGLE_ID)
+
+    def on_mount(self) -> None:
+        self._refresh()
+
+    def refresh_state(self) -> None:
+        """Repaint label/state. Call after settings or embedding-model changes."""
+        if self.is_mounted:
+            self._refresh()
+
+    def _embedding_ready(self) -> bool:
+        return is_model_available(cfg.embedding_model, get_services().provider)
+
+    def _refresh(self) -> None:
+        from textual.content import Content
+
+        ready = self._embedding_ready()
+        mode = cfg.chat_mode if ready else ChatMode.CHAT.value
+        active_search = mode == ChatMode.SEARCH.value
+        search_style = "$primary on $surface bold" if active_search else "dim $text-muted"
+        chat_style = "dim $text-muted" if active_search else "$accent on $surface bold"
+        self.update(
+            Content.assemble(
+                Content.styled(f" {msg.CHAT_MODE_SEARCH_LABEL} ", search_style),
+                Content.styled(" | ", "dim $text-muted"),
+                Content.styled(f" {msg.CHAT_MODE_CHAT_LABEL} ", chat_style),
+            )
+        )
+        self.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
+        self.set_class(active_search, _CHAT_MODE_SEARCH_CLASS)
+        self.set_class(not active_search, _CHAT_MODE_CHAT_CLASS)
+        self.tooltip = (
+            msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
+        )
+
+    def toggle(self) -> bool:
+        """Flip mode if embedding is ready. Returns True when the mode changed."""
+        if not self._embedding_ready():
+            return False
+        new_mode = (
+            ChatMode.CHAT.value if cfg.chat_mode == ChatMode.SEARCH.value else ChatMode.SEARCH.value
+        )
+        apply_setting(self.app, "chat_mode", new_mode)
+        self._refresh()
+        return True
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.toggle()
+
+    def action_flip_mode(self) -> None:
+        self.toggle()
+
+
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
@@ -269,8 +345,11 @@ class ModelBar(Widget, can_focus=False):
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
-        self._populating = True  # Guard against change events during init
         self._scope: SearchScope = SearchScope.BOTH
+        # _scan_models runs on every chat on_show but the install set rarely
+        # changes between visits; fingerprint to skip redundant set_options.
+        self._chat_options_cache: tuple[tuple[str, str], ...] = ()
+        self._embed_options_cache: tuple[tuple[str, str], ...] = ()
 
     @property
     def scope(self) -> SearchScope:
@@ -278,29 +357,14 @@ class ModelBar(Widget, can_focus=False):
         return self._scope
 
     def compose(self) -> ComposeResult:
-        chat_label = display_label_for_ref(cfg.chat_model) or cfg.chat_model
-        embed_label = display_label_for_ref(cfg.embedding_model) or cfg.embedding_model
-        chat_opts = [(chat_label, cfg.chat_model)] if cfg.chat_model else []
-        embed_opts = [(embed_label, cfg.embedding_model)] if cfg.embedding_model else []
         with Horizontal():
             yield Static(pill("Chat", "$primary", "$text"), classes="model-bar-pill")
-            yield Select[str](
-                options=chat_opts,
-                prompt="Chat model",
-                id="chat-model-select",
-                allow_blank=False,
-            )
+            yield ModelPickerButton(scope="chat", button_id=_CHAT_MODEL_BUTTON_ID)
             yield Static(pill("Embed", "$secondary", "$text"), classes="model-bar-pill")
-            yield Select[str](
-                options=embed_opts,
-                prompt="Embed model",
-                id="embed-model-select",
-                allow_blank=False,
-            )
-            # Scope picker only appears when the wiki layer is on. With wiki
-            # off, ``CHUNKS_TABLE`` contains only raw rows so a wiki/raw/both
-            # toggle has nothing to pick between; hiding it keeps the choice
-            # from implying a capability the user hasn't opted into.
+            yield ModelPickerButton(scope="embed", button_id=_EMBED_MODEL_BUTTON_ID)
+            yield ChatModeToggle()
+            # Scope picker only appears when the wiki layer is on; without
+            # the wiki layer there is no raw/wiki distinction to pick.
             if cfg.wiki:
                 yield Static(pill("Scope", "$accent", "$text"), classes="model-bar-pill")
                 yield Select[str](
@@ -312,40 +376,19 @@ class ModelBar(Widget, can_focus=False):
         yield Static("", id=_CLOUD_WARNING_ID, classes=_CLOUD_WARNING_CLASS)
 
     def on_mount(self) -> None:
-        chat_sel = self.query_one("#chat-model-select", Select)
-        embed_sel = self.query_one("#embed-model-select", Select)
-
-        if cfg.chat_model:
-            chat_sel.value = cfg.chat_model
-        if cfg.embedding_model:
-            embed_sel.value = cfg.embedding_model
-
-        self._watch_overlay_collapse(chat_sel)
-        self._watch_overlay_collapse(embed_sel)
-
         self._refresh_cloud_warning()
         self._scan_models()
 
-    def _watch_overlay_collapse(self, sel: Select) -> None:
-        """Force a full screen refresh when a Select overlay collapses."""
-
-        def _on_expanded_change(expanded: bool) -> None:
-            if not expanded and self.is_mounted:
-                with contextlib.suppress(Exception):
-                    self.screen.refresh()
-
-        self.watch(sel, "expanded", _on_expanded_change, init=False)
-
     def on_unmount(self) -> None:
-        """Collapse any open dropdown before tear-down so the SelectOverlay
-        does not leak its border cells into the next screen's render."""
+        """Collapse the scope dropdown before tear-down so its overlay
+        does not leak border cells into the next screen's render."""
         for sel in self.query(Select):
             if sel.expanded:
                 sel.expanded = False
 
     @work(thread=True)
     def _scan_models(self) -> None:
-        """Scan installed models in background, then populate dropdowns."""
+        """Scan installed models in background, then populate buttons."""
         chat, embed = _classify_installed_models()
         call_from_thread(self, self._populate, chat, embed)
 
@@ -354,30 +397,18 @@ class ModelBar(Widget, can_focus=False):
         chat_models: list[ModelOption],
         embed_models: list[ModelOption],
     ) -> None:
-        """Populate Select widgets from scanned models (main thread)."""
-        self._populating = True
-
-        chat_sel = self.query_one("#chat-model-select", Select)
-        embed_sel = self.query_one("#embed-model-select", Select)
-
         chat_opts = list(chat_models) if chat_models else [ModelOption("(none)", "")]
         embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
-
-        _sync_select(chat_sel, chat_opts, cfg.chat_model)
-        _sync_select(embed_sel, embed_opts, cfg.embedding_model)
-
-        self._populating = False
-
-    @on(Select.Changed, "#chat-model-select")
-    def _on_chat_model_changed(self, event: Select.Changed) -> None:
-        """Write the new chat model to cfg and settings."""
-        chat_sel = self.query_one("#chat-model-select", Select)
-        value = self._extract_value(event, chat_sel)
-        if value is None or value == cfg.chat_model:
-            return
-        apply_active_model(self.app, "chat_model", value)
+        chat_fingerprint = _options_fingerprint(chat_opts, cfg.chat_model)
+        if chat_fingerprint != self._chat_options_cache:
+            self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton).set_options(chat_opts)
+            self._chat_options_cache = chat_fingerprint
+        embed_fingerprint = _options_fingerprint(embed_opts, cfg.embedding_model)
+        if embed_fingerprint != self._embed_options_cache:
+            self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton).set_options(embed_opts)
+            self._embed_options_cache = embed_fingerprint
         self._refresh_cloud_warning()
-        self._after_model_change()
+        self._refresh_chat_mode_toggle()
 
     def _refresh_cloud_warning(self) -> None:
         """Show a warning if the active chat model routes to a cloud API."""
@@ -389,52 +420,16 @@ class ModelBar(Widget, can_focus=False):
         warning.update(msg.MODEL_BAR_CLOUD_PROVIDER_WARNING.format(provider=label))
         warning.add_class(_CLOUD_WARNING_VISIBLE_CLASS)
 
-    @on(Select.Changed, "#embed-model-select")
-    def _on_embed_model_changed(self, event: Select.Changed) -> None:
-        """Write the new embedding model to cfg and settings."""
-        embed_sel = self.query_one("#embed-model-select", Select)
-        value = self._extract_value(event, embed_sel)
-        if value is None or value == cfg.embedding_model:
-            return
-        # Pin a legacy store's identity to the OLD model BEFORE the cfg mutation
-        # so the gate in store.search/add_chunks correctly detects drift on the
-        # next op. See bb-x1qa.
-        get_services().store.initialize_meta_if_legacy()
-        apply_active_model(self.app, "embedding_model", value)
-        self._after_model_change()
+    def _refresh_chat_mode_toggle(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one(ChatModeToggle).refresh_state()
 
     @on(Select.Changed, "#scope-select")
     def _on_scope_changed(self, event: Select.Changed) -> None:
-        """Track scope selection for the next ask_stream call.
-
-        Session-scoped on purpose; not written to settings so each new
-        session starts at "both" and the user opts into a narrower pool
-        explicitly each time.
-        """
-        scope_sel = self.query_one("#scope-select", Select)
-        value = self._extract_value(event, scope_sel)
-        if value is None:
+        """Track scope selection for the next ask_stream call. Session-scoped."""
+        if event.value is Select.BLANK or event.value is None:
             return
-        self._scope = SearchScope(value)
-
-    def _extract_value(self, event: Select.Changed, sel: Select) -> str | None:
-        """Extract a non-empty value from a Select.Changed event, or None to skip.
-
-        Drops events whose payload no longer matches the widget's current
-        value. Textual posts Select.Changed asynchronously, so a prior
-        event carrying an intermediate auto-picked option can still be in
-        the queue after ``_populate`` reassigns ``sel.value`` to the
-        configured model. The stale-event check is deterministic across
-        platforms because it compares two synchronously-set values rather
-        than relying on event-loop ordering.
-        """
-        if self._populating:
-            return None
-        if event.value is _DISABLED or event.value is None or str(event.value) == "":
-            return None
-        if str(event.value) != str(sel.value):
-            return None
-        return str(event.value)
+        self._scope = SearchScope(str(event.value))
 
     def _after_model_change(self) -> None:
         """Shared post-change logic: cancel active stream and reset services safely."""
@@ -442,7 +437,7 @@ class ModelBar(Widget, can_focus=False):
 
         screen = self.app.screen
         if isinstance(screen, ChatScreen):
-            screen._apply_model_change()
+            screen.apply_model_change()
         else:
             reset_services()
 
