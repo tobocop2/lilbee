@@ -1092,8 +1092,9 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "TestChat"
-                await pilot.pause()
-                await pilot.pause()
+                # Wait past the catalog search debounce (80 ms) so the
+                # filter actually runs.
+                await pilot.pause(0.15)
 
                 all_cards_after = app.screen.query(ModelCard)
                 assert len(all_cards_after) == initial_count
@@ -1166,8 +1167,7 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "TestChat"
-                await pilot.pause()
-                await pilot.pause()
+                await pilot.pause(0.15)
 
                 ctas = list(app.screen.query(SearchHFCtaItem))
                 assert len(ctas) == 1
@@ -1299,7 +1299,7 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "zzz_remote"
-                await pilot.pause()
+                await pilot.pause(0.15)
 
                 cta = app.screen.query_one(SearchHFCtaItem)
                 cta.action_select()
@@ -1340,7 +1340,7 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "no-such-model-anywhere"
-                await pilot.pause()
+                await pilot.pause(0.15)
                 await search.action_submit()
                 await app.workers.wait_for_complete()
                 for _ in range(20):

@@ -41,6 +41,15 @@ DARK_THEMES = (
 )
 
 
+def _view_screen_name(view_name: str) -> str:
+    """Stable install_screen identifier for a top-level view.
+
+    Lower-cased so it never collides with the user-facing display name
+    used in the tab strip.
+    """
+    return view_name.lower()
+
+
 def _make_catalog() -> Screen:
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -129,6 +138,10 @@ class LilbeeApp(App[None]):
         self.active_view = msg.DEFAULT_VIEW
         self._switching = False
         self._theme_index = 0
+        # Names of non-Chat screens already installed via install_screen.
+        # Subsequent visits switch by name to reuse the same instance,
+        # so Footer / signal / worker wiring runs once per session.
+        self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
@@ -258,13 +271,20 @@ class LilbeeApp(App[None]):
         self.exit()
 
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view via lazy screen factories.
+        """Switch to a named view, installing each screen at most once.
 
         Guards against concurrent switches: ``switch_screen`` is async
         (processed on the next event-loop tick) but callers read
         ``active_view`` synchronously. Without a guard, rapid keypresses
         queue conflicting switches that corrupt the screen stack.
         ``active_view`` is updated after the switch completes.
+
+        Each non-Chat screen is built lazily on its first visit and
+        installed by name. Subsequent visits ``switch_screen`` to the
+        same instance, so ``compose`` + ``on_mount`` (Footer reactive
+        wiring, signal subscriptions, worker spawn) run once per
+        session instead of once per visit. Screens refresh their data
+        in ``on_show`` where applicable.
         """
         if self._switching:
             return
@@ -281,7 +301,11 @@ class LilbeeApp(App[None]):
             if factory is None:
                 self._switching = False
                 return
-            self.switch_screen(factory())
+            screen_name = _view_screen_name(view_name)
+            if screen_name not in self._installed_screen_names:
+                self.install_screen(factory(), name=screen_name)
+                self._installed_screen_names.add(screen_name)
+            self.switch_screen(screen_name)
 
         def _finish() -> None:
             self.active_view = view_name

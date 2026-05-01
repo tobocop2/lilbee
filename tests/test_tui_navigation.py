@@ -305,22 +305,24 @@ async def test_catalog_nav_noop_when_search_focused():
         assert isinstance(screen.focused, Input)
 
 
-async def test_chat_tab_focuses_model_select_when_input_not_focused():
-    """Tab from outside the input jumps to the chat model dropdown."""
-    from textual.widgets import Select
+async def test_chat_tab_outside_input_advances_focus():
+    """Tab from outside the chat input advances the focus chain.
 
+    The dedicated jump-to-model-bar shortcut is ``m`` (see
+    ``Binding("m", "focus_model_bar", ...)``); Tab is the universal
+    walk-the-chain key, not a shortcut to the model dropdown.
+    """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         # Escape to normal mode: input loses focus
         await pilot.press("escape")
         await pilot.pause()
-
+        before = app.focused
         screen = app.screen
         screen.action_complete()
         await pilot.pause()
-        chat_sel = screen.query_one("#chat-model-select", Select)
-        assert chat_sel.has_focus
+        assert app.focused is not before, "Tab in normal mode did not advance focus"
 
 
 async def test_chat_escape_from_model_select():
