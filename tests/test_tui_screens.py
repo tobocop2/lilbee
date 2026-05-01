@@ -483,16 +483,45 @@ class TestGroupRowsForGrid:
         assert len(experimental.rows) == 1
 
 
+def _make_eager_settings_screen():
+    """SettingsScreen subclass that populates every pane on mount.
+
+    Production lazy-mounts non-active panes on activation; the test
+    suite predates that pattern and queries editors across all panes
+    by id, so this subclass hooks ``on_mount`` to walk pane groups
+    and populate every body before tests query. CSS_PATH is pinned
+    to the original module's directory because Textual otherwise
+    resolves it next to the test file.
+    """
+    import importlib
+    from pathlib import Path
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    src_module = importlib.import_module(SettingsScreen.__module__)
+    css_path = str(Path(src_module.__file__ or "").parent / "settings.tcss")
+
+    class _EagerSettingsScreen(SettingsScreen):
+        CSS_PATH = css_path
+
+        def on_mount(self) -> None:
+            super().on_mount()
+            for pane_id in self._pane_groups:
+                self._populate_pane(pane_id)
+
+    return _EagerSettingsScreen
+
+
 class SettingsTestApp(App[None]):
+    """Test fixture that pre-populates every Settings pane on mount."""
+
     CSS = ""
 
     def compose(self) -> ComposeResult:
         yield Footer()
 
     def on_mount(self) -> None:
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-
-        self.push_screen(SettingsScreen())
+        self.push_screen(_make_eager_settings_screen()())
 
 
 async def test_settings_screen_mounts_grouped_sections():
@@ -519,40 +548,31 @@ async def test_settings_api_keys_group_shows_plaintext_warning():
         assert "sensitive" in rendered.lower()
 
 
-async def test_settings_search_filters_settings():
-    """Search input filters visible setting rows."""
+async def test_settings_tab_activation_populates_pane():
+    """Activating a settings tab mounts its rows.
+
+    With lazy tab bodies, only the active pane composes its editors
+    on first paint. Switching to another tab triggers
+    ``TabbedContent.TabActivated`` and the pane's body fills in.
+    """
+    from textual.widgets import TabbedContent
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
-        search.value = "top_k"
-        await pilot.pause()
-        visible = [r for r in app.screen.query(".setting-row") if r.display]
-        assert len(visible) >= 1
-        assert any("top_k" in (r.name or "") for r in visible)
-
-
-async def test_settings_search_clears_restores_all():
-    """Clearing search restores all settings."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        # Settings groups its rows into a TabbedContent. The full row
-        # set is mounted under inactive TabPanes (display=False but in
-        # the DOM); count after a pause so layout has settled.
         await pilot.pause(0.15)
-        search = app.screen.query_one("#settings-search", Input)
-        total = len(app.screen.query(".setting-row"))
-        assert total > 0
-        search.value = "xyznonexistent"
+        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+        # Find a non-active tab; activating it should populate its body.
+        target_pane_id = None
+        for pane in tabbed.query("TabPane"):
+            if pane.id and pane.id != tabbed.active:
+                target_pane_id = pane.id
+                break
+        assert target_pane_id is not None
+        tabbed.active = target_pane_id
         await pilot.pause(0.15)
-        search.value = ""
-        await pilot.pause(0.15)
-        visible = [r for r in app.screen.query(".setting-row") if r.display]
-        assert len(visible) == total
+        target_pane = app.screen.query_one(f"#{target_pane_id}")
+        rows = list(target_pane.query(".setting-row"))
+        assert rows, f"activating {target_pane_id} did not mount any rows"
 
 
 async def test_settings_bool_renders_checkbox():
@@ -593,12 +613,9 @@ def test_settings_screen_has_expected_handlers_and_actions() -> None:
         "_on_input_save",
         "_on_checkbox_save",
         "_on_select_save",
-        "_on_search_submitted",
-        "_filter_settings",
         "_persist_value",
         "_parse_value",
         "_refresh_help",
-        "action_focus_search",
         "action_go_back",
         "action_scroll_down",
         "action_scroll_up",
@@ -763,7 +780,6 @@ async def test_settings_list_editor_can_be_expanded():
 
 async def test_settings_list_editor_saves_on_blur():
     """Typing into the list TextArea and blurring persists the parsed list."""
-    from textual.widgets import Input
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
@@ -773,8 +789,7 @@ async def test_settings_list_editor_saves_on_blur():
         ta.focus()
         await pilot.pause()
         ta.load_text("foo\nbar")
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
+        ta.blur()
         for _ in range(10):
             await pilot.pause()
             if cfg.crawl_exclude_patterns == ["foo", "bar"]:
@@ -784,7 +799,6 @@ async def test_settings_list_editor_saves_on_blur():
 
 async def test_settings_list_editor_strips_blanks():
     """Blank lines and surrounding whitespace are stripped during parsing."""
-    from textual.widgets import Input
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
@@ -794,8 +808,7 @@ async def test_settings_list_editor_strips_blanks():
         ta.focus()
         await pilot.pause()
         ta.load_text("a\n\nb\n")
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
+        ta.blur()
         for _ in range(10):
             await pilot.pause()
             if cfg.crawl_exclude_patterns == ["a", "b"]:
@@ -805,7 +818,7 @@ async def test_settings_list_editor_strips_blanks():
 
 async def test_settings_list_editor_invalid_regex_blocks_save():
     """An invalid regex shows an error and does not mutate cfg."""
-    from textual.widgets import Input, Static
+    from textual.widgets import Static
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
@@ -816,8 +829,7 @@ async def test_settings_list_editor_invalid_regex_blocks_save():
         ta.focus()
         await pilot.pause()
         ta.load_text("[")
-        search = app.screen.query_one("#settings-search", Input)
-        search.focus()
+        ta.blur()
         err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
         # Focus change → blur handler → regex validation → error widget
         # class toggle are all async. Single pilot.pause is not enough on
@@ -874,7 +886,6 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     After reload, the pydantic `splitlines()` validator then produced a
     one-element list with corrupt contents.
     """
-    from textual.widgets import Input
 
     from lilbee.cli.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -888,7 +899,7 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
         ta.focus()
         await pilot.pause()
         ta.load_text("pat-a\npat-b")
-        app.screen.query_one("#settings-search", Input).focus()
+        ta.blur()
         await pilot.pause()
 
     # Raw TOML value is a newline-joined string (not Python repr of the list).
@@ -1185,7 +1196,7 @@ async def test_ctrl_r_with_no_focus_is_noop():
 
 async def test_ctrl_r_on_non_row_focus_is_noop():
     """action_reset_focused ignores focus that isn't inside a setting row."""
-    from textual.widgets import Input
+    from textual.widgets import Button
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -1193,8 +1204,7 @@ async def test_ctrl_r_on_non_row_focus_is_noop():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        search = screen.query_one("#settings-search", Input)
-        search.focus()
+        screen.query_one("#reset-all-defaults", Button).focus()
         await pilot.pause()
         with patch.object(screen, "_reset_to_default") as mock_reset:
             screen.action_reset_focused()

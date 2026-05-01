@@ -6,15 +6,16 @@ import logging
 import os
 import re
 from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import ClassVar
 
-from textual import lazy, on
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -60,6 +61,52 @@ _LIST_ERROR_VISIBLE_CLASS = "-visible"
 _API_KEYS_GROUP = "API-Keys"
 _API_KEYS_WARNING_CLASS = "api-keys-warning"
 _CONFIG_TOML_FILENAME = "config.toml"
+
+
+@dataclass(frozen=True)
+class _PaneGroup:
+    """One settings tab's bundle: pane id, group label, ordered settings.
+
+    The pane id is the DOM identifier for both the ``TabPane`` and its
+    inner ``_LazyGroupBody`` (the body uses ``{pane_id}-body``). The
+    items list preserves SETTINGS_MAP insertion order so the rows
+    render in the same sequence the config was authored in.
+    """
+
+    pane_id: str
+    group_name: str
+    items: list[tuple[str, SettingDef]]
+
+
+class _LazyGroupBody(VerticalGroup):
+    """Pane-body container that mounts its rows on demand.
+
+    Each TabPane wraps one of these instead of yielding rows directly,
+    so the screen's first paint only constructs the active pane's
+    editors. The screen calls ``populate(builder)`` when the pane is
+    first activated; the builder is a no-arg callable that returns
+    the list of row widgets to mount. Subsequent activations are a
+    no-op so we don't re-mount.
+    """
+
+    DEFAULT_CSS: ClassVar[str] = "_LazyGroupBody { width: 1fr; height: auto; }"
+
+    def __init__(self, *, id: str | None = None) -> None:
+        super().__init__(id=id, classes="settings-group-body")
+        self._populated = False
+
+    @property
+    def populated(self) -> bool:
+        return self._populated
+
+    def populate(self, build: Callable[[], list[Widget]]) -> None:
+        """Build and mount this pane's row widgets exactly once."""
+        if self._populated:
+            return
+        self._populated = True
+        widgets = build()
+        if widgets:
+            self.mount_all(widgets)
 
 
 def _config_toml_path() -> str:
@@ -231,10 +278,9 @@ class SettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
-        Binding("slash", "focus_search", "Search", show=True),
-        # Tab walks every focusable on the screen (search, reset, the
-        # group Tabs strip, then editors inside the active TabPane).
-        # Use ←/→ to switch tabs while focus is on the strip.
+        # Tab walks every focusable on the screen (reset-all button,
+        # the group Tabs strip, then editors inside the active
+        # TabPane). Use ←/→ to switch tabs while focus is on the strip.
         Binding("tab", "app.focus_next", "Next field", show=True),
         Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
         Binding("ctrl+r", "reset_focused", "Reset", show=False),
@@ -246,7 +292,13 @@ class SettingsScreen(Screen[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self._filter_timer: Timer | None = None
+        # Group definitions for lazy-mount on tab activation. Indexed
+        # by pane id so the activated-pane handler can look up its
+        # bundle in O(1). ``_eagerly_populate`` is the pane id whose
+        # body gets populated in on_mount (the active-by-default first
+        # pane); the rest fill in on first activation.
+        self._pane_groups: dict[str, _PaneGroup] = {}
+        self._eagerly_populate: str | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -259,10 +311,6 @@ class SettingsScreen(Screen[None]):
         with TopBars():
             yield ViewTabs()
             with Horizontal(id="settings-top-row"):
-                yield Input(
-                    placeholder="Filter settings...",
-                    id="settings-search",
-                )
                 yield Button(
                     msg.SETTINGS_RESET_ALL_LABEL,
                     id="reset-all-defaults",
@@ -275,91 +323,107 @@ class SettingsScreen(Screen[None]):
             yield Footer()
 
     def _compose_group_tabs(self) -> ComposeResult:
-        """Yield one TabPane per setting group with a lazy body.
+        """Yield one TabPane per setting group, populated on activation.
 
-        TabbedContent constructs every TabPane up front. Wrapping each
-        body in ``lazy.Lazy`` defers the body mount until after the
-        screen's first refresh, so the tab strip surfaces immediately
-        while the ~500 setting editors slot in on the next frame.
+        Each pane mounts a ``_LazyGroupBody`` container that composes
+        nothing on initial mount; its real children land when the
+        screen's ``on_mount`` (for the first pane) or
+        ``TabbedContent.TabActivated`` (for the rest) calls
+        ``populate()``. This means first-paint of Settings only
+        constructs the active tab's editors -- ~20 widgets instead of
+        ~430 -- so the screen reaches interactivity well under 200 ms.
         """
+        first = True
         for group_name, items in _group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
-            with (
-                TabPane(group_name, id=pane_id),
-                lazy.Lazy(VerticalGroup(classes="settings-group-body")),
-            ):
-                yield from self._compose_group_body(group_name, items)
-
-    def _compose_group_body(
-        self, group_name: str, items: list[tuple[str, SettingDef]]
-    ) -> ComposeResult:
-        """Yield the body of one settings tab: API-keys warning + rows."""
-        if group_name == _API_KEYS_GROUP:
-            yield Static(
-                msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
-                classes=_API_KEYS_WARNING_CLASS,
+            self._pane_groups[pane_id] = _PaneGroup(
+                pane_id=pane_id, group_name=group_name, items=items
             )
-        for key, defn in items:
-            yield from self._compose_setting(key, defn)
+            yield TabPane(
+                group_name,
+                _LazyGroupBody(id=f"{pane_id}-body"),
+                id=pane_id,
+            )
+            # The first pane is the one TabbedContent activates by
+            # default; populate it eagerly so a user landing on
+            # Settings sees content on first paint instead of an empty
+            # active pane that fills in one frame later.
+            if first:
+                first = False
+                self._eagerly_populate = pane_id
 
-    def _compose_setting(self, key: str, defn: SettingDef) -> ComposeResult:
-        """Yield widgets for a single setting row."""
-        with VerticalGroup(
+    def on_mount(self) -> None:
+        """Populate the active pane's body so first paint shows content."""
+        if self._eagerly_populate is not None:
+            self._populate_pane(self._eagerly_populate)
+
+    @on(TabbedContent.TabActivated)
+    def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Populate the activated pane's body on first activation."""
+        pane = event.pane
+        if pane is None or pane.id is None:
+            return
+        self._populate_pane(pane.id)
+
+    def _populate_pane(self, pane_id: str) -> None:
+        """Mount this pane's setting editors into its lazy body.
+
+        Delegates to ``_LazyGroupBody.populate``; the body itself
+        gates against double-mount so repeat activations are no-ops.
+        """
+        group = self._pane_groups.get(pane_id)
+        if group is None:
+            return
+        try:
+            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+        except Exception:
+            log.debug("pane body %s not yet mounted", pane_id, exc_info=True)
+            return
+        body.populate(lambda: self._build_pane_widgets(group))
+
+    def _build_pane_widgets(self, group: _PaneGroup) -> list[Widget]:
+        """Build the body widgets for one settings tab as a flat list.
+
+        ``_LazyGroupBody.populate`` mounts whatever is returned here
+        directly, so each top-level entry must already carry its
+        children via the constructor (a generator that uses
+        ``with VerticalGroup(): yield X`` only works inside ``compose``,
+        not inside this loose builder).
+        """
+        widgets: list[Widget] = []
+        if group.group_name == _API_KEYS_GROUP:
+            widgets.append(
+                Static(
+                    msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
+                    classes=_API_KEYS_WARNING_CLASS,
+                )
+            )
+        for key, defn in group.items:
+            widgets.append(self._build_setting_row(key, defn))
+        return widgets
+
+    def _build_setting_row(self, key: str, defn: SettingDef) -> VerticalGroup:
+        """Construct one setting row with its title, help, editor, and reset."""
+        title = Static(_title_content(key, defn), classes="setting-title")
+        help_widget = Static(_help_content(key, defn), classes="setting-help")
+        children: list[Widget] = [title, help_widget]
+        if defn.writable:
+            editor_row = Horizontal(
+                _make_editor(key, defn),
+                Button(
+                    _RESET_BUTTON_LABEL,
+                    id=f"{_RESET_BUTTON_ID_PREFIX}{key}",
+                    classes="setting-reset-button",
+                    tooltip=msg.SETTINGS_RESET_TO_DEFAULT_TOOLTIP,
+                ),
+                classes="setting-editor-row",
+            )
+            children.append(editor_row)
+        return VerticalGroup(
+            *children,
             classes="setting-row",
-            name=f"{defn.group.lower()} {key}",
             id=f"{_ROW_ID_PREFIX}{key}",
-        ):
-            yield Static(_title_content(key, defn), classes="setting-title")
-            yield Static(_help_content(key, defn), classes="setting-help")
-            if defn.writable:
-                with Horizontal(classes="setting-editor-row"):
-                    yield _make_editor(key, defn)
-                    yield Button(
-                        _RESET_BUTTON_LABEL,
-                        id=f"{_RESET_BUTTON_ID_PREFIX}{key}",
-                        classes="setting-reset-button",
-                        tooltip=msg.SETTINGS_RESET_TO_DEFAULT_TOOLTIP,
-                    )
-
-    @on(Input.Submitted, "#settings-search")
-    def _on_search_submitted(self) -> None:
-        """Blur the search input when Enter is pressed."""
-        self.query_one("#settings-scroll", VerticalScroll).focus()
-
-    _FILTER_DEBOUNCE_SECONDS = 0.1
-
-    @on(Input.Changed, "#settings-search")
-    def _filter_settings(self, event: Input.Changed) -> None:
-        """Schedule a filter pass after a short debounce.
-
-        Each keystroke walks ~100 setting rows and toggles ``display``,
-        which Textual treats as a layout change. Without the debounce the
-        UI re-runs the filter at typing speed and judders. The timer is
-        cancellable so rapid typing collapses to a single pass.
-        """
-        term = event.value.strip().lower()
-        if self._filter_timer is not None:
-            self._filter_timer.stop()
-        self._filter_timer = self.set_timer(
-            self._FILTER_DEBOUNCE_SECONDS,
-            lambda: self._apply_filter(term),
         )
-
-    def _apply_filter(self, term: str) -> None:
-        """Apply the filter term to all rows in a single batched update.
-
-        Walks the DOM each pass since ``lazy.Reveal`` may still be
-        streaming rows in. Debounce keeps this at most ~10 walks/sec.
-        """
-        with self.app.batch_update():
-            for pane in self.query(TabPane):
-                visible_count = 0
-                for row in pane.query(".setting-row"):
-                    matches = not term or term in (row.name or "")
-                    row.display = matches
-                    if matches:
-                        visible_count += 1
-                pane.display = visible_count > 0
 
     @on(Input.Submitted, ".setting-editor")
     @on(Input.Blurred, ".setting-editor")
@@ -665,15 +729,7 @@ class SettingsScreen(Screen[None]):
             else:
                 widget.load_text("" if value is None else str(value))
 
-    def action_focus_search(self) -> None:
-        """Focus the search input -- bound to / key."""
-        self.query_one("#settings-search", Input).focus()
-
     def action_go_back(self) -> None:
-        search = self.query_one("#settings-search", Input)
-        if self.focused is search:  # Escape from filter → blur, don't leave
-            self.query_one("#settings-scroll", VerticalScroll).focus()
-            return
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp

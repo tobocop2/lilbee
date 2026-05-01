@@ -140,16 +140,16 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
         assert app.focused is inp, "Focus moved away from chat input on Tab"
 
 
-async def test_settings_tab_chain_visits_tabs_widget_and_search() -> None:
-    """Tab from SettingsScreen visits the search input and the group Tabs."""
+async def test_settings_tab_chain_visits_tabs_widget_and_reset_button() -> None:
+    """Tab from SettingsScreen visits the reset-all button and the group Tabs."""
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause(0.2)
         chain = await _walk_tab_chain(app, pilot, max_presses=80)
-        # Search input is reachable from the Settings screen.
-        assert "settings-search" in chain, f"settings-search missing from {chain}"
+        # Reset-all button is reachable from the Settings screen.
+        assert "reset-all-defaults" in chain, f"reset-all-defaults missing from {chain}"
         # ContentTabs (TabbedContent's tab strip) is reachable. Textual
         # gives it a stable id like 'tabs' inside ContentTabs; checking
         # by class name keeps the test resilient to internal renames.

@@ -60,7 +60,6 @@ _BUDGETS_MS: dict[str, float] = {
     "switch to Catalog (re-entry)": 250.0,
     "type 5 chars in chat input": 500.0,  # Textual TextArea ~75ms/char
     "type 5 chars in catalog search": 800.0,
-    "type 5 chars in settings search": 800.0,
     "press v (toggle to list view)": 700.0,
     "press v (toggle back to grid)": 600.0,
     "press [": 250.0,
@@ -272,17 +271,10 @@ async def run_profile() -> ProfileReport:
         await profiler.step("switch to Settings", to_settings)
         await settle_settings()
 
-        async def type_in_settings() -> None:
-            search = app.screen.query_one("#settings-search", Input)
-            search.focus()
-            await pilot.pause()
-            for ch in "chat":
-                await pilot.press(ch)
-            # Settings has a 100ms debounce; wait it out so the result
-            # actually lands inside the measurement window.
-            await pilot.pause(0.15)
-
-        await profiler.step("type 5 chars in settings search", type_in_settings)
+        # Settings dropped its filter input -- tabs already group the
+        # ~60 settings into 8 small chunks, so search added complexity
+        # (debounce, full-DOM walk, populate-all-on-filter) for little
+        # navigational value. No "type in settings search" step now.
 
         async def to_tasks() -> None:
             app.switch_view("Tasks")

@@ -175,66 +175,21 @@ async def test_bracket_keys_typed_literally_when_catalog_search_focused():
         assert search.value == "[]", f"Brackets must type literally; got {search.value!r}"
 
 
-async def test_settings_filter_not_focused_on_mount():
-    """Settings should focus scroll container, not the search Input."""
+async def test_settings_escape_returns_to_chat():
+    """Escape on Settings switches back to Chat (no filter input to blur)."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause()
-
-        search = app.screen.query_one("#settings-search", Input)
-        assert app.screen.focused is not search
-
-
-async def test_settings_slash_focuses_filter():
-    """/ focuses the filter, Enter blurs it."""
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause()
-
-        await pilot.press("slash")
-        await pilot.pause()
-        search = app.screen.query_one("#settings-search", Input)
-        assert app.screen.focused is search
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen.focused is not search
-
-
-async def test_settings_escape_from_filter_stays():
-    """Escape from filter blurs it but stays on Settings."""
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause()
-
-        await pilot.press("slash")
-        await pilot.pause()
-        assert isinstance(app.screen.focused, Input)
+        assert isinstance(app.screen, SettingsScreen)
 
         await pilot.press("escape")
         await pilot.pause()
-        assert isinstance(app.screen, SettingsScreen)
-        assert not isinstance(app.screen.focused, Input)
+        # action_go_back routes back to Chat under LilbeeApp.
+        from lilbee.cli.tui.screens.chat import ChatScreen
 
-
-async def test_settings_jk_scrolls_not_types():
-    """j should scroll, not type into the filter input."""
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause()
-
-        await pilot.press("j")
-        await pilot.pause()
-        search = app.screen.query_one("#settings-search", Input)
-        assert search.value == ""
+        assert isinstance(app.screen, ChatScreen)
 
 
 async def test_grid_arrows_stay_on_catalog():
