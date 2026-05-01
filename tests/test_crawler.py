@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lilbee.config import cfg
+from lilbee.core.config import cfg
+from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
@@ -24,17 +25,13 @@ from lilbee.crawler import (
     validate_crawl_url,
 )
 from lilbee.crawler import bootstrap as bootstrap_mod
-from lilbee.crawler.api import (
-    _drain_background_tasks,
+from lilbee.crawler.bootstrap import CrawlerBrowserError
+from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
 )
-from lilbee.crawler.api import (
-    _state as crawler_state,
-)
-from lilbee.crawler.bootstrap import CrawlerBrowserMissing
 from lilbee.crawler.save import _save_single_result, _update_single_metadata
-from lilbee.progress import EventType
+from lilbee.runtime.progress import EventType
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +50,12 @@ def isolated_env(tmp_path, monkeypatch, request):
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    # Disable periodic sync by default. The drain step in the runner's
+    # finally-block waits for a real ingest to complete; on slow CI
+    # runners (ubuntu 3.11) the embedding cold-start blows the
+    # pytest-timeout. Tests that exercise periodic sync explicitly set
+    # crawl_sync_interval to a non-zero value themselves.
+    cfg.crawl_sync_interval = 0
     cls = request.cls.__name__ if request.cls else ""
     if cls != "TestPlaywrightBrowserCheck":
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
@@ -70,7 +73,7 @@ def isolated_env(tmp_path, monkeypatch, request):
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
     # opt out of this autopatch.
     if cls != "TestSitemapCounting":
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         monkeypatch.setattr(
             "lilbee.crawler.sitemap._count_sitemap_urls",
@@ -210,18 +213,24 @@ def _no_dns(monkeypatch):
 
 
 class TestCrawlerAvailable:
+    """Exercises the un-patched ``crawler_available`` import probe."""
+
     def test_returns_true_when_installed(self):
         from lilbee.crawler import crawler_available
 
+        crawler_available.cache_clear()
         mock_crawl4ai = MagicMock()
         with patch.dict("sys.modules", {"crawl4ai": mock_crawl4ai}):
             assert crawler_available() is True
+        crawler_available.cache_clear()
 
     def test_returns_false_when_not_installed(self):
         from lilbee.crawler import crawler_available
 
+        crawler_available.cache_clear()
         with patch.dict("sys.modules", {"crawl4ai": None}):
             assert crawler_available() is False
+        crawler_available.cache_clear()
 
 
 class TestIsUrl:
@@ -419,13 +428,13 @@ class TestCrawlSingle:
         Regression test for bb-60mj: without this guard Playwright prints
         a raw ASCII install banner into the TUI and the task lands as DONE.
         """
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         # Stub crawl4ai so the test runs even when the `crawler` extra
         # isn't installed in the unit-test env.
         monkeypatch.setitem(__import__("sys").modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+        with pytest.raises(CrawlerBrowserError, match="Chromium"):
             await crawl_single("https://example.com")
 
     async def test_missing_crawler_extra_raises_backend_missing(
@@ -437,14 +446,14 @@ class TestCrawlSingle:
         would be swallowed by the broad ``except Exception`` at the bottom
         of crawl_single, turning a missing-extra install into a silent
         ``CrawlResult(success=False)`` and a ``crawl_done`` with
-        ``files_written=0`` — same silent failure the recursive path
+        ``files_written=0``: same silent failure the recursive path
         already guards against.
         """
-        from lilbee.crawler import CrawlerBackendMissing
+        from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_single("https://example.com")
 
 
@@ -454,12 +463,12 @@ class TestBootstrapChromium:
     async def test_short_circuits_when_already_installed(self, monkeypatch):
         """No subprocess, no stream events, when Chromium is already present."""
         from lilbee.crawler.bootstrap import bootstrap_chromium
-        from lilbee.progress import EventType, SetupDoneEvent
+        from lilbee.runtime.progress import EventType, SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         events: list[tuple[EventType, object]] = []
         await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
-        # Only a single setup_done (success) — no start/progress when we
+        # Only a single setup_done (success): no start/progress when we
         # short-circuit.
         assert len(events) == 1
         evt, payload = events[0]
@@ -470,7 +479,7 @@ class TestBootstrapChromium:
     async def test_parses_progress_from_fake_subprocess(self, monkeypatch):
         """Feed canned stdout through the subprocess to drive progress events."""
         from lilbee.crawler.bootstrap import bootstrap_chromium
-        from lilbee.progress import EventType, SetupProgressEvent, SetupStartEvent
+        from lilbee.runtime.progress import EventType, SetupProgressEvent, SetupStartEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         # Stub the runner so the test doesn't need a real playwright install
@@ -521,9 +530,9 @@ class TestBootstrapChromium:
         assert isinstance(progress_events[0], SetupProgressEvent)
 
     async def test_raises_crawler_browser_missing_on_subprocess_failure(self, monkeypatch):
-        """Non-zero exit → CrawlerBrowserMissing with stderr tail."""
-        from lilbee.crawler.bootstrap import CrawlerBrowserMissing, bootstrap_chromium
-        from lilbee.progress import EventType, SetupDoneEvent
+        """Non-zero exit → CrawlerBrowserError with stderr tail."""
+        from lilbee.crawler.bootstrap import CrawlerBrowserError, bootstrap_chromium
+        from lilbee.runtime.progress import EventType, SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         monkeypatch.setattr(
@@ -554,7 +563,7 @@ class TestBootstrapChromium:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
 
         events: list[tuple[EventType, object]] = []
-        with pytest.raises(CrawlerBrowserMissing, match="exit 42"):
+        with pytest.raises(CrawlerBrowserError, match="exit 42"):
             await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
         final = events[-1]
         assert final[0] == EventType.SETUP_DONE
@@ -641,7 +650,7 @@ class TestResolvePlaywrightRunner:
             bootstrap_mod._resolve_playwright_runner()
 
     def test_playwright_missing_raises_actionable_error(self, monkeypatch):
-        """ImportError on playwright raises CrawlerBrowserMissing with install hint."""
+        """ImportError on playwright raises CrawlerBrowserError with install hint."""
         import builtins
 
         real_import = builtins.__import__
@@ -653,7 +662,7 @@ class TestResolvePlaywrightRunner:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
-        with pytest.raises(CrawlerBrowserMissing) as ei:
+        with pytest.raises(CrawlerBrowserError) as ei:
             bootstrap_mod._resolve_playwright_runner()
         message = str(ei.value)
         # The error must name the install fix; bare 'not found' breaks the
@@ -664,7 +673,7 @@ class TestResolvePlaywrightRunner:
         """bootstrap_chromium fires setup_done(success=False) before re-raising."""
         import builtins
 
-        from lilbee.progress import SetupDoneEvent
+        from lilbee.runtime.progress import SetupDoneEvent
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
 
@@ -678,7 +687,7 @@ class TestResolvePlaywrightRunner:
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
         events: list[tuple[EventType, object]] = []
-        with pytest.raises(CrawlerBrowserMissing):
+        with pytest.raises(CrawlerBrowserError):
             await bootstrap_mod.bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
 
         types = [e for e, _ in events]
@@ -819,7 +828,7 @@ class TestCrawlRecursive:
         assert results[1].url == "https://example.com/about"
         assert len(progress_calls) == 2
         # Streaming semantics: total is unknown during BFS, counter advances per page.
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         assert [c[1].current for c in progress_calls] == [1, 2]
         assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in progress_calls)
@@ -987,28 +996,28 @@ class TestCrawlRecursive:
         mock_crawler_cls.assert_called_once_with(verbose=False)
 
     async def test_reraises_browser_missing_from_crawler_open(self, monkeypatch):
-        """CrawlerBrowserMissing raised inside the try block propagates past the broad except."""
-        from lilbee.crawler import CrawlerBrowserMissing
+        """CrawlerBrowserError raised inside the try block propagates past the broad except."""
+        from lilbee.crawler import CrawlerBrowserError
 
         mock_instance = AsyncMock()
-        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserMissing("chromium gone"))
+        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserError("chromium gone"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            pytest.raises(CrawlerBrowserMissing, match="chromium gone"),
+            pytest.raises(CrawlerBrowserError, match="chromium gone"),
         ):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
 
     async def test_propagates_crawler_browser_missing(self, monkeypatch):
-        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserMissing past its broad except."""
+        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserError past its broad except."""
         import sys as _sys
 
-        from lilbee.crawler import CrawlerBrowserMissing
+        from lilbee.crawler import CrawlerBrowserError
 
         # Stub crawl4ai + the deep_crawling submodule so the test runs even
-        # when the `crawler` extra isn't installed — crawl_recursive imports
+        # when the `crawler` extra isn't installed: crawl_recursive imports
         # both at the top of its body before _open_crawler can fire.
         monkeypatch.setitem(_sys.modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
         monkeypatch.setitem(
@@ -1020,7 +1029,7 @@ class TestCrawlRecursive:
             MagicMock(FilterChain=MagicMock(), URLPatternFilter=MagicMock()),
         )
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserMissing, match="Chromium"):
+        with pytest.raises(CrawlerBrowserError, match="Chromium"):
             await crawl_recursive("https://example.com", max_depth=1)
 
     async def test_missing_crawler_extra_raises_backend_missing(
@@ -1034,11 +1043,11 @@ class TestCrawlRecursive:
         the server's SSE layer surface ``event: error`` with a fix-it
         message instead of a zero-results ``crawl_done``.
         """
-        from lilbee.crawler import CrawlerBackendMissing
+        from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_recursive("https://example.com", max_depth=1)
 
 
@@ -1110,7 +1119,7 @@ class TestSitemapCounting:
         import httpx
 
         from lilbee.crawler.sitemap import _count_sitemap_urls
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         def _raise(*a, **kw):
             raise httpx.ConnectError("boom")
@@ -1123,7 +1132,7 @@ class TestSitemapCounting:
 
     def test_returns_unknown_on_4xx(self, monkeypatch):
         from lilbee.crawler.sitemap import _count_sitemap_urls
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         fake = MagicMock(status_code=404, text="")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
@@ -1166,7 +1175,7 @@ class TestSitemapCounting:
     def test_returns_unknown_when_start_url_has_no_host(self):
         """A malformed start URL short-circuits before hitting the network."""
         from lilbee.crawler.sitemap import _count_sitemap_urls
-        from lilbee.progress import CRAWL_TOTAL_UNKNOWN
+        from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
         # file:///foo has no hostname, so the helper bails immediately.
         assert (
@@ -1203,14 +1212,14 @@ class TestSitemapCounting:
 
 
 class TestCrawlAndSave:
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
         assert paths[0].exists()
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
         self, mock_crawl_single, isolated_env, monkeypatch
     ):
@@ -1227,8 +1236,8 @@ class TestCrawlAndSave:
         assert called == [None]
 
     async def test_raises_backend_missing_before_bootstrap(self, isolated_env, monkeypatch):
-        """Without [crawler] extra, fail fast — never trigger Chromium bootstrap."""
-        from lilbee.crawler import CrawlerBackendMissing
+        """Without [crawler] extra, fail fast: never trigger Chromium bootstrap."""
+        from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
@@ -1239,11 +1248,11 @@ class TestCrawlAndSave:
             bootstrap_called.append(on_progress)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
-        with pytest.raises(CrawlerBackendMissing, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_and_save("https://example.com", depth=0)
         assert bootstrap_called == []
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_recursive(self, mock_crawl_recursive, isolated_env):
         streamed = [
             CrawlResult(url="https://example.com", markdown="# Home"),
@@ -1266,7 +1275,7 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_default_depth_is_recursive(self, mock_crawl_recursive, isolated_env):
         """No depth kwarg means recursive (whole-site) crawl, not single page."""
         mock_crawl_recursive.return_value = [
@@ -1276,14 +1285,14 @@ class TestCrawlAndSave:
         mock_crawl_recursive.assert_awaited_once()
         assert mock_crawl_recursive.await_args.kwargs["max_depth"] is None
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_quiet_forwarded_to_crawl_single(self, mock_crawl_single, isolated_env):
         """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         await crawl_and_save("https://example.com", depth=0, quiet=True)
         mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
         """quiet=True is forwarded to crawl_recursive."""
         mock_crawl_recursive.return_value = []
@@ -1291,21 +1300,21 @@ class TestCrawlAndSave:
         call_kwargs = mock_crawl_recursive.call_args[1]
         assert call_kwargs["quiet"] is True
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
         """whole-site default is exact-host scoping."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is False
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_include_subdomains_threaded_through(self, mock_crawl_recursive, isolated_env):
         """Opting into subdomain scope reaches the recursive crawl."""
         mock_crawl_recursive.return_value = []
         await crawl_and_save("https://example.com", depth=2, include_subdomains=True)
         assert mock_crawl_recursive.await_args.kwargs["include_subdomains"] is True
 
-    @patch("lilbee.crawler.api.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_cancel_threaded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
         """The cancel event is threaded through to crawl_recursive for BFS abort."""
         import threading
@@ -1315,7 +1324,7 @@ class TestCrawlAndSave:
         await crawl_and_save("https://example.com", depth=2, cancel=cancel)
         assert mock_crawl_recursive.call_args[1]["cancel"] is cancel
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page_with_progress(self, mock_crawl_single, isolated_env):
         """Progress callback receives crawl_start, crawl_page, crawl_done for single page."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
@@ -1330,7 +1339,7 @@ class TestCrawlAndSave:
         assert "crawl_page" in event_types
         assert "crawl_done" in event_types
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_updates_metadata(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
@@ -1339,7 +1348,7 @@ class TestCrawlAndSave:
         meta = load_crawl_metadata()
         assert "https://example.com/page" in meta
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
         """Same content on re-crawl skips saving (hash-based detection)."""
         mock_crawl_single.return_value = CrawlResult(
@@ -1358,7 +1367,7 @@ class TestCrawlAndSave:
         assert paths2 == []
         mock_crawl_single.assert_awaited_once()
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_changed_content_updates_file(self, mock_crawl_single, isolated_env):
         """Changed content on re-crawl saves updated file."""
         mock_crawl_single.return_value = CrawlResult(
@@ -1376,38 +1385,32 @@ class TestCrawlAndSave:
 
     async def test_semaphore_limits_concurrency(self, isolated_env):
         """The semaphore limits concurrent crawls based on config."""
-        from lilbee.crawler import api as crawler_mod
-
-        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 5
+        reset_services()
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == 5
-        crawler_mod._state.semaphore = None
+        reset_services()
 
     async def test_semaphore_defaults_to_cpu_count(self, isolated_env):
         """Default concurrency matches CPU count."""
         import os
 
-        from lilbee.crawler import api as crawler_mod
-
-        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = os.cpu_count() or 4
+        reset_services()
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == (os.cpu_count() or 4)
-        crawler_mod._state.semaphore = None
+        reset_services()
 
     async def test_semaphore_unlimited_when_zero(self, isolated_env):
         """Setting crawl_max_concurrent=0 disables the semaphore."""
-        from lilbee.crawler import api as crawler_mod
-
-        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 0
+        reset_services()
         assert _get_crawl_semaphore() is None
-        crawler_mod._state.semaphore = None
+        reset_services()
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_cancel_keeps_fetched_page(self, mock_crawl_single, isolated_env):
         """A single-URL crawl that gets cancelled still keeps the page it fetched.
 
@@ -1428,209 +1431,117 @@ class TestCrawlAndSave:
 class TestPeriodicSync:
     async def test_sync_disabled_when_interval_zero(self, isolated_env):
         """No sync fires when crawl_sync_interval is 0."""
-        import threading
-
-        from lilbee.crawler import api as crawler_mod
-
         cfg.crawl_sync_interval = 0
-        crawler_mod._state.last_sync_time = 0.0
-        crawler_mod._state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
 
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync()
+        tasks: set[asyncio.Task[None]] = set()
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
+            await _maybe_periodic_sync(tasks)
             mock_sync.assert_not_awaited()
+        assert not tasks
 
     async def test_sync_skipped_when_already_running(self, isolated_env):
         """No new sync is started if one is already in progress."""
-        import threading
-
-        from lilbee.crawler import api as crawler_mod
-
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        lock = threading.Lock()
-        lock.acquire()  # simulate already-running
-        crawler_mod._state.sync_running = lock
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+        sync_state.lock.acquire()  # simulate already-running
 
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync()
-            mock_sync.assert_not_awaited()
-
-        lock.release()
+        tasks: set[asyncio.Task[None]] = set()
+        try:
+            with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
+                await _maybe_periodic_sync(tasks)
+                mock_sync.assert_not_awaited()
+        finally:
+            sync_state.lock.release()
 
     async def test_sync_skipped_when_interval_not_elapsed(self, isolated_env):
         """No sync fires if the interval hasn't elapsed since last sync."""
-        import threading
         import time
 
-        from lilbee.crawler import api as crawler_mod
-
         cfg.crawl_sync_interval = 9999
-        crawler_mod._state.last_sync_time = time.monotonic()
-        crawler_mod._state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = time.monotonic()
 
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync()
+        tasks: set[asyncio.Task[None]] = set()
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
+            await _maybe_periodic_sync(tasks)
             mock_sync.assert_not_awaited()
 
     async def test_sync_fires_when_interval_elapsed(self, isolated_env):
         """Sync fires as a background task when interval has elapsed."""
-        import asyncio
-        import threading
-
-        from lilbee.crawler import api as crawler_mod
-
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        crawler_mod._state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
 
+        tasks: set[asyncio.Task[None]] = set()
         mock_sync = AsyncMock()
-        with patch("lilbee.ingest.sync", mock_sync):
-            await _maybe_periodic_sync()
-            # Let the background task run
-            await asyncio.sleep(0)
+        with patch("lilbee.data.ingest.sync", mock_sync):
+            await _maybe_periodic_sync(tasks)
+            # Drain the spawned task so the awaited assertion is deterministic.
+            await asyncio.gather(*tasks, return_exceptions=True)
             mock_sync.assert_awaited_once()
 
     async def test_sync_failure_resets_running_flag(self, isolated_env):
-        """If sync raises, _sync_running lock is released so future syncs can proceed."""
-        import asyncio
-        import threading
-
-        from lilbee.crawler import api as crawler_mod
-
+        """If sync raises, the sync lock is released so future syncs can proceed."""
         cfg.crawl_sync_interval = 1
-        crawler_mod._state.last_sync_time = 0.0
-        lock = threading.Lock()
-        crawler_mod._state.sync_running = lock
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
 
+        tasks: set[asyncio.Task[None]] = set()
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
-        with patch("lilbee.ingest.sync", mock_sync):
-            await _maybe_periodic_sync()
-            await asyncio.sleep(0)
+        with patch("lilbee.data.ingest.sync", mock_sync):
+            await _maybe_periodic_sync(tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         # Lock should be released after failure
-        assert lock.acquire(blocking=False)
-        lock.release()
+        assert sync_state.lock.acquire(blocking=False)
+        sync_state.lock.release()
 
 
-class TestDrainBackgroundTasks:
-    """``_drain_background_tasks`` cancels periodic-sync tasks so crawl_and_save
-    can exit cleanly without 'destroyed but pending' warnings. (bb-zqws)"""
+class TestServicesCrawlerSemaphore:
+    def test_services_crawler_semaphore_rebuilds_on_reset(self, isolated_env):
+        """``reset_services`` produces a fresh semaphore matching the cfg limit."""
+        cfg.crawl_max_concurrent = 3
+        reset_services()
+        first = get_services().crawler_semaphore
+        assert first is not None
+        assert first._value == 3
+        reset_services()
+        second = get_services().crawler_semaphore
+        assert second is not None
+        assert second._value == 3
+        assert first is not second
 
-    async def test_no_pending_tasks_returns_immediately(self, isolated_env):
-        """With no spawned tasks, the helper is a fast no-op."""
-        crawler_state.background_tasks = set()
-        await _drain_background_tasks()
-        assert crawler_state.background_tasks == set()
-
-    async def test_cancels_pending_periodic_sync(self, isolated_env):
-        """The drain cancels (not awaits) so a slow sync can't block crawl_and_save's exit."""
-
-        async def _slow_sync() -> None:
-            await asyncio.sleep(60.0)  # would deadlock the test if awaited
-
-        task = asyncio.create_task(_slow_sync())
-        crawler_state.background_tasks = {task}
-        task.add_done_callback(crawler_state.background_tasks.discard)
-
-        await _drain_background_tasks()
-
-        assert task.done()
-        assert task.cancelled()
-
-    async def test_swallows_task_exception(self, isolated_env):
-        """A failing periodic-sync task must not bubble out of the drain."""
-
-        async def _boom() -> None:
-            await asyncio.sleep(0)
-            raise RuntimeError("sync exploded")
-
-        task = asyncio.create_task(_boom())
-        crawler_state.background_tasks = {task}
-        task.add_done_callback(crawler_state.background_tasks.discard)
-
-        await _drain_background_tasks()
-        assert task.done()
-
-    async def test_skips_already_done_task(self, isolated_env):
-        """A task that already finished is left untouched by the drain."""
-
-        async def _quick() -> str:
-            return "ok"
-
-        task = asyncio.create_task(_quick())
-        await task  # finish it before the drain sees it
-        # Re-add manually because add_done_callback already discarded it.
-        crawler_state.background_tasks = {task}
-
-        await _drain_background_tasks()
-        assert task.done()
-        assert not task.cancelled()
-        assert task.result() == "ok"
-
-    async def test_drops_cross_loop_task_from_registry(self, isolated_env):
-        """A task whose loop has closed gets dropped instead of awaited.
-
-        Mirrors what happens when an earlier asyncio.run() call left a task
-        in background_tasks: subsequent crawl_and_save() runs on a new loop
-        and must not try to cross-await it.
-        """
-        # MagicMock(spec=Task) lets us simulate a cross-loop entry without
-        # spawning a real task on a separate loop (which would be cleanup-heavy).
-        other_loop = asyncio.new_event_loop()
-        try:
-            stale_task = MagicMock(spec=asyncio.Task)
-            stale_task.done.return_value = False
-            stale_task.get_loop.return_value = other_loop
-
-            crawler_state.background_tasks = {stale_task}
-
-            await _drain_background_tasks()
-
-            assert stale_task not in crawler_state.background_tasks
-            stale_task.cancel.assert_not_called()  # never touched mid-flight
-        finally:
-            other_loop.close()
-
-
-class TestCrawlerStateReset:
-    def test_reset_clears_all_state(self, isolated_env):
-        """CrawlerState.reset() restores all fields to initial values."""
-        from lilbee.crawler import api as crawler_mod
-
-        state = crawler_mod._state
-        state.semaphore = asyncio.Semaphore(3)
-        state.semaphore_limit = 3
-        state.last_sync_time = 99.0
-
-        state.reset()
-
-        assert state.semaphore is None
-        assert state.semaphore_limit == 0
-        assert state.last_sync_time == 0.0
-        assert state.sync_running.acquire(blocking=False)
-        state.sync_running.release()
-        assert state.background_tasks == set()
+    def test_services_crawler_semaphore_none_when_unlimited(self, isolated_env):
+        """``crawl_max_concurrent <= 0`` leaves ``crawler_semaphore`` as ``None``."""
+        cfg.crawl_max_concurrent = 0
+        reset_services()
+        assert get_services().crawler_semaphore is None
 
 
 class TestCrawlAndSaveSemaphore:
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_semaphore_acquired_and_released(self, mock_crawl_single, isolated_env):
         """When crawl_max_concurrent > 0, sem.acquire/release are called."""
-        from lilbee.crawler import api as crawler_mod
-
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cfg.crawl_max_concurrent = 2
-        crawler_mod._state.semaphore = None
+        reset_services()
 
         paths = await crawl_and_save("https://example.com", depth=0)
         assert len(paths) == 1
 
-        # Verify semaphore was created and is still available (released)
-        sem = crawler_mod._state.semaphore
+        # Verify semaphore is still at full capacity (released).
+        sem = get_services().crawler_semaphore
         assert sem is not None
         assert sem._value == 2
-        crawler_mod._state.semaphore = None
+        reset_services()
 
 
 class TestCrawlCancel:
@@ -2220,7 +2131,7 @@ class TestStreamingFlush:
         assert paths[0].name == "index.md"
         assert paths[0].read_text(encoding="utf-8") == "# NewPage"
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_url_flushes_via_per_page_path(self, mock_crawl_single, isolated_env):
         """depth=0 uses the same flush_page callback, not the old batch helpers."""
         mock_crawl_single.return_value = CrawlResult(
@@ -2286,7 +2197,9 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch(
+                "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
+            ) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
         mock_sync.assert_not_awaited()
@@ -2306,14 +2219,15 @@ class TestStreamingFlush:
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.crawler.api._maybe_periodic_sync", new_callable=AsyncMock) as mock_sync,
+            patch(
+                "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
+            ) as mock_sync,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
         mock_sync.assert_awaited_once()
 
     async def test_crawl_and_save_drains_background_tasks(self, isolated_env):
-        """crawl_and_save cancels any spawned periodic-sync task before returning. (bb-zqws)"""
-        import threading
+        """crawl_and_save awaits its locally-spawned periodic-sync task before returning."""
 
         async def _gen():
             await asyncio.sleep(0)
@@ -2324,23 +2238,64 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        async def _slow_sync(*_args, **_kwargs):
-            # Would deadlock the test if the drain awaited instead of cancelling.
-            await asyncio.sleep(60.0)
+        sync_completed = asyncio.Event()
+
+        async def _short_sync(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            sync_completed.set()
 
         cfg.crawl_sync_interval = 1
-        crawler_state.last_sync_time = 0.0
-        crawler_state.sync_running = threading.Lock()
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+
+        # Snapshot tasks currently on this loop so we can assert no
+        # crawler-spawned task survives the call.
+        before = set(asyncio.all_tasks())
 
         with (
             patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
-            patch("lilbee.ingest.sync", _slow_sync),
+            patch("lilbee.data.ingest.sync", _short_sync),
         ):
             await crawl_and_save("https://example.com", depth=0)
 
-        # The done callback cleared the registry; any task that survived would
-        # mean the drain didn't await its cancellation.
-        assert all(t.done() for t in crawler_state.background_tasks)
+        # crawl_and_save must not return before its periodic-sync task finished.
+        assert sync_completed.is_set()
+        # No new pending tasks leak past the call.
+        leaked = {t for t in asyncio.all_tasks() if t not in before and not t.done()}
+        assert not leaked
+
+    async def test_concurrent_crawl_and_save_calls_isolated_tasks(self, isolated_env):
+        """Two concurrent crawl_and_save calls each own their own local task set."""
+        cfg.crawl_max_concurrent = 0  # don't serialize the two concurrent calls
+        cfg.crawl_sync_interval = 1  # spawn a periodic-sync per call
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+
+        async def _short_sync(*_args, **_kwargs):
+            await asyncio.sleep(0)
+
+        async def _fake_single(url: str, *, quiet: bool = False) -> CrawlResult:
+            await asyncio.sleep(0)
+            return CrawlResult(url=url, markdown=f"# {url}")
+
+        before = set(asyncio.all_tasks())
+
+        with (
+            patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
+            patch("lilbee.data.ingest.sync", _short_sync),
+        ):
+            results = await asyncio.gather(
+                crawl_and_save("https://example.com/a", depth=0),
+                crawl_and_save("https://example.com/b", depth=0),
+            )
+        assert len(results) == 2
+        assert all(len(paths) == 1 for paths in results)
+        # Each call's local task set was drained before returning, so no
+        # crawler-spawned task leaks past either invocation.
+        leaked = {t for t in asyncio.all_tasks() if t not in before and not t.done()}
+        assert not leaked
 
     async def test_metadata_flush_is_batched(self, isolated_env):
         """_flush_metadata fires every METADATA_FLUSH_INTERVAL pages, not every page."""
@@ -2425,7 +2380,7 @@ class TestStreamingFlush:
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
 
-    @patch("lilbee.crawler.api.crawl_single")
+    @patch("lilbee.crawler.runner.crawl_single")
     async def test_depth_zero_flush_failure_does_not_fail_the_crawl(
         self, mock_crawl_single, isolated_env
     ):

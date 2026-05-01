@@ -1,4 +1,4 @@
-"""GridSelect — responsive grid with cursor navigation.
+"""GridSelect: responsive grid with cursor navigation.
 
 Ported from toad (https://github.com/batrachianai/toad).
 Extends Textual's ItemGrid with keyboard cursor, highlight class, and messages.

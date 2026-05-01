@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.cli.tui.screens.chat import _remove_copied_files
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ class TestDoAddCancelCleanup:
     def test_sync_exception_triggers_cleanup(self, isolated_documents, monkeypatch):
         from unittest.mock import MagicMock, patch
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = ChatScreen.__new__(ChatScreen)
@@ -109,8 +109,8 @@ class TestDoAddCancelCleanup:
             raise _Cancelled("cancelled by user")
 
         with (
-            patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-            patch("lilbee.asyncio_loop.run", side_effect=_run),
+            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
             pytest.raises(_Cancelled),
         ):
             screen._do_add(target, reporter)
@@ -126,9 +126,9 @@ class TestDoAddCancelCleanup:
         """
         from unittest.mock import MagicMock, patch
 
-        from lilbee.cli.helpers import CopyResult
+        from lilbee.app.ingest import CopyResult
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.ingest import SyncResult
+        from lilbee.data.ingest import SyncResult
 
         screen = ChatScreen.__new__(ChatScreen)
         reporter = MagicMock()
@@ -148,8 +148,8 @@ class TestDoAddCancelCleanup:
             return failing_result
 
         with (
-            patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
-            patch("lilbee.asyncio_loop.run", side_effect=_run),
+            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
             pytest.raises(RuntimeError, match="Sync failed"),
         ):
             screen._do_add(target, reporter)

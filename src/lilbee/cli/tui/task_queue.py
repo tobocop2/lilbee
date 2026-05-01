@@ -118,7 +118,7 @@ class TaskQueue:
 
     @property
     def active_task(self) -> Task | None:
-        """Return any one active task (for backward compat). Prefer active_tasks."""
+        """Return any one active task. Prefer ``active_tasks`` for the full set."""
         with self._lock:
             for ids in self._active_ids.values():
                 for tid in ids:

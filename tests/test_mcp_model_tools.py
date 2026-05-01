@@ -9,14 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lilbee.catalog import DownloadProgress
-from lilbee.cli.model import (
+from lilbee.app.models import (
     ListModelsResult,
     PullResult,
     PullStatus,
     RemoveResult,
     ShowModelResult,
 )
+from lilbee.catalog import DownloadProgress
 from lilbee.mcp_server import (
     _log_progress_failure,
     model_list,
@@ -24,25 +24,25 @@ from lilbee.mcp_server import (
     model_rm,
     model_show,
 )
-from lilbee.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
 
 
 class TestMcpList:
     def test_native_source_forwarded(self):
         expected = ListModelsResult(models=[], total=0)
-        with patch("lilbee.cli.model.list_models_data", return_value=expected) as fn:
+        with patch("lilbee.app.models.list_models_data", return_value=expected) as fn:
             result = model_list(source="native", task="chat")
         assert result == expected.model_dump()
         fn.assert_called_once_with(source=ModelSource.NATIVE, task="chat")
 
     def test_empty_strings_mean_all(self):
         expected = ListModelsResult(models=[], total=0)
-        with patch("lilbee.cli.model.list_models_data", return_value=expected) as fn:
+        with patch("lilbee.app.models.list_models_data", return_value=expected) as fn:
             model_list()
         fn.assert_called_once_with(source=None, task=None)
 
     def test_invalid_source_returns_explicit_error(self):
-        with patch("lilbee.cli.model.list_models_data") as fn:
+        with patch("lilbee.app.models.list_models_data") as fn:
             result = model_list(source="bogus")
         assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
         fn.assert_not_called()
@@ -51,14 +51,14 @@ class TestMcpList:
 class TestMcpShow:
     def test_delegates_and_serializes(self):
         expected = ShowModelResult(model="qwen3:0.6b", installed=True, source="native")
-        with patch("lilbee.cli.model.show_model_data", return_value=expected) as fn:
+        with patch("lilbee.app.models.show_model_data", return_value=expected) as fn:
             result = model_show("qwen3:0.6b")
         fn.assert_called_once_with("qwen3:0.6b")
         assert result == expected.model_dump()
 
     def test_not_found_returns_error_dict(self):
         with patch(
-            "lilbee.cli.model.show_model_data",
+            "lilbee.app.models.show_model_data",
             side_effect=ModelNotFoundError("model not found: ghost"),
         ):
             result = model_show("ghost")
@@ -68,19 +68,19 @@ class TestMcpShow:
 class TestMcpRemove:
     def test_default_source_is_none(self):
         expected = RemoveResult(model="qwen3:0.6b", deleted=True, freed_gb=5.0)
-        with patch("lilbee.cli.model.remove_model_data", return_value=expected) as fn:
+        with patch("lilbee.app.models.remove_model_data", return_value=expected) as fn:
             result = model_rm("qwen3:0.6b")
         fn.assert_called_once_with("qwen3:0.6b", source=None)
         assert result == expected.model_dump()
 
     def test_native_source(self):
         expected = RemoveResult(model="qwen3:0.6b", deleted=True)
-        with patch("lilbee.cli.model.remove_model_data", return_value=expected) as fn:
+        with patch("lilbee.app.models.remove_model_data", return_value=expected) as fn:
             model_rm("qwen3:0.6b", source="native")
         fn.assert_called_once_with("qwen3:0.6b", source=ModelSource.NATIVE)
 
     def test_invalid_source_explicit_error(self):
-        with patch("lilbee.cli.model.remove_model_data") as fn:
+        with patch("lilbee.app.models.remove_model_data") as fn:
             result = model_rm("qwen3:0.6b", source="bogus")
         assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
         fn.assert_not_called()
@@ -103,7 +103,7 @@ class TestMcpPull:
             on_update(DownloadProgress(percent=50, detail="50 MB", is_cache_hit=False))
             return final
 
-        with patch("lilbee.cli.model.pull_model_data", side_effect=fake_pull):
+        with patch("lilbee.app.models.pull_model_data", side_effect=fake_pull):
             result = await model_pull("qwen3:0.6b", source="native", ctx=ctx)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -125,7 +125,7 @@ class TestMcpPull:
             on_update(DownloadProgress(percent=30, detail="", is_cache_hit=False))
             return final
 
-        with patch("lilbee.cli.model.pull_model_data", side_effect=fake_pull):
+        with patch("lilbee.app.models.pull_model_data", side_effect=fake_pull):
             result = await model_pull("qwen3:0.6b")
         assert result == final.model_dump()
 
@@ -138,14 +138,14 @@ class TestMcpPull:
             captured.append(source)
             return final
 
-        with patch("lilbee.cli.model.pull_model_data", side_effect=fake_pull):
+        with patch("lilbee.app.models.pull_model_data", side_effect=fake_pull):
             await model_pull("llama3:latest", source="remote")
         assert captured == [ModelSource.REMOTE]
 
     @pytest.mark.asyncio
     async def test_pull_runtime_error_returned_as_dict(self):
         with patch(
-            "lilbee.cli.model.pull_model_data",
+            "lilbee.app.models.pull_model_data",
             side_effect=RuntimeError("no network"),
         ):
             result = await model_pull("qwen3:0.6b")
@@ -154,7 +154,7 @@ class TestMcpPull:
     @pytest.mark.asyncio
     async def test_pull_permission_error_returned_as_dict(self):
         with patch(
-            "lilbee.cli.model.pull_model_data",
+            "lilbee.app.models.pull_model_data",
             side_effect=PermissionError("gated"),
         ):
             result = await model_pull("qwen3:0.6b")

@@ -1,4 +1,4 @@
-"""Tests for lilbee.cli.sync — background sync, executor, and status."""
+"""Tests for lilbee.cli.sync: background sync, executor, and status."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from lilbee.cli import sync as sync_mod
 from lilbee.cli import theme
-from lilbee.progress import (
+from lilbee.runtime.progress import (
     EmbedEvent,
     EventType,
     ExtractEvent,

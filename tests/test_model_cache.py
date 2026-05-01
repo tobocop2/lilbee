@@ -32,7 +32,7 @@ def model_dir(tmp_path: Path) -> Path:
 
 
 def _fake_loader(path: Path, *, mode: str = "chat") -> mock.MagicMock:
-    """Simulate loading a Llama model — returns a unique mock per call."""
+    """Simulate loading a Llama model: returns a unique mock per call."""
     m = mock.MagicMock()
     m._model_path = str(path)
     m._mode = mode

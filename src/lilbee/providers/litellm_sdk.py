@@ -12,6 +12,7 @@ content-parts schema for images) lives here. The semantic layer in
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -19,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from lilbee.config import DEFAULT_HTTP_TIMEOUT
+from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.providers.base import ProviderError
 from lilbee.providers.model_ref import OLLAMA_PREFIX, ProviderModelRef
 from lilbee.providers.sdk_backend import (
@@ -45,6 +46,7 @@ def _is_ollama(base_url: str) -> bool:
     return any(p in url_lower for p in _OLLAMA_URL_PATTERNS)
 
 
+@functools.cache
 def litellm_available() -> bool:
     """Return True if ``litellm`` can be imported."""
     try:
@@ -71,7 +73,7 @@ def _require_litellm() -> Any:
 
 def _cache_ollama_defaults(model: str, params_text: str) -> None:
     """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.model_defaults import parse_kv_parameters, set_defaults
+    from lilbee.modelhub.model_defaults import parse_kv_parameters, set_defaults
 
     defaults = parse_kv_parameters(params_text)
     set_defaults(model, defaults)
@@ -275,15 +277,19 @@ class LitellmSdkBackend:
     def list_chat_models(self, provider: str) -> list[str]:
         """Return chat-mode model ids from litellm's static catalog.
 
+        Returns whatever litellm exposes for *provider*, alphabetically.
         Empty list when litellm is not installed or the provider has no
-        chat-mode entries. Callers that care about the litellm debug
-        banner should invoke ``configure_logging`` first (the semantic
-        layer's ``SdkLLMProvider`` does this in ``list_chat_models``).
+        chat-mode entries.
         """
         try:
             import litellm
         except ImportError:
             return []
+        return self._all_chat_models_for(provider, litellm)
+
+    @staticmethod
+    def _all_chat_models_for(provider: str, litellm: Any) -> list[str]:
+        """Filter litellm's catalog down to chat-mode entries for ``provider``."""
         models = litellm.models_by_provider.get(provider, set())
         chat_models: list[str] = []
         for model_name in sorted(models):

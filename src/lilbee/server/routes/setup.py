@@ -22,6 +22,7 @@ from litestar.response import Stream
 from lilbee.crawler import (
     bootstrap_chromium,
     chromium_installed,
+    crawler_available,
     crawler_browsers_path,
 )
 from lilbee.server.handlers import SseStream, sse_done, sse_error
@@ -29,9 +30,13 @@ from lilbee.server.handlers import SseStream, sse_done, sse_error
 
 @get("/setup/crawler/status")
 async def setup_crawler_status_route() -> dict[str, Any]:
-    """Return whether the Chromium browser is installed."""
+    """Return whether the crawler is fully ready (Python package + Chromium)."""
+    package_installed = crawler_available()
+    chromium_ok = chromium_installed()
     return {
-        "installed": chromium_installed(),
+        "installed": package_installed and chromium_ok,
+        "package_installed": package_installed,
+        "chromium_installed": chromium_ok,
         "component": "chromium",
         "browsers_path": str(crawler_browsers_path()),
     }

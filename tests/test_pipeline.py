@@ -5,14 +5,14 @@ Integration tests requiring real models live in tests/integration/test_pipeline_
 
 import pytest
 
-from lilbee.config import cfg
-from lilbee.store import Store
+from lilbee.core.config import cfg
+from lilbee.data.store import Store
 
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path):
     """Point store at a temp directory, clean up after."""
-    from lilbee.services import reset_services
+    from lilbee.core.services import reset_services
 
     original = cfg.lancedb_dir
     cfg.lancedb_dir = tmp_path / "lancedb_test"
@@ -140,7 +140,7 @@ class TestStoreOperations:
         """Cover safe_delete logging on failure."""
         from unittest.mock import MagicMock
 
-        from lilbee.store import safe_delete
+        from lilbee.data.store import safe_delete
 
         mock_table = MagicMock()
         mock_table.delete.side_effect = RuntimeError("test error")
@@ -151,7 +151,7 @@ class TestStoreOperations:
         """ensure_table recovers when create_table raises ValueError."""
         from unittest import mock
 
-        from lilbee.store import ensure_table
+        from lilbee.data.store import ensure_table
 
         s = Store(cfg)
         db = s.get_db()

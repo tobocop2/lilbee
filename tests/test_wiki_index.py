@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from conftest import write_wiki_page
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 from lilbee.wiki.index import (
     append_wiki_log,
     parse_source_count,

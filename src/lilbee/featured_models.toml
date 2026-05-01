@@ -1,6 +1,6 @@
 [[chat]]
 hf_repo = "Qwen/Qwen3-0.6B-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 0.5
 min_ram_gb = 2.0
 description = "Tiny — runs on anything"
@@ -8,21 +8,21 @@ recommended = true
 
 [[chat]]
 hf_repo = "Qwen/Qwen3-4B-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 2.5
 min_ram_gb = 8.0
 description = "Small — good balance for 8 GB RAM"
 
 [[chat]]
 hf_repo = "Qwen/Qwen3-8B-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 5.0
 min_ram_gb = 8.0
 description = "Medium — strong general purpose"
 
 [[chat]]
 hf_repo = "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 4.4
 min_ram_gb = 8.0
 description = "Fast 7B, 32K context"
@@ -30,7 +30,7 @@ recommended = true
 
 [[chat]]
 hf_repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 18.0
 min_ram_gb = 32.0
 description = "Extra large — best quality"
@@ -74,14 +74,14 @@ description = "Google Gemma embedder, strong multilingual + retrieval"
 
 [[embedding]]
 hf_repo = "second-state/All-MiniLM-L6-v2-Embedding-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 0.025
 min_ram_gb = 1.0
 description = "Tiny classic embedder, fits anywhere, 384 dims"
 
 [[vision]]
 hf_repo = "noctrex/LightOnOCR-2-1B-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 1.5
 min_ram_gb = 4.0
 description = "Fast OCR — clean markdown output, small footprint"
@@ -89,7 +89,7 @@ recommended = true
 
 [[rerank]]
 hf_repo = "gpustack/bge-reranker-v2-m3-GGUF"
-gguf_filename = "*Q4_K_M.gguf"
+gguf_filename = "*Q8_0.gguf"
 size_gb = 0.4
 min_ram_gb = 2.0
 description = "Multilingual cross-encoder, best default for RAG"

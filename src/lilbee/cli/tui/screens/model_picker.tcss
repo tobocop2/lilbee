@@ -1,0 +1,37 @@
+ModelPickerModal {
+    align: center middle;
+    background: black 50%;
+}
+
+#picker-root {
+    width: 80%;
+    height: 80%;
+    max-width: 90;
+    max-height: 30;
+    background: $surface;
+    border: thick $primary;
+    padding: 1;
+}
+
+#picker-title {
+    text-style: bold;
+    color: $primary;
+    padding: 0 0 1 0;
+}
+
+#picker-search {
+    height: 3;
+    border: tall $primary;
+    margin: 0 0 1 0;
+}
+
+#picker-list {
+    height: 1fr;
+    border: solid $surface-lighten-2;
+}
+
+#picker-hint {
+    height: 1;
+    color: $text-muted;
+    padding: 1 0 0 0;
+}

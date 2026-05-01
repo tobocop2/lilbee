@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from lilbee.temporal import DateRange, detect_temporal, resolve_date_range
+from lilbee.runtime.temporal import DateRange, detect_temporal, resolve_date_range
 
 
 class TestDetectTemporal:

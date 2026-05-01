@@ -9,14 +9,17 @@ from textual.app import App
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.config import cfg
+from lilbee.core.config import cfg
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+_TEST_LOCAL_LABEL = display_label_for_ref(TEST_LOCAL_REF)
+_ALT_CHAT_LABEL = display_label_for_ref(_ALT_CHAT_REF)
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +45,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
-    from lilbee.services import set_services
+    from lilbee.core.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -75,11 +78,14 @@ def _patch_chat_setup():
 
 
 def _rendered_tab_text(tabs: ViewTabs) -> str:
-    """Pull the rendered text out of the inner Static, regardless of styling."""
+    """Render the visible tab strip text: per-tab Labels + trailing Static."""
     from textual.widgets import Static
 
-    inner = tabs.query_one("#view-tabs-content", Static)
-    return str(inner.render())
+    from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+    parts = [str(tab.render()) for tab in tabs.query(ViewTab)]
+    parts.append(str(tabs.query_one("#view-tabs-trailing", Static).render()))
+    return " ".join(parts)
 
 
 async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
@@ -92,7 +98,7 @@ async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert TEST_LOCAL_REF not in text
+        assert _TEST_LOCAL_LABEL not in text
 
 
 async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup) -> None:
@@ -110,7 +116,7 @@ async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup
 
         tabs = app.screen.query_one(ViewTabs)
         text = _rendered_tab_text(tabs)
-        assert TEST_LOCAL_REF in text
+        assert _TEST_LOCAL_LABEL in text
 
 
 async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_setup) -> None:
@@ -127,14 +133,14 @@ async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_set
         await pilot.pause()
 
         tabs = app.screen.query_one(ViewTabs)
-        assert TEST_LOCAL_REF in _rendered_tab_text(tabs)
+        assert _TEST_LOCAL_LABEL in _rendered_tab_text(tabs)
 
         cfg.chat_model = _ALT_CHAT_REF
         app.settings_changed_signal.publish(("chat_model", _ALT_CHAT_REF))
         await pilot.pause()
 
-        assert _ALT_CHAT_REF in _rendered_tab_text(tabs)
-        assert TEST_LOCAL_REF not in _rendered_tab_text(tabs)
+        assert _ALT_CHAT_LABEL in _rendered_tab_text(tabs)
+        assert _TEST_LOCAL_LABEL not in _rendered_tab_text(tabs)
 
 
 async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -> None:
@@ -266,7 +272,7 @@ def test_theme_keybinding_is_visible_in_app_bindings() -> None:
 
 async def test_cycle_theme_persists_to_config(_patch_chat_setup) -> None:
     """Pressing the cycle binding writes the new theme name to config.toml."""
-    from lilbee import settings
+    from lilbee.core import settings
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -284,7 +290,7 @@ async def test_cycle_theme_persists_to_config(_patch_chat_setup) -> None:
 
 async def test_set_theme_persists_to_config(_patch_chat_setup) -> None:
     """The /theme command path also persists across sessions."""
-    from lilbee import settings
+    from lilbee.core import settings
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:

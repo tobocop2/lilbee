@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.services import Services, set_services
+from lilbee.core.services import CrawlerSyncState, Services, set_services
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,7 @@ def _clean_vision_module() -> None:
 @pytest.fixture()
 def mock_provider():
     """Create a mock provider and inject it via Services.
-    Uses spec_set to exclude vision_ocr — tests that need the subprocess
+    Uses spec_set to exclude vision_ocr: tests that need the subprocess
     path should set it explicitly on the mock.
     """
     provider = mock.MagicMock(
@@ -41,6 +41,11 @@ def mock_provider():
         clusterer=mock.MagicMock(),
         searcher=searcher,
         registry=registry,
+        hf_client=mock.MagicMock(),
+        ingest_lock_registry=mock.MagicMock(),
+        model_manager=mock.MagicMock(),
+        crawler_semaphore=None,
+        crawler_sync_state=CrawlerSyncState(),
     )
     set_services(services)
     yield provider
@@ -174,6 +179,11 @@ class TestExtractPageTextSubprocess:
             clusterer=mock.MagicMock(),
             searcher=mock.MagicMock(),
             registry=mock.MagicMock(),
+            hf_client=mock.MagicMock(),
+            ingest_lock_registry=mock.MagicMock(),
+            model_manager=mock.MagicMock(),
+            crawler_semaphore=None,
+            crawler_sync_state=CrawlerSyncState(),
         )
         set_services(services)
 
@@ -196,6 +206,11 @@ class TestExtractPageTextSubprocess:
             clusterer=mock.MagicMock(),
             searcher=mock.MagicMock(),
             registry=mock.MagicMock(),
+            hf_client=mock.MagicMock(),
+            ingest_lock_registry=mock.MagicMock(),
+            model_manager=mock.MagicMock(),
+            crawler_semaphore=None,
+            crawler_sync_state=CrawlerSyncState(),
         )
         set_services(services)
 
@@ -246,7 +261,7 @@ class TestExtractPdfVision:
         """With concurrency=1, a 5-page PDF must drain inflight futures
         mid-loop (max_inflight=2) instead of submitting all pages up-front.
         Exercises the vision.py inflight-full branch."""
-        from lilbee.config import cfg
+        from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "vision_concurrency", 1)
         mock_iter = _mock_iterator(num_pages=5)

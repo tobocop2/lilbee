@@ -2,7 +2,7 @@
 
 import pytest
 
-from lilbee.store import CitationRecord
+from lilbee.data.store import CitationRecord
 from lilbee.wiki.citation import (
     CitationStatus,
     ParsedCitation,
