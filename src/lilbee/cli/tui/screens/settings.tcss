@@ -14,18 +14,26 @@ SettingsScreen {
         padding: 0 1;
     }
 
-    /* TabbedContent focus highlight: bold text + accent underline on
-     * the active group-tab when the Tabs widget has focus. Default
-     * Textual styling shows the active tab in $primary; we lift
-     * contrast further so keyboard users can see the focus ring.
+    /* Settings sub-tabs adopt the same airline-pill aesthetic as the
+     * top ViewTabs strip: active tab gets a bold accent underline,
+     * inactive tabs stay muted. Two navigation levels speak the same
+     * dialect.
      */
-    #settings-tabs Tabs:focus .-active {
-        text-style: bold underline;
-        color: $accent;
+    #settings-tabs Tab {
+        padding: 0 2;
+        color: $text-muted;
+    }
+    #settings-tabs Tab.-active {
+        color: $primary;
+        text-style: bold;
+        background: $surface;
     }
     #settings-tabs Tabs:focus Tab.-active {
-        text-style: bold underline;
         color: $accent;
+        text-style: bold underline;
+    }
+    #settings-tabs Underline {
+        color: $primary;
     }
 
     .api-keys-warning {

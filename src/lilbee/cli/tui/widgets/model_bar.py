@@ -299,12 +299,23 @@ class ChatModeToggle(Static, can_focus=True):
     def _refresh(self) -> None:
         ready = self._embedding_ready()
         mode = cfg.chat_mode if ready else "chat"
-        label = msg.CHAT_MODE_SEARCH_LABEL if mode == "search" else msg.CHAT_MODE_CHAT_LABEL
-        accent = "$primary" if mode == "search" else "$accent"
-        self.update(pill(label, accent, "$text"))
+        # Render both states inline so the toggle reads as a switch, not a label.
+        # Active segment gets the accent pill, inactive segment is dim.
+        from textual.content import Content
+
+        active_search = mode == "search"
+        search_style = "$primary on $surface bold" if active_search else "dim $text-muted"
+        chat_style = "dim $text-muted" if active_search else "$accent on $surface bold"
+        self.update(
+            Content.assemble(
+                Content.styled(f" {msg.CHAT_MODE_SEARCH_LABEL} ", search_style),
+                Content.styled(" | ", "dim $text-muted"),
+                Content.styled(f" {msg.CHAT_MODE_CHAT_LABEL} ", chat_style),
+            )
+        )
         self.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
-        self.set_class(mode == "search", _CHAT_MODE_SEARCH_CLASS)
-        self.set_class(mode == "chat", _CHAT_MODE_CHAT_CLASS)
+        self.set_class(active_search, _CHAT_MODE_SEARCH_CLASS)
+        self.set_class(not active_search, _CHAT_MODE_CHAT_CLASS)
         self.tooltip = (
             msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
         )
