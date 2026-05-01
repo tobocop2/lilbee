@@ -55,3 +55,20 @@ ModelBar .cloud-warning {
 ModelBar .cloud-warning.-visible {
     display: block;
 }
+
+ModelBar #chat-mode-toggle {
+    width: auto;
+    height: 1;
+    margin: 0 1 0 0;
+    padding: 0 1;
+    text-style: bold;
+}
+
+ModelBar #chat-mode-toggle:focus {
+    text-style: bold reverse;
+}
+
+ModelBar #chat-mode-toggle.-disabled {
+    color: $text 40%;
+    text-style: dim;
+}

@@ -231,6 +231,13 @@ class LilbeeApp(App[None]):
         settings.set_value(cfg.data_root, key, normalized)
         self.settings_changed_signal.publish((key, normalized))
 
+    def set_setting(self, key: str, value: object) -> None:
+        """Single write boundary for non-model settings."""
+        setattr(cfg, key, value)
+        normalized = getattr(cfg, key)
+        settings.set_value(cfg.data_root, key, normalized)
+        self.settings_changed_signal.publish((key, normalized))
+
     def _sync_theme_index_to_current(self) -> None:
         """Align cycle index with the active theme."""
         try:
@@ -325,6 +332,15 @@ def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
     """Route model writes through set_active_model, falling back to direct cfg+settings writes."""
     if isinstance(host_app, LilbeeApp):
         host_app.set_active_model(key, value)
+        return
+    setattr(cfg, key, value)
+    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+
+
+def apply_setting(host_app: App[Any], key: str, value: object) -> None:
+    """Route non-model settings writes through set_setting, falling back to direct writes."""
+    if isinstance(host_app, LilbeeApp):
+        host_app.set_setting(key, value)
         return
     setattr(cfg, key, value)
     settings.set_value(cfg.data_root, key, getattr(cfg, key))

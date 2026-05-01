@@ -186,6 +186,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Generation",
         help_text="System prompt sent when there are no documents to ground the answer",
     ),
+    "chat_mode": SettingDef(
+        str,
+        nullable=False,
+        group="Generation",
+        choices=("search", "chat"),
+        help_text="search runs every chat turn through document retrieval; chat skips it",
+    ),
     "top_k": SettingDef(
         int,
         nullable=False,

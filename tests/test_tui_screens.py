@@ -7599,12 +7599,15 @@ async def test_chat_on_setup_complete_completed_with_auto_sync():
 
 async def test_chat_on_setup_complete_hides_banner_when_embedding_ready():
     """_on_setup_complete hides chat-only banner after wizard configures embedding."""
+    from lilbee.core.config import cfg
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # Simulate banner being visible (e.g. from /setup command while in chat-only mode)
-        app.screen._show_chat_only_banner()
+        with patch.object(app.screen, "_embedding_ready", return_value=False):
+            app.screen._refresh_mode_banner()
         assert app.screen.query_one("#chat-only-banner").display is True
         with patch.object(app.screen, "_embedding_ready", return_value=True):
+            cfg.chat_mode = "search"
             app.screen._on_setup_complete("done")
             await _pilot.pause()
             assert app.screen.query_one("#chat-only-banner").display is False
@@ -8289,15 +8292,17 @@ async def test_chat_embedding_ready_false_on_exception():
             assert screen._embedding_ready() is False
 
 
-async def test_chat_hide_banner():
-    """_hide_chat_only_banner hides the banner."""
+async def test_chat_refresh_mode_banner_toggles_visibility():
+    """_refresh_mode_banner shows the banner when embedding is unavailable, hides it otherwise."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        app.screen._show_chat_only_banner()
-        assert app.screen.query_one("#chat-only-banner").display is True
-        app.screen._hide_chat_only_banner()
-        assert app.screen.query_one("#chat-only-banner").display is False
+        with patch.object(app.screen, "_embedding_ready", return_value=False):
+            app.screen._refresh_mode_banner()
+            assert app.screen.query_one("#chat-only-banner").display is True
+        with patch.object(app.screen, "_embedding_ready", return_value=True):
+            app.screen._refresh_mode_banner()
+            assert app.screen.query_one("#chat-only-banner").display is False
 
 
 async def test_chat_f5_opens_setup():

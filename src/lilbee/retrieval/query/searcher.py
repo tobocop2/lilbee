@@ -450,9 +450,9 @@ class Searcher:
         *,
         chunk_type: str | None = None,
     ) -> AskResult:
-        """Ask a question. Falls back to a no-RAG chat turn when search is
-        unconfigured or the query yields zero relevant chunks."""
-        if not self._embedder.embedding_available():
+        """Ask a question. Skips retrieval when chat_mode is 'chat' or
+        when no embedding model is configured."""
+        if self._config.chat_mode == "chat" or not self._embedder.embedding_available():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
@@ -521,7 +521,7 @@ class Searcher:
         """Stream answer tokens with citations appended at the end."""
         from lilbee.retrieval.reasoning import StreamToken, filter_reasoning
 
-        if not self._embedder.embedding_available():
+        if self._config.chat_mode == "chat" or not self._embedder.embedding_available():
             yield from self._stream_direct(question, history, options)
             return
 

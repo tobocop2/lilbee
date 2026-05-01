@@ -226,3 +226,17 @@ SETTINGS_API_KEYS_WARNING = (
 MODEL_BAR_CLOUD_PROVIDER_WARNING = (
     "Chat prompts are being sent to {provider}. Do not share sensitive data."
 )
+CHAT_MODE_SEARCH_LABEL = "Search"
+CHAT_MODE_CHAT_LABEL = "Chat"
+CHAT_MODE_TOGGLE_TOOLTIP = (
+    "Search runs your question through document retrieval. "
+    "Chat skips retrieval and answers directly. Click or press F3 to flip."
+)
+CHAT_MODE_TOGGLE_DISABLED_TOOLTIP = (
+    "Search needs an embedding model. Install one to enable Search mode."
+)
+CHAT_MODE_BANNER_CHAT = "Chat mode, no document search."
+CHAT_MODE_BANNER_SEARCH_NO_RESULTS = (
+    "Search returned 0 results, falling back to chat for this turn."
+)
+CHAT_MODE_SET = "Mode: {label}"

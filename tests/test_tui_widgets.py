@@ -467,6 +467,83 @@ class TestModelBar:
             bar.on_unmount()
             assert chat_sel.expanded is False
 
+    async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                assert "-disabled" not in toggle.classes
+                assert "-search" in toggle.classes
+
+    async def test_chat_mode_toggle_disabled_without_embedding(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                assert "-disabled" in toggle.classes
+                assert "-chat" in toggle.classes
+
+    async def test_chat_mode_toggle_flips_on_click(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                assert toggle.toggle() is True
+                assert cfg.chat_mode == "chat"
+                assert toggle.toggle() is True
+                assert cfg.chat_mode == "search"
+
+    async def test_chat_mode_toggle_no_op_when_disabled(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                assert toggle.toggle() is False
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_repaints_when_embedding_set(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False
+        ) as patched:
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                assert "-disabled" in toggle.classes
+                patched.return_value = True
+                app.query_one(ModelBar)._refresh_chat_mode_toggle()
+                await pilot.pause()
+                assert "-disabled" not in toggle.classes
+
     async def test_scope_hidden_when_wiki_disabled(self) -> None:
         """With ``cfg.wiki=False`` the scope pill+select are omitted entirely.
 

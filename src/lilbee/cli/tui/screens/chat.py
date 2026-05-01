@@ -18,6 +18,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import Footer, Select, Static
 
@@ -28,13 +29,13 @@ from textual.worker import get_current_worker as _get_worker
 from lilbee.app.version import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model
+from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp, apply_active_model
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
@@ -157,6 +158,7 @@ class ChatScreen(Screen[None]):
         Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
+        Binding("f3", "toggle_chat_mode", "Search/Chat", show=True),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
@@ -201,15 +203,15 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_input_style()
-        self.query_one("#chat-only-banner", Static).display = False
+        self._refresh_mode_banner()
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif not self._embedding_ready():
-            self._show_chat_only_banner()
-        elif self._auto_sync:
+        elif self._auto_sync and self._embedding_ready():
             self._run_sync()
+        if isinstance(self.app, LilbeeApp):
+            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
@@ -250,21 +252,30 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if result == "skipped" and not self._embedding_ready():
-            self._show_chat_only_banner()
-        elif self._embedding_ready():
-            self._hide_chat_only_banner()
-            if self._auto_sync:
-                self._run_sync()
+        if self._embedding_ready() and self._auto_sync:
+            self._run_sync()
+        self._refresh_mode_banner()
         self.refresh_model_bar()
 
-    def _show_chat_only_banner(self) -> None:
-        """Show the persistent chat-only banner."""
-        self.query_one("#chat-only-banner", Static).display = True
+    def _refresh_mode_banner(self) -> None:
+        """Show the right banner for the current embedding+mode state."""
+        try:
+            banner = self.query_one("#chat-only-banner", Static)
+        except NoMatches:
+            return
+        if not self._embedding_ready():
+            banner.update(msg.CHAT_ONLY_BANNER)
+            banner.display = True
+        elif cfg.chat_mode == "chat":
+            banner.update(msg.CHAT_MODE_BANNER_CHAT)
+            banner.display = True
+        else:
+            banner.display = False
 
-    def _hide_chat_only_banner(self) -> None:
-        """Hide the chat-only banner."""
-        self.query_one("#chat-only-banner", Static).display = False
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        key, _value = payload
+        if key in {"chat_mode", "embedding_model"}:
+            self._refresh_mode_banner()
 
     def action_open_setup(self) -> None:
         """Open the setup wizard."""
@@ -287,8 +298,6 @@ class ChatScreen(Screen[None]):
 
     def _update_mode_indicator(self) -> None:
         """Update the ViewTabs mode text to reflect the current mode."""
-        from textual.css.query import NoMatches
-
         with contextlib.suppress(NoMatches):
             bar = self.query_one(ViewTabs)
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
@@ -776,8 +785,6 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(StatusScreen())
 
     def _cmd_theme(self, args: str) -> None:
-        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
-
         if args and isinstance(self.app, LilbeeApp):
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
@@ -792,8 +799,6 @@ class ChatScreen(Screen[None]):
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
-        from lilbee.cli.tui.app import LilbeeApp
-
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Wiki")
 
@@ -917,6 +922,16 @@ class ChatScreen(Screen[None]):
                 self._trim_history()
         call_from_thread(self, widget.finish, sources)
         call_from_thread(self, self._scroll_to_bottom)
+        if (
+            cfg.chat_mode == "search"
+            and self._embedding_ready()
+            and full_response
+            and "\n\nSources:\n" not in full_response
+        ):
+            call_from_thread(self, self._notify_no_results)
+
+    def _notify_no_results(self) -> None:
+        self.notify(msg.CHAT_MODE_BANNER_SEARCH_NO_RESULTS, severity="warning")
 
     def _trim_history(self) -> None:
         """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
@@ -1061,6 +1076,19 @@ class ChatScreen(Screen[None]):
 
         with contextlib.suppress(Exception):
             self.query_one("#chat-model-select", Select).focus()
+
+    def action_toggle_chat_mode(self) -> None:
+        """F3: flip between Search and Chat mode."""
+        try:
+            toggle = self.query_one(ChatModeToggle)
+        except NoMatches:
+            return
+        if not toggle.toggle():
+            return
+        label = (
+            msg.CHAT_MODE_SEARCH_LABEL if cfg.chat_mode == "search" else msg.CHAT_MODE_CHAT_LABEL
+        )
+        self.notify(msg.CHAT_MODE_SET.format(label=label))
 
     def action_complete(self) -> None:
         """Tab: cycle autocomplete, insert a literal tab, or advance focus.

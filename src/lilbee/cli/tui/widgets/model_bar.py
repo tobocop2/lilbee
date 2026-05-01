@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
@@ -16,7 +16,7 @@ from textual.widgets._select import SelectCurrent
 
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model
+from lilbee.cli.tui.app import apply_active_model, apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
@@ -29,6 +29,7 @@ from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
 )
+from lilbee.retrieval.embedder import is_model_available
 
 log = logging.getLogger(__name__)
 
@@ -239,6 +240,11 @@ _SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 
 _CSS_FILE = Path(__file__).parent / "model_bar.tcss"
 
+_CHAT_MODE_TOGGLE_ID = "chat-mode-toggle"
+_CHAT_MODE_DISABLED_CLASS = "-disabled"
+_CHAT_MODE_SEARCH_CLASS = "-search"
+_CHAT_MODE_CHAT_CLASS = "-chat"
+
 # Presentation labels for the scope toggle. Values match ``SearchScope``
 # so the widget's ``.value`` feeds directly into ``scope_to_chunk_type``.
 _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -246,6 +252,50 @@ _SCOPE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Wiki", SearchScope.WIKI.value),
     ("Raw", SearchScope.RAW.value),
 )
+
+
+class ChatModeToggle(Static, can_focus=True):
+    """Two-state pill toggling cfg.chat_mode between 'search' and 'chat'."""
+
+    def __init__(self) -> None:
+        super().__init__(id=_CHAT_MODE_TOGGLE_ID)
+
+    def on_mount(self) -> None:
+        self._refresh()
+
+    def refresh_state(self) -> None:
+        """Repaint label/state. Call after settings or embedding-model changes."""
+        if self.is_mounted:
+            self._refresh()
+
+    def _embedding_ready(self) -> bool:
+        return is_model_available(cfg.embedding_model, get_services().provider)
+
+    def _refresh(self) -> None:
+        ready = self._embedding_ready()
+        mode = cfg.chat_mode if ready else "chat"
+        label = msg.CHAT_MODE_SEARCH_LABEL if mode == "search" else msg.CHAT_MODE_CHAT_LABEL
+        accent = "$primary" if mode == "search" else "$accent"
+        self.update(pill(label, accent, "$text"))
+        self.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
+        self.set_class(mode == "search", _CHAT_MODE_SEARCH_CLASS)
+        self.set_class(mode == "chat", _CHAT_MODE_CHAT_CLASS)
+        self.tooltip = (
+            msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
+        )
+
+    def toggle(self) -> bool:
+        """Flip mode if embedding is ready. Returns True when the mode changed."""
+        if not self._embedding_ready():
+            return False
+        new_mode = "chat" if cfg.chat_mode == "search" else "search"
+        apply_setting(self.app, "chat_mode", new_mode)
+        self._refresh()
+        return True
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.toggle()
 
 
 class ModelBar(Widget, can_focus=False):
@@ -290,6 +340,7 @@ class ModelBar(Widget, can_focus=False):
                 id="embed-model-select",
                 allow_blank=False,
             )
+            yield ChatModeToggle()
             # Scope picker only appears when the wiki layer is on. With wiki
             # off, ``CHUNKS_TABLE`` contains only raw rows so a wiki/raw/both
             # toggle has nothing to pick between; hiding it keeps the choice
@@ -401,7 +452,12 @@ class ModelBar(Widget, can_focus=False):
         # next op. See bb-x1qa.
         get_services().store.initialize_meta_if_legacy()
         apply_active_model(self.app, "embedding_model", value)
+        self._refresh_chat_mode_toggle()
         self._after_model_change()
+
+    def _refresh_chat_mode_toggle(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one(ChatModeToggle).refresh_state()
 
     @on(Select.Changed, "#scope-select")
     def _on_scope_changed(self, event: Select.Changed) -> None:

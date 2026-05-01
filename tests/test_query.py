@@ -1480,6 +1480,62 @@ class TestAskRawNoEmbed:
         assert "direct answer" in result.answer
 
 
+class TestAskRawChatMode:
+    """ask_raw consults cfg.chat_mode before consulting the embedder."""
+
+    def test_chat_mode_skips_retrieval_even_when_embedding_ready(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = True
+            mock_svc.provider.chat.return_value = "no-search answer"
+            result = get_services().searcher.ask_raw("any question")
+            assert result.answer == "no-search answer"
+            assert result.sources == []
+            mock_svc.store.search.assert_not_called()
+            sent = mock_svc.provider.chat.call_args[0][0]
+            assert sent[0]["content"] == cfg.general_system_prompt
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_with_results_runs_rag(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.store.search.return_value = [_make_result(chunk="grounded")]
+            mock_svc.provider.chat.return_value = "grounded answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "grounded answer"
+            assert len(result.sources) == 1
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_empty_results_falls_through(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.store.search.return_value = []
+            mock_svc.provider.chat.return_value = "general answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "general answer"
+            assert result.sources == []
+        finally:
+            cfg.chat_mode = old
+
+    def test_search_mode_without_embedding_falls_through(self, mock_svc):
+        old = cfg.chat_mode
+        cfg.chat_mode = "search"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
+            mock_svc.provider.chat.return_value = "direct answer"
+            result = get_services().searcher.ask_raw("question")
+            assert result.answer == "direct answer"
+            assert result.sources == []
+            mock_svc.store.search.assert_not_called()
+        finally:
+            cfg.chat_mode = old
+
+
 class TestAskStreamNoEmbed:
     def test_streams_directly_when_no_embedding(self, mock_svc):
         """ask_stream without embedding streams from the LLM directly under

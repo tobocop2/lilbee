@@ -311,9 +311,8 @@ class TestChatOnlyBanner:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            # Manually simulate embedding not ready
             with mock.patch.object(app.screen, "_embedding_ready", return_value=False):
-                app.screen._show_chat_only_banner()
+                app.screen._refresh_mode_banner()
                 await pilot.pause()
                 from textual.widgets import Static
 
