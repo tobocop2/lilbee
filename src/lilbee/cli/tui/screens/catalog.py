@@ -693,10 +693,14 @@ class CatalogScreen(Screen[None]):
             self._mount_grid_ctas(hf_overflow)
             return
         # Mount the first section immediately (cheap; user sees content fast),
-        # then schedule the rest one section per refresh tick so each section
-        # paints in its own frame instead of one ~600 ms freeze.
+        # then drop the rest + CTAs onto the next refresh tick as a single
+        # batch. Per-section streaming yielded across N frames, but each
+        # extra deferral can pump focus on slow runners and breaks tests
+        # that focus the search input between ticks. One deferred batch
+        # keeps the first-paint win without the cascade.
         self._mount_grid_section(sections[0])
-        self._stream_grid_sections(sections[1:], hf_overflow)
+        rest = sections[1:]
+        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_overflow)
 
     def _mount_grid_section(self, section: GridSection) -> None:
         cards = [ModelCard(row) for row in section.rows]
@@ -708,19 +712,12 @@ class CatalogScreen(Screen[None]):
             ]
         )
 
-    def _stream_grid_sections(self, remaining: list[GridSection], hf_overflow: int) -> None:
-        if not remaining:
-            self.call_after_refresh(self._mount_grid_ctas, hf_overflow)
-            return
-        next_section = remaining[0]
-        rest = remaining[1:]
-        self.call_after_refresh(self._stream_one_grid_section, next_section, rest, hf_overflow)
-
-    def _stream_one_grid_section(
-        self, section: GridSection, rest: list[GridSection], hf_overflow: int
+    def _mount_remaining_grid_sections(
+        self, remaining: list[GridSection], hf_overflow: int
     ) -> None:
-        self._mount_grid_section(section)
-        self._stream_grid_sections(rest, hf_overflow)
+        for section in remaining:
+            self._mount_grid_section(section)
+        self._mount_grid_ctas(hf_overflow)
 
     def _mount_grid_ctas(self, hf_overflow: int) -> None:
         ctas: list[Static] = []
