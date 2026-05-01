@@ -2686,7 +2686,7 @@ class TestViewTabs:
                 switch_calls.append(name)
 
             with patch.object(LilbeeApp, "switch_view", _record):
-                await pilot.click(f"#{target.id}")
+                target.on_click()
                 await pilot.pause()
             assert switch_calls == [target.view_name]
 

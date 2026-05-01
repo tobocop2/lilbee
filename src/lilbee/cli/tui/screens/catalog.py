@@ -184,7 +184,7 @@ class CatalogScreen(Screen[None]):
         # synchronous mount adds ~600 ms of stylesheet work; deferring drops
         # perceived "frozen" time on Catalog open by half.
         self.call_after_refresh(self._refresh_grid)
-        self.call_after_refresh(self._focus_first_grid)
+        self.call_after_refresh(self._initial_focus_first_grid)
         self._fetch_remote_models()
         self._fetch_frontier_models()
         if isinstance(self.app, LilbeeApp):
@@ -213,6 +213,14 @@ class CatalogScreen(Screen[None]):
         """Focus the first GridSelect widget if available."""
         with contextlib.suppress(Exception):
             self.query_one(GridSelect).focus()
+
+    def _initial_focus_first_grid(self) -> None:
+        """on_mount initial focus: skip if a later refresh-tick has already
+        landed focus elsewhere (e.g. a test focused #catalog-search before
+        the streaming-section mount drained its scheduled callbacks)."""
+        if self.focused is not None:
+            return
+        self._focus_first_grid()
 
     def _fetch_installed_names(self) -> None:
         """Populate installed identities from the shared ModelManager cache.

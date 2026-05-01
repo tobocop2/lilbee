@@ -400,6 +400,7 @@ class TestSyncFrontierTab:
             screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
             screen._sync_frontier_tab()
             await pilot.pause()
+            await pilot.pause()
             assert tabs.query("#frontier")
 
     async def test_tab_removed_when_rows_clear(self) -> None:

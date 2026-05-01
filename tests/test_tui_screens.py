@@ -3633,6 +3633,25 @@ async def test_catalog_sort_label_covers_every_pagination_state():
             assert "for more" not in text.lower()
 
 
+async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
+    """_initial_focus_first_grid is a no-op once a focus owner exists."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen.query_one("#catalog-search", Input).focus()
+            await _pilot.pause()
+            with patch.object(screen, "_focus_first_grid") as fall_through:
+                screen._initial_focus_first_grid()
+                fall_through.assert_not_called()
+
+
 async def test_catalog_get_highlighted_model_name_empty():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
