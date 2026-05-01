@@ -4471,7 +4471,7 @@ class TestSearchHFCtaItem:
         assert received and received[0].term == "phi-3"
 
     async def test_compose_yields_label_with_term(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import App
         from textual.widgets import Static
 
         from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
