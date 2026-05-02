@@ -140,6 +140,12 @@ class StatusScreen(Screen[None]):
         Binding("G", "jump_bottom", "End", show=False),
     ]
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._sections_mounted: bool = False
+        self._pending_sources: list[SourceRecord] | None = None
+        self._pending_arch: ModelArchInfo | None = None
+
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
@@ -150,11 +156,14 @@ class StatusScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
+        # Mount only the first (Configuration) collapsible up front so the
+        # screen paints fast on push. Documents/arch/storage hydrate via
+        # ``call_after_refresh`` once the screen is visible -- their
+        # backing widgets are still cheap to mount, but the synchronous
+        # cost of mounting all four under a single VerticalScroll spiked
+        # screen-switch latency to ~1s on cold caches.
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
-            Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
-            Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),
-            Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             id="status-scroll",
         )
         with BottomBars():
@@ -168,9 +177,33 @@ class StatusScreen(Screen[None]):
         # parses their headers (~hundreds of ms each cold); ``get_sources``
         # reads LanceDB (seconds on cold caches).
         self._load_config()
-        self._show_loading_placeholders()
+        self.call_after_refresh(self._mount_remaining_sections)
         self._fetch_sources_worker()
         self._fetch_arch_worker()
+
+    def _mount_remaining_sections(self) -> None:
+        """Mount Documents/Architecture/Storage once the screen is visible."""
+        scroll = self.query_one("#status-scroll", VerticalScroll)
+        scroll.mount_all(
+            [
+                Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
+                Collapsible(
+                    Static(id="arch-info"), title="Model Architecture", id="arch-section"
+                ),
+                Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
+            ]
+        )
+        self._sections_mounted = True
+        self._show_loading_placeholders()
+        # If a worker callback fired before the deferred mount completed,
+        # the result is parked on the screen and replayed here.
+        if self._pending_sources is not None:
+            self._load_documents(self._pending_sources)
+            self._load_storage(len(self._pending_sources))
+            self._pending_sources = None
+        if self._pending_arch is not None:
+            self._load_arch(self._pending_arch)
+            self._pending_arch = None
 
     def _show_loading_placeholders(self) -> None:
         """Surface a 'Loading…' marker for sections backed by workers."""
@@ -204,12 +237,18 @@ class StatusScreen(Screen[None]):
             sources = event.worker.result
             if not isinstance(sources, list):
                 sources = []
-            self._load_documents(sources)
-            self._load_storage(len(sources))
+            if self._sections_mounted:
+                self._load_documents(sources)
+                self._load_storage(len(sources))
+            else:
+                self._pending_sources = sources
         elif event.worker.name == "status_fetch_arch":
             arch = event.worker.result
             if isinstance(arch, ModelArchInfo):
-                self._load_arch(arch)
+                if self._sections_mounted:
+                    self._load_arch(arch)
+                else:
+                    self._pending_arch = arch
 
     def _load_arch(self, info: ModelArchInfo) -> None:
         """Populate the model architecture section from worker result."""
