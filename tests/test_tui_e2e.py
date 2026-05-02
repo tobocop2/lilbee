@@ -1630,8 +1630,6 @@ class TestSettingsInteractions:
 
     async def test_edit_string_value_updates_cfg(self, _mock_resolve):
         """Editing a writable string setting persists to cfg."""
-        from textual.widgets import Input
-
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -1653,7 +1651,7 @@ class TestSettingsInteractions:
             assert cfg.rag_system_prompt == "test system prompt"
 
     async def test_multiline_save_noop_when_unchanged(self, _mock_resolve):
-        """Blurring a multi-line editor without edits is a no-op (covers the equality short-circuit)."""
+        """Blurring a multi-line editor without edits is a no-op."""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.settings import SettingsScreen
         from lilbee.cli.tui.widgets.list_text_area import ListTextArea
@@ -1822,8 +1820,6 @@ class TestSettingsInteractions:
 
     async def test_settings_changed_signal_fires(self, _mock_resolve):
         """Editing a setting fires the settings_changed signal."""
-        from textual.widgets import Input
-
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
