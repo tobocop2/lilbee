@@ -39,8 +39,11 @@ from lilbee.runtime.progress import (
 log = logging.getLogger(__name__)
 
 
-# Limit concurrent ingestion to avoid overwhelming I/O
-_MAX_CONCURRENT = os.cpu_count() or 4
+# Limit concurrent ingestion. Sourced from cpu_quota() so worker storms
+# can't starve the TUI's asyncio main thread on macOS.
+from lilbee.runtime.cpu import cpu_quota
+
+_MAX_CONCURRENT = cpu_quota()
 
 # Concurrent.futures raises this exact RuntimeError message when submitting to
 # a shutdown executor (Python 3.11+). There is no dedicated exception class to

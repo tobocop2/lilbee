@@ -26,7 +26,7 @@ from lilbee.data.ingest.types import (
 )
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.data.store import CHUNK_TYPE_RAW
-from lilbee.vision import extract_pdf_vision
+from lilbee.vision import PageText, extract_pdf_vision
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +136,105 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
+_PDF_SUBPROCESS_TIMEOUT_S = 300.0
+
+
+async def _extract_pdf_vision_in_subprocess(
+    path: Path,
+    vision_model: str,
+    *,
+    timeout: float | None,
+    quiet: bool,
+    on_progress: DetailedProgressCallback,
+) -> list[PageText]:
+    """Run ``extract_pdf_vision`` in a child process via ``-m lilbee.runtime.pdf_extract``.
+
+    pdfium's JPEG-2000 decoder spawns its own internal thread pool; running
+    it in-process saturated CPU and starved the asyncio main thread on
+    macOS. The child writes per-page progress to stderr so the parent can
+    surface it via ``on_progress``. JSON args go in via stdin; the result
+    (or an error string) comes back as JSON on stdout.
+    """
+    import json
+    import sys
+
+    payload = json.dumps(
+        {
+            "path": str(path),
+            "vision_model": vision_model,
+            "timeout": timeout,
+            "quiet": quiet,
+        }
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "lilbee.runtime.pdf_extract",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    proc.stdin.write(payload.encode("utf-8"))
+    await proc.stdin.drain()
+    proc.stdin.close()
+
+    progress_task = asyncio.create_task(_pump_pdf_progress(proc.stderr, on_progress, path))
+    try:
+        stdout_bytes, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=_PDF_SUBPROCESS_TIMEOUT_S
+        )
+    except TimeoutError:
+        progress_task.cancel()
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"PDF extraction timed out after {_PDF_SUBPROCESS_TIMEOUT_S:.0f}s")
+    progress_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await progress_task
+
+    try:
+        result = json.loads(stdout_bytes.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"PDF extraction subprocess returned invalid JSON: {exc}") from exc
+    if "error" in result:
+        raise RuntimeError(result["error"])
+    raw = result.get("page_texts", [])
+    return [PageText(int(p), str(t)) for p, t in raw]
+
+
+async def _pump_pdf_progress(
+    stream: asyncio.StreamReader,
+    on_progress: DetailedProgressCallback,
+    path: Path,
+) -> None:
+    """Forward ``progress: page=N total=M`` lines from the subprocess to ``on_progress``."""
+    from lilbee.runtime.progress import BatchProgressEvent, EventType
+
+    while True:
+        line = await stream.readline()
+        if not line:
+            return
+        text = line.decode("utf-8", errors="replace").strip()
+        if not text.startswith("progress: "):
+            continue
+        try:
+            parts = dict(part.split("=") for part in text[len("progress: ") :].split())
+            page = int(parts["page"])
+            total = int(parts["total"])
+        except (KeyError, ValueError):
+            continue
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(
+                file=str(path), status="rasterizing", current=page, total=total
+            ),
+        )
+
+
 async def _vision_fallback(
     path: Path,
     source_name: str,
@@ -154,12 +253,11 @@ async def _vision_fallback(
     if not cfg.vision_model:
         return []
     try:
-        page_texts = await asyncio.to_thread(
-            extract_pdf_vision,
+        page_texts = await _extract_pdf_vision_in_subprocess(
             path,
             cfg.vision_model,
-            quiet=quiet,
             timeout=cfg.ocr_timeout,
+            quiet=quiet,
             on_progress=on_progress,
         )
     except Exception:
