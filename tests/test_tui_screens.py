@@ -7609,7 +7609,7 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 async def test_catalog_grid_leave_down_focuses_next():
     """GridSelect.LeaveDown moves focus to the next focusable widget."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -7617,11 +7617,11 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            grids = list(screen.query(GridSelect))
+            grids = list(screen.query(VirtualGrid))
             if grids:
                 grids[0].focus()
                 await pilot.pause()
-                grids[0].post_message(GridSelect.LeaveDown(grids[0]))
+                grids[0].post_message(VirtualGrid.LeaveDown(grids[0]))
                 await pilot.pause()
                 assert screen.focused is not grids[0]
 
@@ -7629,7 +7629,7 @@ async def test_catalog_grid_leave_down_focuses_next():
 async def test_catalog_grid_leave_up_focuses_previous():
     """GridSelect.LeaveUp moves focus to the previous focusable widget."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -7637,11 +7637,11 @@ async def test_catalog_grid_leave_up_focuses_previous():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            grids = list(screen.query(GridSelect))
+            grids = list(screen.query(VirtualGrid))
             assert grids, "Expected at least one GridSelect"
             grids[0].focus()
             await pilot.pause()
-            grids[0].post_message(GridSelect.LeaveUp(grids[0]))
+            grids[0].post_message(VirtualGrid.LeaveUp(grids[0]))
             await pilot.pause()
             assert screen.focused is not grids[0]
 
@@ -9364,8 +9364,8 @@ async def test_catalog_grid_selected_with_model_card():
     """Grid selection with ModelCard delegates to _select_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.grid_select import GridSelect
     from lilbee.cli.tui.widgets.model_card import ModelCard
+    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9388,7 +9388,7 @@ async def test_catalog_grid_selected_with_model_card():
             )
             mock_card = MagicMock(spec=ModelCard)
             mock_card.row = row
-            event = MagicMock(spec=GridSelect.Selected)
+            event = MagicMock(spec=VirtualGrid.Selected)
             event.widget = mock_card
             with patch.object(screen, "_select_row") as mock_sel:
                 screen._on_grid_selected(event)
@@ -9657,7 +9657,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9665,27 +9665,23 @@ async def test_catalog_search_submit_installs_first_visible_match():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grids = list(screen.query(GridSelect))
-            assert grids, "catalog should mount at least one GridSelect"
+            grids = list(screen.query(VirtualGrid))
+            assert grids, "catalog should mount at least one VirtualGrid"
             grid = grids[0]
-            assert len(grid.children) >= 2
-            # Simulate a filter hiding all cards except the second one --
-            # the old handler would install the first (now-hidden) card
-            # via highlighted=0; the fix must land on the visible one.
-            for card in grid.children:
-                card.display = False
-            target_card = grid.children[1]
-            target_card.display = True
+            assert len(grid.rows) >= 2
+            # VirtualGrid filters at the dataset level: set_rows replaces
+            # the visible set. Simulate "filter narrows to the second
+            # row" by trimming the dataset to that single row.
+            target_row = grid.rows[1]
+            grid.set_rows([target_row])
+            await _pilot.pause()
             with patch.object(screen, "_select_row") as install:
                 screen._select_first_visible_grid_card()
-                # action_select posts a message; drain the loop so
-                # _on_grid_selected dispatches through to our patched
-                # _select_row.
                 for _ in range(5):
                     await _pilot.pause()
                 assert install.called
                 row_arg = install.call_args.args[0]
-                assert row_arg is target_card.row
+                assert row_arg is target_row
 
 
 async def test_catalog_select_first_visible_list_item_installs_match():

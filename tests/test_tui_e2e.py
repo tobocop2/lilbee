@@ -976,7 +976,7 @@ class TestCatalogInteractions:
     async def test_grid_view_is_default(self, _mock_resolve):
         """Grid view is shown on mount by default."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid as GridSelect
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1062,22 +1062,21 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await pilot.pause()
 
-                all_cards = app.screen.query(ModelCard)
-                initial_count = len(all_cards)
+                initial_count = len(app.screen.query(ModelCard))
                 assert initial_count > 0
 
                 search = app.screen.query_one("#catalog-search")
-                search.value = "TestChat"
+                # Filter to a string that no fixture matches so we can
+                # observe narrowing without depending on fixture cardinality.
+                search.value = "definitely-no-such-model-xyz"
                 # Wait past the catalog search debounce (80 ms) so the
                 # filter actually runs.
                 await pilot.pause(0.15)
 
-                all_cards_after = app.screen.query(ModelCard)
-                assert len(all_cards_after) == initial_count
-                visible = [c for c in all_cards_after if c.display]
-                hidden = [c for c in all_cards_after if not c.display]
-                assert len(visible) >= 1
-                assert len(hidden) >= 1
+                # Filter rebuilds the VirtualGrid dataset; non-matching
+                # cards are not mounted at all.
+                after_count = len(app.screen.query(ModelCard))
+                assert after_count < initial_count
 
     async def test_search_input_is_visible_when_opened(self, _mock_resolve):
         """Pressing / focuses a visible search input ready for text entry."""
@@ -1109,7 +1108,7 @@ class TestCatalogInteractions:
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1124,7 +1123,7 @@ class TestCatalogInteractions:
                 search.value = "test"
                 await search.action_submit()
                 await pilot.pause()
-                grid = app.screen.query_one(GridSelect)
+                grid = app.screen.query_one(VirtualGrid)
                 assert grid.has_focus
 
     async def test_search_filters_list_view(self, _mock_resolve):
@@ -2513,7 +2512,9 @@ class TestCatalogPickBadge:
     """Test that featured cards show the pick badge."""
 
     async def test_featured_card_has_pick_label(self, _mock_resolve):
-        """Featured ModelCard should render #card-pick."""
+        """Featured ModelCard renders the 'pick' pill in its body content."""
+        from textual.widgets import Static
+
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.model_card import ModelCard
 
@@ -2526,8 +2527,8 @@ class TestCatalogPickBadge:
                 cards = app.screen.query(ModelCard)
                 featured = [c for c in cards if c.row.featured]
                 assert len(featured) > 0
-                pick = featured[0].query("#card-pick")
-                assert len(pick) == 1
+                body = featured[0].query_one(".card-body", Static)
+                assert "pick" in str(body.content)
 
 
 class TestCatalogLazyLoad:

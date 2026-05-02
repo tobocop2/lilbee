@@ -3737,8 +3737,11 @@ class TestModelCardBuildHelpers:
         async with _Probe().run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             card = pilot.app.query_one(ModelCard)
-            assert card.query_one("#card-name") is not None
-            assert card.query_one("#card-status") is not None
+            body = card.query_one(".card-body")
+            text = str(body.content)
+            assert "gpt-4o" in text
+            assert "OpenAI" in text
+            assert "needs key" in text
 
 
 # ---------------------------------------------------------------------------
