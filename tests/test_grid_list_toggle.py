@@ -26,16 +26,17 @@ async def test_toggle_renders_grid_active_by_default() -> None:
         assert "·" in rendered
 
 
-async def test_set_grid_repaints_active_half() -> None:
+async def test_set_grid_flips_active_half() -> None:
     app = _ToggleApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         toggle = app.query_one(GridListToggle)
         toggle.set_grid(False)
         await pilot.pause()
+        assert toggle._is_grid is False
         toggle.set_grid(True)
         await pilot.pause()
-        # No exception means the repaint cycled both states cleanly.
+        assert toggle._is_grid is True
 
 
 async def test_action_select_grid_calls_screen_toggle_when_on_list() -> None:

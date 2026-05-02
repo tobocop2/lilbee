@@ -47,15 +47,17 @@ SETUP_CHAT_GRID_ID = "setup-chat-grid"
 def _scan_installed_models() -> tuple[list[str], list[str]]:
     """List installed models from the registry, split into chat vs embedding."""
     try:
+        from lilbee.modelhub.model_manager.discovery import reclassify_by_name
         from lilbee.modelhub.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         chat: list[str] = []
         embed: list[str] = []
         for m in registry.list_installed():
-            if m.task == ModelTask.EMBEDDING:
+            task = reclassify_by_name(m.ref, m.task)
+            if task == ModelTask.EMBEDDING:
                 embed.append(m.ref)
-            elif m.task == ModelTask.CHAT:
+            elif task == ModelTask.CHAT:
                 chat.append(m.ref)
         return sorted(chat), sorted(embed)
     except Exception:

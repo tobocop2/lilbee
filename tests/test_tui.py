@@ -615,7 +615,7 @@ class TestThemes:
     async def test_set_setting_theme_applies_live(self, mock_catalog: mock.MagicMock) -> None:
         """Settings → theme dropdown must update app.theme, not just cfg.theme.
 
-        Regression: bb-akqw — without this, picking a theme in Settings
+        Regression: bb-akqw. Without this, picking a theme in Settings
         only persisted to disk; the visual theme stayed the same until
         next launch.
         """

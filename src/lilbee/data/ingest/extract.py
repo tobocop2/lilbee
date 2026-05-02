@@ -26,7 +26,7 @@ from lilbee.data.ingest.types import (
 )
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.data.store import CHUNK_TYPE_RAW
-from lilbee.vision import PageText, extract_pdf_vision
+from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
 
