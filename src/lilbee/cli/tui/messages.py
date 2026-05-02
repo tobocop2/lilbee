@@ -113,6 +113,7 @@ CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
 CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask a question or type / for commands"
 CHAT_STOP_BUTTON_LABEL = "■ Stop"
+CHAT_THINKING_LABEL = "thinking…"
 CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local search engine and personal encyclopedia."
 CHAT_WELCOME_HINT = "Press / for commands, or just ask."
