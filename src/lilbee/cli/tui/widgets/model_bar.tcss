@@ -86,7 +86,7 @@ ModelBar #chat-mode-toggle {
 }
 
 ModelBar #chat-mode-toggle:focus {
-    text-style: bold reverse;
+    text-style: bold underline;
 }
 
 ModelBar #chat-mode-toggle.-disabled {

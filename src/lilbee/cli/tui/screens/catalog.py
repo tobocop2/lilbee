@@ -224,6 +224,26 @@ class CatalogScreen(Screen[None]):
         if isinstance(self.app, LilbeeApp):
             with contextlib.suppress(Exception):
                 self.app.provider_availability_changed_signal.unsubscribe(self)
+        self._stop_spinner_timer()
+
+    def on_screen_suspend(self) -> None:
+        """Pause the spinner timer while the screen is offscreen.
+
+        Without this the 100 ms braille tick keeps firing for the full
+        TUI session even when the catalog is not visible, costing ~4%
+        of main-thread CPU forever.
+        """
+        self._stop_spinner_timer()
+
+    def on_screen_resume(self) -> None:
+        """Re-arm the spinner only if a fetch is still in flight."""
+        if self._loading_more or self._search_in_flight:
+            self._sync_loading_spinner()
+
+    def _stop_spinner_timer(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
 
     _FRONTIER_REFRESH_DEBOUNCE = 1.0
 
