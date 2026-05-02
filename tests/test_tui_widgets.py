@@ -4916,3 +4916,69 @@ class TestVirtualGridUtilityMethods:
         grid.post_message = received.append  # type: ignore[method-assign]
         grid.action_select()
         assert received == []
+
+
+class TestVirtualGridCursorEdges:
+    """Cover the LeaveDown and bound-clip branches of cursor actions."""
+
+    def test_action_cursor_down_at_last_row_emits_leave_down(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(3)]
+        grid = VirtualGrid(rows)
+        grid._cards_per_row = 4  # next_index from 0 lands beyond the dataset
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 2
+        received: list[VirtualGrid.LeaveDown] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_cursor_down()
+        assert received and isinstance(received[0], VirtualGrid.LeaveDown)
+
+    def test_action_cursor_left_clamps_to_zero(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 0
+        grid.action_cursor_left()
+        assert grid.highlighted == 0
+
+    def test_action_cursor_right_clamps_to_last_index(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = VirtualGrid(rows)
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.action_cursor_right()
+        assert grid.highlighted == 1
+
+    def test_scroll_index_into_view_no_op_on_empty_grid(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([])
+        # Must not raise: the empty branch returns before any scrolling.
+        grid._scroll_index_into_view(5)
+
+    async def test_watch_scroll_y_resets_pending_debounce(self) -> None:
+        """Two scroll events back-to-back stop the first timer before scheduling the second."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(20)]
+        grid = VirtualGrid(rows, id="vg-debounce-test")
+
+        class _GridApp(App):
+            CSS = "VirtualGrid { height: 12; width: 60; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.pause()
+            grid.scroll_to(y=12, animate=False)
+            grid.scroll_to(y=24, animate=False)
+            await pilot.pause(0.15)
+            assert grid._scroll_debounce is not None

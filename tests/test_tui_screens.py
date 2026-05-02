@@ -9986,3 +9986,88 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
         screen._on_model_picker_dismissed("chat_model", None)
         screen._on_model_picker_dismissed("chat_model", "")
         mock_apply.assert_not_called()
+
+
+async def test_status_mount_remaining_sections_bails_when_not_mounted(monkeypatch):
+    """is_mounted guard short-circuits the deferred mount when the screen popped."""
+    from lilbee.cli.tui.screens.status import StatusScreen
+
+    screen = StatusScreen.__new__(StatusScreen)
+    screen._sections_mounted = False
+    screen._pending_sources = None
+    screen._pending_arch = None
+    # Force the guard branch by stubbing is_mounted to False.
+    monkeypatch.setattr(StatusScreen, "is_mounted", property(lambda self: False))
+    await screen._mount_remaining_sections()
+    assert screen._sections_mounted is False
+
+
+def test_settings_model_field_to_picker_scope_returns_all_four():
+    """_model_field_to_picker_scope returns the canonical 4-key map."""
+    from lilbee.cli.tui.screens.settings import _model_field_to_picker_scope
+
+    mapping = _model_field_to_picker_scope()
+    assert set(mapping) == {"chat_model", "embedding_model", "vision_model", "reranker_model"}
+    assert set(mapping.values()) == {"chat", "embed", "vision", "rerank"}
+
+
+def test_settings_picker_scope_to_task_covers_all_branches():
+    """_picker_scope_to_task maps every PickerScope to the right ModelTask."""
+    from lilbee.cli.tui.screens.settings import _picker_scope_to_task
+    from lilbee.modelhub.models import ModelTask
+
+    assert _picker_scope_to_task("chat") is ModelTask.CHAT
+    assert _picker_scope_to_task("embed") is ModelTask.EMBEDDING
+    assert _picker_scope_to_task("vision") is ModelTask.VISION
+    assert _picker_scope_to_task("rerank") is ModelTask.RERANK
+
+
+async def test_settings_push_model_picker_bails_when_unmounted(monkeypatch):
+    """_push_model_picker returns early when the screen has popped between worker + push."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    monkeypatch.setattr(SettingsScreen, "is_mounted", property(lambda self: False))
+    pushed: list[object] = []
+    fake_app = type("FakeApp", (), {"push_screen": lambda *a, **k: pushed.append(a)})()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
+    screen._push_model_picker("chat_model", "chat", [])
+    assert pushed == []
+
+
+async def test_settings_push_model_picker_substitutes_none_placeholder(monkeypatch):
+    """Empty options resolve to the (none) placeholder before reaching push_screen."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    monkeypatch.setattr(SettingsScreen, "is_mounted", property(lambda self: True))
+    pushed: list[list[ModelOption]] = []
+
+    class _FakeApp:
+        def push_screen(self, modal, *_args, **_kwargs):
+            pushed.append(list(modal._options.options))
+
+    fake_app = _FakeApp()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
+    screen._push_model_picker("chat_model", "chat", [])
+    assert pushed and len(pushed[0]) == 1
+    assert pushed[0][0].label == "(none)"
+
+
+def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch):
+    """If the button row is gone when the modal closes, the refresh logs and returns."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+
+    def _raise(*_a, **_k):
+        raise RuntimeError("button removed")
+
+    screen.query_one = _raise
+    fake_app = type("FakeApp", (), {})()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
+    with patch("lilbee.cli.tui.app.apply_active_model"):
+        screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")
