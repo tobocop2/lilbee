@@ -11,7 +11,7 @@ from typing import ClassVar
 from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
 from textual.timer import Timer
@@ -161,10 +161,14 @@ class CatalogScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
+        from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
+
         with TopBars():
             yield ViewTabs()
             yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
-        yield Static("", id="sort-label", shrink=True)
+        with Horizontal(id="catalog-toolbar"):
+            yield GridListToggle()
+            yield Static("", id="sort-label", shrink=True)
         with (
             TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
             TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
@@ -191,8 +195,9 @@ class CatalogScreen(Screen[None]):
             self.app.provider_availability_changed_signal.subscribe(
                 self, self._on_provider_availability_changed
             )
-        # Auto-load more HF rows when scrolled near the bottom of the list.
+        # Auto-load more HF rows when scrolled near the bottom in either view.
         self.watch(self._list_widget, "scroll_y", self._on_list_scrolled, init=False)
+        self.watch(self._grid_container, "scroll_y", self._on_grid_scrolled, init=False)
 
     def on_unmount(self) -> None:
         if isinstance(self.app, LilbeeApp):
@@ -274,6 +279,13 @@ class CatalogScreen(Screen[None]):
                     self.query_one("#catalog-grid GridSelect", GridSelect).focus()
         finally:
             self._view_switching = False
+        self._sync_grid_list_toggle()
+
+    def _sync_grid_list_toggle(self) -> None:
+        from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
+
+        with contextlib.suppress(Exception):
+            self.query_one(GridListToggle).set_grid(self._grid_view)
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -458,10 +470,13 @@ class CatalogScreen(Screen[None]):
         worker_name = event.worker.name
         if not self._apply_worker_result(worker_name, result):
             return
-        # FETCH_MORE_HF appends to the list (and is invisible to the capped grid).
-        # Skip the full _refresh_view rebuild; just mount the new rows at the end.
-        if worker_name == _WORKER_FETCH_MORE_HF and not self._grid_view:
-            self._append_more_hf_to_list(result)
+        # FETCH_MORE_HF appends to the active view's tail; skip the full
+        # _refresh_view rebuild so scroll position and focus are preserved.
+        if worker_name == _WORKER_FETCH_MORE_HF:
+            if self._grid_view:
+                self._refresh_grid()
+            else:
+                self._append_more_hf_to_list(result)
             return
         self._refresh_view()
 
@@ -680,17 +695,11 @@ class CatalogScreen(Screen[None]):
             else:
                 self._refresh_list()
 
-    # Cap protects against ItemGrid layout cost (~5 subwidgets per
-    # card * N cards locks the UI). List view has no cap.
-    _GRID_HF_BUDGET = 24
-
     def _refresh_grid(self) -> None:
         """Rebuild the grid view with all cards (called when data changes)."""
         family_rows = self._build_family_rows("")
         remote_rows = self._build_remote_rows("")
-        hf_rows_full = self._build_hf_rows("") if self._hf_fetched else []
-        hf_overflow = max(0, len(hf_rows_full) - self._GRID_HF_BUDGET)
-        hf_rows = hf_rows_full[: self._GRID_HF_BUDGET]
+        hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
@@ -703,7 +712,7 @@ class CatalogScreen(Screen[None]):
         container.remove_children()
         sections = [s for s in _group_rows_for_grid(all_rows) if s.rows]
         if not sections:
-            self._mount_grid_ctas(hf_overflow)
+            self._mount_grid_ctas(hf_count=len(hf_rows))
             return
         # Mount the first section immediately (cheap; user sees content fast),
         # then drop the rest + CTAs onto the next refresh tick as a single
@@ -713,7 +722,7 @@ class CatalogScreen(Screen[None]):
         # keeps the first-paint win without the cascade.
         self._mount_grid_section(sections[0])
         rest = sections[1:]
-        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_overflow)
+        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_count=len(hf_rows))
 
     def _mount_grid_section(self, section: GridSection) -> None:
         cards = [ModelCard(row) for row in section.rows]
@@ -725,22 +734,27 @@ class CatalogScreen(Screen[None]):
             ]
         )
 
-    def _mount_remaining_grid_sections(
-        self, remaining: list[GridSection], hf_overflow: int
-    ) -> None:
+    def _mount_remaining_grid_sections(self, remaining: list[GridSection], hf_count: int) -> None:
         for section in remaining:
             self._mount_grid_section(section)
-        self._mount_grid_ctas(hf_overflow)
+        self._mount_grid_ctas(hf_count=hf_count)
 
-    def _mount_grid_ctas(self, hf_overflow: int) -> None:
+    def _mount_grid_ctas(self, *, hf_count: int) -> None:
         ctas: list[Static] = []
         if not self._hf_fetched:
             ctas.append(Static(msg.CATALOG_BROWSE_MORE, classes="grid-cta browse-more-hf"))
-        elif hf_overflow:
+        elif self._hf_has_more:
             ctas.append(
                 Static(
-                    msg.CATALOG_GRID_OVERFLOW.format(count=hf_overflow),
-                    classes="grid-cta",
+                    msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count),
+                    classes="grid-cta scroll-hint",
+                )
+            )
+        else:
+            ctas.append(
+                Static(
+                    msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count),
+                    classes="grid-cta scroll-hint",
                 )
             )
         search = self._get_search_text()
@@ -751,7 +765,6 @@ class CatalogScreen(Screen[None]):
                     classes="grid-cta search-hf-cta",
                 )
             )
-        ctas.append(Static(msg.CATALOG_VIEW_TOGGLE_GRID, classes="grid-cta"))
         self._grid_container.mount_all(ctas)
 
     def _sync_grid_search_cta(self) -> None:
@@ -1123,25 +1136,34 @@ class CatalogScreen(Screen[None]):
 
     def _on_list_scrolled(self, _scroll_y: float) -> None:
         """Trigger _load_more when the user scrolls near the bottom of the list."""
-        if not self._scroll_prefetch_due():
+        if not self._scroll_prefetch_due(self._list_widget):
             return
         self._scroll_prefetch_armed_at = time.monotonic()
         self._load_more()
 
-    def _scroll_prefetch_due(self) -> bool:
+    def _on_grid_scrolled(self, _scroll_y: float) -> None:
+        """Trigger _load_more when the user scrolls near the bottom of the grid."""
+        if not self._grid_view:
+            return
+        if not self._scroll_prefetch_due(self._grid_container):
+            return
+        self._scroll_prefetch_armed_at = time.monotonic()
+        self._load_more()
+
+    def _scroll_prefetch_due(self, widget: VerticalScroll | ModelList) -> bool:
         # Cooldown blocks a runaway cascade where appending rows shifts
         # max_scroll_y, the watcher refires, and load_more kicks off the
         # next fetch before the user notices.
-        if self._grid_view or not self._hf_has_more or self._loading_more:
+        if not self._hf_has_more or self._loading_more:
             return False
         if self._scroll_prefetch_armed_at:
             elapsed = time.monotonic() - self._scroll_prefetch_armed_at
             if elapsed < self._SCROLL_PREFETCH_COOLDOWN:
                 return False
-        max_y = self._list_widget.max_scroll_y
+        max_y = widget.max_scroll_y
         if max_y <= 0:
             return False
-        return self._list_widget.scroll_y / max_y >= self._SCROLL_PREFETCH_RATIO
+        return widget.scroll_y / max_y >= self._SCROLL_PREFETCH_RATIO
 
     def _page_rows(self) -> int:
         """How many cursor steps make up one 'page' in the active view."""
