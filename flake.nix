@@ -31,6 +31,7 @@
         license = pkgs.lib.licenses.elastic20;
         mainProgram = "lilbee";
         platforms = systems;
+        sourceProvenance = [ pkgs.lib.sourceTypes.binaryNativeCode ];
       };
 
       mkBin =
