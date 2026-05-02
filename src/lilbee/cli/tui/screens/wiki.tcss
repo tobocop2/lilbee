@@ -1,5 +1,6 @@
 #wiki-layout {
     height: 1fr;
+    min-height: 0;
 }
 
 #wiki-sidebar {
@@ -33,6 +34,7 @@
 
 #wiki-content-scroll {
     height: 1fr;
+    min-height: 0;
     padding: 0 2;
 }
 
