@@ -290,8 +290,6 @@ class TestParentWrapper:
         assert kill_calls == [True]
 
     async def test_subprocess_wrapper_kills_on_timeout(self) -> None:
-        import asyncio as _asyncio
-
         from lilbee.data.ingest.extract import _extract_pdf_vision_in_subprocess
 
         kill_calls: list[bool] = []
@@ -311,7 +309,11 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
-        FakeProc.stdout.read = mock.AsyncMock()
+        # Have stdout.read raise TimeoutError directly. asyncio.wait_for
+        # propagates exceptions raised by the inner awaitable, so the
+        # wrapper's `except TimeoutError` branch fires identically across
+        # platforms (avoids cross-platform asyncio.wait_for mock quirks).
+        FakeProc.stdout.read = mock.AsyncMock(side_effect=TimeoutError())
 
         with (
             mock.patch(
@@ -322,11 +324,6 @@ class TestParentWrapper:
                 new=mock.AsyncMock(return_value=None),
             ),
             mock.patch("lilbee.vision.pdf_page_count", return_value=5),
-            mock.patch.object(
-                _asyncio,
-                "wait_for",
-                new=mock.AsyncMock(side_effect=TimeoutError),
-            ),
             pytest.raises(RuntimeError, match="timed out"),
         ):
             await _extract_pdf_vision_in_subprocess(
