@@ -265,7 +265,7 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
-        # Reading stdout itself blows up — exercises the BaseException branch
+        # Reading stdout itself blows up. Exercises the BaseException branch
         # without the cross-platform quirks of asyncio.CancelledError handling.
         FakeProc.stdout.read = mock.AsyncMock(side_effect=RuntimeError("read kaboom"))
 
