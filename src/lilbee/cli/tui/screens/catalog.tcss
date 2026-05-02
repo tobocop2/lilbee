@@ -66,8 +66,8 @@ VirtualGrid > .vg-row > ModelCard {
 
 #catalog-loading-spinner {
     height: 1;
-    width: 2;
-    padding: 0 0 0 1;
+    width: auto;
+    padding: 0 1;
     color: $primary;
     text-style: bold;
     display: none;

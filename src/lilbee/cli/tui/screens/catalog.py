@@ -528,6 +528,7 @@ class CatalogScreen(Screen[None]):
         decorator name won't silently rebuild the grid)."""
         if name == _WORKER_FETCH_HF:
             self._hf_models = result
+            self._loading_more = False
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
             self._loading_more = False
@@ -832,6 +833,8 @@ class CatalogScreen(Screen[None]):
         """Fetch all models when the browse-more card is clicked."""
         if not self._hf_fetched:
             self._hf_fetched = True
+            self._loading_more = True
+            self._sync_loading_spinner()
             self._fetch_all_hf_models()
 
     @on(GridSelect.LeaveDown)
@@ -903,7 +906,7 @@ class CatalogScreen(Screen[None]):
         active = self._loading_more or self._search_in_flight
         if active:
             spinner.styles.display = "block"
-            spinner.update(_SPINNER_FRAMES[self._spinner_frame])
+            spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
             if self._spinner_timer is None:
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
@@ -921,7 +924,7 @@ class CatalogScreen(Screen[None]):
         self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
         with contextlib.suppress(Exception):
             spinner = self.query_one("#catalog-loading-spinner", Static)
-            spinner.update(_SPINNER_FRAMES[self._spinner_frame])
+            spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label, switching copy by active tab."""
