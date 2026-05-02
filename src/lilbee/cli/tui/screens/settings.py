@@ -694,13 +694,16 @@ class SettingsScreen(Screen[None]):
         options = list(buckets.get(task, []))
         call_from_thread(self, self._push_model_picker, key, scope, options)
 
-    def _push_model_picker(
-        self, key: str, scope: PickerScope, options: list[ModelOption]
-    ) -> None:
+    def _push_model_picker(self, key: str, scope: PickerScope, options: list[ModelOption]) -> None:
         """Push ModelPickerModal once the worker has resolved options."""
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
         from lilbee.cli.tui.widgets.model_bar import ModelOption
 
+        # Bail out if the user navigated away from Settings while the
+        # discovery worker was still running; otherwise we'd push the
+        # modal onto whatever screen is now on top.
+        if not self.is_mounted:
+            return
         if not options:
             options = [ModelOption(label=msg.MODEL_VALUE_NONE, ref="")]
         self.app.push_screen(

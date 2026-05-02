@@ -609,6 +609,43 @@ async def test_settings_readonly_no_editor():
         assert len(editors) == 0
 
 
+async def test_settings_model_picker_button_renders_for_model_fields():
+    """Each model field surfaces a picker button instead of a plain editor."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        for key in ("chat_model", "embedding_model", "vision_model", "reranker_model"):
+            row = app.screen.query_one(f"#row-{key}")
+            buttons = list(row.query(".setting-model-picker-button"))
+            assert len(buttons) == 1, f"{key} missing its picker button"
+
+
+async def test_settings_model_picker_button_pushes_modal_after_worker():
+    """Clicking the picker runs discovery in a worker, then pushes the modal."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+    from lilbee.modelhub.models import ModelTask
+
+    fake_buckets = {
+        ModelTask.CHAT: [ModelOption(label="fake-chat", ref="fake/chat.gguf")],
+        ModelTask.EMBEDDING: [],
+        ModelTask.VISION: [],
+        ModelTask.RERANK: [],
+    }
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch(
+            "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
+            return_value=fake_buckets,
+        ):
+            await pilot.click("#model-pick-chat_model")
+            await pilot.pause(0.3)
+        assert isinstance(app.screen, ModelPickerModal), (
+            f"expected ModelPickerModal on top, got {type(app.screen).__name__}"
+        )
+
+
 def test_settings_screen_has_expected_handlers_and_actions() -> None:
     """Structural regression test: SettingsScreen event handlers + action
     bindings must be class methods, not nested functions captured by a
