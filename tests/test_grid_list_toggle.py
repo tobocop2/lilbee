@@ -44,9 +44,21 @@ async def test_action_select_grid_calls_screen_toggle_when_on_list() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         toggle = app.query_one(GridListToggle)
-        toggle.set_grid(False)  # currently list
+        toggle._is_grid = False  # bypass set_grid + _refresh side effects
         with mock.patch.object(toggle, "_call_screen_toggle") as mocked:
             toggle.action_select_grid()
+        mocked.assert_called_once()
+
+
+async def test_action_select_list_calls_screen_toggle_when_on_grid() -> None:
+    """Symmetric: action_select_list fires when currently on grid."""
+    app = _ToggleApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        toggle = app.query_one(GridListToggle)
+        toggle._is_grid = True
+        with mock.patch.object(toggle, "_call_screen_toggle") as mocked:
+            toggle.action_select_list()
         mocked.assert_called_once()
 
 
@@ -102,3 +114,19 @@ async def test_call_screen_toggle_no_op_when_not_catalog_screen() -> None:
         toggle = app.query_one(GridListToggle)
         # Direct call should not raise even though screen is not CatalogScreen.
         toggle._call_screen_toggle()
+
+
+async def test_call_screen_toggle_invokes_catalog_action() -> None:
+    """When screen is a CatalogScreen, the toggle calls action_toggle_view."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = _ToggleApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        toggle = app.query_one(GridListToggle)
+        fake_screen = mock.MagicMock(spec=CatalogScreen)
+        with mock.patch.object(
+            type(toggle), "screen", new_callable=mock.PropertyMock, return_value=fake_screen
+        ):
+            toggle._call_screen_toggle()
+        fake_screen.action_toggle_view.assert_called_once()

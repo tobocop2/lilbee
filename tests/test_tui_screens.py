@@ -3505,6 +3505,27 @@ async def test_catalog_grid_scroll_prefetch_skipped_in_list_view():
                 assert not load_more.called
 
 
+async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
+    """When _hf_has_more is False, the grid CTA reads 'All N models loaded'."""
+    from lilbee.cli.tui import messages as msg_module
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._hf_fetched = True
+            screen._hf_has_more = False
+            screen._mount_grid_ctas(hf_count=12)
+            await _pilot.pause()
+            ctas = list(screen.query(".scroll-hint"))
+            assert any(
+                msg_module.CATALOG_GRID_ALL_LOADED.format(count=12) in str(c.render()) for c in ctas
+            )
+
+
 async def test_catalog_grid_scroll_fires_load_more_near_bottom():
     """Grid view: scroll past the threshold triggers _load_more."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
