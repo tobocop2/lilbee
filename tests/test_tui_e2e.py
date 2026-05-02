@@ -607,6 +607,10 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 await pilot.press("q")
                 await pilot.pause()
@@ -1858,6 +1862,10 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 collapsibles = app.screen.query(Collapsible)
                 assert len(collapsibles) >= 3
@@ -1871,6 +1879,10 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 config_info = app.screen.query_one("#config-info")
                 assert config_info is not None
@@ -1886,6 +1898,10 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 table = app.screen.query_one("#docs-table", DataTable)
                 assert table is not None
@@ -1900,6 +1916,10 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 await pilot.press("j")
                 await pilot.pause()
@@ -1916,6 +1936,10 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 await pilot.press("G")
                 await pilot.pause()
@@ -1933,6 +1957,10 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 await pilot.press("q")
                 await pilot.pause()
@@ -1961,14 +1989,22 @@ class TestStatusInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Status")
-                # Worker runs on a thread; wait for it to land + the
-                # callback to fill the table.
-                for _ in range(20):
+                # Documents/Architecture/Storage collapsibles mount via
+                # call_after_refresh, so the table appears one tick after
+                # the screen pushes. Suppress NoMatches until it lands,
+                # then poll for the worker callback to fill rows.
+                from textual.css.query import NoMatches
+
+                table = None
+                for _ in range(40):
                     await pilot.pause(0.05)
-                    table = app.screen.query_one("#docs-table", DataTable)
+                    try:
+                        table = app.screen.query_one("#docs-table", DataTable)
+                    except NoMatches:
+                        continue
                     if table.row_count == 2:
                         break
-                assert table.row_count == 2
+                assert table is not None and table.row_count == 2
 
 
 class TestTaskCenterInteractions:
@@ -2681,6 +2717,10 @@ class TestSetupWizardGrid:
                 assert isinstance(app.screen, CatalogScreen)
 
                 app.switch_view("Status")
+                # Two pauses: first lets the screen mount and on_mount run,
+                # second lets the deferred Documents/Architecture/Storage
+                # collapsibles land via call_after_refresh.
+                await pilot.pause()
                 await pilot.pause()
                 assert app.active_view == "Status"
 

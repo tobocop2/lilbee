@@ -4715,3 +4715,104 @@ class TestSearchHFCtaItem:
             await pilot.pause()
             label = app.query_one("#cta-label", Static)
             assert "phi-3" in str(label.render())
+
+
+def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
+    return LocalCatalogRow(
+        name=name,
+        task="chat",
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=False,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref=name,
+        backend="native",
+    )
+
+
+class TestVirtualGridOnClick:
+    """Cover the click handler that was missing after the GridSelect migration."""
+
+    def test_click_on_card_first_highlights_then_second_selects(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = VirtualGrid(rows)
+        # Stand-in cards: ancestors_with_self resolves to themselves so the
+        # ancestor walk finds the ModelCard branch without mounting the grid.
+        stand_in_cards = [mock.Mock(spec=ModelCard), mock.Mock(spec=ModelCard)]
+        for card in stand_in_cards:
+            card.ancestors_with_self = [card]
+        grid._iter_mounted_cards = lambda: iter(  # type: ignore[method-assign]
+            list(enumerate(stand_in_cards))
+        )
+        # watch_highlighted touches the layout / scroll engine which needs
+        # an active App; stub it so the test stays in plain-Python land.
+        grid.watch_highlighted = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        received: list[VirtualGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.focus = lambda: None  # type: ignore[method-assign]
+        click = mock.Mock()
+        click.widget = stand_in_cards[1]
+        grid.on_click(click)
+        assert grid.highlighted == 1
+        assert received == []
+        grid.on_click(click)
+        assert received and isinstance(received[0], VirtualGrid.Selected)
+        assert received[0].widget is stand_in_cards[1]
+
+    def test_click_with_no_widget_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        click = mock.Mock()
+        click.widget = None
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+    def test_click_on_non_card_ancestor_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        bystander = mock.Mock()
+        bystander.ancestors_with_self = [bystander]
+        click = mock.Mock()
+        click.widget = bystander
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+    def test_click_on_unmounted_card_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        # ModelCard exists in the ancestor chain but is not in the mounted
+        # window, so _iter_mounted_cards never yields it.
+        orphan = mock.Mock(spec=ModelCard)
+        orphan.ancestors_with_self = [orphan]
+        grid._iter_mounted_cards = lambda: iter([])  # type: ignore[method-assign]
+        click = mock.Mock()
+        click.widget = orphan
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+
+class TestModelPickerScopeTitles:
+    """Cover the vision and rerank title branches of _picker_title."""
+
+    def test_vision_title(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.model_picker import _picker_title
+
+        assert _picker_title("vision") == msg.MODEL_PICKER_TITLE_VISION
+
+    def test_rerank_title(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.model_picker import _picker_title
+
+        assert _picker_title("rerank") == msg.MODEL_PICKER_TITLE_RERANK
