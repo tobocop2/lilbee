@@ -867,14 +867,7 @@ class CatalogScreen(Screen[None]):
         container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
-        """Re-render the grid with the current search filter applied.
-
-        Pre-virtualization this walked mounted cards and toggled
-        ``display`` to avoid a full rebuild. With ``VirtualGrid`` only
-        the visible-window cards are mounted, so a refresh is cheap
-        and the dataset-level rebuild via ``_refresh_grid`` handles
-        filter, sort, section grouping in one pass.
-        """
+        """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
 
     @on(Click, ".browse-more-hf")

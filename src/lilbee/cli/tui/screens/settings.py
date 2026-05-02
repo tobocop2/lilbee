@@ -8,9 +8,9 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
@@ -35,6 +35,11 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.model_picker import PickerScope
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+    from lilbee.modelhub.models import ModelTask
 
 _ROW_ID_PREFIX = "row-"
 _EDITOR_ID_PREFIX = "ed-"
@@ -62,18 +67,35 @@ _API_KEYS_GROUP = "API-Keys"
 _API_KEYS_WARNING_CLASS = "api-keys-warning"
 _CONFIG_TOML_FILENAME = "config.toml"
 
-# Model-config fields surface their value through a picker modal that
-# lists every installed/available chat/embed/vision/rerank model the
-# host can route, instead of a free-text Input. The mapping below is the
-# single source of truth for the picker scope each model field uses.
-_MODEL_FIELD_TO_PICKER_SCOPE: dict[str, str] = {
-    "chat_model": "chat",
-    "embedding_model": "embed",
-    "vision_model": "vision",
-    "reranker_model": "rerank",
-}
+
+def _model_field_to_picker_scope() -> dict[str, PickerScope]:
+    """Single source of truth for the picker scope each model field uses.
+
+    Lazy-built so the ``PickerScope`` import doesn't drag the modal
+    module into every import path that hits ``settings.py``.
+    """
+    mapping: dict[str, PickerScope] = {
+        "chat_model": "chat",
+        "embedding_model": "embed",
+        "vision_model": "vision",
+        "reranker_model": "rerank",
+    }
+    return mapping
+
+
+def _picker_scope_to_task(scope: PickerScope) -> ModelTask:
+    """Map a picker scope to the ``ModelTask`` bucket it discovers from."""
+    from lilbee.modelhub.models import ModelTask as _ModelTask
+
+    return {
+        "chat": _ModelTask.CHAT,
+        "embed": _ModelTask.EMBEDDING,
+        "vision": _ModelTask.VISION,
+        "rerank": _ModelTask.RERANK,
+    }[scope]
+
+
 _MODEL_PICKER_BUTTON_PREFIX = "model-pick-"
-_MODEL_VALUE_NONE = "(none)"
 
 
 def _model_picker_label(key: str) -> str:
@@ -82,7 +104,7 @@ def _model_picker_label(key: str) -> str:
 
     ref = getattr(cfg, key, None) or ""
     label = display_label_for_ref(str(ref))
-    return label or _MODEL_VALUE_NONE
+    return label or msg.MODEL_VALUE_NONE
 
 
 @dataclass(frozen=True)
@@ -434,7 +456,7 @@ class SettingsScreen(Screen[None]):
         title = Static(_title_content(key, defn), classes="setting-title")
         help_widget = Static(_help_content(key, defn), classes="setting-help")
         children: list[Widget] = [title, help_widget]
-        if key in _MODEL_FIELD_TO_PICKER_SCOPE:
+        if key in _model_field_to_picker_scope():
             children.append(self._build_model_picker_row(key))
         elif defn.writable:
             editor_row = Horizontal(
@@ -650,34 +672,39 @@ class SettingsScreen(Screen[None]):
         if button_id is None or not button_id.startswith(_MODEL_PICKER_BUTTON_PREFIX):
             return
         key = button_id[len(_MODEL_PICKER_BUTTON_PREFIX) :]
-        scope = _MODEL_FIELD_TO_PICKER_SCOPE.get(key)
+        scope = _model_field_to_picker_scope().get(key)
         if scope is None:
             return
-        self._open_model_picker_for_field(key, scope)
+        self._discover_then_open_picker(key, scope)
 
-    def _open_model_picker_for_field(self, key: str, scope: str) -> None:
-        """Discover models for *scope*, push the picker, persist on dismiss."""
-        from lilbee.cli.tui.screens.model_picker import ModelPickerModal, PickerScope
-        from lilbee.cli.tui.widgets.model_bar import (
-            ModelOption,
-            classify_installed_models_full,
-        )
-        from lilbee.modelhub.models import ModelTask
+    @work(thread=True, exit_on_error=False)
+    def _discover_then_open_picker(self, key: str, scope: PickerScope) -> None:
+        """Discover installed models off the UI thread, then push the picker.
 
-        scope_to_task: dict[str, ModelTask] = {
-            "chat": ModelTask.CHAT,
-            "embed": ModelTask.EMBEDDING,
-            "vision": ModelTask.VISION,
-            "rerank": ModelTask.RERANK,
-        }
-        task = scope_to_task[scope]
+        ``classify_installed_models_full`` probes the native registry,
+        Ollama (HTTP), and litellm provider lists. Running it on the
+        event loop blocks paint for hundreds of ms; the chat-bar uses
+        the same worker pattern.
+        """
+        from lilbee.cli.tui.thread_safe import call_from_thread
+        from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+
+        task = _picker_scope_to_task(scope)
         buckets = classify_installed_models_full()
         options = list(buckets.get(task, []))
+        call_from_thread(self, self._push_model_picker, key, scope, options)
+
+    def _push_model_picker(
+        self, key: str, scope: PickerScope, options: list[ModelOption]
+    ) -> None:
+        """Push ModelPickerModal once the worker has resolved options."""
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+        from lilbee.cli.tui.widgets.model_bar import ModelOption
+
         if not options:
-            options = [ModelOption(label=_MODEL_VALUE_NONE, ref="")]
-        modal_scope: PickerScope = scope  # type: ignore[assignment]
+            options = [ModelOption(label=msg.MODEL_VALUE_NONE, ref="")]
         self.app.push_screen(
-            ModelPickerModal(scope=modal_scope, options=options),
+            ModelPickerModal(scope=scope, options=options),
             lambda ref: self._on_model_picker_dismissed(key, ref),
         )
 

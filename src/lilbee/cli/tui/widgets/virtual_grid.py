@@ -12,14 +12,15 @@ keep working.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass
-from types import TracebackType
 from typing import ClassVar
 
 from textual import events
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.timer import Timer
@@ -315,19 +316,12 @@ class VirtualGrid(VerticalScroll, can_focus=True):
             self.highlighted = len(self._rows) - 1
 
 
-class _SuppressNotFound:
-    """Context manager: swallow exceptions from removing already-removed widgets."""
+def _suppress_not_found() -> contextlib.AbstractContextManager[None]:
+    """Swallow Textual lookup misses while tearing down stale row widgets.
 
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> bool:
-        return exc_type is not None
-
-
-_suppress_not_found = _SuppressNotFound
+    A row widget can be in the children list one frame and detached the
+    next when virtualization unmounts it; ``remove()`` then raises
+    ``NoMatches``. Narrow the scope so genuine programmer errors still
+    propagate.
+    """
+    return contextlib.suppress(NoMatches, LookupError)

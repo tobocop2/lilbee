@@ -183,6 +183,8 @@ class StatusScreen(Screen[None]):
 
     async def _mount_remaining_sections(self) -> None:
         """Mount Documents/Architecture/Storage once the screen is visible."""
+        if not self.is_mounted:
+            return
         scroll = self.query_one("#status-scroll", VerticalScroll)
         await scroll.mount_all(
             [

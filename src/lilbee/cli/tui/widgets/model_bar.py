@@ -244,7 +244,7 @@ class ModelPickerButton(Static, can_focus=True):
 
     def _refresh(self) -> None:
         ref = cfg.chat_model if self._scope == "chat" else cfg.embedding_model
-        label = display_label_for_ref(ref) or ref or "(none)"
+        label = display_label_for_ref(ref) or ref or msg.MODEL_VALUE_NONE
         self.update(label)
 
     def on_click(self, event: events.Click) -> None:
@@ -397,8 +397,8 @@ class ModelBar(Widget, can_focus=False):
         chat_models: list[ModelOption],
         embed_models: list[ModelOption],
     ) -> None:
-        chat_opts = list(chat_models) if chat_models else [ModelOption("(none)", "")]
-        embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
+        chat_opts = list(chat_models) if chat_models else [ModelOption(msg.MODEL_VALUE_NONE, "")]
+        embed_opts = list(embed_models) if embed_models else [ModelOption(msg.MODEL_VALUE_NONE, "")]
         chat_fingerprint = _options_fingerprint(chat_opts, cfg.chat_model)
         if chat_fingerprint != self._chat_options_cache:
             self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton).set_options(chat_opts)

@@ -639,9 +639,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     ),
     "documents_dir": SettingDef(
         str,
-        nullable=True,
+        nullable=False,
         group="System",
-        help_text="Local documents root that lilbee sync ingests (blank = no auto-sync)",
+        help_text="Local documents root that lilbee sync ingests (blank = data_root/documents)",
     ),
     "vault_base": SettingDef(
         str,
@@ -659,6 +659,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group="API-Keys",
+        choices=("auto", "llama-cpp", "remote"),
         help_text=(
             "Provider routing: auto picks the first key present; force a specific one when set"
         ),
