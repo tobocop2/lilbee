@@ -744,7 +744,9 @@ class CatalogScreen(Screen[None]):
         existing_grids = list(self._grid_container.query(VirtualGrid))
         existing_headings = list(self._grid_container.query(".section-heading"))
         if existing_grids and len(existing_grids) == len(sections):
-            for grid, heading, section in zip(existing_grids, existing_headings, sections):
+            for grid, heading, section in zip(
+                existing_grids, existing_headings, sections, strict=True
+            ):
                 heading.update(section.heading)
                 grid.set_rows(section.rows)
             return
