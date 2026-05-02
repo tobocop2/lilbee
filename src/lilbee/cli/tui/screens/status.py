@@ -181,10 +181,10 @@ class StatusScreen(Screen[None]):
         self._fetch_sources_worker()
         self._fetch_arch_worker()
 
-    def _mount_remaining_sections(self) -> None:
+    async def _mount_remaining_sections(self) -> None:
         """Mount Documents/Architecture/Storage once the screen is visible."""
         scroll = self.query_one("#status-scroll", VerticalScroll)
-        scroll.mount_all(
+        await scroll.mount_all(
             [
                 Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
                 Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),

@@ -842,10 +842,12 @@ class CatalogScreen(Screen[None]):
         self._grid_container.mount_all(ctas)
 
     def _refresh_grid_ctas(self, *, hf_count: int) -> None:
-        """Update the existing scroll-hint CTA in place (no remount)."""
-        with contextlib.suppress(Exception):
-            hint = self.query_one("#catalog-grid > .scroll-hint", Static)
-            hint.update(self._grid_scroll_hint_text(hf_count))
+        """Update the bottom CTA strip in place; remount when class changes."""
+        existing = list(self._grid_container.query(".grid-cta"))
+        for w in existing:
+            with contextlib.suppress(Exception):
+                w.remove()
+        self._mount_grid_ctas(hf_count=hf_count)
 
     def _sync_grid_search_cta(self) -> None:
         """Mount/remove/update the grid-view search-HF CTA in response to typing."""

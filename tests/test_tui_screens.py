@@ -4894,6 +4894,10 @@ async def test_catalog_grid_renders_hf_overflow_cta():
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):
                 screen._refresh_grid()
+                # Two pauses: first lets call_after_refresh schedule
+                # _mount_remaining_grid_sections, the second lets it mount
+                # the CTA that surfaces the "{count} loaded" hint.
+                await _pilot.pause()
                 await _pilot.pause()
             grid_text = " ".join(str(s.render()) for s in screen.query("#catalog-grid > Static"))
             assert any(c.isdigit() for c in grid_text)
