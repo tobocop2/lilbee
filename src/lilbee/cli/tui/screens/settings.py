@@ -76,6 +76,15 @@ _MODEL_PICKER_BUTTON_PREFIX = "model-pick-"
 _MODEL_VALUE_NONE = "(none)"
 
 
+def _model_picker_label(key: str) -> str:
+    """Render the picker button label as the human-friendly model name."""
+    from lilbee.catalog.formatting import display_label_for_ref
+
+    ref = getattr(cfg, key, None) or ""
+    label = display_label_for_ref(str(ref))
+    return label or _MODEL_VALUE_NONE
+
+
 @dataclass(frozen=True)
 class _PaneGroup:
     """One settings tab: pane id, group label, ordered settings."""
@@ -447,10 +456,9 @@ class SettingsScreen(Screen[None]):
 
     def _build_model_picker_row(self, key: str) -> Horizontal:
         """A button-style row that opens the same ModelPickerModal as the chat bar."""
-        current = getattr(cfg, key, None) or _MODEL_VALUE_NONE
         return Horizontal(
             Button(
-                str(current),
+                _model_picker_label(key),
                 id=f"{_MODEL_PICKER_BUTTON_PREFIX}{key}",
                 classes="setting-model-picker-button",
             ),
@@ -679,7 +687,7 @@ class SettingsScreen(Screen[None]):
         apply_active_model(self.app, key, ref)
         try:
             button = self.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}{key}", Button)
-            button.label = str(getattr(cfg, key, "") or _MODEL_VALUE_NONE)
+            button.label = _model_picker_label(key)
         except Exception:
             log.debug("Failed to refresh model picker label for %s", key, exc_info=True)
 

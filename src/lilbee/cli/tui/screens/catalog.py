@@ -1178,6 +1178,13 @@ class CatalogScreen(Screen[None]):
         focused_grid = self._focused_grid()
         if focused_grid is None or focused_grid.highlighted is None:
             return None
+        if isinstance(focused_grid, VirtualGrid):
+            rows = focused_grid.rows
+            index = focused_grid.highlighted
+            if 0 <= index < len(rows):
+                return rows[index].ref or None
+            return None
+        # GridSelect path: cards are direct children indexed positionally.
         child = focused_grid.children[focused_grid.highlighted]
         if isinstance(child, ModelCard):
             return child.row.ref or None
