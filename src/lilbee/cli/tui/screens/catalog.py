@@ -778,7 +778,9 @@ class CatalogScreen(Screen[None]):
         # section heading is keyed by its text so we can match a new
         # section to its existing VirtualGrid without tearing down.
         existing_grids = list(self._grid_container.query(VirtualGrid))
-        existing_headings = list(self._grid_container.query(".section-heading"))
+        existing_headings = [
+            w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
+        ]
         if existing_grids and len(existing_grids) == len(sections):
             for grid, heading, section in zip(
                 existing_grids, existing_headings, sections, strict=True

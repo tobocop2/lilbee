@@ -187,9 +187,7 @@ class StatusScreen(Screen[None]):
         scroll.mount_all(
             [
                 Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
-                Collapsible(
-                    Static(id="arch-info"), title="Model Architecture", id="arch-section"
-                ),
+                Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),
                 Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             ]
         )

@@ -12,7 +12,9 @@ keep working.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from types import TracebackType
 from typing import ClassVar
 
 from textual import events
@@ -209,7 +211,7 @@ class VirtualGrid(VerticalScroll, can_focus=True):
             card.set_class(index == self.highlighted, "-highlight")
             card.selected = index == self.highlighted
 
-    def _iter_mounted_cards(self):
+    def _iter_mounted_cards(self) -> Iterable[tuple[int, ModelCard]]:
         for row_index in sorted(self._row_widgets):
             row = self._row_widgets[row_index]
             for col_index, card in enumerate(row.query(ModelCard)):
@@ -319,7 +321,12 @@ class _SuppressNotFound:
     def __enter__(self) -> None:
         return None
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         return exc_type is not None
 
 
