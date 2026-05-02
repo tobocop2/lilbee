@@ -244,10 +244,8 @@ class TestParentWrapper:
                 on_progress=lambda *_: None,
             )
 
-    async def test_subprocess_wrapper_kills_on_cancellation(self) -> None:
-        """CancelledError mid-read still kills the subprocess and re-raises."""
-        import asyncio as _asyncio
-
+    async def test_subprocess_wrapper_kills_on_unexpected_error(self) -> None:
+        """Any non-timeout error mid-read still kills the subprocess and re-raises."""
         from lilbee.data.ingest.extract import _extract_pdf_vision_in_subprocess
 
         kill_calls: list[bool] = []
@@ -267,7 +265,9 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
-        FakeProc.stdout.read = mock.AsyncMock()
+        # Reading stdout itself blows up — exercises the BaseException branch
+        # without the cross-platform quirks of asyncio.CancelledError handling.
+        FakeProc.stdout.read = mock.AsyncMock(side_effect=RuntimeError("read kaboom"))
 
         with (
             mock.patch(
@@ -278,10 +278,7 @@ class TestParentWrapper:
                 new=mock.AsyncMock(return_value=None),
             ),
             mock.patch("lilbee.vision.pdf_page_count", return_value=5),
-            mock.patch.object(
-                _asyncio, "wait_for", new=mock.AsyncMock(side_effect=_asyncio.CancelledError)
-            ),
-            pytest.raises(_asyncio.CancelledError),
+            pytest.raises(RuntimeError, match="read kaboom"),
         ):
             await _extract_pdf_vision_in_subprocess(
                 Path("/tmp/x.pdf"),
