@@ -16,7 +16,20 @@ on:
       - .github/workflows/flake-check.yml
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: statix
+        run: nix run nixpkgs#statix -- check flake.nix
+      - name: deadnix
+        run: nix run nixpkgs#deadnix -- --fail flake.nix
+      - name: nixfmt --check
+        run: nix run nixpkgs#nixfmt-rfc-style -- --check flake.nix
+
   check:
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
