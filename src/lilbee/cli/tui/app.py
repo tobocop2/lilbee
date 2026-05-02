@@ -236,6 +236,9 @@ class LilbeeApp(App[None]):
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         settings.set_value(cfg.data_root, key, normalized)
+        if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
+            self.theme = normalized
+            self._sync_theme_index_to_current()
         self.settings_changed_signal.publish((key, normalized))
 
     def _sync_theme_index_to_current(self) -> None:

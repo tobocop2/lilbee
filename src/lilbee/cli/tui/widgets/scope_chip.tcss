@@ -2,6 +2,7 @@ ScopeChip {
     height: 1;
     width: auto;
     padding: 0;
+    margin: 0 2 0 0;
     background: transparent;
 }
 

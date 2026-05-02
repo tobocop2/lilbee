@@ -356,7 +356,6 @@ class ChatScreen(Screen[None]):
 
     def _enter_streaming_state(self) -> None:
         self.add_class("streaming")
-        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_STREAMING
         # Both cancel paths and the natural finalize write streaming=False;
         # reactive dedupe makes the watcher a no-op on equal values, so the
         # button mount happens exactly once per streaming session.
@@ -368,7 +367,6 @@ class ChatScreen(Screen[None]):
 
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
-        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
         for w in self.query("#chat-stop"):
             w.remove()
 

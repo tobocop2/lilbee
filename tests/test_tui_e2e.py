@@ -2787,10 +2787,10 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming is False
 
-    async def test_input_placeholder_swaps_with_streaming_state(
+    async def test_input_placeholder_stays_default_through_streaming(
         self, _mock_resolve, _mock_services
     ):
-        """Placeholder reflects streaming state across the full lifecycle."""
+        """Placeholder stays at the default during streaming; the user message stays prominent."""
         with self._patch_stream_response():
             app = ChatTestApp()
             async with app.run_test(size=(120, 40)) as pilot:
@@ -2800,8 +2800,7 @@ class TestChatStreaming:
                 inp.value = "go"
                 await pilot.press("enter")
                 await pilot.pause()
-                assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_STREAMING
-                # Simulate natural finalize: streaming -> False reverts state.
+                assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
                 app.screen._set_streaming(False)
                 await pilot.pause()
                 assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT

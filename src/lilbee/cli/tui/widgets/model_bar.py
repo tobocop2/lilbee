@@ -223,6 +223,9 @@ class ModelPickerButton(Static, can_focus=True):
         super().__init__(id=button_id)
         self._scope: Literal["chat", "embed"] = scope
         self._options: list[ModelOption] = []
+        self.tooltip = (
+            msg.MODEL_PICKER_CHAT_TOOLTIP if scope == "chat" else msg.MODEL_PICKER_EMBED_TOOLTIP
+        )
 
     def on_mount(self) -> None:
         self._refresh()
@@ -294,25 +297,26 @@ class ChatModeToggle(Static, can_focus=True):
     def _embedding_ready(self) -> bool:
         return is_model_available(cfg.embedding_model, get_services().provider)
 
-    def _render_pill(self, label: str, *, active: bool, disabled: bool) -> Content:
+    def _render_label(self, label: str, *, active: bool, disabled: bool) -> Content:
+        """Render a half of the toggle as styled text (no pill chrome)."""
         if disabled:
-            text = Content.styled(label, "strike")
-            return pill(text, "$surface", "$text-muted")
+            return Content.styled(label, "strike $text-muted")
         if active:
-            return pill(label, "$primary", "$text")
-        return pill(label, "$surface", "$text-muted")
+            return Content.styled(label, "bold $primary")
+        return Content.styled(label, "$text-muted")
 
     def _refresh(self) -> None:
         ready = self._embedding_ready()
         mode = cfg.chat_mode if ready else ChatMode.CHAT.value
         active_search = mode == ChatMode.SEARCH.value
-        search_pill = self._render_pill(
+        search_label = self._render_label(
             msg.CHAT_MODE_SEARCH_LABEL, active=active_search, disabled=not ready
         )
-        chat_pill = self._render_pill(
+        chat_label = self._render_label(
             msg.CHAT_MODE_CHAT_LABEL, active=not active_search, disabled=False
         )
-        self.update(Content.assemble(search_pill, " ", chat_pill))
+        divider = Content.styled(" · ", "$text-muted")
+        self.update(Content.assemble(search_label, divider, chat_label))
         self.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
         self.set_class(active_search, _CHAT_MODE_SEARCH_CLASS)
         self.set_class(not active_search, _CHAT_MODE_CHAT_CLASS)

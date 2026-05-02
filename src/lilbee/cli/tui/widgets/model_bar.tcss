@@ -1,6 +1,7 @@
 ModelBar {
     height: auto;
     padding: 0;
+    margin: 1 0 0 0;
     background: transparent;
 }
 

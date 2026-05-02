@@ -112,7 +112,6 @@ CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
 CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask a question or type / for commands"
-CHAT_INPUT_PLACEHOLDER_STREAMING = "Generating response… (Esc to stop)"
 CHAT_STOP_BUTTON_LABEL = "■ Stop"
 CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local search engine and personal encyclopedia."
@@ -240,5 +239,9 @@ CHAT_MODE_SEARCH_NO_RESULTS = "Search returned 0 results, falling back to chat f
 CHAT_MODE_SET = "Mode: {label}"
 MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
 MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"
+MODEL_PICKER_CHAT_TOOLTIP = "Model used to answer your questions. Click to pick a different one."
+MODEL_PICKER_EMBED_TOOLTIP = (
+    "Model used to vectorize search queries (Search mode). Click to pick a different one."
+)
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"

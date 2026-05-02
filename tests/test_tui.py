@@ -577,6 +577,24 @@ class TestThemes:
             assert app.theme == "dracula"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_theme_applies_live(self, mock_catalog: mock.MagicMock) -> None:
+        """Settings → theme dropdown must update app.theme, not just cfg.theme.
+
+        Regression: bb-akqw — without this, picking a theme in Settings
+        only persisted to disk; the visual theme stayed the same until
+        next launch.
+        """
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            target = "dracula" if app.theme != "dracula" else "gruvbox"
+            app.set_setting("theme", target)
+            assert app.theme == target
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_invalid_theme_noop(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp

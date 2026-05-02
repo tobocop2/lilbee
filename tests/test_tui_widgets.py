@@ -582,8 +582,8 @@ class TestModelBar:
                 toggle.action_select_search()
                 assert cfg.chat_mode == "chat"
 
-    async def test_chat_mode_toggle_renders_pills_with_half_blocks(self) -> None:
-        """Both halves render via the pill helper, not plain ``Search | Chat`` text."""
+    async def test_chat_mode_toggle_renders_subtle_label(self) -> None:
+        """Both halves render as plain text with a dot divider, no pill chrome."""
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -595,10 +595,26 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 rendered = str(toggle.render())
-                assert rendered.count("▌") >= 2
-                assert rendered.count("▐") >= 2
+                assert "▌" not in rendered
+                assert "▐" not in rendered
                 assert "Search" in rendered
                 assert "Chat" in rendered
+                assert "·" in rendered
+
+    async def test_picker_buttons_have_tooltips(self) -> None:
+        """Chat and Embed pickers expose hover tooltips like the scope chip does."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_btn = app.query_one("#chat-model-button", ModelPickerButton)
+            embed_btn = app.query_one("#embed-model-button", ModelPickerButton)
+            assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
+            assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
 
     async def test_cloud_warning_hidden_for_local_model(self) -> None:
         cfg.chat_model = TEST_LOCAL_REF
