@@ -362,7 +362,8 @@ class ChatScreen(Screen[None]):
         # button mount happens exactly once per streaming session.
         with contextlib.suppress(Exception):
             self.query_one("#chat-prompt-area", PromptArea).mount(
-                ChatStopButton(button_id="chat-stop")
+                ChatStopButton(button_id="chat-stop"),
+                before="#chat-input",
             )
 
     def _exit_streaming_state(self) -> None:

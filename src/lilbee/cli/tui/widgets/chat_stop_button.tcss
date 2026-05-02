@@ -6,6 +6,7 @@ ChatStopButton {
     color: $text;
     text-style: bold;
     border: none;
+    dock: top;
 }
 
 ChatStopButton:focus {

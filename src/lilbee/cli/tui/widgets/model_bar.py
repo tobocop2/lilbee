@@ -120,11 +120,14 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         for m in manifests:
             repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
 
+        from lilbee.modelhub.model_manager.discovery import reclassify_by_name
+
         for manifest in manifests:
             ref = manifest.ref
             if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
-            bucket = _lookup_bucket(buckets, manifest.task, ref)
+            task = reclassify_by_name(ref, manifest.task)
+            bucket = _lookup_bucket(buckets, task, ref)
             if bucket is None:
                 continue
             seen.add(ref)
