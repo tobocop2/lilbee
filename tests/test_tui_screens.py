@@ -10242,3 +10242,25 @@ async def test_catalog_sync_grid_search_cta_mounts_when_missing():
             await _pilot.pause()
             ctas = list(screen.query("#catalog-grid > .search-hf-cta"))
             assert len(ctas) == 1
+
+
+async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
+    """The success branches of _tick_loading_spinner update both targets."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # Mount a scroll-hint inside the grid container so the second
+            # contextlib.suppress block successfully resolves the query.
+            await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
+            await _pilot.pause()
+            screen._tick_loading_spinner()
+            await _pilot.pause()
+            hint = screen.query_one("#catalog-grid > .scroll-hint", Static)
+            assert "loading" in str(hint.render()).lower()
