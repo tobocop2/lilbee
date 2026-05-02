@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+from textual import events
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
 from textual.message import Message
@@ -272,6 +273,34 @@ class VirtualGrid(VerticalScroll, can_focus=True):
             if index == self.highlighted:
                 self.post_message(self.Selected(self, card))
                 return
+
+    def on_click(self, event: events.Click) -> None:
+        """Mouse click selects a card. First click highlights, second selects.
+
+        Mirrors ``GridSelect.on_click`` semantics so the catalog screen's
+        existing ``Selected`` handler keeps working under VirtualGrid.
+        """
+        if event.widget is None:
+            return
+        clicked_card: ModelCard | None = None
+        for ancestor in event.widget.ancestors_with_self:
+            if isinstance(ancestor, ModelCard):
+                clicked_card = ancestor
+                break
+        if clicked_card is None:
+            return
+        clicked_index: int | None = None
+        for index, card in self._iter_mounted_cards():
+            if card is clicked_card:
+                clicked_index = index
+                break
+        if clicked_index is None:
+            return
+        if self.highlighted == clicked_index:
+            self.post_message(self.Selected(self, clicked_card))
+        else:
+            self.highlighted = clicked_index
+        self.focus()
 
     def highlight_first(self) -> None:
         """Move highlight to the first card; mirrors ``GridSelect.highlight_first``."""

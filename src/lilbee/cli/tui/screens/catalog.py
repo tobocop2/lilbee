@@ -60,11 +60,11 @@ from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 log = logging.getLogger(__name__)
 
 # Models fetched per task per page. We make one /api/models call per
-# task (chat / embedding / vision / rerank), so the actual page size
-# the user sees is _HF_PAGE_SIZE * 4. Smaller pages keep each HF
-# round-trip below ~1s on a typical connection so the spinner appears
-# briefly instead of stalling the user for several seconds at a time.
-_HF_PAGE_SIZE = 12
+# task (chat / embedding / vision / rerank), so the user-visible page
+# size is _HF_PAGE_SIZE * 4. Small pages keep each HF round-trip well
+# under a second on a typical connection and keep the freshly-rendered
+# row count low so layout reflow stays cheap.
+_HF_PAGE_SIZE = 4
 _HF_LOAD_MORE_TRIGGER = 4
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
@@ -181,7 +181,11 @@ class CatalogScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-            yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
+            yield Input(
+                placeholder=msg.CATALOG_FILTER_PLACEHOLDER,
+                id="catalog-search",
+                classes="-hidden",
+            )
         with Horizontal(id="catalog-toolbar"):
             yield GridListToggle()
             yield Static("", id="sort-label", shrink=True)
@@ -307,7 +311,8 @@ class CatalogScreen(Screen[None]):
             self.query_one(GridListToggle).set_grid(self._grid_view)
 
     def action_focus_search(self) -> None:
-        """Focus the filter input -- bound to / key."""
+        """Reveal and focus the filter input. Bound to / key."""
+        self._search_input.remove_class("-hidden")
         self._search_input.focus()
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
@@ -731,11 +736,15 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows(search)
         hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
+        # Keep self._rows in sync so the toolbar sort-label can render
+        # "{n} loaded" whichever view (grid or list) is active.
+        self._rows = list(all_rows)
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
             self._get_search_text(),
         )
         if self._grid_cache_key == row_key:
+            self._update_sort_label()
             return
         self._grid_cache_key = row_key
         sections = [s for s in _group_rows_for_grid(all_rows) if s.rows]
@@ -743,6 +752,7 @@ class CatalogScreen(Screen[None]):
             container = self._grid_container
             container.remove_children()
             self._mount_grid_ctas(hf_count=len(hf_rows))
+            self._update_sort_label()
             return
         # Extend in-place when we already have a grid mounted. Each
         # section heading is keyed by its text so we can match a new
@@ -755,6 +765,8 @@ class CatalogScreen(Screen[None]):
             ):
                 heading.update(section.heading)
                 grid.set_rows(section.rows)
+            self._refresh_grid_ctas(hf_count=len(hf_rows))
+            self._update_sort_label()
             return
         # First paint (or section count changed): teardown + remount.
         container = self._grid_container
@@ -762,6 +774,7 @@ class CatalogScreen(Screen[None]):
         self._mount_grid_section(sections[0])
         rest = sections[1:]
         self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_count=len(hf_rows))
+        self._update_sort_label()
 
     def _mount_grid_section(self, section: GridSection) -> None:
         grid = VirtualGrid(section.rows, classes="vg-section")
@@ -777,21 +790,22 @@ class CatalogScreen(Screen[None]):
             self._mount_grid_section(section)
         self._mount_grid_ctas(hf_count=hf_count)
 
+    def _grid_scroll_hint_text(self, hf_count: int) -> str:
+        """Pick the bottom scroll-hint text based on fetch state."""
+        if self._loading_more:
+            return msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+        if self._hf_has_more:
+            return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
+        return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
+
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
         ctas: list[Static] = []
-        if not self._hf_fetched:
+        if not self._hf_fetched and not self._loading_more:
             ctas.append(Static(msg.CATALOG_BROWSE_MORE, classes="grid-cta browse-more-hf"))
-        elif self._hf_has_more:
-            ctas.append(
-                Static(
-                    msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count),
-                    classes="grid-cta scroll-hint",
-                )
-            )
         else:
             ctas.append(
                 Static(
-                    msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count),
+                    self._grid_scroll_hint_text(hf_count),
                     classes="grid-cta scroll-hint",
                 )
             )
@@ -804,6 +818,12 @@ class CatalogScreen(Screen[None]):
                 )
             )
         self._grid_container.mount_all(ctas)
+
+    def _refresh_grid_ctas(self, *, hf_count: int) -> None:
+        """Update the existing scroll-hint CTA in place (no remount)."""
+        with contextlib.suppress(Exception):
+            hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+            hint.update(self._grid_scroll_hint_text(hf_count))
 
     def _sync_grid_search_cta(self) -> None:
         """Mount/remove/update the grid-view search-HF CTA in response to typing."""
@@ -916,6 +936,17 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
                 )
+            # Mirror the spinner into the in-grid scroll hint so users
+            # waiting at the bottom of the grid see the activity without
+            # glancing back up at the toolbar.
+            if self._loading_more:
+                with contextlib.suppress(Exception):
+                    hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                    hint.update(
+                        msg.CATALOG_GRID_LOADING_MORE.format(
+                            frame=_SPINNER_FRAMES[self._spinner_frame]
+                        )
+                    )
         else:
             spinner.update("")
             spinner.styles.display = "none"
@@ -923,6 +954,9 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer.stop()
                 self._spinner_timer = None
             self._spinner_frame = 0
+            # Restore the post-load CTA text now that the fetch settled.
+            hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched else []
+            self._refresh_grid_ctas(hf_count=len(hf_rows))
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""
@@ -930,6 +964,11 @@ class CatalogScreen(Screen[None]):
         with contextlib.suppress(Exception):
             spinner = self.query_one("#catalog-loading-spinner", Static)
             spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
+        with contextlib.suppress(Exception):
+            hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+            hint.update(
+                msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+            )
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label, switching copy by active tab."""
@@ -1070,9 +1109,12 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def action_go_back(self) -> None:
-        # Escape unfocuses the filter input first so screen-level keys
-        # (s / v) reach the screen, not the input.
+        # Escape from a focused filter input collapses the input back to
+        # hidden and restores focus to the grid/list, so screen-level
+        # keys (s / v) reach the screen instead of the (now-hidden) input.
         if isinstance(self.focused, Input):
+            self._search_input.value = ""
+            self._search_input.add_class("-hidden")
             self._focus_list_or_grid()
             return
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp

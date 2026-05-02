@@ -186,7 +186,6 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.cli.tui.widgets.top_bars import TopBars
 
         with TopBars():
@@ -198,7 +197,6 @@ class ChatScreen(Screen[None]):
         yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
-                yield ScopeChip(id="scope-chip")
                 yield ChatInput(
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",

@@ -77,6 +77,10 @@ VirtualGrid > .vg-row > ModelCard {
     margin: 0 1;
 }
 
+#catalog-search.-hidden {
+    display: none;
+}
+
 #model-detail {
     height: 6;
     padding: 1;

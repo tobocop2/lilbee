@@ -42,26 +42,27 @@ ConfirmDialog .confirm-pill {
     height: 1;
     padding: 0 2;
     margin: 0 1;
-    background: $surface-lighten-1;
+    background: $boost;
     color: $text;
     text-style: bold;
     content-align: center middle;
 }
 
 ConfirmDialog #confirm-yes {
-    background: $error;
+    background: $primary 20%;
     color: $text;
 }
 
 ConfirmDialog #confirm-yes:focus,
 ConfirmDialog #confirm-yes:hover {
-    background: $error-lighten-1;
-    text-style: bold reverse;
+    background: $primary 40%;
+    color: $text;
+    text-style: bold;
 }
 
 ConfirmDialog #confirm-no:focus,
 ConfirmDialog #confirm-no:hover {
-    background: $primary;
+    background: $boost;
     color: $text;
-    text-style: bold reverse;
+    text-style: bold;
 }
