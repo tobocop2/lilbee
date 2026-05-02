@@ -658,7 +658,10 @@ class SettingsScreen(Screen[None]):
     def _open_model_picker_for_field(self, key: str, scope: str) -> None:
         """Discover models for *scope*, push the picker, persist on dismiss."""
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal, PickerScope
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _classify_installed_models
+        from lilbee.cli.tui.widgets.model_bar import (
+            ModelOption,
+            classify_installed_models_full,
+        )
         from lilbee.modelhub.models import ModelTask
 
         scope_to_task: dict[str, ModelTask] = {
@@ -668,7 +671,7 @@ class SettingsScreen(Screen[None]):
             "rerank": ModelTask.RERANK,
         }
         task = scope_to_task[scope]
-        buckets = _classify_installed_models()
+        buckets = classify_installed_models_full()
         options = list(buckets.get(task, []))
         if not options:
             options = [ModelOption(label=_MODEL_VALUE_NONE, ref="")]

@@ -70,7 +70,19 @@ def _is_mmproj(name: str) -> bool:
     return _MMPROJ_MARKER in name.lower()
 
 
-def _classify_installed_models() -> dict[ModelTask, list[ModelOption]]:
+def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
+    """Classify installed models into (chat, embedding) lists, dropping mmproj.
+
+    The chat-bar surfaces only chat + embedding pickers; vision and rerank
+    use ``classify_installed_models_full`` directly. Vision/rerank entries
+    are still discovered here so their refs are claimed in ``seen`` and
+    later buckets don't duplicate them.
+    """
+    buckets = classify_installed_models_full()
+    return (buckets[ModelTask.CHAT], buckets[ModelTask.EMBEDDING])
+
+
+def classify_installed_models_full() -> dict[ModelTask, list[ModelOption]]:
     """Classify installed models into per-task lists, dropping mmproj entries."""
     buckets: dict[ModelTask, list[ModelOption]] = {task: [] for task in ModelTask}
     seen: set[str] = set()
@@ -377,10 +389,8 @@ class ModelBar(Widget, can_focus=False):
     @work(thread=True)
     def _scan_models(self) -> None:
         """Scan installed models in background, then populate buttons."""
-        buckets = _classify_installed_models()
-        call_from_thread(
-            self, self._populate, buckets[ModelTask.CHAT], buckets[ModelTask.EMBEDDING]
-        )
+        chat, embed = _classify_installed_models()
+        call_from_thread(self, self._populate, chat, embed)
 
     def _populate(
         self,
