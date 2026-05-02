@@ -1,10 +1,9 @@
 ScopeChip {
     height: 1;
-    width: 100%;
+    width: auto;
     padding: 0;
-    margin: 0;
+    margin: 0 2 0 0;
     background: transparent;
-    align: right top;
 }
 
 ScopeChip.-hidden {
@@ -14,7 +13,6 @@ ScopeChip.-hidden {
 ScopeChip Horizontal {
     height: 1;
     width: auto;
-    align-horizontal: right;
 }
 
 ScopeChip .scope-chip-pill {

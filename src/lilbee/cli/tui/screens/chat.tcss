@@ -50,15 +50,15 @@ Markdown {
  * The widget toggles the .-multiline class via _track_multiline. */
 #chat-input {
     border: none;
-    height: 4;
-    padding: 1 1 1 1;
-    margin: 1 0 1 0;
+    height: 1;
+    padding: 0 1;
+    margin: 0;
     background: $surface;
 }
 
 #chat-input.-multiline {
     height: auto;
-    min-height: 4;
+    min-height: 2;
     max-height: 10;
 }
 
