@@ -10071,3 +10071,75 @@ def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch)
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
     with patch("lilbee.cli.tui.app.apply_active_model"):
         screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")
+
+
+def test_settings_on_model_picker_pressed_ignores_unrelated_button_id():
+    """Button.Pressed with a non-prefixed id short-circuits before dispatch."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    discover_calls: list[tuple] = []
+    screen._discover_then_open_picker = lambda *a: discover_calls.append(a)
+    event = MagicMock()
+    event.button.id = "reset-some-other"
+    screen._on_model_picker_pressed(event)
+    event.button.id = None
+    screen._on_model_picker_pressed(event)
+    assert discover_calls == []
+
+
+def test_settings_on_model_picker_pressed_ignores_unknown_key():
+    """A button id that isn't in the scope map is ignored."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.settings import (
+        _MODEL_PICKER_BUTTON_PREFIX,
+        SettingsScreen,
+    )
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    discover_calls: list[tuple] = []
+    screen._discover_then_open_picker = lambda *a: discover_calls.append(a)
+    event = MagicMock()
+    event.button.id = f"{_MODEL_PICKER_BUTTON_PREFIX}not_a_known_field"
+    screen._on_model_picker_pressed(event)
+    assert discover_calls == []
+
+
+async def test_catalog_get_highlighted_model_name_virtual_grid_out_of_range():
+    """An out-of-range VirtualGrid.highlighted index returns None instead of raising."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+    rows = [
+        LocalCatalogRow(
+            name="m0",
+            task="chat",
+            params="--",
+            size="--",
+            quant="--",
+            downloads="--",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref="r0",
+            backend="native",
+        )
+    ]
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            grid = VirtualGrid(rows, id="vg-oob-test")
+            await screen._grid_container.mount(grid)
+            # Highlight an index past the end of the dataset.
+            grid.highlighted = 99
+            grid.focus()
+            await _pilot.pause()
+            assert screen._get_highlighted_model_name() is None

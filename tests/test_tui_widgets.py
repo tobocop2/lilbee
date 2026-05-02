@@ -4982,3 +4982,79 @@ class TestVirtualGridCursorEdges:
             grid.scroll_to(y=24, animate=False)
             await pilot.pause(0.15)
             assert grid._scroll_debounce is not None
+
+
+class TestVirtualGridLayoutEdges:
+    """Cover the remaining _update_layout and _scroll_index_into_view branches."""
+
+    async def test_update_layout_empty_rows_zero_spacer_height(self) -> None:
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([], id="vg-empty-test")
+
+        class _GridApp(App):
+            CSS = "VirtualGrid { height: 12; width: 60; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.pause()
+            # The empty branch flips both spacers to height 0.
+            assert grid._top_spacer.styles.height.value == 0
+            assert grid._bot_spacer.styles.height.value == 0
+
+    async def test_scroll_index_into_view_scrolls_back_when_above_window(self) -> None:
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(60)]
+        grid = VirtualGrid(rows, id="vg-scrollback-test")
+
+        class _GridApp(App):
+            CSS = "VirtualGrid { height: 12; width: 80; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            # Scroll deep into the dataset so a small index is above the
+            # current viewport. _scroll_index_into_view should then move
+            # the scroll position back up.
+            grid.scroll_to(y=120, animate=False)
+            await pilot.pause(0.2)
+            grid._scroll_index_into_view(0)
+            await pilot.pause()
+            assert grid.scroll_y < 120
+
+    async def test_layout_unmount_path_drops_offscreen_rows(self) -> None:
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(80)]
+        grid = VirtualGrid(rows, id="vg-unmount-test")
+
+        class _GridApp(App):
+            CSS = "VirtualGrid { height: 12; width: 80; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            initial_keys = set(grid._row_widgets)
+            grid.scroll_to(y=240, animate=False)
+            await pilot.pause(0.3)
+            grid._update_layout()
+            after_keys = set(grid._row_widgets)
+            # Some of the originally-mounted top rows should have been
+            # unmounted; otherwise the unmount branch is dead code.
+            assert any(k not in after_keys for k in initial_keys)
