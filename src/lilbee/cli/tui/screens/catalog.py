@@ -79,6 +79,13 @@ _FRONTIER_LIST_ID = "frontier-list"
 
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
+# Braille spinner frames for the catalog pagination/search loading
+# indicator. Cycled on a 100 ms timer while the catalog is fetching
+# more HF rows or a remote search is in flight, so the user always
+# has a moving signal during the wait instead of an empty pane.
+_SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SPINNER_INTERVAL_S = 0.1
+
 _RowCacheKey = tuple[int, int, int, bool, int, int]
 
 
@@ -159,6 +166,8 @@ class CatalogScreen(Screen[None]):
         self._frontier_refresh_timer: Timer | None = None
         self._search_filter_timer: Timer | None = None
         self._scroll_prefetch_armed_at: float = 0.0
+        self._spinner_timer: Timer | None = None
+        self._spinner_frame: int = 0
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -171,6 +180,7 @@ class CatalogScreen(Screen[None]):
         with Horizontal(id="catalog-toolbar"):
             yield GridListToggle()
             yield Static("", id="sort-label", shrink=True)
+            yield Static("", id="catalog-loading-spinner")
         with (
             TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
             TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
@@ -343,6 +353,7 @@ class CatalogScreen(Screen[None]):
             return
         self._search_in_flight = True
         self._update_sort_label()
+        self._sync_loading_spinner()
         # Sort label is hidden in grid view, so the toast is the only feedback there.
         self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
         self._fetch_hf_search(query)
@@ -507,6 +518,7 @@ class CatalogScreen(Screen[None]):
         if name == _WORKER_FETCH_SEARCH:
             self._search_in_flight = False
             self._update_sort_label()
+        self._sync_loading_spinner()
 
     def _apply_worker_result(self, name: str, result: list) -> bool:
         """Land worker results into the screen's caches.
@@ -532,6 +544,7 @@ class CatalogScreen(Screen[None]):
         else:
             return False
         self._data_version += 1
+        self._sync_loading_spinner()
         return True
 
     def _sync_frontier_tab(self) -> None:
@@ -859,6 +872,41 @@ class CatalogScreen(Screen[None]):
         )
         self._update_sort_label()
 
+    def _sync_loading_spinner(self) -> None:
+        """Show/hide the toolbar spinner based on active fetch state.
+
+        Visible when a paginated HF fetch or a remote search is in
+        flight (both grid and list views share the same toolbar
+        widget). Cycles braille frames on a 100 ms timer so the
+        wait reads as "moving" rather than "frozen".
+        """
+        try:
+            spinner = self.query_one("#catalog-loading-spinner", Static)
+        except Exception:
+            return
+        active = self._loading_more or self._search_in_flight
+        if active:
+            spinner.styles.display = "block"
+            spinner.update(_SPINNER_FRAMES[self._spinner_frame])
+            if self._spinner_timer is None:
+                self._spinner_timer = self.set_interval(
+                    _SPINNER_INTERVAL_S, self._tick_loading_spinner
+                )
+        else:
+            spinner.update("")
+            spinner.styles.display = "none"
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+            self._spinner_frame = 0
+
+    def _tick_loading_spinner(self) -> None:
+        """Advance the spinner one braille frame; called by the interval timer."""
+        self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
+        with contextlib.suppress(Exception):
+            spinner = self.query_one("#catalog-loading-spinner", Static)
+            spinner.update(_SPINNER_FRAMES[self._spinner_frame])
+
     def _update_sort_label(self) -> None:
         """Update the sort indicator label, switching copy by active tab."""
         label = self.query_one("#sort-label", Static)
@@ -940,6 +988,7 @@ class CatalogScreen(Screen[None]):
         if self._loading_more or not self._hf_has_more:
             return
         self._loading_more = True
+        self._sync_loading_spinner()
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
 

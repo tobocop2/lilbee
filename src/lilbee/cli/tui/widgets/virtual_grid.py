@@ -19,6 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -28,11 +29,18 @@ from lilbee.cli.tui.widgets.model_card import ModelCard
 # Row of cards is 4 lines tall: name, pill line, specs, status (or hint).
 # Card border adds 2 lines top+bottom, so each row visually occupies 6 lines.
 _ROW_HEIGHT = 6
-# Mount this many extra rows above and below the visible window so a fast
-# scroll has the next row already painted.
-_OVERDRAW_ROWS = 1
+# Mount this many extra rows above and below the visible window so fast
+# keyboard scrolls (PageUp/PageDown, Fn+Up/Down on Mac) and trackpad
+# flings don't churn through mount/unmount on every step. Tuned so a
+# single PageDown stays within the buffer so the user sees a smooth
+# repaint instead of a frame of empty space.
+_OVERDRAW_ROWS = 6
 # Default columns when the container width is unknown (pre-mount).
 _DEFAULT_COLUMNS = 4
+# Coalesce rapid scroll events into a single layout pass. 50 ms keeps
+# the buffer current at 20 fps, smooths key-repeat on macOS without
+# adding visible lag on a one-off keystroke.
+_SCROLL_DEBOUNCE_S = 0.05
 
 
 class VirtualGrid(VerticalScroll, can_focus=True):
@@ -82,6 +90,7 @@ class VirtualGrid(VerticalScroll, can_focus=True):
         self._top_spacer: Static | None = None
         self._bot_spacer: Static | None = None
         self._row_widgets: dict[int, Horizontal] = {}
+        self._scroll_debounce: Timer | None = None
 
     @property
     def rows(self) -> list[CatalogRow]:
@@ -110,9 +119,14 @@ class VirtualGrid(VerticalScroll, can_focus=True):
         self._update_layout()
 
     def watch_scroll_y(self, _old: float, _new: float) -> None:
-        # Textual's VerticalScroll maintains scroll_y reactive; we react
-        # to changes by recomputing the visible window.
-        self._update_layout()
+        # Coalesce rapid scroll events (key repeat, trackpad fling) into
+        # one layout pass so we don't spend more time mounting/unmounting
+        # rows than rendering. Overdraw covers the in-between frames.
+        if self._scroll_debounce is not None:
+            self._scroll_debounce.stop()
+        self._scroll_debounce = self.set_timer(
+            _SCROLL_DEBOUNCE_S, self._update_layout
+        )
 
     def _columns_for_width(self, width: int) -> int:
         """Compute cards per row from the container width.
