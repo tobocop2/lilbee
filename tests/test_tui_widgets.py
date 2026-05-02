@@ -4261,9 +4261,7 @@ class TestConfirmDialog:
 
         assert results == [True]
 
-    async def test_yes_button_click(self) -> None:
-        from textual.widgets import Button
-
+    async def test_yes_pill_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -4275,15 +4273,12 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            btn = app.screen.query_one("#confirm-yes", Button)
-            btn.press()
+            await pilot.click("#confirm-yes")
             await pilot.pause()
 
         assert results == [True]
 
-    async def test_no_button_click(self) -> None:
-        from textual.widgets import Button
-
+    async def test_no_pill_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -4295,8 +4290,7 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            btn = app.screen.query_one("#confirm-no", Button)
-            btn.press()
+            await pilot.click("#confirm-no")
             await pilot.pause()
 
         assert results == [False]

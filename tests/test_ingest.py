@@ -945,7 +945,8 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=vision_pages),
         ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
@@ -953,8 +954,8 @@ class TestVisionFallback:
         mock_vision.assert_called_once_with(
             f,
             "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf",
-            quiet=True,
             timeout=45.0,
+            quiet=True,
             on_progress=mock.ANY,
         )
         assert len(result) > 0
@@ -975,7 +976,8 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=vision_pages),
         ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
@@ -1002,7 +1004,8 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=vision_pages),
         ) as mock_vision:
             from lilbee.data.ingest.pipeline import _ingest_file
 
@@ -1023,7 +1026,9 @@ class TestVisionFallback:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision") as mock_vision:
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess", new=AsyncMock()
+        ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1038,7 +1043,9 @@ class TestVisionFallback:
         f = isolated_env / "doc.txt"
         f.write_text("")
 
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision") as mock_vision:
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess", new=AsyncMock()
+        ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "doc.txt", "text")
@@ -1056,7 +1063,10 @@ class TestVisionFallback:
         f = isolated_env / "blank.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision", return_value=[]):
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=[]),
+        ):
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "blank.pdf", "pdf")
@@ -1072,7 +1082,9 @@ class TestVisionFallback:
         f = isolated_env / "good.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision") as mock_vision:
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess", new=AsyncMock()
+        ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "good.pdf", "pdf")
@@ -1092,7 +1104,8 @@ class TestVisionFallback:
 
         with (
             mock.patch(
-                "lilbee.data.ingest.extract.extract_pdf_vision", return_value=[(1, "Some text")]
+                "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+                new=AsyncMock(return_value=[(1, "Some text")]),
             ),
             mock.patch("lilbee.data.ingest.extract.chunk_text", return_value=[]),
         ):
@@ -1118,8 +1131,8 @@ class TestVisionFallback:
 
         with (
             mock.patch(
-                "lilbee.data.ingest.extract.extract_pdf_vision",
-                return_value=[(1, "page one text"), (2, "page two text")],
+                "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+                new=AsyncMock(return_value=[(1, "page one text"), (2, "page two text")]),
             ),
             mock.patch(
                 "lilbee.data.ingest.extract.chunk_text", return_value=["chunk"]
@@ -1180,7 +1193,9 @@ class TestVisionFallbackEmptyVisionModel:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision") as mock_vision:
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess", new=AsyncMock()
+        ) as mock_vision:
             result = await _vision_fallback(f, "scanned.pdf", "pdf")
         mock_vision.assert_not_called()
         assert result == []
@@ -1199,7 +1214,8 @@ class TestVisionFallbackException:
         f.write_bytes(b"fake pdf")
 
         with mock.patch(
-            "lilbee.data.ingest.extract.extract_pdf_vision", side_effect=RuntimeError("boom")
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
         ):
             from lilbee.data.ingest import ingest_document
 
@@ -1223,7 +1239,9 @@ class TestTesseractOcrMiddleTier:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision") as mock_vision:
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess", new=AsyncMock()
+        ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1246,7 +1264,8 @@ class TestTesseractOcrMiddleTier:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=vision_pages),
         ) as mock_vision:
             from lilbee.data.ingest import ingest_document
 
@@ -1297,7 +1316,10 @@ class TestTesseractOcrMiddleTier:
         f.write_bytes(b"fake pdf")
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages):
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=vision_pages),
+        ):
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -1388,7 +1410,10 @@ class TestTesseractOcrMiddleTier:
         f.write_bytes(b"fake pdf")
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
-        with mock.patch("lilbee.data.ingest.extract.extract_pdf_vision", return_value=vision_pages):
+        with mock.patch(
+            "lilbee.data.ingest.extract._extract_pdf_vision_in_subprocess",
+            new=AsyncMock(return_value=vision_pages),
+        ):
             from lilbee.data.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")

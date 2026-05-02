@@ -3471,7 +3471,42 @@ async def test_catalog_scroll_prefetch_fires_load_more_near_bottom():
                 assert load_more.called
 
 
-async def test_catalog_scroll_prefetch_skipped_in_grid_view():
+async def test_catalog_list_scroll_prefetch_skipped_when_no_more():
+    """List scroll doesn't fire load_more once HF has nothing left to give."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = False
+            with patch.object(screen, "_load_more") as load_more:
+                screen._on_list_scrolled(99.0)
+                assert not load_more.called
+
+
+async def test_catalog_grid_scroll_prefetch_skipped_in_list_view():
+    """The grid-scroll handler is a no-op when the screen is in list view."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            with patch.object(screen, "_load_more") as load_more:
+                screen._on_grid_scrolled(99.0)
+                assert not load_more.called
+
+
+async def test_catalog_grid_scroll_fires_load_more_near_bottom():
+    """Grid view: scroll past the threshold triggers _load_more."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3482,9 +3517,25 @@ async def test_catalog_scroll_prefetch_skipped_in_grid_view():
             await _pilot.pause()
             screen._grid_view = True
             screen._hf_has_more = True
-            with patch.object(screen, "_load_more") as load_more:
-                screen._on_list_scrolled(99.0)
-                assert not load_more.called
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            with (
+                patch.object(
+                    type(screen._grid_container),
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    type(screen._grid_container),
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=95.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen._on_grid_scrolled(95.0)
+                assert load_more.called
 
 
 async def test_catalog_scroll_prefetch_skipped_during_cooldown():

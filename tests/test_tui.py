@@ -577,6 +577,41 @@ class TestThemes:
             assert app.theme == "dracula"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_dismiss_help_if_open_skips_when_no_panel(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Esc raises SkipAction when the HelpPanel is not mounted, so screens
+        keep receiving Esc as before."""
+        from textual.actions import SkipAction
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        mock_catalog.return_value = _EMPTY_CATALOG
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with pytest.raises(SkipAction):
+                app.action_dismiss_help_if_open()
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_dismiss_help_if_open_hides_when_panel_mounted(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Esc dismisses the panel and does NOT raise when the panel is open."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        mock_catalog.return_value = _EMPTY_CATALOG
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_help_panel()
+            await pilot.pause()
+            assert len(app.screen.query("HelpPanel")) == 1
+            app.action_dismiss_help_if_open()
+            await pilot.pause()
+            assert len(app.screen.query("HelpPanel")) == 0
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_setting_theme_applies_live(self, mock_catalog: mock.MagicMock) -> None:
         """Settings → theme dropdown must update app.theme, not just cfg.theme.
 

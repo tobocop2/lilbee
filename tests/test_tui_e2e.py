@@ -2421,30 +2421,18 @@ class TestGridSelectWidget:
 class TestCatalogViewToggle:
     """Test view toggle CTA and grid/table switching."""
 
-    async def test_view_toggle_cta_exists(self, _mock_resolve):
-        """Grid view renders the 'Press v for list view' CTA."""
-        from lilbee.cli.tui import messages as msg
+    async def test_grid_list_toggle_widget_present(self, _mock_resolve):
+        """Catalog body renders the visible Grid ↔ List toggle widget."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                # Catalog defers the rest-of-sections + CTAs to the next
-                # refresh tick via call_after_refresh; poll the deferred
-                # batch on slow Windows xdist shards.
-                ctas: list = []
-                for _ in range(10):
-                    await pilot.pause()
-                    ctas = [
-                        s
-                        for s in app.screen.query(".grid-cta")
-                        if msg.CATALOG_VIEW_TOGGLE_GRID in str(s.render())
-                    ]
-                    if ctas:
-                        break
-                assert len(ctas) >= 1
+                await pilot.pause()
+                assert app.screen.query_one(GridListToggle) is not None
 
     async def test_our_picks_heading_in_grid(self, _mock_resolve):
         """Grid view shows 'Our picks' section heading."""
