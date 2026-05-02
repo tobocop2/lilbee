@@ -208,7 +208,26 @@ def _make_editor(key: str, defn: SettingDef) -> Widget:
         return _make_select(key, defn, value)
     if defn.type is bool:
         return _make_checkbox(key, value)
+    if defn.render is RenderStyle.MULTILINE:
+        return _make_multiline_editor(key, value)
     return _make_input(key, value)
+
+
+def _make_multiline_editor(key: str, value: str) -> ListTextArea:
+    """Create a multi-line editor for string settings (system prompts, etc.).
+
+    Reuses ListTextArea so we get the same blur-saves-on-focus-out behavior
+    as list-of-strings settings without re-implementing the message bridge.
+    """
+    display = "" if value == "None" else value
+    return ListTextArea(
+        text=display,
+        show_line_numbers=False,
+        name=key,
+        id=f"{_EDITOR_ID_PREFIX}{key}",
+        classes="setting-editor setting-multiline-editor",
+        soft_wrap=True,
+    )
 
 
 def _make_list_editor(key: str) -> Collapsible:
@@ -422,6 +441,22 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         raw = event.value.strip()
+        current = str(getattr(cfg, name, ""))
+        if raw == current:
+            return
+        self._persist_value(name, defn, raw)
+
+    @on(ListTextArea.Blurred, ".setting-multiline-editor")
+    def _on_multiline_save(self, event: ListTextArea.Blurred) -> None:
+        """Save multi-line string settings (system prompts) on blur."""
+        ta = event.control
+        name = ta.name
+        if name is None:
+            return
+        defn = SETTINGS_MAP.get(name)
+        if defn is None:
+            return
+        raw = ta.text
         current = str(getattr(cfg, name, ""))
         if raw == current:
             return

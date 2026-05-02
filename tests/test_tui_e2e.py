@@ -1644,12 +1644,71 @@ class TestSettingsInteractions:
             app.screen.populate_all_panes()
             await pilot.pause()
 
-            editor = app.screen.query_one("#ed-rag_system_prompt", Input)
-            editor.value = "test system prompt"
-            event = Input.Submitted(editor, "test system prompt")
-            app.screen._on_input_save(event)
+            from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+            editor = app.screen.query_one("#ed-rag_system_prompt", ListTextArea)
+            editor.text = "test system prompt"
+            app.screen._on_multiline_save(ListTextArea.Blurred(editor))
             await pilot.pause()
             assert cfg.rag_system_prompt == "test system prompt"
+
+    async def test_multiline_save_noop_when_unchanged(self, _mock_resolve):
+        """Blurring a multi-line editor without edits is a no-op (covers the equality short-circuit)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+        from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
+            await pilot.pause()
+            editor = app.screen.query_one("#ed-rag_system_prompt", ListTextArea)
+            # Same value -> no persist call.
+            with mock.patch.object(app.screen, "_persist_value") as mock_persist:
+                app.screen._on_multiline_save(ListTextArea.Blurred(editor))
+            mock_persist.assert_not_called()
+
+    async def test_multiline_save_ignores_unnamed_widget(self, _mock_resolve):
+        """A ListTextArea blur message with no name is a no-op (defensive guard)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+        from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
+            await pilot.pause()
+            stray = ListTextArea(text="x", show_line_numbers=False, name=None)
+            with mock.patch.object(app.screen, "_persist_value") as mock_persist:
+                app.screen._on_multiline_save(ListTextArea.Blurred(stray))
+            mock_persist.assert_not_called()
+
+    async def test_multiline_save_ignores_unknown_setting(self, _mock_resolve):
+        """A ListTextArea blur for a name not in SETTINGS_MAP is a no-op."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+        from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+            assert isinstance(app.screen, SettingsScreen)
+            app.screen.populate_all_panes()
+            await pilot.pause()
+            stray = ListTextArea(text="x", show_line_numbers=False, name="not_a_real_setting")
+            with mock.patch.object(app.screen, "_persist_value") as mock_persist:
+                app.screen._on_multiline_save(ListTextArea.Blurred(stray))
+            mock_persist.assert_not_called()
 
     async def test_toggle_boolean_checkbox(self, _mock_resolve):
         """Toggling a boolean checkbox updates cfg.
@@ -1780,10 +1839,11 @@ class TestSettingsInteractions:
             app.screen.populate_all_panes()
             await pilot.pause()
 
-            editor = app.screen.query_one("#ed-rag_system_prompt", Input)
-            editor.value = "signal test prompt"
-            event = Input.Submitted(editor, "signal test prompt")
-            app.screen._on_input_save(event)
+            from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+            editor = app.screen.query_one("#ed-rag_system_prompt", ListTextArea)
+            editor.text = "signal test prompt"
+            app.screen._on_multiline_save(ListTextArea.Blurred(editor))
             await pilot.pause()
             assert len(received) >= 1
             assert received[0][0] == "rag_system_prompt"

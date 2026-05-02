@@ -93,6 +93,12 @@ class Config(BaseSettings):
     # (remote API, separate Ollama host). Local GPU models contend on a
     # single device and get slower with concurrency > 1.
     vision_concurrency: int = ConfigField(default=1, ge=1, writable=True)
+    # Outer wall-clock budget for the PDF-extract subprocess: load buffer
+    # plus per_page_budget * pages. Tune up for slow hardware (M1 Pro vision
+    # is ~5min/page) or down for fast hardware. ocr_timeout still governs
+    # the per-page timeout inside the subprocess.
+    vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
+    vision_per_page_budget_s: float = ConfigField(default=600.0, ge=0.0, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)

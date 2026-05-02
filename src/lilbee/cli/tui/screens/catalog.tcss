@@ -5,6 +5,16 @@
     min-height: 0;
 }
 
+/* TabbedContent's inner ContentSwitcher and TabPane default to height: auto,
+ * which lets a tall TabPane body push the docked BottomBars off-screen.
+ * Force them to flex instead so the dock-bottom reservation always wins.
+ */
+#catalog-tabs ContentSwitcher,
+#catalog-tabs TabPane {
+    height: 1fr;
+    min-height: 0;
+}
+
 #catalog-toolbar {
     height: 1;
     width: 100%;

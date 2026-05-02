@@ -21,6 +21,17 @@ SettingsScreen {
         min-height: 0;
     }
 
+    /* TabbedContent's inner ContentSwitcher and TabPane default to
+     * height: auto. With a tall settings group (Ingest, Generation) that
+     * pushes the docked BottomBars off-screen. Force flex so the
+     * dock-bottom reservation always wins.
+     */
+    #settings-tabs ContentSwitcher,
+    #settings-tabs TabPane {
+        height: 1fr;
+        min-height: 0;
+    }
+
     /* Settings sub-tabs adopt the same airline-pill aesthetic as the
      * top ViewTabs strip: active tab gets a bold accent underline,
      * inactive tabs stay muted. Two navigation levels speak the same
@@ -107,6 +118,16 @@ SettingsScreen {
         height: 16;
         border: solid $surface;
         margin-bottom: 1;
+    }
+
+    .setting-multiline-editor {
+        height: 12;
+        border: solid $surface-lighten-2;
+        margin-bottom: 1;
+
+        &:focus-within {
+            border: tall $primary;
+        }
     }
 
     .setting-list-error {

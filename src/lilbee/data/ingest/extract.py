@@ -136,10 +136,6 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
-_PDF_SUBPROCESS_LOAD_BUDGET_S = 300.0
-_PDF_SUBPROCESS_PER_PAGE_BUDGET_S = 600.0
-
-
 async def _cleanup_pdf_subprocess(
     proc: asyncio.subprocess.Process, progress_task: asyncio.Task[None]
 ) -> None:
@@ -174,11 +170,12 @@ async def _extract_pdf_vision_in_subprocess(
     from lilbee.vision import pdf_page_count
 
     pages = pdf_page_count(path)
-    # Outer wall-clock budget = model load + per-page work, with the per-page
-    # budget governed by the same cfg.ocr_timeout the child enforces inside.
-    # Anything tighter trips on first-cold-load for the very first page.
-    per_page_cap = max(_PDF_SUBPROCESS_PER_PAGE_BUDGET_S, timeout or 0.0)
-    wall_clock_budget = _PDF_SUBPROCESS_LOAD_BUDGET_S + per_page_cap * max(pages, 1)
+    # Outer wall-clock budget = vision_load_budget_s + per-page work. The
+    # per-page budget honours both cfg.vision_per_page_budget_s and the
+    # caller's timeout (whichever is larger) so a user-set ocr_timeout above
+    # the default doesn't trip the wrapper before the child's per-page wait.
+    per_page_cap = max(cfg.vision_per_page_budget_s, timeout or 0.0)
+    wall_clock_budget = cfg.vision_load_budget_s + per_page_cap * max(pages, 1)
 
     payload = json.dumps(
         {

@@ -245,9 +245,11 @@ class LlamaCppProvider(LLMProvider):
         """llama-cpp can rerank iff llama-cpp-python exposes the rank pooling type."""
         return _llama_cpp_has_rank_pooling()
 
-    def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
-        """Run vision OCR via the subprocess worker."""
-        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt)
+    def vision_ocr(
+        self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
+    ) -> str:
+        """Run vision OCR via the subprocess worker, honouring an optional per-call timeout."""
+        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
     def chat(
         self,

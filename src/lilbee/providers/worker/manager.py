@@ -124,11 +124,14 @@ class WorkerManager:
         resp = self._round_trip(req, EmbedResponse, _EMBED_TIMEOUT_S, label="embed")
         return resp.vectors
 
-    def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
-        """Run vision OCR in the worker, honouring ``cfg.ocr_timeout``.
+    def vision_ocr(
+        self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
+    ) -> str:
+        """Run vision OCR in the worker, honouring per-call or cfg timeout.
 
-        Auto-starts the worker and retries once on crash. ``cfg.ocr_timeout
-        == 0`` means no cap; substituted with ``_NO_CAP_TIMEOUT_S`` for
+        Auto-starts the worker and retries once on crash. *timeout* (seconds)
+        wins when set; otherwise ``cfg.ocr_timeout`` applies. Either ``0`` or
+        ``None`` means no cap; substituted with ``_NO_CAP_TIMEOUT_S`` for
         the round-trip wait loop.
         """
         self._ensure_started()
@@ -138,8 +141,9 @@ class WorkerManager:
             prompt=prompt,
             request_id=self._next_request_id(),
         )
-        timeout = cfg.ocr_timeout if cfg.ocr_timeout > 0 else _NO_CAP_TIMEOUT_S
-        resp = self._round_trip(req, VisionResponse, timeout, label="vision OCR")
+        effective = timeout if timeout is not None else cfg.ocr_timeout
+        budget = effective if effective and effective > 0 else _NO_CAP_TIMEOUT_S
+        resp = self._round_trip(req, VisionResponse, budget, label="vision OCR")
         return resp.text
 
     def _round_trip(

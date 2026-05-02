@@ -1516,7 +1516,9 @@ class TestVisionOcr:
 
         result = provider.vision_ocr(b"\x89PNG", "vision-model", "describe")
         assert result == "extracted text"
-        mock_worker.vision_ocr.assert_called_once_with(b"\x89PNG", "vision-model", "describe")
+        mock_worker.vision_ocr.assert_called_once_with(
+            b"\x89PNG", "vision-model", "describe", timeout=None
+        )
 
 
 class TestChatStreamReturnsLockedIterator:
@@ -2375,7 +2377,9 @@ class TestLlamaCppProviderMethods:
         with mock.patch.object(provider, "_get_subprocess_worker", return_value=mock_worker):
             result = provider.vision_ocr(b"\x89PNG", "vis-model", "extract text")
 
-        mock_worker.vision_ocr.assert_called_once_with(b"\x89PNG", "vis-model", "extract text")
+        mock_worker.vision_ocr.assert_called_once_with(
+            b"\x89PNG", "vis-model", "extract text", timeout=None
+        )
         assert result == "OCR result"
 
 
