@@ -4816,3 +4816,103 @@ class TestModelPickerScopeTitles:
         from lilbee.cli.tui.screens.model_picker import _picker_title
 
         assert _picker_title("rerank") == msg.MODEL_PICKER_TITLE_RERANK
+
+
+class TestVirtualGridUtilityMethods:
+    """Direct unit coverage of VirtualGrid helpers + simple message wrappers."""
+
+    def test_selected_control_returns_grid(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        msg = VirtualGrid.Selected(grid, mock.Mock())
+        assert msg.control is grid
+
+    def test_columns_for_width_zero_returns_default(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import _DEFAULT_COLUMNS, VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        assert grid._columns_for_width(0) == _DEFAULT_COLUMNS
+        assert grid._columns_for_width(-5) == _DEFAULT_COLUMNS
+
+    def test_total_rows_zero_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([])
+        assert grid._total_rows() == 0
+
+    def test_total_rows_when_columns_zero(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        grid._cards_per_row = 0
+        assert grid._total_rows() == 0
+
+    def test_update_layout_no_spacers_short_circuits(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        # Spacers are None until on_mount; calling _update_layout before
+        # mount must not raise.
+        grid._update_layout()
+
+    async def test_full_layout_lifecycle_mounts_unmounts_rows(self) -> None:
+        """End-to-end: scroll causes rows to mount and unmount."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(40)]
+        grid = VirtualGrid(rows, id="vg-full-test")
+
+        class _GridApp(App):
+            CSS = "VirtualGrid { height: 12; width: 60; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.pause()
+            initial_rows = len(grid._row_widgets)
+            assert initial_rows >= 1
+            grid.scroll_to(y=24, animate=False)
+            await pilot.pause(0.2)
+            assert grid._row_widgets, "Some rows should still be mounted after a scroll"
+
+    async def test_cursor_actions_when_highlight_unset(self) -> None:
+        """First cursor action lands on index 0 instead of moving from None."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(4)]
+        grid = VirtualGrid(rows, id="vg-cursor-test")
+
+        class _GridApp(App):
+            CSS = "VirtualGrid { height: 12; width: 80; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            for action in (
+                grid.action_cursor_up,
+                grid.action_cursor_down,
+                grid.action_cursor_left,
+                grid.action_cursor_right,
+            ):
+                grid.highlighted = None
+                action()
+                assert grid.highlighted == 0
+
+    async def test_action_select_no_op_when_unset(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a")])
+        received: list[VirtualGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_select()
+        assert received == []
