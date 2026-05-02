@@ -1,9 +1,10 @@
 ScopeChip {
     height: 1;
-    width: auto;
+    width: 100%;
     padding: 0;
-    margin: 0 2 0 0;
+    margin: 0;
     background: transparent;
+    align: right top;
 }
 
 ScopeChip.-hidden {
@@ -13,6 +14,7 @@ ScopeChip.-hidden {
 ScopeChip Horizontal {
     height: 1;
     width: auto;
+    align-horizontal: right;
 }
 
 ScopeChip .scope-chip-pill {
@@ -28,10 +30,12 @@ ScopeChip Select {
     margin: 0 1 0 0;
     border: none;
     padding: 0;
+    color: $text-muted;
 }
 
 ScopeChip Select:focus {
     border: none;
+    color: $text;
 }
 
 ScopeChip Select > SelectCurrent {
@@ -42,8 +46,7 @@ ScopeChip Select > SelectCurrent {
 
 ScopeChip Select:focus > SelectCurrent {
     border: none;
-    background: $primary 30%;
-    color: $text;
+    color: $primary;
     text-style: bold;
 }
 

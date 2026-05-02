@@ -362,14 +362,11 @@ class ModelBar(Widget, can_focus=False):
         self._embed_options_cache: tuple[tuple[str, str], ...] = ()
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
-
         with Horizontal():
             yield Static(pill("Chat", "$primary", "$text"), classes="model-bar-pill")
             yield ModelPickerButton(scope="chat", button_id=_CHAT_MODEL_BUTTON_ID)
             yield Static(pill("Embed", "$secondary", "$text"), classes="model-bar-pill")
             yield ModelPickerButton(scope="embed", button_id=_EMBED_MODEL_BUTTON_ID)
-            yield ScopeChip(id="scope-chip")
             yield ChatModeToggle()
         yield Static("", id=_CLOUD_WARNING_ID, classes=_CLOUD_WARNING_CLASS)
 
