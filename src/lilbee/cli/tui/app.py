@@ -119,17 +119,31 @@ class LilbeeApp(App[None]):
     _NAV_GROUP = Binding.Group("Navigate")
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=True),
-        Binding("f1", "push_help", "Help", show=False),
-        Binding("ctrl+h", "push_help", "Help", show=False),
+        Binding("question_mark", "push_help", "Help", show=True, priority=True),
+        Binding("f1", "push_help", "Help", show=False, priority=True),
+        Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
+        Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
-        # Non-priority: a focused Input or TextArea consumes the printable
-        # before this binding fires, so brackets type literally inside any
-        # input. With no input focused, the bindings reach the app and
-        # navigate. This mirrors vim-style insert vs. normal modes.
-        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
-        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
+        # priority=True so a focused TextArea cannot swallow the bracket
+        # under stress (multi-key send-keys etc.); type literal brackets
+        # via Shift+[ / Shift+] which produce { / } and bypass these.
+        Binding(
+            "left_square_bracket",
+            "nav_prev",
+            "Prev",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
+        Binding(
+            "right_square_bracket",
+            "nav_next",
+            "Next",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
@@ -313,6 +327,21 @@ class LilbeeApp(App[None]):
             self.action_hide_help_panel()
         else:
             self.action_show_help_panel()
+
+    def action_dismiss_help_if_open(self) -> None:
+        """Esc dismisses the HelpPanel when it is open; otherwise no-op.
+
+        Without this, focus inside the panel could prevent ``?`` from
+        toggling it back off and the user had no key to escape with.
+        Bubble the Escape so screens can still receive it when no panel
+        is mounted.
+        """
+        from textual.actions import SkipAction
+
+        if self.screen.query("HelpPanel"):
+            self.action_hide_help_panel()
+            return
+        raise SkipAction()
 
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
