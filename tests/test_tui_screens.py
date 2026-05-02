@@ -10143,3 +10143,102 @@ async def test_catalog_get_highlighted_model_name_virtual_grid_out_of_range():
             grid.focus()
             await _pilot.pause()
             assert screen._get_highlighted_model_name() is None
+
+
+def test_catalog_tick_loading_spinner_advances_frame_with_no_widgets():
+    """_tick_loading_spinner advances the frame counter even when widgets are missing."""
+    from lilbee.cli.tui.screens.catalog import _SPINNER_FRAMES, CatalogScreen
+
+    screen = CatalogScreen()
+    start = screen._spinner_frame
+    # query_one will raise NoMatches off-mount; the suppress wrappers
+    # still let _spinner_frame advance and exit cleanly.
+    screen._tick_loading_spinner()
+    assert screen._spinner_frame == (start + 1) % len(_SPINNER_FRAMES)
+
+
+def test_catalog_sync_loading_spinner_exception_path():
+    """If the toolbar spinner widget is not in the DOM, _sync_loading_spinner returns."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._loading_more = True
+    # query_one raises off-mount; the function must return without crashing.
+    screen._sync_loading_spinner()
+
+
+def test_catalog_on_screen_resume_re_arms_only_when_loading():
+    """on_screen_resume is a no-op when nothing is in flight."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._loading_more = False
+    screen._search_in_flight = False
+    with patch.object(screen, "_sync_loading_spinner") as sync:
+        screen.on_screen_resume()
+        sync.assert_not_called()
+    screen._loading_more = True
+    with patch.object(screen, "_sync_loading_spinner") as sync:
+        screen.on_screen_resume()
+        sync.assert_called_once()
+
+
+async def test_catalog_get_highlighted_model_name_grid_select_branch():
+    """GridSelect branch returns the row.ref when the focused child is a ModelCard."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    row = LocalCatalogRow(
+        name="m0",
+        task="chat",
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=False,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref="ref-grid",
+        backend="native",
+    )
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            grid = GridSelect(min_column_width=20)
+            await screen._grid_container.mount(grid)
+            await grid.mount(ModelCard(row))
+            grid.highlighted = 0
+            grid.focus()
+            await _pilot.pause()
+            with patch.object(screen, "_focused_grid", return_value=grid):
+                assert screen._get_highlighted_model_name() == "ref-grid"
+
+
+async def test_catalog_sync_grid_search_cta_mounts_when_missing():
+    """First search keystroke mounts the search-CTA into the grid container."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # No search CTA yet; force the mount path with a non-empty search.
+            with patch.object(screen, "_get_search_text", return_value="phi"):
+                screen._sync_grid_search_cta()
+            await _pilot.pause()
+            ctas = list(screen.query("#catalog-grid > .search-hf-cta"))
+            assert len(ctas) == 1
