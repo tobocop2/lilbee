@@ -712,7 +712,14 @@ class CatalogScreen(Screen[None]):
                 self._refresh_list()
 
     def _refresh_grid(self) -> None:
-        """Rebuild the grid view with cards filtered by the active search."""
+        """Rebuild grid view; extend in-place when sections already mounted.
+
+        Initial paint mounts everything (first time a tab is opened).
+        Subsequent dataset updates (HF pagination, sort change, filter)
+        update each existing VirtualGrid via set_rows rather than tearing
+        the container down and re-mounting from scratch. Avoids a 100%
+        CPU spike on every "Browse more" return.
+        """
         search = self._get_search_text()
         family_rows = self._build_family_rows(search)
         remote_rows = self._build_remote_rows(search)
@@ -725,18 +732,25 @@ class CatalogScreen(Screen[None]):
         if self._grid_cache_key == row_key:
             return
         self._grid_cache_key = row_key
-        container = self._grid_container
-        container.remove_children()
         sections = [s for s in _group_rows_for_grid(all_rows) if s.rows]
         if not sections:
+            container = self._grid_container
+            container.remove_children()
             self._mount_grid_ctas(hf_count=len(hf_rows))
             return
-        # Mount the first section immediately (cheap; user sees content fast),
-        # then drop the rest + CTAs onto the next refresh tick as a single
-        # batch. Per-section streaming yielded across N frames, but each
-        # extra deferral can pump focus on slow runners and breaks tests
-        # that focus the search input between ticks. One deferred batch
-        # keeps the first-paint win without the cascade.
+        # Extend in-place when we already have a grid mounted. Each
+        # section heading is keyed by its text so we can match a new
+        # section to its existing VirtualGrid without tearing down.
+        existing_grids = list(self._grid_container.query(VirtualGrid))
+        existing_headings = list(self._grid_container.query(".section-heading"))
+        if existing_grids and len(existing_grids) == len(sections):
+            for grid, heading, section in zip(existing_grids, existing_headings, sections):
+                heading.update(section.heading)
+                grid.set_rows(section.rows)
+            return
+        # First paint (or section count changed): teardown + remount.
+        container = self._grid_container
+        container.remove_children()
         self._mount_grid_section(sections[0])
         rest = sections[1:]
         self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_count=len(hf_rows))

@@ -124,9 +124,7 @@ class VirtualGrid(VerticalScroll, can_focus=True):
         # rows than rendering. Overdraw covers the in-between frames.
         if self._scroll_debounce is not None:
             self._scroll_debounce.stop()
-        self._scroll_debounce = self.set_timer(
-            _SCROLL_DEBOUNCE_S, self._update_layout
-        )
+        self._scroll_debounce = self.set_timer(_SCROLL_DEBOUNCE_S, self._update_layout)
 
     def _columns_for_width(self, width: int) -> int:
         """Compute cards per row from the container width.
