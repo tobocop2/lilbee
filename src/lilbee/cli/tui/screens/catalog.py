@@ -59,8 +59,13 @@ from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
 log = logging.getLogger(__name__)
 
-_HF_PAGE_SIZE = 25
-_HF_LOAD_MORE_TRIGGER = 5
+# Models fetched per task per page. We make one /api/models call per
+# task (chat / embedding / vision / rerank), so the actual page size
+# the user sees is _HF_PAGE_SIZE * 4. Smaller pages keep each HF
+# round-trip below ~1s on a typical connection so the spinner appears
+# briefly instead of stalling the user for several seconds at a time.
+_HF_PAGE_SIZE = 12
+_HF_LOAD_MORE_TRIGGER = 4
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
