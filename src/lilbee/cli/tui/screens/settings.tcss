@@ -98,6 +98,19 @@ SettingsScreen {
         color: $text-muted;
     }
 
+    .setting-model-picker-button {
+        width: 1fr;
+        height: 3;
+        background: $boost;
+        color: $text;
+        border: tall $surface-lighten-2;
+        text-style: bold;
+
+        &:focus {
+            border: tall $primary;
+        }
+    }
+
     Input, Select SelectCurrent, Checkbox {
         border: tall $surface-lighten-2;
 

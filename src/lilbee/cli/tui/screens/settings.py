@@ -62,6 +62,19 @@ _API_KEYS_GROUP = "API-Keys"
 _API_KEYS_WARNING_CLASS = "api-keys-warning"
 _CONFIG_TOML_FILENAME = "config.toml"
 
+# Model-config fields surface their value through a picker modal that
+# lists every installed/available chat/embed/vision/rerank model the
+# host can route, instead of a free-text Input. The mapping below is the
+# single source of truth for the picker scope each model field uses.
+_MODEL_FIELD_TO_PICKER_SCOPE: dict[str, str] = {
+    "chat_model": "chat",
+    "embedding_model": "embed",
+    "vision_model": "vision",
+    "reranker_model": "rerank",
+}
+_MODEL_PICKER_BUTTON_PREFIX = "model-pick-"
+_MODEL_VALUE_NONE = "(none)"
+
 
 @dataclass(frozen=True)
 class _PaneGroup:
@@ -412,7 +425,9 @@ class SettingsScreen(Screen[None]):
         title = Static(_title_content(key, defn), classes="setting-title")
         help_widget = Static(_help_content(key, defn), classes="setting-help")
         children: list[Widget] = [title, help_widget]
-        if defn.writable:
+        if key in _MODEL_FIELD_TO_PICKER_SCOPE:
+            children.append(self._build_model_picker_row(key))
+        elif defn.writable:
             editor_row = Horizontal(
                 _make_editor(key, defn),
                 Button(
@@ -428,6 +443,18 @@ class SettingsScreen(Screen[None]):
             *children,
             classes="setting-row",
             id=f"{_ROW_ID_PREFIX}{key}",
+        )
+
+    def _build_model_picker_row(self, key: str) -> Horizontal:
+        """A button-style row that opens the same ModelPickerModal as the chat bar."""
+        current = getattr(cfg, key, None) or _MODEL_VALUE_NONE
+        return Horizontal(
+            Button(
+                str(current),
+                id=f"{_MODEL_PICKER_BUTTON_PREFIX}{key}",
+                classes="setting-model-picker-button",
+            ),
+            classes="setting-editor-row",
         )
 
     @on(Input.Submitted, ".setting-editor")
@@ -607,6 +634,54 @@ class SettingsScreen(Screen[None]):
             return
         key = button_id[len(_RESET_BUTTON_ID_PREFIX) :]
         self._reset_to_default(key)
+
+    @on(Button.Pressed, ".setting-model-picker-button")
+    def _on_model_picker_pressed(self, event: Button.Pressed) -> None:
+        """Open ModelPickerModal for the model field this button represents."""
+        button_id = event.button.id
+        if button_id is None or not button_id.startswith(_MODEL_PICKER_BUTTON_PREFIX):
+            return
+        key = button_id[len(_MODEL_PICKER_BUTTON_PREFIX) :]
+        scope = _MODEL_FIELD_TO_PICKER_SCOPE.get(key)
+        if scope is None:
+            return
+        self._open_model_picker_for_field(key, scope)
+
+    def _open_model_picker_for_field(self, key: str, scope: str) -> None:
+        """Discover models for *scope*, push the picker, persist on dismiss."""
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal, PickerScope
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _classify_installed_models
+        from lilbee.modelhub.models import ModelTask
+
+        scope_to_task: dict[str, ModelTask] = {
+            "chat": ModelTask.CHAT,
+            "embed": ModelTask.EMBEDDING,
+            "vision": ModelTask.VISION,
+            "rerank": ModelTask.RERANK,
+        }
+        task = scope_to_task[scope]
+        buckets = _classify_installed_models()
+        options = list(buckets.get(task, []))
+        if not options:
+            options = [ModelOption(label=_MODEL_VALUE_NONE, ref="")]
+        modal_scope: PickerScope = scope  # type: ignore[assignment]
+        self.app.push_screen(
+            ModelPickerModal(scope=modal_scope, options=options),
+            lambda ref: self._on_model_picker_dismissed(key, ref),
+        )
+
+    def _on_model_picker_dismissed(self, key: str, ref: str | None) -> None:
+        """Persist the picker selection and refresh the button label."""
+        if ref is None or not ref:
+            return
+        from lilbee.cli.tui.app import apply_active_model
+
+        apply_active_model(self.app, key, ref)
+        try:
+            button = self.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}{key}", Button)
+            button.label = str(getattr(cfg, key, "") or _MODEL_VALUE_NONE)
+        except Exception:
+            log.debug("Failed to refresh model picker label for %s", key, exc_info=True)
 
     @on(Button.Pressed, "#reset-all-defaults")
     def _on_reset_all_pressed(self) -> None:

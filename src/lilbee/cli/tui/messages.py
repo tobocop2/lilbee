@@ -249,6 +249,8 @@ CHAT_MODE_SEARCH_NO_RESULTS = "Search returned 0 results, falling back to chat f
 CHAT_MODE_SET = "Mode: {label}"
 MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
 MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"
+MODEL_PICKER_TITLE_VISION = "Pick a vision model"
+MODEL_PICKER_TITLE_RERANK = "Pick a reranker model"
 MODEL_PICKER_CHAT_TOOLTIP = "Model used to answer your questions. Click to pick a different one."
 MODEL_PICKER_EMBED_TOOLTIP = (
     "Model used to vectorize search queries (Search mode). Click to pick a different one."

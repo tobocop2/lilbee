@@ -70,8 +70,8 @@ def _is_mmproj(name: str) -> bool:
     return _MMPROJ_MARKER in name.lower()
 
 
-def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
-    """Classify installed models into (chat, embedding) lists, dropping mmproj."""
+def _classify_installed_models() -> dict[ModelTask, list[ModelOption]]:
+    """Classify installed models into per-task lists, dropping mmproj entries."""
     buckets: dict[ModelTask, list[ModelOption]] = {task: [] for task in ModelTask}
     seen: set[str] = set()
 
@@ -79,13 +79,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
     _collect_remote_models(buckets, seen)
     _collect_api_models(buckets, seen)
 
-    # ModelBar exposes only chat + embedding Selects. Vision and rerank
-    # models are collected to claim their refs in ``seen`` so later
-    # buckets don't duplicate them, but aren't returned to the UI.
-    return (
-        sorted(buckets[ModelTask.CHAT], key=lambda o: o.ref),
-        sorted(buckets[ModelTask.EMBEDDING], key=lambda o: o.ref),
-    )
+    return {task: sorted(opts, key=lambda o: o.ref) for task, opts in buckets.items()}
 
 
 def _lookup_bucket(
@@ -386,8 +380,10 @@ class ModelBar(Widget, can_focus=False):
     @work(thread=True)
     def _scan_models(self) -> None:
         """Scan installed models in background, then populate buttons."""
-        chat, embed = _classify_installed_models()
-        call_from_thread(self, self._populate, chat, embed)
+        buckets = _classify_installed_models()
+        call_from_thread(
+            self, self._populate, buckets[ModelTask.CHAT], buckets[ModelTask.EMBEDDING]
+        )
 
     def _populate(
         self,
