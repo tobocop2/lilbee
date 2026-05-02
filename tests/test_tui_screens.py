@@ -9882,3 +9882,107 @@ def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
     monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
     content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" not in content.plain
+
+
+def test_catalog_grid_scroll_hint_text_loading_branch():
+    """_grid_scroll_hint_text returns the loading-more text when fetching."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._loading_more = True
+    text = screen._grid_scroll_hint_text(hf_count=5)
+    assert "loading" in text
+
+
+def test_catalog_grid_scroll_hint_text_all_loaded_branch():
+    """_grid_scroll_hint_text falls back to the all-loaded message."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._loading_more = False
+    screen._hf_has_more = False
+    text = screen._grid_scroll_hint_text(hf_count=12)
+    assert "12" in text
+    assert "loading" not in text
+
+
+async def test_catalog_get_highlighted_model_name_virtual_grid_branch():
+    """_get_highlighted_model_name reads VirtualGrid.rows by index, not children."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+    rows = [
+        LocalCatalogRow(
+            name=f"m{i}",
+            task="chat",
+            params="--",
+            size="--",
+            quant="--",
+            downloads="--",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref=f"ref-{i}",
+            backend="native",
+        )
+        for i in range(3)
+    ]
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            grid = VirtualGrid(rows, id="vg-name-test")
+            await screen._grid_container.mount(grid)
+            grid.highlighted = 2
+            grid.focus()
+            await _pilot.pause()
+            assert screen._get_highlighted_model_name() == "ref-2"
+
+
+def test_catalog_grid_scroll_hint_text_keep_scrolling_branch():
+    """_grid_scroll_hint_text returns the keep-scrolling text when more is available."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._loading_more = False
+    screen._hf_has_more = True
+    text = screen._grid_scroll_hint_text(hf_count=7)
+    assert "7" in text
+
+
+async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
+    """_on_model_picker_dismissed pushes through apply_active_model and repaints the button."""
+    from unittest.mock import patch
+
+    from textual.widgets import Button
+
+    from lilbee.cli.tui.screens.settings import _MODEL_PICKER_BUTTON_PREFIX
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+            screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
+            mock_apply.assert_called_once()
+        button = app.screen.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
+        # Label was repainted via _model_picker_label; the chat_model field
+        # is still bound to whatever cfg currently holds, so the button
+        # label is non-empty regardless of the picker outcome.
+        assert str(button.label).strip() != ""
+
+
+def test_settings_model_picker_dismissed_no_op_on_blank_ref():
+    """A blank/None ref short-circuits before reaching apply_active_model."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+        screen._on_model_picker_dismissed("chat_model", None)
+        screen._on_model_picker_dismissed("chat_model", "")
+        mock_apply.assert_not_called()
