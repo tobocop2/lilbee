@@ -738,9 +738,11 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
 def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
     """BATCH_PROGRESS events from the vision-OCR subprocess become per-page reporter updates."""
+    import asyncio
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest.types import SyncResult
     from lilbee.runtime.progress import BatchProgressEvent, EventType
 
     src = tmp_path / "doc.pdf"
@@ -757,12 +759,16 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
             EventType.BATCH_PROGRESS,
             BatchProgressEvent(file="a.pdf", status="rasterizing", current=2, total=10),
         )
+        return SyncResult()
 
     def _worker() -> None:
         screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
         with (
             patch("lilbee.app.ingest.copy_files", return_value=copy_result),
             patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+            # Run the coroutine inline so on_progress fires; bypass asyncio_loop
+            # which may not be primed inside this worker thread (Windows CI).
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
         ):
             screen._do_add(src, reporter)
 
@@ -783,26 +789,28 @@ def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:
     screen = ChatScreen.__new__(ChatScreen)
     screen._auto_sync = False  # type: ignore[attr-defined]
     reporter = MagicMock(spec=ProgressReporter)
-    notifications: list[str] = []
-    screen.notify = lambda body, **kw: notifications.append(body)  # type: ignore[assignment]
-
-    async def fake_sync(*, quiet, on_progress):
-        return SyncResult(skipped=["scan.pdf"])
+    screen.notify = lambda body, **kw: None  # type: ignore[assignment]
+    notify_calls: list[tuple[str, ...]] = []
 
     def _worker() -> None:
         with (
-            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
-            patch("lilbee.cli.tui.thread_safe.call_from_thread", side_effect=lambda *a, **kw: None),
+            patch(
+                "lilbee.runtime.asyncio_loop.run",
+                new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda *a, **kw: notify_calls.append(a),
+            ),
         ):
-            # call_from_thread routes to self.notify; in a non-Textual harness
-            # we just want the message to make it into the call surface.
             screen._do_sync(reporter)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
     t.join(timeout=5)
-    # The branch executed: call_from_thread(self, self.notify, message, severity="warning").
-    # We just assert no exception was raised.
+    # call_from_thread(self, self.notify, message, severity="warning") was invoked.
+    assert notify_calls
+    assert any("scan.pdf" in str(call) for call in notify_calls)
 
 
 def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
@@ -820,10 +828,6 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
     from lilbee.app.ingest import CopyResult
 
     copy_result = CopyResult(copied=[str(src)], skipped=[])
-
-    async def fake_sync(*, quiet, on_progress):
-        return SyncResult(skipped=["scan.pdf"])
-
     captured: list[BaseException] = []
 
     def _worker() -> None:
@@ -831,7 +835,10 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
                 patch("lilbee.app.ingest.copy_files", return_value=copy_result),
-                patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+                patch(
+                    "lilbee.runtime.asyncio_loop.run",
+                    new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
+                ),
                 patch("lilbee.cli.tui.screens.chat._remove_copied_files"),
             ):
                 screen._do_add(src, reporter)
