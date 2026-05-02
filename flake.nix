@@ -44,8 +44,8 @@
           meta = mkMeta pkgs;
         };
 
-      # The release binary is PyInstaller / Nuitka onefile: it self-extracts
-      # at launch and dlopen's its bundled .so's via the standard ld.so path.
+      # The release binary is a Nuitka onefile: it self-extracts at launch
+      # and dlopen's its bundled .so's via the standard ld.so path.
       # buildFHSEnv exposes glibc / libgomp / vulkan-loader at /lib so the
       # extracted libs resolve on bare NixOS. Darwin uses @executable_path
       # install names and needs no wrapper.
@@ -72,5 +72,7 @@
           meta = self.packages.${system}.default.meta;
         };
       });
+
+      formatter = forAllSystems (system: (mkPkgs system).nixfmt-rfc-style);
     };
 }
