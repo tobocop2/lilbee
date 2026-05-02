@@ -29,6 +29,17 @@ def test_on_progress_emits_for_batch_event(capsys) -> None:
     assert "progress: page=2 total=5" in capsys.readouterr().err
 
 
+def test_on_progress_emits_for_extract_event(capsys) -> None:
+    """Vision-OCR fires EXTRACT per page; the bridge must surface those too."""
+    from lilbee.runtime.progress import EventType, ExtractEvent
+
+    pdf_extract._on_progress(
+        EventType.EXTRACT,
+        ExtractEvent(file="x", page=3, total_pages=10),
+    )
+    assert "progress: page=3 total=10" in capsys.readouterr().err
+
+
 def test_on_progress_ignores_non_batch_events(capsys) -> None:
     from lilbee.runtime.progress import EventType
 
@@ -120,18 +131,11 @@ class TestParentWrapper:
     async def test_subprocess_wrapper_returns_page_texts(self) -> None:
         from lilbee.data.ingest.extract import _extract_pdf_vision_in_subprocess
 
-        async def _noop(*_a, **_kw) -> None:
-            return None
-
         class FakeProc:
             stdin = mock.MagicMock()
             stdout = mock.AsyncMock()
             stderr = mock.AsyncMock()
             returncode = 0
-
-            async def communicate(self) -> tuple[bytes, bytes]:
-                payload = json.dumps({"page_texts": [[1, "p1"], [2, "p2"]]}).encode()
-                return payload, b""
 
             async def wait(self) -> int:
                 return 0
@@ -141,6 +145,9 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
+        FakeProc.stdout.read = mock.AsyncMock(
+            return_value=json.dumps({"page_texts": [[1, "p1"], [2, "p2"]]}).encode()
+        )
 
         with (
             mock.patch(
@@ -150,6 +157,7 @@ class TestParentWrapper:
                 "lilbee.data.ingest.extract._pump_pdf_progress",
                 new=mock.AsyncMock(return_value=None),
             ),
+            mock.patch("lilbee.vision.pdf_page_count", return_value=5),
         ):
             result = await _extract_pdf_vision_in_subprocess(
                 Path("/tmp/x.pdf"),
@@ -169,9 +177,6 @@ class TestParentWrapper:
             stderr = mock.AsyncMock()
             returncode = 1
 
-            async def communicate(self) -> tuple[bytes, bytes]:
-                return json.dumps({"error": "kaboom"}).encode(), b""
-
             async def wait(self) -> int:
                 return 0
 
@@ -180,6 +185,7 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
+        FakeProc.stdout.read = mock.AsyncMock(return_value=json.dumps({"error": "kaboom"}).encode())
 
         with (
             mock.patch(
@@ -189,6 +195,7 @@ class TestParentWrapper:
                 "lilbee.data.ingest.extract._pump_pdf_progress",
                 new=mock.AsyncMock(return_value=None),
             ),
+            mock.patch("lilbee.vision.pdf_page_count", return_value=5),
             pytest.raises(RuntimeError, match="kaboom"),
         ):
             await _extract_pdf_vision_in_subprocess(
@@ -208,9 +215,6 @@ class TestParentWrapper:
             stderr = mock.AsyncMock()
             returncode = 0
 
-            async def communicate(self) -> tuple[bytes, bytes]:
-                return b"not json", b""
-
             async def wait(self) -> int:
                 return 0
 
@@ -219,6 +223,7 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
+        FakeProc.stdout.read = mock.AsyncMock(return_value=b"not json")
 
         with (
             mock.patch(
@@ -228,6 +233,7 @@ class TestParentWrapper:
                 "lilbee.data.ingest.extract._pump_pdf_progress",
                 new=mock.AsyncMock(return_value=None),
             ),
+            mock.patch("lilbee.vision.pdf_page_count", return_value=5),
             pytest.raises(RuntimeError, match="invalid JSON"),
         ):
             await _extract_pdf_vision_in_subprocess(
@@ -237,6 +243,54 @@ class TestParentWrapper:
                 quiet=True,
                 on_progress=lambda *_: None,
             )
+
+    async def test_subprocess_wrapper_kills_on_cancellation(self) -> None:
+        """CancelledError mid-read still kills the subprocess and re-raises."""
+        import asyncio as _asyncio
+
+        from lilbee.data.ingest.extract import _extract_pdf_vision_in_subprocess
+
+        kill_calls: list[bool] = []
+
+        class FakeProc:
+            stdin = mock.MagicMock()
+            stdout = mock.AsyncMock()
+            stderr = mock.AsyncMock()
+            returncode = -15
+
+            async def wait(self) -> int:
+                return -15
+
+            def kill(self) -> None:
+                kill_calls.append(True)
+
+        FakeProc.stdin.drain = mock.AsyncMock()
+        FakeProc.stdin.write = mock.MagicMock()
+        FakeProc.stdin.close = mock.MagicMock()
+        FakeProc.stdout.read = mock.AsyncMock()
+
+        with (
+            mock.patch(
+                "asyncio.create_subprocess_exec", new=mock.AsyncMock(return_value=FakeProc())
+            ),
+            mock.patch(
+                "lilbee.data.ingest.extract._pump_pdf_progress",
+                new=mock.AsyncMock(return_value=None),
+            ),
+            mock.patch("lilbee.vision.pdf_page_count", return_value=5),
+            mock.patch.object(
+                _asyncio, "wait_for", new=mock.AsyncMock(side_effect=_asyncio.CancelledError)
+            ),
+            pytest.raises(_asyncio.CancelledError),
+        ):
+            await _extract_pdf_vision_in_subprocess(
+                Path("/tmp/x.pdf"),
+                "model",
+                timeout=5.0,
+                quiet=True,
+                on_progress=lambda *_: None,
+            )
+        assert kill_calls == [True]
 
     async def test_subprocess_wrapper_kills_on_timeout(self) -> None:
         import asyncio as _asyncio
@@ -251,9 +305,6 @@ class TestParentWrapper:
             stderr = mock.AsyncMock()
             returncode = -9
 
-            async def communicate(self) -> tuple[bytes, bytes]:
-                raise TimeoutError
-
             async def wait(self) -> int:
                 return -9
 
@@ -263,6 +314,7 @@ class TestParentWrapper:
         FakeProc.stdin.drain = mock.AsyncMock()
         FakeProc.stdin.write = mock.MagicMock()
         FakeProc.stdin.close = mock.MagicMock()
+        FakeProc.stdout.read = mock.AsyncMock()
 
         with (
             mock.patch(
@@ -272,6 +324,7 @@ class TestParentWrapper:
                 "lilbee.data.ingest.extract._pump_pdf_progress",
                 new=mock.AsyncMock(return_value=None),
             ),
+            mock.patch("lilbee.vision.pdf_page_count", return_value=5),
             mock.patch.object(
                 _asyncio,
                 "wait_for",

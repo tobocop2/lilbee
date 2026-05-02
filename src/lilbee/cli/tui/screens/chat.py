@@ -436,7 +436,7 @@ class ChatScreen(Screen[None]):
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import FileStartEvent
+        from lilbee.runtime.progress import BatchProgressEvent, FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
         copy_result = copy_files([path], force=force)
@@ -451,6 +451,13 @@ class ChatScreen(Screen[None]):
             reporter.check_cancelled()
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
+            elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
+                pct = (data.current / data.total * 100.0) if data.total else 0.0
+                reporter.update(
+                    pct,
+                    f"{data.status.capitalize()} page {data.current} of {data.total}",
+                    indeterminate=False,
+                )
 
         try:
             sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
@@ -465,6 +472,9 @@ class ChatScreen(Screen[None]):
         if sync_result.failed:
             _remove_copied_files(copied)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
+        if sync_result.skipped:
+            _remove_copied_files(copied)
+            raise RuntimeError(msg.SYNC_SKIPPED_FILES.format(files=", ".join(sync_result.skipped)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -1113,6 +1123,13 @@ class ChatScreen(Screen[None]):
             raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
         if result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
+        if result.skipped:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_SKIPPED_FILES.format(files=", ".join(result.skipped)),
+                severity="warning",
+            )
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

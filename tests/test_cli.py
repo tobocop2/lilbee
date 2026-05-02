@@ -1960,6 +1960,7 @@ class TestIngestShutdownError:
             added = ["test.txt"]
             updated: list[str] = []
             failed: list[str] = []
+            skipped: list[str] = []
             with (
                 mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=shutdown_err),
                 pytest.raises(asyncio.CancelledError),
@@ -1969,6 +1970,7 @@ class TestIngestShutdownError:
                     added,
                     updated,
                     failed,
+                    skipped,
                     quiet=True,
                 )
 

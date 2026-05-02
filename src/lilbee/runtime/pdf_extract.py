@@ -22,12 +22,18 @@ def _emit_progress(page: int, total: int) -> None:
 
 
 def _on_progress(event_type: object, data: object) -> None:
-    """Bridge ``DetailedProgressCallback`` events to stderr progress lines."""
-    from lilbee.runtime.progress import BatchProgressEvent, EventType
+    """Bridge ``DetailedProgressCallback`` events to stderr progress lines.
 
-    if event_type != EventType.BATCH_PROGRESS or not isinstance(data, BatchProgressEvent):
-        return
-    _emit_progress(data.current, data.total)
+    Vision-OCR fires ``EXTRACT`` per page (vision.py:_record_page); some
+    callers may also emit ``BATCH_PROGRESS``. Both shapes carry a
+    current/total pair we can surface to the parent's TaskBar.
+    """
+    from lilbee.runtime.progress import BatchProgressEvent, EventType, ExtractEvent
+
+    if event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
+        _emit_progress(data.page, data.total_pages)
+    elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
+        _emit_progress(data.current, data.total)
 
 
 def main() -> int:

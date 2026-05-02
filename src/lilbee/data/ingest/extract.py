@@ -136,7 +136,20 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
-_PDF_SUBPROCESS_TIMEOUT_S = 300.0
+_PDF_SUBPROCESS_LOAD_BUDGET_S = 300.0
+_PDF_SUBPROCESS_PER_PAGE_BUDGET_S = 600.0
+
+
+async def _cleanup_pdf_subprocess(
+    proc: asyncio.subprocess.Process, progress_task: asyncio.Task[None]
+) -> None:
+    """Kill a PDF-extract subprocess and cancel its stderr-progress task."""
+    progress_task.cancel()
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    await proc.wait()
+    with contextlib.suppress(asyncio.CancelledError):
+        await progress_task
 
 
 async def _extract_pdf_vision_in_subprocess(
@@ -157,6 +170,15 @@ async def _extract_pdf_vision_in_subprocess(
     """
     import json
     import sys
+
+    from lilbee.vision import pdf_page_count
+
+    pages = pdf_page_count(path)
+    # Outer wall-clock budget = model load + per-page work, with the per-page
+    # budget governed by the same cfg.ocr_timeout the child enforces inside.
+    # Anything tighter trips on first-cold-load for the very first page.
+    per_page_cap = max(_PDF_SUBPROCESS_PER_PAGE_BUDGET_S, timeout or 0.0)
+    wall_clock_budget = _PDF_SUBPROCESS_LOAD_BUDGET_S + per_page_cap * max(pages, 1)
 
     payload = json.dumps(
         {
@@ -181,17 +203,23 @@ async def _extract_pdf_vision_in_subprocess(
     await proc.stdin.drain()
     proc.stdin.close()
 
+    # Read stdout and stderr with separate tasks. proc.communicate() would
+    # attach its own stderr reader and collide with _pump_pdf_progress,
+    # raising "read() called while another coroutine is already waiting
+    # for incoming data" at the first stderr line.
     progress_task = asyncio.create_task(_pump_pdf_progress(proc.stderr, on_progress, path))
     try:
-        stdout_bytes, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_PDF_SUBPROCESS_TIMEOUT_S
-        )
+        stdout_bytes = await asyncio.wait_for(proc.stdout.read(), timeout=wall_clock_budget)
     except TimeoutError:
-        progress_task.cancel()
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"PDF extraction timed out after {_PDF_SUBPROCESS_TIMEOUT_S:.0f}s")
+        await _cleanup_pdf_subprocess(proc, progress_task)
+        raise RuntimeError(
+            f"PDF extraction timed out after {wall_clock_budget:.0f}s "
+            f"({pages} pages)"
+        ) from None
+    except BaseException:
+        await _cleanup_pdf_subprocess(proc, progress_task)
+        raise
+    await proc.wait()
     progress_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await progress_task
@@ -199,7 +227,7 @@ async def _extract_pdf_vision_in_subprocess(
     try:
         result = json.loads(stdout_bytes.decode("utf-8") or "{}")
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"PDF extraction subprocess returned invalid JSON: {exc}") from exc
+        raise RuntimeError(f"PDF extraction returned invalid JSON: {exc}") from exc
     if "error" in result:
         raise RuntimeError(result["error"])
     raw = result.get("page_texts", [])

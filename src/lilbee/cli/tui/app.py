@@ -249,7 +249,16 @@ class LilbeeApp(App[None]):
         """Single write boundary for non-model settings."""
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
-        settings.set_value(cfg.data_root, key, normalized)
+        # settings.set_value persists into TOML, which only accepts strings.
+        # Mirror SettingsScreen._stringify_for_toml's contract: None -> "",
+        # list[str] -> newline-joined, everything else -> str().
+        if normalized is None:
+            persisted: str = ""
+        elif isinstance(normalized, list):
+            persisted = "\n".join(str(x) for x in normalized)
+        else:
+            persisted = str(normalized)
+        settings.set_value(cfg.data_root, key, persisted)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
             self.theme = normalized
             self._sync_theme_index_to_current()

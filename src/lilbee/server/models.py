@@ -304,6 +304,7 @@ class SyncSummary(BaseModel):
     removed: list[str] = []
     unchanged: int = 0
     failed: list[str] = []
+    skipped: list[str] = []
 
 
 class AddSummary(BaseModel):

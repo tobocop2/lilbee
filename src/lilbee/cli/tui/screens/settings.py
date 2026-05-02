@@ -457,16 +457,19 @@ class SettingsScreen(Screen[None]):
         """Parse, apply, and persist a setting value."""
         try:
             parsed = self._parse_value(defn, raw)
-            setattr(cfg, key, parsed)
-            persisted = self._stringify_for_toml(parsed)
-            settings.set_value(cfg.data_root, key, persisted)
+            from lilbee.cli.tui.app import LilbeeApp
+
+            if isinstance(self.app, LilbeeApp):
+                # set_setting handles theme live-apply, signal publish, etc.
+                self.app.set_setting(key, parsed)
+            else:
+                # Test harnesses where self.app isn't a LilbeeApp.
+                setattr(cfg, key, parsed)
+                persisted = self._stringify_for_toml(parsed)
+                settings.set_value(cfg.data_root, key, persisted)
             if not quiet:
                 self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
-            from lilbee.cli.tui.app import LilbeeApp
-
-            if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-                self.app.settings_changed_signal.publish((key, parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
 

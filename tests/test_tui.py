@@ -630,6 +630,38 @@ class TestThemes:
             assert app.theme == target
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_stringifies_none_for_toml(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Nullable settings must serialize as empty string, not None, for TOML."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set:
+                app.set_setting("seed", None)
+            mock_set.assert_called_once()
+            assert mock_set.call_args.args[2] == ""
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_stringifies_list_for_toml(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """List settings must serialize as newline-joined for TOML."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set:
+                app.set_setting("crawl_exclude_patterns", ["foo", "bar"])
+            mock_set.assert_called_once()
+            assert mock_set.call_args.args[2] == "foo\nbar"
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_invalid_theme_noop(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp

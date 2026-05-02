@@ -34,6 +34,10 @@ SETUP_CHROMIUM_DETAIL = "chromium: {done}/{total} MB"
 SETUP_CHROMIUM_DETAIL_UNKNOWN = "chromium: {done} MB"
 SETUP_CHROMIUM_CLI_PROGRESS = "  chromium: {pct}%"
 SYNC_FAILED_FILES = "Sync failed for {files}"
+SYNC_SKIPPED_FILES = (
+    "Skipped (no text extracted): {files}. "
+    "Set vision_model in settings or check that the PDF is readable."
+)
 CMD_DELETE_NO_DOCS = "No documents indexed"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
