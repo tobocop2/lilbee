@@ -13,13 +13,13 @@ from textual.app import App, ComposeResult
 from textual.widgets import Select
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
-from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 from lilbee.core.config import cfg
 
 
-class _ModelBarApp(App[None]):
+class _ScopeChipApp(App[None]):
     def compose(self) -> ComposeResult:
-        yield ModelBar(id="model-bar")
+        yield ScopeChip(id="scope-chip")
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +28,7 @@ def _isolated_cfg(tmp_path):
     cfg.data_root = tmp_path
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
+    cfg.chat_mode = "search"
     cfg.wiki = True
     yield
     for name in type(cfg).model_fields:
@@ -43,21 +44,21 @@ def _mock_classify():
         yield
 
 
-def test_model_bar_caps_overlay_height_and_constrains_inside() -> None:
+def test_scope_chip_caps_overlay_height_and_constrains_inside() -> None:
     """CSS caps overlay height and inflects so it stays within the viewport."""
-    css = ModelBar.DEFAULT_CSS
+    css = ScopeChip.DEFAULT_CSS
     assert "max-height: 12" in css
     assert "constrain: inflect inflect" in css
 
 
 async def test_unmount_collapses_open_scope_select() -> None:
     """on_unmount collapses any expanded Select so its overlay does not leak."""
-    app = _ModelBarApp()
+    app = _ScopeChipApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         scope_sel = app.query_one("#scope-select", Select)
         scope_sel.expanded = True
         await pilot.pause()
-        bar = app.query_one(ModelBar)
-        bar.on_unmount()
+        chip = app.query_one(ScopeChip)
+        chip.on_unmount()
         assert scope_sel.expanded is False

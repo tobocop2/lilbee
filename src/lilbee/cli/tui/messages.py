@@ -114,7 +114,6 @@ CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
 CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask a question or type / for commands"
 CHAT_INPUT_PLACEHOLDER_STREAMING = "Generating response… (Esc to stop)"
 CHAT_STOP_BUTTON_LABEL = "■ Stop"
-CHAT_ONLY_BANNER = "Chat only, no document search. Press F5 to set up embedding model."
 CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local search engine and personal encyclopedia."
 CHAT_WELCOME_HINT = "Press / for commands, or just ask."
@@ -237,10 +236,7 @@ CHAT_MODE_TOGGLE_TOOLTIP = (
 CHAT_MODE_TOGGLE_DISABLED_TOOLTIP = (
     "Search needs an embedding model. Install one to enable Search mode."
 )
-CHAT_MODE_BANNER_CHAT = "Chat mode, no document search."
-CHAT_MODE_BANNER_SEARCH_NO_RESULTS = (
-    "Search returned 0 results, falling back to chat for this turn."
-)
+CHAT_MODE_SEARCH_NO_RESULTS = "Search returned 0 results, falling back to chat for this turn."
 CHAT_MODE_SET = "Mode: {label}"
 MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
 MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"

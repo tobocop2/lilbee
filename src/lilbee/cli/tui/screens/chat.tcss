@@ -65,14 +65,6 @@ Markdown {
     opacity: 0.7;
 }
 
-#chat-only-banner {
-    height: 1;
-    padding: 0 1;
-    background: $warning;
-    color: $text;
-    text-style: bold;
-}
-
 /* The prompt block wraps the input AND the model strip so they share a single
  * focus border. Children (input on top, model strip below) read as one zone. */
 #chat-prompt-area {

@@ -1,0 +1,52 @@
+ScopeChip {
+    height: 1;
+    width: auto;
+    padding: 0;
+    background: transparent;
+}
+
+ScopeChip.-hidden {
+    display: none;
+}
+
+ScopeChip Horizontal {
+    height: 1;
+    width: auto;
+}
+
+ScopeChip .scope-chip-pill {
+    width: auto;
+    padding: 0 1 0 0;
+}
+
+ScopeChip Select {
+    width: auto;
+    min-width: 8;
+    height: 1;
+    max-height: 1;
+    margin: 0 1 0 0;
+    border: none;
+    padding: 0;
+}
+
+ScopeChip Select:focus {
+    border: none;
+}
+
+ScopeChip Select > SelectCurrent {
+    height: 1;
+    padding: 0 1;
+    border: none;
+}
+
+ScopeChip Select:focus > SelectCurrent {
+    border: none;
+    background: $primary 30%;
+    color: $text;
+    text-style: bold;
+}
+
+ScopeChip Select > SelectOverlay {
+    max-height: 12;
+    constrain: inflect inflect;
+}

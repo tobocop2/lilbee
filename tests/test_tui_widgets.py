@@ -394,7 +394,8 @@ class TestModelBar:
         ):
             yield
 
-    async def test_renders_picker_buttons_and_scope_select(self) -> None:
+    async def test_renders_picker_buttons_and_no_scope_select(self) -> None:
+        """ModelBar mounts only the two model pickers; scope lives in ScopeChip."""
         from textual.widgets import Select
 
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -406,7 +407,7 @@ class TestModelBar:
             await pilot.pause()
             buttons = list(app.query(ModelPickerButton))
             assert len(buttons) == 2
-            assert len(list(app.query(Select))) == 1  # scope only
+            assert list(app.query(Select)) == []
 
     async def test_button_ids_are_present(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -420,12 +421,7 @@ class TestModelBar:
             assert app.query_one("#embed-model-button", ModelPickerButton) is not None
 
     async def test_labels_rendered(self) -> None:
-        """Chat/Embed/Scope labels render as pills, not plain text.
-
-        Each pill is a Static carrying a pill() Content with half-block
-        ends around the label text. Assert the text survives, wrapped
-        by the PILL_LEFT/RIGHT half-block glyphs.
-        """
+        """Chat/Embed labels render as pills, not plain text."""
         from textual.widgets import Static
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -436,56 +432,6 @@ class TestModelBar:
             pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
             assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
             assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
-            assert any("Scope" in p and "▌" in p and "▐" in p for p in pills)
-
-    async def test_scope_defaults_to_both(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-        from lilbee.data.store import SearchScope
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            assert bar.scope is SearchScope.BOTH
-
-    async def test_scope_change_updates_bar_state(self) -> None:
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-        from lilbee.data.store import SearchScope
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            scope_sel = app.query_one("#scope-select", Select)
-            scope_sel.value = SearchScope.WIKI.value
-            await pilot.pause()
-            assert app.query_one(ModelBar).scope is SearchScope.WIKI
-
-    async def test_on_unmount_collapses_open_scope_dropdown(self) -> None:
-        """An open scope SelectOverlay must be torn down on unmount so its
-        border cells don't bleed into the next screen during navigation."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            scope_sel = app.query_one("#scope-select", Select)
-            scope_sel.expanded = True
-            await pilot.pause()
-            assert scope_sel.expanded is True
-
-            bar = app.query_one(ModelBar)
-            bar.on_unmount()
-            assert scope_sel.expanded is False
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -578,27 +524,81 @@ class TestModelBar:
                 await pilot.pause()
                 assert "-disabled" not in toggle.classes
 
-    async def test_scope_hidden_when_wiki_disabled(self) -> None:
-        """With ``cfg.wiki=False`` the scope pill+select are omitted entirely.
-
-        With wiki off the chunks table has only raw rows, so the choice
-        would imply a capability the user hasn't opted into.
-        """
-        from textual.css.query import NoMatches
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    async def test_chat_mode_toggle_left_selects_search(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
-        cfg.wiki = False
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert app.query_one("#chat-model-button", ModelPickerButton) is not None
-            assert app.query_one("#embed-model-button", ModelPickerButton) is not None
-            with pytest.raises(NoMatches):
-                app.query_one("#scope-select", Select)
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_select_search()
+                assert cfg.chat_mode == "search"
+
+    async def test_chat_mode_toggle_right_selects_chat(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_select_chat()
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_select_chat_when_already_chat_is_noop(self) -> None:
+        """Selecting the already-active half is a no-op; cfg is not rewritten."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                # already in chat mode; selecting chat returns False
+                assert toggle._set_mode("chat") is False
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_select_search_no_op_when_disabled(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_select_search()
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_renders_pills_with_half_blocks(self) -> None:
+        """Both halves render via the pill helper, not plain ``Search | Chat`` text."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                rendered = str(toggle.render())
+                assert rendered.count("▌") >= 2
+                assert rendered.count("▐") >= 2
+                assert "Search" in rendered
+                assert "Chat" in rendered
 
     async def test_cloud_warning_hidden_for_local_model(self) -> None:
         cfg.chat_model = TEST_LOCAL_REF
@@ -796,24 +796,181 @@ class TestModelPickerButton:
                 await pilot.pause()
                 assert cfg.chat_mode == "chat"
 
-    async def test_scope_select_blank_event_is_dropped(self) -> None:
-        from textual.widgets import Select
 
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+class _ScopeChipApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
+        yield ScopeChip(id="scope-chip")
+
+
+@pytest.mark.usefixtures("wiki_enabled")
+class TestScopeChip:
+    """ScopeChip is the search-only filter; only visible when wiki is on AND chat_mode == search."""
+
+    async def test_visible_when_search_mode_and_wiki_on(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            scope_sel = app.query_one("#scope-select", Select)
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" not in chip.classes
+
+    async def test_hidden_in_chat_mode(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "chat"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" in chip.classes
+
+    async def test_hidden_when_wiki_disabled(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = False
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" in chip.classes
+
+    async def test_scope_property_defaults_to_both(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_scope_property_reflects_select_change(self) -> None:
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            select = app.query_one("#scope-select", Select)
+            select.value = SearchScope.WIKI.value
+            await pilot.pause()
+            assert app.query_one(ScopeChip).scope is SearchScope.WIKI
+
+    async def test_blank_select_value_returns_both(self) -> None:
+        """A spurious BLANK from Textual maps to SearchScope.BOTH so callers never crash."""
+        from unittest.mock import patch
+
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            select = app.query_one("#scope-select", Select)
+            with patch.object(type(select), "value", new_callable=lambda: Select.BLANK):
+                assert chip.scope is SearchScope.BOTH
+
+    async def test_on_unmount_collapses_open_dropdown(self) -> None:
+        """The Select overlay is collapsed on unmount so it doesn't bleed cells."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            select = app.query_one("#scope-select", Select)
+            select.expanded = True
+            await pilot.pause()
+            assert select.expanded is True
+            chip = app.query_one(ScopeChip)
+            chip.on_unmount()
+            assert select.expanded is False
+
+    async def test_on_settings_changed_chat_mode_recomputes_visibility(self) -> None:
+        """A chat_mode flip in the signal payload toggles the chip visibility."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" not in chip.classes
+            cfg.chat_mode = "chat"
+            chip._on_settings_changed(("chat_mode", "chat"))
+            assert "-hidden" in chip.classes
+
+    async def test_on_settings_changed_unrelated_key_is_a_noop(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            chip._on_settings_changed(("temperature", 0.5))
+            assert "-hidden" not in chip.classes
+
+    async def test_swallow_blank_stops_blank_event(self) -> None:
+        """A spurious BLANK Select.Changed event is dropped, not propagated."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            select = app.query_one("#scope-select", Select)
             event = mock.MagicMock(spec=Select.Changed)
             event.value = Select.BLANK
-            event.select = scope_sel
-            before = bar.scope
-            bar._on_scope_changed(event)
-            assert bar.scope is before
+            event.select = select
+            chip._swallow_blank(event)
+            event.stop.assert_called_once()
+
+    async def test_outer_click_focuses_select(self) -> None:
+        """Clicks on the ScopeChip frame forward focus to the inner Select."""
+        from textual import events
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = chip
+            chip.on_click(click)
+            await pilot.pause()
+            assert app.query_one("#scope-select", Select).has_focus
 
 
 def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:

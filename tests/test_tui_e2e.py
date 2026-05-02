@@ -280,36 +280,24 @@ class TestViewCycling:
                 assert app.active_view == view, f"Expected {view}, got {app.active_view}"
 
 
-class TestChatOnlyBanner:
-    async def test_banner_hidden_when_embedding_available(self, _mock_resolve):
-        """Banner must be hidden when embedding model resolves and Search mode is on."""
-        from lilbee.core.config import cfg as _cfg
+class TestChatOnlyBannerRemoved:
+    """Regression guards: the persistent yellow chat-mode banner is gone."""
 
-        old_mode = _cfg.chat_mode
-        _cfg.chat_mode = "search"
-        app = ChatTestApp()
-        try:
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                from textual.widgets import Static
+    async def test_no_chat_only_banner_in_dom(self, _mock_resolve):
+        from textual.css.query import NoMatches
 
-                banner = app.screen.query_one("#chat-only-banner", Static)
-                assert banner.display is False
-        finally:
-            _cfg.chat_mode = old_mode
-
-    async def test_banner_shown_when_embedding_unavailable(self, _mock_resolve):
-        """Banner must show when _embedding_ready returns False."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            with mock.patch.object(app.screen, "_embedding_ready", return_value=False):
-                app.screen._refresh_mode_banner()
-                await pilot.pause()
-                from textual.widgets import Static
+            with pytest.raises(NoMatches):
+                app.screen.query_one("#chat-only-banner")
 
-                banner = app.screen.query_one("#chat-only-banner", Static)
-                assert banner.display is True
+    async def test_screen_has_no_refresh_mode_banner_method(self, _mock_resolve):
+        """The old _refresh_mode_banner helper is permanently deleted."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert not hasattr(app.screen, "_refresh_mode_banner")
 
 
 class TestDownloadProgressSlow:

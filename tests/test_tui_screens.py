@@ -2110,9 +2110,10 @@ async def test_chat_slash_unknown_command():
             assert "Unknown command" in mock_notify.call_args[0][0]
 
 
-async def test_chat_current_chunk_type_reflects_model_bar():
-    """The helper reads the scope Select via query_one; test the happy path."""
-    from lilbee.cli.tui.widgets.model_bar import ModelBar
+async def test_chat_current_chunk_type_reflects_scope_chip():
+    """The helper reads the scope Select via the ScopeChip widget."""
+    from textual.widgets import Select
+
     from lilbee.data.store import SearchScope
 
     app = ChatTestApp()
@@ -2120,33 +2121,29 @@ async def test_chat_current_chunk_type_reflects_model_bar():
         # Default scope is "both" -> chunk_type None
         assert app.screen._current_chunk_type() is None
 
-        # Flip the ModelBar scope state directly; the change-handler path is
-        # exercised by test_tui_widgets.TestModelBar.test_scope_change_updates_bar_state.
-        bar = app.screen.query_one("#model-bar", ModelBar)
-        bar._scope = SearchScope.WIKI
+        select = app.screen.query_one("#scope-select", Select)
+        select.value = SearchScope.WIKI.value
+        await _pilot.pause()
         assert app.screen._current_chunk_type() == "wiki"
 
 
-async def test_chat_current_chunk_type_without_model_bar_returns_none():
-    """Test apps without a ModelBar (e.g. mounting ChatScreen in isolation)
+async def test_chat_current_chunk_type_without_scope_chip_returns_none():
+    """Test apps without a ScopeChip (e.g. mounting ChatScreen in isolation)
     must get ``None`` from the helper, not a ``NoMatches`` crash.
     """
     from textual.app import App
 
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
     class _BareChatApp(App):
         def on_mount(self) -> None:
-            # Push ChatScreen but manually remove the ModelBar after mount
             self.push_screen(ChatScreen())
 
     app = _BareChatApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        # Uninstall the ModelBar so the NoMatches branch fires
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        bar = app.screen.query_one("#model-bar", ModelBar)
-        await bar.remove()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        await chip.remove()
         await pilot.pause()
         assert app.screen._current_chunk_type() is None
 
@@ -4237,32 +4234,14 @@ async def test_chat_auto_sync_triggers_sync():
         assert app.screen._auto_sync is True
 
 
-async def test_chat_on_setup_complete_skipped_shows_banner():
-    """Cover _on_setup_complete with 'skipped' result."""
+async def test_chat_on_setup_complete_skipped_refreshes_model_bar():
+    """Cover _on_setup_complete with 'skipped' result; ensures model bar repaints."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._on_setup_complete("skipped")
-        await _pilot.pause()
-        banner = app.screen.query_one("#chat-only-banner")
-        assert banner.display is True
-
-
-async def test_chat_on_setup_complete_skipped_no_banner_when_embedding_ready():
-    """Skipping wizard does not show banner when embedding model is already configured."""
-    from lilbee.core.config import cfg as _cfg
-
-    old_mode = _cfg.chat_mode
-    _cfg.chat_mode = "search"
-    app = ChatTestApp()
-    try:
-        async with app.run_test(size=(120, 40)) as _pilot:
-            with patch.object(app.screen, "_embedding_ready", return_value=True):
-                app.screen._on_setup_complete("skipped")
-                await _pilot.pause()
-                banner = app.screen.query_one("#chat-only-banner")
-                assert banner.display is False
-    finally:
-        _cfg.chat_mode = old_mode
+        with patch.object(app.screen, "refresh_model_bar") as mock_refresh:
+            app.screen._on_setup_complete("skipped")
+            await _pilot.pause()
+            mock_refresh.assert_called()
 
 
 async def test_chat_on_setup_complete_success():
@@ -7894,20 +7873,30 @@ async def test_chat_on_setup_complete_completed_with_auto_sync():
             mock_sync.assert_called_once()
 
 
-async def test_chat_on_setup_complete_hides_banner_when_embedding_ready():
-    """_on_setup_complete hides chat-only banner after wizard configures embedding."""
+async def test_chat_on_setup_complete_refreshes_model_bar():
+    """_on_setup_complete pings the ModelBar so the toggle picks up new state."""
     from lilbee.core.config import cfg
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_embedding_ready", return_value=False):
-            app.screen._refresh_mode_banner()
-        assert app.screen.query_one("#chat-only-banner").display is True
-        with patch.object(app.screen, "_embedding_ready", return_value=True):
+        with (
+            patch.object(app.screen, "_embedding_ready", return_value=True),
+            patch.object(app.screen, "refresh_model_bar") as mock_refresh,
+        ):
             cfg.chat_mode = "search"
             app.screen._on_setup_complete("done")
             await _pilot.pause()
-            assert app.screen.query_one("#chat-only-banner").display is False
+            mock_refresh.assert_called()
+
+
+async def test_chat_screen_has_no_persistent_chat_only_banner():
+    """Regression guard: bb-pmyi-style yellow banner is permanently gone."""
+    from textual.css.query import NoMatches
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#chat-only-banner")
 
 
 async def test_chat_on_key_insert_mode_unfocused_input():
@@ -8624,64 +8613,15 @@ async def test_chat_embedding_ready_false_on_exception():
             assert screen._embedding_ready() is False
 
 
-async def test_chat_refresh_mode_banner_toggles_visibility():
-    """_refresh_mode_banner shows the banner when embedding is unavailable, hides it otherwise."""
-    from lilbee.core.config import cfg as _cfg
-
-    old_mode = _cfg.chat_mode
-    _cfg.chat_mode = "search"
-    app = ChatTestApp()
-    try:
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            with patch.object(app.screen, "_embedding_ready", return_value=False):
-                app.screen._refresh_mode_banner()
-                assert app.screen.query_one("#chat-only-banner").display is True
-            with patch.object(app.screen, "_embedding_ready", return_value=True):
-                app.screen._refresh_mode_banner()
-                assert app.screen.query_one("#chat-only-banner").display is False
-    finally:
-        _cfg.chat_mode = old_mode
-
-
-async def test_chat_refresh_mode_banner_shows_chat_mode_text_when_chat():
-    """In Chat mode with embedding ready, the banner reflects the chat-mode copy."""
-    from lilbee.cli.tui import messages as chat_msg
-    from lilbee.core.config import cfg
-
-    cfg.chat_mode = "chat"
-    app = ChatTestApp()
-    try:
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            with patch.object(app.screen, "_embedding_ready", return_value=True):
-                app.screen._refresh_mode_banner()
-                banner = app.screen.query_one("#chat-only-banner", Static)
-                assert banner.display is True
-                assert chat_msg.CHAT_MODE_BANNER_CHAT in str(banner.render())
-    finally:
-        cfg.chat_mode = "search"
-
-
-async def test_chat_refresh_mode_banner_no_widget_is_silent():
-    """_refresh_mode_banner returns silently when the banner widget is gone."""
+async def test_chat_on_settings_changed_refreshes_model_bar_for_chat_mode():
+    """settings_changed_signal payloads on chat_mode trigger model-bar refresh."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        app.screen.query_one("#chat-only-banner", Static).remove()
-        await _pilot.pause()
-        app.screen._refresh_mode_banner()
-
-
-async def test_chat_on_settings_changed_repaints_banner_for_chat_mode():
-    """settings_changed_signal payloads on chat_mode trigger banner repaint."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with patch.object(app.screen, "_refresh_mode_banner") as mock_refresh:
+        with patch.object(app.screen, "refresh_model_bar") as mock_refresh:
             app.screen._on_settings_changed(("chat_mode", "chat"))
             mock_refresh.assert_called_once()
-        with patch.object(app.screen, "_refresh_mode_banner") as mock_refresh:
+        with patch.object(app.screen, "refresh_model_bar") as mock_refresh:
             app.screen._on_settings_changed(("temperature", 0.5))
             mock_refresh.assert_not_called()
 
@@ -8753,7 +8693,7 @@ async def test_chat_notify_no_results_uses_warning_severity():
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._notify_no_results()
             mock_notify.assert_called_once_with(
-                chat_msg.CHAT_MODE_BANNER_SEARCH_NO_RESULTS, severity="warning"
+                chat_msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning"
             )
 
 

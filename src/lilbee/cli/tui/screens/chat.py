@@ -185,11 +185,11 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.cli.tui.widgets.top_bars import TopBars
 
         with TopBars():
             yield ViewTabs()
-            yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(
             ChatWelcome(id="chat-welcome"),
             id="chat-log",
@@ -197,6 +197,7 @@ class ChatScreen(Screen[None]):
         yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
+                yield ScopeChip(id="scope-chip")
                 yield ChatInput(
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
@@ -207,7 +208,6 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_input_style()
-        self._refresh_mode_banner()
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -258,28 +258,12 @@ class ChatScreen(Screen[None]):
         """Called when wizard completes or is skipped."""
         if self._embedding_ready() and self._auto_sync:
             self._run_sync()
-        self._refresh_mode_banner()
         self.refresh_model_bar()
-
-    def _refresh_mode_banner(self) -> None:
-        """Show the right banner for the current embedding+mode state."""
-        try:
-            banner = self.query_one("#chat-only-banner", Static)
-        except NoMatches:
-            return
-        if not self._embedding_ready():
-            banner.update(msg.CHAT_ONLY_BANNER)
-            banner.display = True
-        elif cfg.chat_mode == ChatMode.CHAT.value:
-            banner.update(msg.CHAT_MODE_BANNER_CHAT)
-            banner.display = True
-        else:
-            banner.display = False
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _value = payload
         if key in {"chat_mode", "embedding_model"}:
-            self._refresh_mode_banner()
+            self.refresh_model_bar()
 
     def action_open_setup(self) -> None:
         """Open the setup wizard."""
@@ -867,19 +851,21 @@ class ChatScreen(Screen[None]):
         self._stream_response(text, assistant_msg, self._current_chunk_type())
 
     def _current_chunk_type(self) -> str | None:
-        """Translate the ModelBar scope selection into a ``chunk_type`` arg.
+        """Translate the ScopeChip selection into a ``chunk_type`` arg.
 
         Returns ``None`` for "both" (no filter) and the raw/wiki string
-        otherwise. Defaults to ``None`` when the ModelBar isn't mounted
-        (e.g. test apps).
+        otherwise. Defaults to ``None`` when the ScopeChip isn't mounted
+        (e.g. test apps that compose the screen without it).
         """
         from textual.css.query import NoMatches
 
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
         try:
-            bar = self.query_one("#model-bar", ModelBar)
+            chip = self.query_one("#scope-chip", ScopeChip)
         except NoMatches:
             return None
-        return scope_to_chunk_type(bar.scope)
+        return scope_to_chunk_type(chip.scope)
 
     @work(thread=True)
     def _stream_response(
@@ -979,7 +965,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self._notify_no_results)
 
     def _notify_no_results(self) -> None:
-        self.notify(msg.CHAT_MODE_BANNER_SEARCH_NO_RESULTS, severity="warning")
+        self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
 
     def _trim_history(self) -> None:
         """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
