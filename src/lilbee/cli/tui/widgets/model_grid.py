@@ -145,11 +145,11 @@ class ModelGrid(Widget, can_focus=True):
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         # Recompute columns from the available width so the height stays
         # consistent with what ``render_line`` will draw.
-        cols = self._columns_for_width(width)
-        if cols <= 0 or not self._rows:
+        if not self._rows:
             return 0
+        cols = self._columns_for_width(width)
         rows = (len(self._rows) + cols - 1) // cols
-        return rows * _ROW_HEIGHT - (1 if rows else 0)
+        return rows * _ROW_HEIGHT - 1
 
     # ---- highlight + actions -------------------------------------------------
 
