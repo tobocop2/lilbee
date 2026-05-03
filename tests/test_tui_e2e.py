@@ -2564,6 +2564,10 @@ class TestCatalogPickBadge:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
+                # Two pauses: ModelCard's inner .card-body Static composes
+                # on a later refresh tick than the card itself mounts on
+                # Windows, so a single pause races the lookup.
+                await pilot.pause()
                 await pilot.pause()
                 cards = app.screen.query(ModelCard)
                 featured = [c for c in cards if c.row.featured]

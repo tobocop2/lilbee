@@ -267,22 +267,31 @@ class StatusScreen(Screen[None]):
 
     def _load_arch(self, info: ModelArchInfo) -> None:
         """Populate the model architecture section from worker result."""
-        self.query_one("#arch-info", Static).update(_build_arch_content(info))
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            self.query_one("#arch-info", Static).update(_build_arch_content(info))
 
     def _load_config(self) -> None:
         """Populate the configuration section."""
         self.query_one("#config-info", Static).update(_build_config_content())
 
     def _load_documents(self, sources: list[SourceRecord]) -> None:
-        """Populate the documents table.
+        """Populate the documents table once it is mounted in the DOM.
 
-        Replaces any 'Loading...' placeholder that on_mount put up
-        while the worker was in flight. Columns stay; only the rows
-        get rebuilt against the real source list.
+        Suppresses NoMatches because the deferred Collapsible parents
+        compose their inner DataTable on a later refresh tick than
+        ``mount_all`` returns. The replay path inside
+        ``_mount_remaining_sections`` may run before that tick on
+        Windows; subsequent worker callbacks repaint when the table
+        is actually queryable.
         """
-        table = self.query_one("#docs-table", DataTable)
-        table.clear()
-        self._fill_doc_rows(table, sources)
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            table.clear()
+            self._fill_doc_rows(table, sources)
 
     def _fill_doc_rows(self, table: DataTable, sources: list[SourceRecord]) -> None:
         """Fill the documents table with source data."""
@@ -294,7 +303,10 @@ class StatusScreen(Screen[None]):
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""
-        self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
