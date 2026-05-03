@@ -292,6 +292,11 @@ class LlamaCppProvider(LLMProvider):
                     f"Embedding worker crashed during request: {exc}. Please try again.",
                     provider="llama-cpp",
                 ) from exc
+            except TimeoutError as exc:
+                raise ProviderError(
+                    "Embedding worker timed out. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
         if self._subprocess_enabled:
             try:
                 return self._get_subprocess_worker().embed(texts)
@@ -336,6 +341,11 @@ class LlamaCppProvider(LLMProvider):
             except WorkerError as exc:
                 raise ProviderError(
                     f"Rerank worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
+            except TimeoutError as exc:
+                raise ProviderError(
+                    "Rerank worker timed out. Please try again.",
                     provider="llama-cpp",
                 ) from exc
         fut: Future[list[float]] = Future()
@@ -383,6 +393,11 @@ class LlamaCppProvider(LLMProvider):
             except WorkerError as exc:
                 raise ProviderError(
                     f"Vision worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
+            except TimeoutError as exc:
+                raise ProviderError(
+                    "Vision worker timed out. Please try again.",
                     provider="llama-cpp",
                 ) from exc
         return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
@@ -452,6 +467,11 @@ class LlamaCppProvider(LLMProvider):
             except WorkerError as exc:
                 raise ProviderError(
                     f"Chat worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
+            except TimeoutError as exc:
+                raise ProviderError(
+                    "Chat worker timed out. Please try again.",
                     provider="llama-cpp",
                 ) from exc
         return self._chat_in_process(messages=messages, stream=stream, options=options, model=model)
@@ -734,6 +754,12 @@ class _PoolChatStreamIterator:
             self._exhausted = True
             raise ProviderError(
                 f"Chat worker crashed during request: {exc}. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            self._exhausted = True
+            raise ProviderError(
+                "Chat worker timed out mid-stream. Please try again.",
                 provider="llama-cpp",
             ) from exc
 
