@@ -4212,6 +4212,8 @@ async def test_catalog_select_catalog_row():
 
 
 async def test_catalog_input_changed_refreshes():
+    import asyncio
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -4227,8 +4229,16 @@ async def test_catalog_input_changed_refreshes():
                 event = MagicMock(spec=Input.Changed)
                 event.input = inp
                 screen._on_search_changed(event)
-                # Wait for the debounce timer (80 ms) plus a frame.
-                await pilot.pause(0.15)
+                # Wait for the debounce timer (80 ms) plus enough frames
+                # for the timer callback to dispatch. The bare 0.15 s
+                # ``pilot.pause`` was borderline on Windows 3.11 where
+                # the asyncio timer wheel granularity is coarser; poll
+                # in 50 ms increments and bail as soon as the mock fires.
+                for _ in range(20):
+                    await pilot.pause()
+                    await asyncio.sleep(0.05)
+                    if mock_filter.called:
+                        break
                 mock_filter.assert_called()
 
 
