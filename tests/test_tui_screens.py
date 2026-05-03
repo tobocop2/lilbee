@@ -2148,20 +2148,67 @@ async def test_chat_slash_unknown_command():
 
 
 async def test_chat_current_chunk_type_reflects_scope_chip():
-    """The helper reads the scope Select via the ScopeChip widget."""
-    from textual.widgets import Select
-
-    from lilbee.data.store import SearchScope
+    """The helper reads the cycling pill state via the ScopeChip widget."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # Default scope is "both" -> chunk_type None
+        # Default scope is "both" -> chunk_type None.
         assert app.screen._current_chunk_type() is None
 
-        select = app.screen.query_one("#scope-select", Select)
-        select.value = SearchScope.WIKI.value
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        chip.cycle_scope()  # both -> wiki
         await _pilot.pause()
         assert app.screen._current_chunk_type() == "wiki"
+
+
+async def test_chat_action_cycle_scope_advances_visible_chip():
+    """``s`` on ChatScreen cycles the chip when wiki+search make it visible."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+    from lilbee.data.store import SearchScope
+
+    cfg.chat_mode = "search"
+    cfg.wiki = True
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        assert "-hidden" not in chip.classes
+        assert chip.scope is SearchScope.BOTH
+        app.screen.action_cycle_scope()
+        await pilot.pause()
+        assert chip.scope is SearchScope.WIKI
+
+
+async def test_chat_action_cycle_scope_noop_when_chip_hidden():
+    """``s`` is a no-op when the chip is hidden (chat mode or wiki off)."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+    from lilbee.data.store import SearchScope
+
+    cfg.chat_mode = "chat"
+    cfg.wiki = True
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        assert "-hidden" in chip.classes
+        app.screen.action_cycle_scope()
+        await pilot.pause()
+        assert chip.scope is SearchScope.BOTH
+
+
+async def test_chat_action_cycle_scope_noop_when_chip_unmounted():
+    """``s`` is a no-op when no ScopeChip is in the DOM (mid-screen-tear)."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        await chip.remove()
+        await pilot.pause()
+        # action returns cleanly without raising NoMatches.
+        app.screen.action_cycle_scope()
 
 
 async def test_chat_current_chunk_type_without_scope_chip_returns_none():
@@ -3640,6 +3687,226 @@ async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
                 patch.object(screen, "_load_more") as load_more,
             ):
                 screen._on_list_scrolled(0.0)
+                assert not load_more.called
+
+
+async def test_catalog_mouse_scroll_at_max_y_unsticks_pagination():
+    """Wheeling at max_scroll_y has no scroll_y delta, so the scroll watcher
+    can never fire. on_mouse_scroll_down must force one _load_more."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert load_more.called
+
+
+async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
+    """When scroll_y < max_scroll_y the wheel handler must NOT fire so the
+    scroll watcher's threshold logic stays in charge."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=50.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_mouse_scroll_skipped_in_list_view():
+    """List view must not pirate the wheel trigger from the list watcher."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with patch.object(screen, "_load_more") as load_more:
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
+    """Repeat wheel events at max_y inside the cooldown must not cascade."""
+    import time as _time
+
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = _time.monotonic()
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_mouse_scroll_in_list_view_is_ignored():
+    """on_mouse_scroll_down is a no-op outside grid view (list view paginates separately)."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with patch.object(screen, "_load_more") as load_more:
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_grid_leave_down_at_last_section_loads_more():
+    """LeaveDown from the final grid section must fetch more rather than
+    move focus past the grid area when there is more data to fetch."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            last_grid = ModelGrid([])
+            event = ModelGrid.LeaveDown(last_grid)
+            with (
+                patch.object(
+                    type(screen._grid_container),
+                    "query",
+                    return_value=[last_grid],
+                ),
+                patch.object(screen, "_load_more") as load_more,
+                patch.object(screen, "focus_next") as focus_next,
+            ):
+                screen._on_grid_leave_down(event)
+                assert load_more.called
+                assert not focus_next.called
+
+
+async def test_catalog_grid_leave_down_in_middle_focuses_next():
+    """LeaveDown from a non-last grid must move focus to the next sibling,
+    not fetch more rows."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            middle_grid = ModelGrid([])
+            tail_grid = ModelGrid([])
+            event = ModelGrid.LeaveDown(middle_grid)
+            with (
+                patch.object(
+                    type(screen._grid_container),
+                    "query",
+                    return_value=[middle_grid, tail_grid],
+                ),
+                patch.object(screen, "_load_more") as load_more,
+                patch.object(screen, "focus_next") as focus_next,
+            ):
+                screen._on_grid_leave_down(event)
+                assert focus_next.called
                 assert not load_more.called
 
 
@@ -7648,9 +7915,10 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 
 
 async def test_catalog_grid_leave_down_focuses_next():
-    """GridSelect.LeaveDown moves focus to the next focusable widget."""
+    """GridSelect.LeaveDown moves focus to the next focusable widget when
+    there is no more remote data to fetch."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -7658,11 +7926,12 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            grids = list(screen.query(VirtualGrid))
+            screen._hf_has_more = False  # exhausts the load-more branch
+            grids = list(screen.query(ModelGrid))
             if grids:
                 grids[0].focus()
                 await pilot.pause()
-                grids[0].post_message(VirtualGrid.LeaveDown(grids[0]))
+                grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
                 await pilot.pause()
                 assert screen.focused is not grids[0]
 
@@ -7670,7 +7939,7 @@ async def test_catalog_grid_leave_down_focuses_next():
 async def test_catalog_grid_leave_up_focuses_previous():
     """GridSelect.LeaveUp moves focus to the previous focusable widget."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -7678,11 +7947,11 @@ async def test_catalog_grid_leave_up_focuses_previous():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            grids = list(screen.query(VirtualGrid))
+            grids = list(screen.query(ModelGrid))
             assert grids, "Expected at least one GridSelect"
             grids[0].focus()
             await pilot.pause()
-            grids[0].post_message(VirtualGrid.LeaveUp(grids[0]))
+            grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
             await pilot.pause()
             assert screen.focused is not grids[0]
 
@@ -9430,12 +9699,11 @@ async def test_catalog_browse_more_clicked():
                 mock_fetch.assert_called_once()
 
 
-async def test_catalog_grid_selected_with_model_card():
-    """Grid selection with ModelCard delegates to _select_row."""
+async def test_catalog_grid_selected_delegates_to_select_row():
+    """ModelGrid.Selected delegates to _select_row with the underlying row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.model_card import ModelCard
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9456,12 +9724,45 @@ async def test_catalog_grid_selected_with_model_card():
                 sort_downloads=1000,
                 sort_size=4.0,
             )
-            mock_card = MagicMock(spec=ModelCard)
-            mock_card.row = row
-            event = MagicMock(spec=VirtualGrid.Selected)
-            event.widget = mock_card
+            event = MagicMock(spec=ModelGrid.Selected)
+            event.row = row
             with patch.object(screen, "_select_row") as mock_sel:
                 screen._on_grid_selected(event)
+                mock_sel.assert_called_once_with(row)
+
+
+async def test_catalog_grid_select_selected_with_model_card():
+    """Setup-wizard GridSelect.Selected with a ModelCard delegates to _select_row."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            row = LocalCatalogRow(
+                name="grid-select-row",
+                task="chat",
+                params="7B",
+                size="4.0 GB",
+                quant="Q4_K_M",
+                downloads="1K",
+                installed=False,
+                featured=False,
+                sort_downloads=1000,
+                sort_size=4.0,
+            )
+            mock_card = MagicMock(spec=ModelCard)
+            mock_card.row = row
+            event = MagicMock(spec=GridSelect.Selected)
+            event.widget = mock_card
+            with patch.object(screen, "_select_row") as mock_sel:
+                screen._on_grid_select_selected(event)
                 mock_sel.assert_called_once_with(row)
 
 
@@ -9727,7 +10028,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9735,11 +10036,11 @@ async def test_catalog_search_submit_installs_first_visible_match():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grids = list(screen.query(VirtualGrid))
-            assert grids, "catalog should mount at least one VirtualGrid"
+            grids = list(screen.query(ModelGrid))
+            assert grids, "catalog should mount at least one ModelGrid"
             grid = grids[0]
             assert len(grid.rows) >= 2
-            # VirtualGrid filters at the dataset level: set_rows replaces
+            # ModelGrid filters at the dataset level: set_rows replaces
             # the visible set. Simulate "filter narrows to the second
             # row" by trimming the dataset to that single row.
             target_row = grid.rows[1]
@@ -9935,11 +10236,11 @@ def test_catalog_grid_scroll_hint_text_all_loaded_branch():
     assert "loading" not in text
 
 
-async def test_catalog_get_highlighted_model_name_virtual_grid_branch():
-    """_get_highlighted_model_name reads VirtualGrid.rows by index, not children."""
+async def test_catalog_get_highlighted_model_name_model_grid_branch():
+    """_get_highlighted_model_name reads ModelGrid.rows by index, not children."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     rows = [
         LocalCatalogRow(
@@ -9964,7 +10265,7 @@ async def test_catalog_get_highlighted_model_name_virtual_grid_branch():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grid = VirtualGrid(rows, id="vg-name-test")
+            grid = ModelGrid(rows, id="vg-name-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
             grid.focus()
@@ -10137,11 +10438,11 @@ def test_settings_on_model_picker_pressed_ignores_unknown_key():
     assert discover_calls == []
 
 
-async def test_catalog_get_highlighted_model_name_virtual_grid_out_of_range():
-    """An out-of-range VirtualGrid.highlighted index returns None instead of raising."""
+async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
+    """An out-of-range ModelGrid.highlighted index returns None instead of raising."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     rows = [
         LocalCatalogRow(
@@ -10165,7 +10466,7 @@ async def test_catalog_get_highlighted_model_name_virtual_grid_out_of_range():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grid = VirtualGrid(rows, id="vg-oob-test")
+            grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
             # Highlight an index past the end of the dataset.
             grid.highlighted = 99

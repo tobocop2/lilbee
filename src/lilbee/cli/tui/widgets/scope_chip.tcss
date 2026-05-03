@@ -15,40 +15,16 @@ ScopeChip Horizontal {
     width: auto;
 }
 
-ScopeChip .scope-chip-pill {
+ScopeChip .scope-pill {
     width: auto;
-    padding: 0 1 0 0;
-}
-
-ScopeChip Select {
-    width: auto;
-    min-width: 8;
     height: 1;
-    max-height: 1;
+    padding: 0 1;
     margin: 0 1 0 0;
-    border: none;
-    padding: 0;
+    background: $boost;
     color: $text-muted;
 }
 
-ScopeChip Select:focus {
-    border: none;
+ScopeChip .scope-pill.-active {
+    background: $success;
     color: $text;
-}
-
-ScopeChip Select > SelectCurrent {
-    height: 1;
-    padding: 0 1;
-    border: none;
-}
-
-ScopeChip Select:focus > SelectCurrent {
-    border: none;
-    color: $primary;
-    text-style: bold;
-}
-
-ScopeChip Select > SelectOverlay {
-    max-height: 12;
-    constrain: inflect inflect;
 }
