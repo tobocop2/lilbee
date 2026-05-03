@@ -70,8 +70,20 @@ def _first_leaf_with_slug(node):
 class TestChatFlow:
     """Real chat with streaming LLM response."""
 
+    @pytest.mark.timeout(360)
     async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
-        """Type a question about indexed docs, get a real streamed answer."""
+        """Type a question about indexed docs, get a real streamed answer.
+
+        The pause loop pairs ``pilot.pause`` with a 100 ms ``asyncio.sleep``
+        so wallclock time actually advances. The chat worker subprocess
+        cold-start (model load, mmap, llama-cpp init) is several seconds on
+        CPU CI; without the sleep the 600 iterations spin-yield in
+        milliseconds and the assertion fires before streaming ever begins.
+        Bumped to 360s for the same reason as ``test_ask_includes_citations``:
+        small-model RAG streaming on CPU runners is genuinely slow.
+        """
+        import asyncio
+
         from lilbee.core.services import reset_services
 
         app = _IntegrationChatApp()
@@ -85,8 +97,11 @@ class TestChatFlow:
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
 
+            # ~60s budget: 600 * 100ms covers chat worker cold-start (3-5s)
+            # plus the small-model token stream on the slowest CPU runners.
             for _ in range(600):
                 await pilot.pause()
+                await asyncio.sleep(0.1)
                 if not app.screen.streaming:
                     break
 
