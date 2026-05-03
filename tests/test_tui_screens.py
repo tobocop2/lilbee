@@ -10309,3 +10309,38 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     )()
     screen.on_worker_state_changed(arch_event)
     assert loaded_arch == [arch_payload]
+
+
+async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
+    """_mount_remaining_grid_sections mounts each remaining section after the first paint."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+
+    row = LocalCatalogRow(
+        name="extra-section-row",
+        task="chat",
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=False,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref="extra-ref",
+        backend="native",
+    )
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # Hand the screen one extra section to mount; the iteration
+            # is the previously-uncovered branch.
+            sections = [GridSection(heading="Extras", rows=[row])]
+            before = len(list(screen._grid_container.query(".section-heading")))
+            screen._mount_remaining_grid_sections(sections, hf_count=1)
+            await _pilot.pause()
+            after = len(list(screen._grid_container.query(".section-heading")))
+            assert after > before, "expected an additional section heading"
