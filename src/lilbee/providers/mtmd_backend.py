@@ -100,8 +100,18 @@ def build_vision_chat_handler(model_path: Path, mmproj_path: Path) -> Any:
     return handler_cls(str(mmproj_path), verbose=False)
 
 
-def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
-    """Load a vision-capable ``Llama`` using the GGUF-templated chat handler."""
+def load_vision_llama(
+    model_path: Path,
+    mmproj_path: Path | None = None,
+    *,
+    abort_callback_override: Any = None,
+) -> Any:
+    """Load a vision-capable ``Llama`` using the GGUF-templated chat handler.
+
+    ``abort_callback_override`` lets pool workers bind a callback that
+    reads the cross-process ``mp.Value`` flag instead of the in-process
+    threading.Event used by the fallback path.
+    """
     Llama = import_llama_cpp().Llama  # noqa: N806 # heavy native lib; keep import lazy
 
     install_llama_log_handler()
@@ -126,7 +136,10 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
         "n_threads": n_threads,
         "n_threads_batch": n_threads,
     }
-    kwargs.setdefault("abort_callback", abort_callback)
+    if abort_callback_override is not None:
+        kwargs["abort_callback"] = abort_callback_override
+    else:
+        kwargs.setdefault("abort_callback", abort_callback)
 
     llama = suppress_native_stderr(Llama, **kwargs)
     metadata = getattr(llama, "metadata", {}) or {}

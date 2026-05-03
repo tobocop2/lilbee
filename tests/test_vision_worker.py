@@ -6,6 +6,7 @@ pure-function tests for the dispatch table and the in-process loop.
 
 from __future__ import annotations
 
+import multiprocessing
 from typing import Any
 
 import pytest
@@ -230,13 +231,17 @@ def test_extract_vision_content_walks_defensively() -> None:
 
 
 def test_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_path) -> None:
+    """Default _ensure_loaded reaches load_vision_llama with the role config's
+    path and binds the abort_callback at load time (mp.Value-backed)."""
     role_config = RoleConfig(role="vision", model_path=tmp_path / "stub.gguf", mode="vision")
-    session = _VisionSession(role_config)
+    flag = multiprocessing.Value("b", 0)
+    session = _VisionSession(role_config, flag)
     sentinel = object()
     captured: dict[str, Any] = {}
 
-    def fake_load(path: Any) -> Any:
+    def fake_load(path: Any, *, abort_callback_override: Any = None) -> Any:
         captured["path"] = path
+        captured["abort_callback_override"] = abort_callback_override
         return sentinel
 
     monkeypatch.setattr(
@@ -245,15 +250,22 @@ def test_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_path)
     )
     result = session._ensure_loaded(None)
     assert result is sentinel
-    assert captured == {"path": tmp_path / "stub.gguf"}
+    assert captured["path"] == tmp_path / "stub.gguf"
+    cb = captured["abort_callback_override"]
+    assert callable(cb)
+    flag.value = 0
+    assert cb() is False
+    flag.value = 1
+    assert cb() is True
 
 
 def test_session_ensure_loaded_swaps_on_per_call_model(monkeypatch, tmp_path) -> None:
     role_config = RoleConfig(role="vision", model_path=tmp_path / "default.gguf", mode="vision")
-    session = _VisionSession(role_config)
+    flag = multiprocessing.Value("b", 0)
+    session = _VisionSession(role_config, flag)
     load_calls: list[Any] = []
 
-    def fake_load(path: Any) -> Any:
+    def fake_load(path: Any, *, abort_callback_override: Any = None) -> Any:
         class _LlmStub:
             def close(self) -> None:
                 pass
@@ -286,7 +298,8 @@ def test_session_close_idempotent_and_swallows() -> None:
         model_path=__import__("pathlib").Path("/nope"),
         mode="vision",
     )
-    session = _VisionSession(role_config)
+    flag = multiprocessing.Value("b", 0)
+    session = _VisionSession(role_config, flag)
     session.close()  # no-op when llm is None
 
     class _BadLlama:
@@ -301,7 +314,8 @@ def test_session_close_idempotent_and_swallows() -> None:
 def test_session_ocr_uses_default_prompt_when_empty(monkeypatch, tmp_path) -> None:
     """Empty prompt falls back to the global OCR_PROMPT."""
     role_config = RoleConfig(role="vision", model_path=tmp_path / "x.gguf", mode="vision")
-    session = _VisionSession(role_config)
+    flag = multiprocessing.Value("b", 0)
+    session = _VisionSession(role_config, flag)
     captured: dict[str, Any] = {}
 
     class _Stub:
@@ -371,7 +385,7 @@ def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
             ("shutdown", None),
         ]
     )
-    vision_worker_main(conn, _abort_flag=None, role_config=role_config)
+    vision_worker_main(conn, abort_flag=multiprocessing.Value("b", 0), role_config=role_config)
     assert conn.sent == [("pong", None), ("result", "ok"), ("ack", None)]
     assert conn.closed is True
 
@@ -395,7 +409,7 @@ def test_vision_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
     role_config = RoleConfig(role="vision", model_path=tmp_path / "x.gguf", mode="vision")
     conn = _EofConn(inbound=[("ignored", None)])
-    vision_worker_main(conn, _abort_flag=None, role_config=role_config)
+    vision_worker_main(conn, abort_flag=multiprocessing.Value("b", 0), role_config=role_config)
     assert conn.sent == []
     assert conn.closed is True
 
@@ -426,6 +440,6 @@ def test_vision_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
 
     role_config = RoleConfig(role="vision", model_path=tmp_path / "x.gguf", mode="vision")
     conn = _IdleThenWorkConn()
-    vision_worker_main(conn, _abort_flag=None, role_config=role_config)
+    vision_worker_main(conn, abort_flag=multiprocessing.Value("b", 0), role_config=role_config)
     assert conn._poll_calls >= 2
     assert conn.sent == [("ack", None)]

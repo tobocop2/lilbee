@@ -46,11 +46,26 @@ log = logging.getLogger(__name__)
 _POLL_TIMEOUT_S = 0.5
 
 
+def _make_abort_callback(abort_flag: Any) -> Any:
+    """Return a llama-cpp abort_callback bound to the shared mp.Value flag.
+
+    The flag uses ``lock=True`` so reads are atomic on every supported
+    architecture (x86 + ARM). The cost of one acquire per ggml tick is
+    negligible vs vision inference cost.
+    """
+
+    def _callback(_user_data: Any = None) -> bool:
+        return bool(abort_flag.value)
+
+    return _callback
+
+
 class _VisionSession:
     """Lazy-loaded vision Llama, kept alive for the worker's lifetime."""
 
-    def __init__(self, role_config: RoleConfig) -> None:
+    def __init__(self, role_config: RoleConfig, abort_flag: Any) -> None:
         self._role_config = role_config
+        self._abort_flag = abort_flag
         self._llm: Any = None
         self._model_path: str = ""
 
@@ -85,7 +100,13 @@ class _VisionSession:
         target_str = str(target_path)
         if self._llm is None or target_str != self._model_path:
             self._close_model()
-            self._llm = load_vision_llama(target_path)
+            # The abort flag lives in shared memory (mp.Value), so the
+            # callback bound here lets the parent's pool.cancel() reach
+            # llama-cpp's vision inference loop in this subprocess.
+            self._llm = load_vision_llama(
+                target_path,
+                abort_callback_override=_make_abort_callback(self._abort_flag),
+            )
             self._model_path = target_str
         return self._llm
 
@@ -168,12 +189,12 @@ def _dispatch(conn: Any, kind: str, payload: Any, session: _VisionSession) -> bo
     return True
 
 
-def vision_worker_main(conn: Any, _abort_flag: Any, role_config: RoleConfig) -> None:
+def vision_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
     """Vision-OCR worker entrypoint: load llama-cpp lazily, serve until shutdown."""
     redirect_stdio_to_devnull()
     configure_worker_logging(role_config.role)
     log.info("vision worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
-    session = _VisionSession(role_config)
+    session = _VisionSession(role_config, abort_flag)
     try:
         while True:
             if not conn.poll(timeout=_POLL_TIMEOUT_S):

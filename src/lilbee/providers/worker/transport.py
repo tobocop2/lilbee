@@ -144,6 +144,11 @@ class WorkerChannel(Protocol):
         ...
 
     @property
+    def pid(self) -> int | None:
+        """OS process id of the worker, or None for transports without one."""
+        ...
+
+    @property
     def in_flight(self) -> int:
         """Number of requests sent but not yet fully replied to.
 

@@ -74,7 +74,6 @@ from lilbee.providers.worker.transport import (
     RoleConfig,
     WorkerChannel,
     WorkerEntrypoint,
-    WorkerHandle,
     WorkerSpawner,
 )
 from lilbee.providers.worker.transport_pipe import (
@@ -132,7 +131,6 @@ class _Role:
     worker_main: WorkerEntrypoint
     config_factory: Callable[[], RoleConfig]
     channel: WorkerChannel | None = None
-    handle: WorkerHandle | None = None
     spawn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = 0.0
     crash_history: deque[float] = field(default_factory=deque)
@@ -314,7 +312,6 @@ class WorkerPool:
         ]
         for role in self._roles.values():
             role.channel = None
-            role.handle = None
         await asyncio.gather(
             *(channel.close(timeout=timeout) for channel in live),
             return_exceptions=True,
@@ -336,16 +333,15 @@ class WorkerPool:
             if registration.degraded:
                 raise RoleDegradedError(role, self._restart_attempts, self._restart_window_s)
             self._raise_if_shutdown()
-            channel, handle = await asyncio.get_running_loop().run_in_executor(
+            channel, _handle = await asyncio.get_running_loop().run_in_executor(
                 None,
                 self._spawner.spawn,
                 registration.worker_main,
                 registration.config_factory(),
             )
             registration.channel = channel
-            registration.handle = handle
             registration.last_used = time.monotonic()
-            log.info("Worker pool spawned role=%s pid=%s", role, handle.pid)
+            log.info("Worker pool spawned role=%s pid=%s", role, channel.pid)
             return channel
 
     def _stamp_used(self, role: str) -> None:
@@ -379,7 +375,6 @@ class WorkerPool:
         async with registration.spawn_lock:
             channel = registration.channel
             registration.channel = None
-            registration.handle = None
             now = time.monotonic()
             cutoff = now - self._restart_window_s
             while registration.crash_history and registration.crash_history[0] < cutoff:
@@ -446,7 +441,6 @@ class WorkerPool:
                 if now - registration.last_used < self._max_idle_s:
                     continue
                 registration.channel = None
-                registration.handle = None
             with contextlib.suppress(WorkerError):
                 await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
             log.info(
@@ -489,7 +483,6 @@ class WorkerPool:
             return
         channel = registration.channel
         registration.channel = None
-        registration.handle = None
         if channel is not None:
             with contextlib.suppress(WorkerError):
                 await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
