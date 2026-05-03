@@ -862,8 +862,18 @@ def _llama_cpp_has_rank_pooling() -> bool:
     return True
 
 
-def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
-    """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
+def load_llama(
+    model_path: Path,
+    *,
+    mode: LoaderMode,
+    abort_callback_override: Any = None,
+) -> Any:
+    """Load a llama_cpp.Llama in chat, embed, or rerank mode.
+
+    ``abort_callback_override`` lets pool workers bind a callback that
+    reads the cross-process ``mp.Value`` flag instead of the in-process
+    threading.Event used by the fallback path.
+    """
     Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
@@ -913,6 +923,9 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     if not embedding:
         _apply_flash_attention(kwargs)
         _apply_kv_cache_type(kwargs)
+
+    if abort_callback_override is not None:
+        kwargs["abort_callback"] = abort_callback_override
 
     return _construct_llama(Llama, model_path, kwargs)
 

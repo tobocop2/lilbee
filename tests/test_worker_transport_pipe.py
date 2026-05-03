@@ -357,12 +357,14 @@ async def test_close_terminates_hung_worker_within_timeout(
     # Close should never sit on a hung worker for the full call timeout.
     # Generous upper bound (worker-join + terminate + safety): 6s.
     assert elapsed < 6.0
-    # Verify the OS process is gone.
+    # Verify the worker process is gone. We use the multiprocessing
+    # handle (not os.kill) because os.kill(pid, 0) is unreliable on
+    # Windows -- the signal-0 path actually kills the process there
+    # rather than returning a probe-only result, so it can't be used
+    # for a "did terminate succeed" assertion.
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not channel.is_alive:
             return
         await asyncio.sleep(0.05)
     pytest.fail(f"Hung worker pid={pid} survived close()")

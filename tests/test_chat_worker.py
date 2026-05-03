@@ -51,7 +51,12 @@ def _stub_load_streaming(_self: _ChatSession) -> Any:
 
 
 def _stub_load_aborts_mid_stream(_self: _ChatSession) -> Any:
-    """Stub that emits one chunk, then checks the abort flag before more."""
+    """Stub that emits one chunk, then checks the abort flag before more.
+
+    The abort_callback is bound at load time (mirroring real llama-cpp,
+    which only accepts ``abort_callback`` on ``Llama(...)``, not on
+    ``create_chat_completion``).
+    """
 
     class _StubLlama:
         def __init__(self, abort_flag: Any) -> None:
@@ -62,15 +67,16 @@ def _stub_load_aborts_mid_stream(_self: _ChatSession) -> Any:
             *,
             messages: list[dict[str, str]],
             stream: bool,
-            abort_callback: Any,
             **kwargs: Any,
         ) -> Any:
+            abort_flag = self._abort_flag
+
             def _gen():
                 yield {"choices": [{"delta": {"content": "first"}}]}
                 # Wait until the parent flips the flag (max 5s for safety).
                 deadline = time.monotonic() + 5.0
                 while time.monotonic() < deadline:
-                    if abort_callback():
+                    if bool(abort_flag.value):
                         return
                     time.sleep(0.01)
                 # If the flag was never flipped, emit a sentinel for the test
@@ -408,16 +414,18 @@ def test_chat_session_close_idempotent_and_swallows() -> None:
 
 
 def test_chat_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_path) -> None:
-    """Default _ensure_loaded reaches load_llama with the role config's path."""
+    """Default _ensure_loaded reaches load_llama with the role config's path
+    and binds the abort_callback at load time (mp.Value-backed)."""
     role_config = RoleConfig(role="chat", model_path=tmp_path / "stub.gguf", mode="chat")
     flag = multiprocessing.Value("b", 0)
     session = _ChatSession(role_config, flag)
     sentinel = object()
     captured: dict[str, Any] = {}
 
-    def fake_load_llama(path: Any, *, mode: str) -> Any:
+    def fake_load_llama(path: Any, *, mode: str, abort_callback_override: Any = None) -> Any:
         captured["path"] = path
         captured["mode"] = mode
+        captured["abort_callback_override"] = abort_callback_override
         return sentinel
 
     monkeypatch.setattr(
@@ -426,7 +434,15 @@ def test_chat_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_
     )
     result = session._ensure_loaded(None)
     assert result is sentinel
-    assert captured == {"path": tmp_path / "stub.gguf", "mode": "chat"}
+    assert captured["path"] == tmp_path / "stub.gguf"
+    assert captured["mode"] == "chat"
+    # The override must be a callable that reads the mp.Value-backed flag.
+    cb = captured["abort_callback_override"]
+    assert callable(cb)
+    flag.value = 0
+    assert cb() is False
+    flag.value = 1
+    assert cb() is True
 
 
 def test_chat_session_chat_passes_options_to_llama(monkeypatch, tmp_path) -> None:
@@ -450,7 +466,9 @@ def test_chat_session_chat_passes_options_to_llama(monkeypatch, tmp_path) -> Non
     )
     assert captured["temperature"] == 0.42
     assert captured["max_tokens"] == 32
-    assert "abort_callback" in captured
+    # llama-cpp's create_chat_completion does not accept abort_callback;
+    # the worker binds it at load time instead. See _ensure_loaded.
+    assert "abort_callback" not in captured
 
 
 def test_chat_session_ensure_loaded_swaps_on_per_call_model(monkeypatch, tmp_path) -> None:
@@ -460,7 +478,7 @@ def test_chat_session_ensure_loaded_swaps_on_per_call_model(monkeypatch, tmp_pat
     session = _ChatSession(role_config, flag)
     load_calls: list[Any] = []
 
-    def fake_load_llama(path: Any, *, mode: str) -> Any:
+    def fake_load_llama(path: Any, *, mode: str, abort_callback_override: Any = None) -> Any:
         class _LlmStub:
             closed = False
 

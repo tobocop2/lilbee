@@ -96,9 +96,7 @@ class _ChatSession:
         For ``stream=False`` returns the full result dict.
         """
         llm = self._ensure_loaded(model)
-        kwargs: dict[str, Any] = {"abort_callback": _make_abort_callback(self._abort_flag)}
-        if options:
-            kwargs.update(options)
+        kwargs: dict[str, Any] = dict(options) if options else {}
         return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
@@ -111,7 +109,14 @@ class _ChatSession:
         target_str = str(target_path)
         if self._llm is None or target_str != self._model_path:
             self._close_model()
-            self._llm = load_llama(target_path, mode=MODE_CHAT)
+            # The abort flag lives in shared memory (mp.Value), so the
+            # callback bound here lets the parent's pool.cancel() reach
+            # llama-cpp's inference loop in this subprocess.
+            self._llm = load_llama(
+                target_path,
+                mode=MODE_CHAT,
+                abort_callback_override=_make_abort_callback(self._abort_flag),
+            )
             self._model_path = target_str
         return self._llm
 

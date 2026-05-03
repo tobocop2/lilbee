@@ -259,25 +259,28 @@ class TestModeIndicator:
 
 @pytest.mark.usefixtures("wiki_enabled")
 class TestViewCycling:
-    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
-    async def test_cycles_all_views(self, _fam, _cat, _mock_resolve):
+    async def test_cycles_all_views(self, _mock_resolve):
         from lilbee.cli.tui.app import LilbeeApp
 
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert app.active_view == "Chat"
-
-            # Blur the chat input so the app-level ] binding fires.
-            await pilot.press("escape")
-            await pilot.pause()
-
-            expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
-            for view in expected:
-                await pilot.press("right_square_bracket")
+        # Mock out HF and remote-model fetches so the catalog screen does
+        # not race a worker-driven _update_sort_label against mount on
+        # slower CI runners (Windows). Mirrors the pattern used by every
+        # other view-cycling test below.
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                assert app.active_view == view, f"Expected {view}, got {app.active_view}"
+                assert app.active_view == "Chat"
+
+                # Blur the chat input so the app-level ] binding fires.
+                await pilot.press("escape")
+                await pilot.pause()
+
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                for view in expected:
+                    await pilot.press("right_square_bracket")
+                    await pilot.pause()
+                    assert app.active_view == view, f"Expected {view}, got {app.active_view}"
 
 
 class TestChatOnlyBannerRemoved:
