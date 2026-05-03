@@ -3766,6 +3766,27 @@ async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
                 assert not load_more.called
 
 
+async def test_catalog_mouse_scroll_skipped_in_list_view():
+    """List view must not pirate the wheel trigger from the list watcher."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with patch.object(screen, "_load_more") as load_more:
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
 async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
     """Repeat wheel events at max_y inside the cooldown must not cascade."""
     import time as _time
@@ -3801,6 +3822,27 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
                 ),
                 patch.object(screen, "_load_more") as load_more,
             ):
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_mouse_scroll_in_list_view_is_ignored():
+    """on_mouse_scroll_down is a no-op outside grid view (list view paginates separately)."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with patch.object(screen, "_load_more") as load_more:
                 screen.on_mouse_scroll_down(event)
                 assert not load_more.called
 
