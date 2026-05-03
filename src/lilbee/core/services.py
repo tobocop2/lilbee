@@ -13,7 +13,7 @@ import atexit
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +121,12 @@ def get_services() -> Services:
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     _log_subprocess_embed_deprecation_once(cfg)
-    worker_pool = WorkerPool()
+    worker_pool = WorkerPool(
+        spawner=_make_pool_spawner(cfg),
+        max_idle_s=cfg.worker_pool_max_idle_s,
+        restart_attempts=cfg.worker_pool_restart_attempts,
+        restart_window_s=cfg.worker_pool_restart_window_s,
+    )
     pool_runtime = PoolRuntime()
     provider = create_provider(cfg)
     store = Store(cfg)
@@ -155,6 +160,15 @@ def get_services() -> Services:
         worker_pool=worker_pool,
         pool_runtime=pool_runtime,
     )
+    # Eager start is opt-in: pays the per-worker cold-start (1-3s each)
+    # at TUI mount instead of on first request. Most users keep it off
+    # so `lilbee --help` and the splash screen stay snappy.
+    if cfg.worker_pool_eager_start and cfg.worker_pool_enabled:
+        from contextlib import suppress
+
+        with suppress(Exception):
+            pool_runtime.start()
+            pool_runtime.run_sync(worker_pool.start_eager(), timeout=30.0)
     return _svc
 
 
@@ -208,6 +222,25 @@ def _shutdown_pool(services: Services) -> None:
     except (TimeoutError, RuntimeError, OSError) as exc:
         log.warning("Pool shutdown raised %s; forcing runtime stop", exc)
     runtime.shutdown(timeout=5.0)
+
+
+def _make_pool_spawner(cfg_obj: Config) -> Any:
+    """Pick the worker-pool spawner implementation based on cfg.
+
+    Default ``"pipe"`` returns the stdlib :class:`PipeSpawner`. Future
+    backends (``"zmq"``) plug in here without touching the pool or any
+    consumer. Hot-swap is not supported; the choice is made at Services
+    construction.
+    """
+    from lilbee.providers.worker.transport_pipe import PipeSpawner
+
+    backend = cfg_obj.worker_pool_backend
+    if backend == "pipe":
+        return PipeSpawner()
+    raise ValueError(
+        f"Unknown worker_pool_backend {backend!r}. "
+        f"Supported backends: 'pipe' (additional backends land in future PRs)."
+    )
 
 
 atexit.register(reset_services)

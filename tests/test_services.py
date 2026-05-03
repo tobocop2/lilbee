@@ -90,6 +90,22 @@ class TestSubprocessEmbedDeprecationLog:
         assert services_mod._DEPRECATED_SUBPROCESS_EMBED_LOGGED is False
 
 
+class TestPoolSpawnerSelection:
+    def test_pipe_backend_returns_pipe_spawner(self):
+        from lilbee.core.services import _make_pool_spawner
+        from lilbee.providers.worker.transport_pipe import PipeSpawner
+
+        cfg.worker_pool_backend = "pipe"
+        assert isinstance(_make_pool_spawner(cfg), PipeSpawner)
+
+    def test_unknown_backend_raises(self):
+        from lilbee.core.services import _make_pool_spawner
+
+        cfg.worker_pool_backend = "imaginary"
+        with pytest.raises(ValueError, match="worker_pool_backend"):
+            _make_pool_spawner(cfg)
+
+
 class TestCancelInference:
     """Services.cancel_inference must reach pool-mode AND fallback Event."""
 

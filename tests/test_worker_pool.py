@@ -583,3 +583,176 @@ def test_pool_runtime_run_sync_respects_timeout() -> None:
             runtime.run_sync(_hang(), timeout=0.05)
     finally:
         runtime.shutdown()
+
+
+# =====================================================================
+# Lifecycle features: idle reap, restart bookkeeping, health pings.
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_no_op_when_max_idle_zero(tmp_path) -> None:
+    """``max_idle_s == 0`` disables idle reaping entirely."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.0)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        # Even with last_used in the past, reap is a no-op.
+        reaped = await pool.reap_idle()
+        assert reaped == ()
+        assert spawner.spawned[0].closed is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_closes_idle_role_with_zero_in_flight(tmp_path) -> None:
+    """Roles past ``max_idle_s`` with no in-flight work get closed."""
+    import time as _time
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.01)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        channel = spawner.spawned[0]
+        # Backdate last_used so the reaper considers it stale.
+        pool._roles["embed"].last_used = _time.monotonic() - 10.0
+        reaped = await pool.reap_idle()
+        assert reaped == ("embed",)
+        assert channel.closed is True
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_in_flight_role(tmp_path) -> None:
+    """Reap leaves a role alone while it still has in-flight work."""
+    import time as _time
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.01)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        channel = spawner.spawned[0]
+        channel.in_flight_count = 1
+        pool._roles["embed"].last_used = _time.monotonic() - 10.0
+        reaped = await pool.reap_idle()
+        assert reaped == ()
+        assert channel.closed is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_role_marks_degraded_after_restart_budget(tmp_path) -> None:
+    """A role exceeding restart_attempts within the window is marked degraded."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(
+        spawner=spawner,
+        restart_attempts=2,
+        restart_window_s=10.0,
+    )
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        # Three crashes in the window: degraded after the third.
+        await pool._on_crash("embed")
+        await pool._on_crash("embed")
+        assert pool.is_degraded("embed") is False
+        await pool._on_crash("embed")
+        assert pool.is_degraded("embed") is True
+
+        from lilbee.providers.worker.pool import RoleDegradedError
+
+        with pytest.raises(RoleDegradedError, match="embed"):
+            await pool.accessor("embed").call("echo", "x")
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reset_role_failures_clears_degraded_state(tmp_path) -> None:
+    """Manual reset re-enables a degraded role."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(
+        spawner=spawner,
+        restart_attempts=1,
+        restart_window_s=10.0,
+    )
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool._on_crash("embed")
+        await pool._on_crash("embed")
+        assert pool.is_degraded("embed") is True
+        pool.reset_role_failures("embed")
+        assert pool.is_degraded("embed") is False
+        # Next call now spawns a fresh worker.
+        result = await pool.accessor("embed").call("echo", "post-reset")
+        assert result == "post-reset"
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reset_role_failures_silent_for_unregistered_role(tmp_path) -> None:
+    pool = WorkerPool(spawner=FakeSpawner())
+    try:
+        # Must not raise.
+        pool.reset_role_failures("missing")
+        assert pool.is_degraded("missing") is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crash_history_evicts_stale_entries(tmp_path) -> None:
+    """Crashes outside the window do not count toward the budget."""
+    import time as _time
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(
+        spawner=spawner,
+        restart_attempts=2,
+        restart_window_s=0.05,
+    )
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool._on_crash("embed")
+        await pool._on_crash("embed")
+        # Wait past the window so the next crash is the only one in the budget.
+        _time.sleep(0.1)
+        await pool._on_crash("embed")
+        assert pool.is_degraded("embed") is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ping_role_round_trips(tmp_path) -> None:
+    """``ping_role`` lazy-spawns and round-trips one ping/pong."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.ping_role("embed", timeout=5.0)
+        channel = spawner.spawned[0]
+        assert ("ping", None) in channel.call_log
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_call_stamps_last_used(tmp_path) -> None:
+    """A successful call updates the role's last_used timestamp."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=10.0)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        before = pool._roles["embed"].last_used
+        await pool.accessor("embed").call("echo", "x")
+        after = pool._roles["embed"].last_used
+        assert after > before
+    finally:
+        await pool.shutdown()

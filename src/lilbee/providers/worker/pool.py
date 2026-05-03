@@ -10,7 +10,8 @@ change in the transport layer.
 Lifecycle contract
 ==================
 
-1. ``WorkerPool(spawner=...)``: builds the pool object. **No subprocesses
+1. ``WorkerPool(spawner=..., max_idle_s=..., restart_attempts=...,
+   restart_window_s=...)``: builds the pool object. **No subprocesses
    spawned yet.** Roles are registered with their entrypoint + role config
    factory but not started.
 2. ``await pool.start_eager()``: spawns one process per registered role
@@ -26,11 +27,34 @@ The pool itself is async-safe: per-role accessor lookups and lazy spawn
 serialize on a per-role asyncio.Lock so two concurrent first-callers do
 not race to spawn two workers.
 
-Restart-on-crash, idle reaping, and health pings ride on top of the same
-accessor: if a channel reports ``is_alive == False`` (or raises
-:class:`WorkerCrashError`), the accessor drops it and the next call
-re-spawns. Concrete restart bookkeeping (attempts within a window, mark-
-as-degraded) lands with the per-role workers in subsequent commits.
+Restart-on-crash policy
+-----------------------
+
+A channel that raises :class:`WorkerCrashError` (or reports
+``is_alive == False``) is dropped via :meth:`_on_crash`; the next call
+spawns a fresh worker. The pool tracks each role's crash timestamps in a
+deque and refuses to spawn past ``restart_attempts`` crashes within
+``restart_window_s`` seconds; consumers see :class:`RoleDegradedError`
+until the user explicitly invokes :meth:`reset_role_failures` (typically
+from a TUI "retry" affordance) or restarts the process.
+
+Idle reaping
+------------
+
+If ``max_idle_s > 0``, every successful ``call()`` / ``stream()`` /
+``ping()`` round-trip stamps the role's ``last_used`` timestamp.
+:meth:`reap_idle` (called periodically by an external monitor; the pool
+itself does not own the ticker) closes any role whose ``last_used`` is
+older than the budget and whose ``in_flight`` counter is zero. The next
+request respawns the role transparently.
+
+Health pings
+------------
+
+:meth:`ping_role` issues one ping/pong round-trip against a live channel
+and propagates timeout / crash as :class:`WorkerCrashError`. External
+monitors call this at their own cadence; the pool does not own a
+recurring health timer.
 """
 
 from __future__ import annotations
@@ -39,15 +63,18 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Coroutine
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any, TypeVar
 
 from lilbee.providers.worker.transport import (
     RoleConfig,
     WorkerChannel,
     WorkerEntrypoint,
+    WorkerHandle,
     WorkerSpawner,
 )
 from lilbee.providers.worker.transport_pipe import (
@@ -56,9 +83,6 @@ from lilbee.providers.worker.transport_pipe import (
     WorkerError,
 )
 
-if TYPE_CHECKING:
-    from lilbee.providers.worker.transport import WorkerHandle
-
 log = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
@@ -66,6 +90,10 @@ _T = TypeVar("_T")
 
 _DEFAULT_SHUTDOWN_TIMEOUT_S = 5.0
 _DEFAULT_CALL_TIMEOUT_S = 300.0
+_DEFAULT_HEALTH_TIMEOUT_S = 5.0
+_DEFAULT_MAX_IDLE_S = 0.0  # 0 = no idle reaping by default
+_DEFAULT_RESTART_ATTEMPTS = 3
+_DEFAULT_RESTART_WINDOW_S = 60.0
 _RUNTIME_THREAD_NAME = "lilbee-worker-pool-loop"
 
 
@@ -80,6 +108,22 @@ class PoolShutdownError(WorkerError):
         )
 
 
+class RoleDegradedError(WorkerError):
+    """Raised when a role has burned through its restart budget."""
+
+    def __init__(self, role: str, attempts: int, window_s: float) -> None:
+        super().__init__(
+            "RoleDegradedError",
+            (
+                f"Worker '{role}' crashed {attempts} times in the last "
+                f"{window_s:.0f}s and is now disabled. Restart lilbee or "
+                f"call Services.worker_pool.reset_role_failures({role!r})."
+            ),
+            "",
+        )
+        self.role = role
+
+
 @dataclass
 class _Role:
     """Per-role registration: how to spawn it plus its live channel (if any)."""
@@ -90,6 +134,9 @@ class _Role:
     channel: WorkerChannel | None = None
     handle: WorkerHandle | None = None
     spawn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_used: float = 0.0
+    crash_history: deque[float] = field(default_factory=deque)
+    degraded: bool = False
 
 
 class RoleAccessor:
@@ -116,10 +163,12 @@ class RoleAccessor:
         """Lazy-spawn the worker on first call, then dispatch one request."""
         channel = await self._pool._ensure_channel(self._role)
         try:
-            return await channel.call(kind, payload, timeout=timeout)
+            result = await channel.call(kind, payload, timeout=timeout)
         except WorkerCrashError:
             await self._pool._on_crash(self._role)
             raise
+        self._pool._stamp_used(self._role)
+        return result
 
     def stream(self, kind: str, payload: object) -> object:
         """Lazy-spawn (synchronously async) and return the channel's async iterator.
@@ -138,6 +187,7 @@ class RoleAccessor:
         except WorkerCrashError:
             await self._pool._on_crash(self._role)
             raise
+        self._pool._stamp_used(self._role)
 
     def cancel(self) -> None:
         """Flip the worker's abort flag if it is alive; no-op otherwise."""
@@ -171,6 +221,7 @@ async def _spawn_and_stream(
     except WorkerCrashError:
         await pool._on_crash(role)
         raise
+    pool._stamp_used(role)
 
 
 class WorkerPool:
@@ -187,11 +238,21 @@ class WorkerPool:
     decide which roles exist in this process.
     """
 
-    def __init__(self, *, spawner: WorkerSpawner | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        spawner: WorkerSpawner | None = None,
+        max_idle_s: float = _DEFAULT_MAX_IDLE_S,
+        restart_attempts: int = _DEFAULT_RESTART_ATTEMPTS,
+        restart_window_s: float = _DEFAULT_RESTART_WINDOW_S,
+    ) -> None:
         self._spawner: WorkerSpawner = spawner if spawner is not None else PipeSpawner()
         self._roles: dict[str, _Role] = {}
         self._shutdown = False
         self._shutdown_lock = asyncio.Lock()
+        self._max_idle_s = max_idle_s
+        self._restart_attempts = restart_attempts
+        self._restart_window_s = restart_window_s
 
     def register(
         self,
@@ -263,11 +324,15 @@ class WorkerPool:
         registration = self._roles.get(role)
         if registration is None:
             raise KeyError(f"Role {role!r} is not registered on this pool.")
+        if registration.degraded:
+            raise RoleDegradedError(role, self._restart_attempts, self._restart_window_s)
         if registration.channel is not None and registration.channel.is_alive:
             return registration.channel
         async with registration.spawn_lock:
             if registration.channel is not None and registration.channel.is_alive:
                 return registration.channel
+            if registration.degraded:
+                raise RoleDegradedError(role, self._restart_attempts, self._restart_window_s)
             self._raise_if_shutdown()
             channel, handle = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -277,8 +342,15 @@ class WorkerPool:
             )
             registration.channel = channel
             registration.handle = handle
+            registration.last_used = time.monotonic()
             log.info("Worker pool spawned role=%s pid=%s", role, handle.pid)
             return channel
+
+    def _stamp_used(self, role: str) -> None:
+        """Update *role*'s ``last_used`` timestamp; called by the accessor."""
+        registration = self._roles.get(role)
+        if registration is not None:
+            registration.last_used = time.monotonic()
 
     def _channel_if_alive(self, role: str) -> WorkerChannel | None:
         """Return the role's live channel without spawning; None if absent or dead."""
@@ -290,7 +362,15 @@ class WorkerPool:
         return registration.channel
 
     async def _on_crash(self, role: str) -> None:
-        """Drop a crashed channel so the next call respawns; safe to call repeatedly."""
+        """Drop a crashed channel; mark degraded if the restart budget is exhausted.
+
+        Bookkeeping rule: every entry in ``crash_history`` older than
+        ``restart_window_s`` is evicted before counting; if the surviving
+        count plus this crash exceeds ``restart_attempts``, the role is
+        marked degraded and the next ``_ensure_channel`` raises
+        :class:`RoleDegradedError` until the user calls
+        :meth:`reset_role_failures`. Safe to call repeatedly.
+        """
         registration = self._roles.get(role)
         if registration is None:
             return
@@ -298,9 +378,98 @@ class WorkerPool:
             channel = registration.channel
             registration.channel = None
             registration.handle = None
+            now = time.monotonic()
+            cutoff = now - self._restart_window_s
+            while registration.crash_history and registration.crash_history[0] < cutoff:
+                registration.crash_history.popleft()
+            registration.crash_history.append(now)
+            if len(registration.crash_history) > self._restart_attempts:
+                registration.degraded = True
+                log.error(
+                    "Worker pool marking role=%s degraded after %d crashes in %.0fs",
+                    role,
+                    len(registration.crash_history),
+                    self._restart_window_s,
+                )
         if channel is not None:
             with contextlib.suppress(WorkerError):
                 await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
+
+    def reset_role_failures(self, role: str) -> None:
+        """Clear *role*'s degraded mark and crash history.
+
+        Used by an explicit "retry" UI affordance so the user can recover
+        without restarting lilbee. Returns silently if the role is
+        unregistered.
+        """
+        registration = self._roles.get(role)
+        if registration is None:
+            return
+        registration.crash_history.clear()
+        registration.degraded = False
+
+    def is_degraded(self, role: str) -> bool:
+        """Return True iff *role* is currently disabled by the restart-budget rule."""
+        registration = self._roles.get(role)
+        return registration is not None and registration.degraded
+
+    async def reap_idle(self) -> tuple[str, ...]:
+        """Close any role idle longer than ``max_idle_s`` with zero in-flight.
+
+        Caller (typically a background async task) decides cadence; the
+        pool does not own a recurring timer because the host TUI's loop
+        is the authoritative scheduler.
+
+        Returns the role names that were reaped (informational; useful
+        for tests). No-op when ``max_idle_s == 0``.
+        """
+        if self._max_idle_s <= 0.0:
+            return ()
+        now = time.monotonic()
+        reaped: list[str] = []
+        for role_name, registration in list(self._roles.items()):
+            channel = registration.channel
+            if channel is None or not channel.is_alive:
+                continue
+            if channel.in_flight > 0:
+                continue
+            if registration.last_used <= 0.0:
+                continue
+            if now - registration.last_used < self._max_idle_s:
+                continue
+            async with registration.spawn_lock:
+                # Re-check inside the lock; another coroutine may have just used it.
+                if channel.in_flight > 0:
+                    continue
+                if now - registration.last_used < self._max_idle_s:
+                    continue
+                registration.channel = None
+                registration.handle = None
+            with contextlib.suppress(WorkerError):
+                await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
+            log.info(
+                "Worker pool reaped idle role=%s after %.0fs",
+                role_name,
+                now - registration.last_used,
+            )
+            reaped.append(role_name)
+        return tuple(reaped)
+
+    async def ping_role(
+        self,
+        role: str,
+        *,
+        timeout: float = _DEFAULT_HEALTH_TIMEOUT_S,
+    ) -> None:
+        """Round-trip a ping/pong against *role*; raise on timeout / crash.
+
+        Spawns the worker on first use, same as a real call. Caller
+        (typically a background health monitor) decides cadence and
+        whether to respond by reaping/restarting; this method only
+        propagates the round-trip outcome.
+        """
+        accessor = self.accessor(role)
+        await accessor.ping(timeout=timeout)
 
     async def release(self, role: str) -> None:
         """Close *role*'s live worker and forget the registration entirely.
