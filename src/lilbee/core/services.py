@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+log = logging.getLogger(__name__)
+
+_DEPRECATED_SUBPROCESS_EMBED_LOGGED = False
 
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
@@ -85,6 +90,7 @@ def get_services() -> Services:
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
+    _log_subprocess_embed_deprecation_once(cfg)
     provider = create_provider(cfg)
     store = Store(cfg)
     embedder = Embedder(cfg, provider)
@@ -124,13 +130,38 @@ def set_services(services: Services | None) -> None:
     _svc = services
 
 
+def _log_subprocess_embed_deprecation_once(cfg_obj: object) -> None:
+    """Emit a one-time deprecation warning if cfg.subprocess_embed is True.
+
+    The new ``worker_pool_enabled`` (default True) supersedes the
+    per-call ``subprocess_embed`` path with a persistent worker per
+    role. Users who explicitly opted into subprocess isolation get the
+    new pool transparently; the legacy path remains as a fallback when
+    the pool fails. This log nudges them to drop the deprecated setting
+    from their config so the next major release can remove it.
+    """
+    global _DEPRECATED_SUBPROCESS_EMBED_LOGGED
+    if _DEPRECATED_SUBPROCESS_EMBED_LOGGED:
+        return
+    if not getattr(cfg_obj, "subprocess_embed", False):
+        return
+    _DEPRECATED_SUBPROCESS_EMBED_LOGGED = True
+    log.warning(
+        "cfg.subprocess_embed is deprecated. The persistent worker pool "
+        "(cfg.worker_pool_enabled, default True) supersedes it. The legacy "
+        "per-call subprocess remains as a fallback path; remove "
+        "subprocess_embed from your config when convenient."
+    )
+
+
 def reset_services() -> None:
     """Shut down and discard all cached instances."""
-    global _svc
+    global _svc, _DEPRECATED_SUBPROCESS_EMBED_LOGGED
     if _svc is not None:
         _svc.provider.shutdown()
         _svc.store.close()
     _svc = None
+    _DEPRECATED_SUBPROCESS_EMBED_LOGGED = False
 
 
 atexit.register(reset_services)

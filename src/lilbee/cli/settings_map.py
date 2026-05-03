@@ -507,7 +507,28 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group="Ingest",
-        help_text="Run embedding in a subprocess (avoids GIL contention; slower cold start)",
+        help_text=(
+            "Deprecated. Per-call embedding subprocess. Superseded by worker_pool_enabled "
+            "(default True), which keeps a persistent worker per role"
+        ),
+    ),
+    "worker_pool_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group="Ingest",
+        help_text=(
+            "Run llama-cpp inference (embed, chat, rerank, vision) in persistent worker "
+            "subprocesses. Keeps the TUI responsive under load"
+        ),
+    ),
+    "worker_pool_call_timeout_s": SettingDef(
+        float,
+        nullable=False,
+        group="Ingest",
+        help_text=(
+            "Per-call deadline for one worker-pool round-trip in seconds. "
+            "Raise this for very large embed batches on slow machines"
+        ),
     ),
     "max_tokens": SettingDef(
         int,
