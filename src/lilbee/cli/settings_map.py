@@ -213,6 +213,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         choices=tuple(m.value for m in ChatMode),
         help_text="search runs every chat turn through document retrieval; chat skips it",
     ),
+    "scope": SettingDef(
+        str,
+        nullable=False,
+        group="Generation",
+        choices=("both", "wiki", "raw"),
+        help_text=(
+            "Search-mode filter: both = no filter, wiki = wiki pages only, raw = source chunks only"
+        ),
+    ),
     "top_k": SettingDef(
         int,
         nullable=False,

@@ -80,6 +80,8 @@ class Config(BaseSettings):
         default=DEFAULT_GENERAL_SYSTEM_PROMPT, min_length=1, writable=True
     )
     chat_mode: str = ConfigField(default=ChatMode.SEARCH.value, writable=True)
+    # Search scope chip selection (raw / wiki / both); persisted across sessions.
+    scope: str = ConfigField(default="both", writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     # OCR for scanned PDFs via vision-capable chat model.
     # None = auto-detect (use OCR if chat model is vision-capable).

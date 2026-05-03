@@ -39,7 +39,6 @@ from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
-from lilbee.cli.tui.widgets.thinking_indicator import ThinkingIndicator
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
@@ -400,7 +399,6 @@ class ChatScreen(Screen[None]):
 
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
-        self._remove_thinking_indicator()
         self.refresh_bindings()
         # Drain any prompt the user submitted mid-stream so it doesn't
         # get silently dropped on the floor.
@@ -883,11 +881,8 @@ class ChatScreen(Screen[None]):
             log.query_one("#chat-welcome", ChatWelcome).remove()
         log.mount(UserMessage(text))
 
-        # The spinner sits between the user message and the assistant slot
-        # while we wait for the first token. _consume_stream removes it on
-        # first content; cancel paths remove it via _remove_thinking_indicator.
-        log.mount(ThinkingIndicator())
-
+        # The assistant bubble owns its own ThinkingHeader animator until
+        # the first reasoning or content token swaps it out.
         assistant_msg = AssistantMessage()
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
@@ -896,11 +891,6 @@ class ChatScreen(Screen[None]):
             self._history.append({"role": "user", "content": text})
         self.streaming = True
         self._stream_response(text, assistant_msg, self._current_chunk_type())
-
-    def _remove_thinking_indicator(self) -> None:
-        """Drop the spinner if it is still mounted (idempotent)."""
-        for w in self.query(ThinkingIndicator):
-            w.remove()
 
     def _current_chunk_type(self) -> str | None:
         """Translate the ScopeChip selection into a ``chunk_type`` arg.
@@ -950,16 +940,12 @@ class ChatScreen(Screen[None]):
         reason_buf: list[str] = []
         content_buf: list[str] = []
         timings = [time.monotonic(), 0.0]  # [last_flush, last_scroll]
-        spinner_state = [True]  # mutable so the inner closure can clear it
 
         def flush() -> None:
             if reason_buf:
                 call_from_thread(self, widget.append_reasoning, "".join(reason_buf))
                 reason_buf.clear()
             if content_buf:
-                if spinner_state[0]:
-                    call_from_thread(self, self._remove_thinking_indicator)
-                    spinner_state[0] = False
                 call_from_thread(self, widget.append_content, "".join(content_buf))
                 content_buf.clear()
 
@@ -973,11 +959,6 @@ class ChatScreen(Screen[None]):
                 break  # App shutting down (Ctrl-C) -- stop streaming
         with contextlib.suppress(Exception):
             flush()
-        # Stream ended without ever yielding content (cancel, error, empty
-        # response): drop the spinner so the chat log doesn't keep ticking.
-        if spinner_state[0]:
-            with contextlib.suppress(Exception):
-                call_from_thread(self, self._remove_thinking_indicator)
 
     @staticmethod
     def _buffer_token(
