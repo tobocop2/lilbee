@@ -10,19 +10,21 @@ ScopeChip.-hidden {
     display: none;
 }
 
-ScopeChip #scope-chip-pill {
+ScopeChip Horizontal {
+    height: 1;
+    width: auto;
+}
+
+ScopeChip .scope-pill {
     width: auto;
     height: 1;
     padding: 0 1;
+    margin: 0 1 0 0;
     background: $boost;
     color: $text-muted;
 }
 
-ScopeChip:hover #scope-chip-pill {
-    color: $text;
-}
-
-ScopeChip:focus #scope-chip-pill {
+ScopeChip .scope-pill.-active {
     background: $success;
     color: $text;
 }

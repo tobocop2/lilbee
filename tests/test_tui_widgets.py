@@ -602,7 +602,8 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 assert "-disabled" not in toggle.classes
-                assert "-search" in toggle.classes
+                search_pill = toggle.query_one("#chat-mode-search", Static)
+                assert "-active" in search_pill.classes
 
     async def test_chat_mode_toggle_disabled_without_embedding(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -616,7 +617,8 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 assert "-disabled" in toggle.classes
-                assert "-chat" in toggle.classes
+                chat_pill = toggle.query_one("#chat-mode-chat", Static)
+                assert "-active" in chat_pill.classes
 
     async def test_chat_mode_toggle_flips_on_click(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -1074,8 +1076,28 @@ class TestScopeChip:
             chip = app.query_one(ScopeChip)
             assert chip.scope is SearchScope.BOTH
 
+    async def test_active_pill_tracks_scope(self) -> None:
+        """At rest, the BOTH pill carries -active; the others do not."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            both = chip.query_one("#scope-pill-both", Static)
+            wiki = chip.query_one("#scope-pill-wiki", Static)
+            raw = chip.query_one("#scope-pill-raw", Static)
+            assert "-active" in both.classes
+            assert "-active" not in wiki.classes
+            assert "-active" not in raw.classes
+            assert "scope-pill" in both.classes
+            assert "scope-pill" in wiki.classes
+            assert "scope-pill" in raw.classes
+
     async def test_cycle_walks_both_wiki_raw_and_back(self) -> None:
-        """cycle_scope() advances Both -> Wiki -> Raw -> Both, repaints each step."""
+        """cycle_scope() advances Both -> Wiki -> Raw -> Both and repaints each step."""
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.data.store import SearchScope
 
@@ -1085,19 +1107,68 @@ class TestScopeChip:
         async with app.run_test() as pilot:
             await pilot.pause()
             chip = app.query_one(ScopeChip)
-            label = app.query_one("#scope-chip-pill", Static)
+            wiki_pill = chip.query_one("#scope-pill-wiki", Static)
+            raw_pill = chip.query_one("#scope-pill-raw", Static)
+            both_pill = chip.query_one("#scope-pill-both", Static)
             assert chip.scope is SearchScope.BOTH
-            assert "Scope: Both" in str(label.render())
             assert chip.cycle_scope() is SearchScope.WIKI
-            assert chip.scope is SearchScope.WIKI
-            assert "Scope: Wiki" in str(label.render())
+            assert "-active" in wiki_pill.classes
+            assert "-active" not in both_pill.classes
             assert chip.cycle_scope() is SearchScope.RAW
-            assert "Scope: Raw" in str(label.render())
+            assert "-active" in raw_pill.classes
+            assert "-active" not in wiki_pill.classes
             assert chip.cycle_scope() is SearchScope.BOTH
-            assert "Scope: Both" in str(label.render())
+            assert "-active" in both_pill.classes
+            assert "-active" not in raw_pill.classes
 
-    async def test_click_cycles_scope_and_stops_event(self) -> None:
-        """Clicking anywhere on the pill advances the scope and stops propagation."""
+    async def test_pill_click_routes_to_matching_scope(self) -> None:
+        """A click on a child pill sets the scope to the value that pill represents."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            wiki_pill = chip.query_one("#scope-pill-wiki", Static)
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = wiki_pill
+            chip.on_click(click)
+            click.stop.assert_called_once()
+            assert chip.scope is SearchScope.WIKI
+            raw_pill = chip.query_one("#scope-pill-raw", Static)
+            click2 = mock.MagicMock(spec=events.Click)
+            click2.widget = raw_pill
+            chip.on_click(click2)
+            assert chip.scope is SearchScope.RAW
+
+    async def test_pill_click_on_unknown_widget_is_a_noop(self) -> None:
+        """Clicks routed through an unknown id leave the scope untouched."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            stranger = mock.Mock()
+            stranger.id = "not-a-pill"
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = stranger
+            chip.on_click(click)
+            click.stop.assert_not_called()
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_pill_click_with_no_widget_is_a_noop(self) -> None:
+        """A click without a widget reference is dropped without raising."""
         from textual import events
 
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
@@ -1110,9 +1181,29 @@ class TestScopeChip:
             await pilot.pause()
             chip = app.query_one(ScopeChip)
             click = mock.MagicMock(spec=events.Click)
+            click.widget = None
             chip.on_click(click)
-            click.stop.assert_called_once()
-            assert chip.scope is SearchScope.WIKI
+            click.stop.assert_not_called()
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_set_scope_to_current_is_a_noop(self) -> None:
+        """Re-clicking the active pill keeps the scope and avoids redundant repaints."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            both_pill = chip.query_one("#scope-pill-both", Static)
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = both_pill
+            chip.on_click(click)
+            assert chip.scope is SearchScope.BOTH
 
     async def test_on_settings_changed_chat_mode_recomputes_visibility(self) -> None:
         """A chat_mode flip in the signal payload toggles the chip visibility."""
@@ -1141,8 +1232,8 @@ class TestScopeChip:
             chip._on_settings_changed(("temperature", 0.5))
             assert "-hidden" not in chip.classes
 
-    async def test_pill_renders_cycle_glyph(self) -> None:
-        """The rendered pill text carries the cycle glyph from messages.py."""
+    async def test_pills_render_label_constants(self) -> None:
+        """Each child pill renders the label constant from messages.py."""
         from lilbee.cli.tui import messages as msg_mod
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
@@ -1151,11 +1242,14 @@ class TestScopeChip:
         app = _ScopeChipApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            label = app.query_one("#scope-chip-pill", Static)
-            rendered = str(label.render())
-            assert msg_mod.SCOPE_CYCLE_GLYPH in rendered
-            # Sanity: the chip queries cleanly.
-            assert app.query_one(ScopeChip) is not None
+            chip = app.query_one(ScopeChip)
+            assert (
+                str(chip.query_one("#scope-pill-both", Static).render()) == msg_mod.SCOPE_PILL_BOTH
+            )
+            assert (
+                str(chip.query_one("#scope-pill-wiki", Static).render()) == msg_mod.SCOPE_PILL_WIKI
+            )
+            assert str(chip.query_one("#scope-pill-raw", Static).render()) == msg_mod.SCOPE_PILL_RAW
 
 
 def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:

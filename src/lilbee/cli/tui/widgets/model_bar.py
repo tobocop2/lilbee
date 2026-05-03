@@ -216,8 +216,6 @@ _CHAT_MODE_CHAT_PILL_ID = "chat-mode-chat"
 _CHAT_MODE_PILL_CLASS = "chat-mode-pill"
 _CHAT_MODE_DISABLED_CLASS = "-disabled"
 _CHAT_MODE_ACTIVE_CLASS = "-active"
-_CHAT_MODE_SEARCH_CLASS = "-search"
-_CHAT_MODE_CHAT_CLASS = "-chat"
 
 
 class ModelPickerButton(Static, can_focus=True):
@@ -331,11 +329,9 @@ class ChatModeToggle(Widget, can_focus=True):
         search_pill.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
         chat_pill.set_class(not active_search, _CHAT_MODE_ACTIVE_CLASS)
         chat_pill.set_class(False, _CHAT_MODE_DISABLED_CLASS)
-        # Container-level classes preserve external selectors that test the
-        # toggle as a whole (e.g. -disabled when search is unreachable).
+        # Parent carries the disabled class so external selectors can
+        # disable interaction on the whole toggle when search is gated.
         self.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
-        self.set_class(active_search, _CHAT_MODE_SEARCH_CLASS)
-        self.set_class(not active_search, _CHAT_MODE_CHAT_CLASS)
         self.tooltip = (
             msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
         )

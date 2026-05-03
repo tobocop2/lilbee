@@ -1,4 +1,4 @@
-"""Scope chip: search-only filter pill for raw / wiki / both."""
+"""Scope chip: search-only filter with three side-by-side pills."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from textual import events
 from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -18,15 +19,21 @@ from lilbee.data.store import SearchScope
 _CSS_FILE = Path(__file__).parent / "scope_chip.tcss"
 
 _HIDDEN_CLASS = "-hidden"
+_ACTIVE_CLASS = "-active"
+_SCOPE_PILL_CLASS = "scope-pill"
 
-# Display labels keyed by SearchScope; one source of truth for the pill text.
-_SCOPE_LABELS: dict[SearchScope, str] = {
-    SearchScope.BOTH: "Both",
-    SearchScope.WIKI: "Wiki",
-    SearchScope.RAW: "Raw",
+_SCOPE_BOTH_PILL_ID = "scope-pill-both"
+_SCOPE_WIKI_PILL_ID = "scope-pill-wiki"
+_SCOPE_RAW_PILL_ID = "scope-pill-raw"
+
+# Pill id -> scope value, used for click routing.
+_PILL_TO_SCOPE: dict[str, SearchScope] = {
+    _SCOPE_BOTH_PILL_ID: SearchScope.BOTH,
+    _SCOPE_WIKI_PILL_ID: SearchScope.WIKI,
+    _SCOPE_RAW_PILL_ID: SearchScope.RAW,
 }
 
-# Cycle order: clicking the pill walks Both -> Wiki -> Raw -> Both.
+# Cycle order: Both -> Wiki -> Raw -> Both.
 _SCOPE_CYCLE: tuple[SearchScope, ...] = (
     SearchScope.BOTH,
     SearchScope.WIKI,
@@ -35,7 +42,7 @@ _SCOPE_CYCLE: tuple[SearchScope, ...] = (
 
 
 class ScopeChip(Widget):
-    """Search-only filter chip; visible when cfg.chat_mode=='search' and cfg.wiki.
+    """Three-pill search filter; visible when cfg.chat_mode=='search' and cfg.wiki.
 
     Scope is **session-only** state held on ``self._scope``; it is not
     persisted to ``cfg``. ``ChatScreen`` reads ``chip.scope`` at submit
@@ -55,7 +62,10 @@ class ScopeChip(Widget):
         self._scope: SearchScope = SearchScope.BOTH
 
     def compose(self) -> ComposeResult:
-        yield Static(self._pill_text(self._scope), id="scope-chip-pill")
+        with Horizontal():
+            yield Static(msg.SCOPE_PILL_BOTH, id=_SCOPE_BOTH_PILL_ID, classes=_SCOPE_PILL_CLASS)
+            yield Static(msg.SCOPE_PILL_WIKI, id=_SCOPE_WIKI_PILL_ID, classes=_SCOPE_PILL_CLASS)
+            yield Static(msg.SCOPE_PILL_RAW, id=_SCOPE_RAW_PILL_ID, classes=_SCOPE_PILL_CLASS)
 
     @property
     def scope(self) -> SearchScope:
@@ -64,6 +74,7 @@ class ScopeChip(Widget):
 
     def on_mount(self) -> None:
         self._refresh_visibility()
+        self._refresh()
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):
@@ -78,23 +89,32 @@ class ScopeChip(Widget):
         if key in {"chat_mode", "wiki"}:
             self._refresh_visibility()
 
+    def _refresh(self) -> None:
+        """Toggle the ``-active`` class on each pill based on ``self._scope``."""
+        for pill_id, scope in _PILL_TO_SCOPE.items():
+            pill = self.query_one(f"#{pill_id}", Static)
+            pill.set_class(scope is self._scope, _ACTIVE_CLASS)
+
+    def _set_scope(self, target: SearchScope) -> None:
+        """Apply *target* and repaint if it differs from the current scope."""
+        if self._scope is target:
+            return
+        self._scope = target
+        self._refresh()
+
     def cycle_scope(self) -> SearchScope:
         """Advance to the next scope in the cycle; return the new scope."""
         idx = _SCOPE_CYCLE.index(self._scope)
-        self._scope = _SCOPE_CYCLE[(idx + 1) % len(_SCOPE_CYCLE)]
-        self._repaint()
+        self._set_scope(_SCOPE_CYCLE[(idx + 1) % len(_SCOPE_CYCLE)])
         return self._scope
 
     def on_click(self, event: events.Click) -> None:
-        """Cycle the scope on click anywhere in the pill."""
+        """Route a child-pill click into the scope it represents."""
+        widget = event.widget
+        if widget is None:
+            return
+        target = _PILL_TO_SCOPE.get(widget.id or "")
+        if target is None:
+            return
         event.stop()
-        self.cycle_scope()
-
-    @staticmethod
-    def _pill_text(scope: SearchScope) -> str:
-        """Render the pill label for *scope*."""
-        return msg.CHAT_SCOPE_PILL.format(scope=_SCOPE_LABELS[scope], glyph=msg.SCOPE_CYCLE_GLYPH)
-
-    def _repaint(self) -> None:
-        """Repaint the pill label after a scope change. Caller-safe post-mount."""
-        self.query_one("#scope-chip-pill", Static).update(self._pill_text(self._scope))
+        self._set_scope(target)
