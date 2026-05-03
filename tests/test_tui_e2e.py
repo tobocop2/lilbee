@@ -2899,6 +2899,38 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming is False
 
+    async def test_exit_streaming_drains_queued_prompt(self, _mock_resolve, _mock_services):
+        """Once the active stream settles, the queued prompt fires through ``_send_message``."""
+        with self._patch_stream_response():
+            app = ChatTestApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                screen = app.screen
+                screen._queued_prompt = "follow-up"
+                with mock.patch.object(screen, "_send_message") as send_mock:
+                    screen._exit_streaming_state()
+                    await pilot.pause()
+                    send_mock.assert_called_once_with("follow-up")
+                assert screen._queued_prompt is None
+
+    async def test_chat_submit_in_normal_mode_flips_to_insert(self, _mock_resolve, _mock_services):
+        """Enter while in normal mode flips back to insert without spawning a turn."""
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        with self._patch_stream_response():
+            app = ChatTestApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                screen = app.screen
+                screen._insert_mode = False
+                inp = screen.query_one("#chat-input", ChatInput)
+                inp.value = "stale text"
+                await pilot.press("enter")
+                await pilot.pause()
+                assert screen._insert_mode is True
+                # No assistant turn was spawned by that Enter press.
+                assert len(list(screen.query(UserMessage))) == 0
+
 
 class TestStreamFlushCoalescing:
     """Token coalescing in _consume_stream prevents per-token call_from_thread floods."""

@@ -24,6 +24,13 @@ ChatWelcome {
     height: auto;
 }
 
+/* Reasoning fold while a stream is live: the toggle row is hidden so the
+ * sibling ThinkingHeader carries the visual weight. finish() drops the
+ * -streaming class to reveal the toggle and the formatted token count. */
+.reasoning-block.-streaming > CollapsibleTitle {
+    display: none;
+}
+
 .speaker-label {
     height: auto;
 }

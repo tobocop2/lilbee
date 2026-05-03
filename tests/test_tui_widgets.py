@@ -64,15 +64,49 @@ class TestUserMessage:
 
 
 class TestAssistantMessageAsync:
-    async def test_append_reasoning_expands_collapsible(self) -> None:
+    async def test_compose_yields_speaker_content_citation(self) -> None:
+        """Compose yields three children: speaker label, content, citation. No
+        Collapsible up front; the reasoning fold is mounted lazily inside
+        ``on_mount``/``append_reasoning``.
+        """
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        am = AssistantMessage()
+        children = list(am.compose())
+        assert len(children) == 3
+        # First child carries the lilbee speaker label markup.
+        assert "lilbee" in str(children[0].render())
+        assert am._reasoning_widget is None
+        assert am._content_widget is not None
+        assert am._citation_widget is not None
+
+    async def test_on_mount_attaches_thinking_header(self) -> None:
+        """Mounting the message inserts a sibling ``ThinkingHeader`` above content."""
+        from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
+
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            assert am._thinking_header is not None
+            assert isinstance(am._thinking_header, ThinkingHeader)
+            assert am._thinking_header.is_mounted
+
+    async def test_first_reasoning_token_mounts_streaming_collapsible(self) -> None:
+        """The Collapsible appears only when the first reasoning token arrives,
+        carrying the ``-streaming`` modifier so the toggle row is hidden by CSS.
+        """
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am._reasoning_widget is None
             am.append_reasoning("step 1")
-            assert am._reasoning_parts == ["step 1"]
+            await pilot.pause()
             assert am._reasoning_widget is not None
             assert am._reasoning_widget.collapsed is False
+            assert "reasoning-block" in am._reasoning_widget.classes
+            assert "-streaming" in am._reasoning_widget.classes
 
     async def test_append_reasoning_debounces_static_updates(self) -> None:
         """Reasoning bursts collapse to one ``Static.update``; ``finish`` flushes the tail."""
@@ -80,17 +114,17 @@ class TestAssistantMessageAsync:
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            am.append_reasoning("a ")
             assert am._reasoning_static is not None
             with mock.patch.object(am._reasoning_static, "update") as mock_update:
-                am.append_reasoning("a ")
                 am.append_reasoning("b ")
                 am.append_reasoning("c ")
-                # All three append in well under the 0.1s debounce window,
-                # so only the first should have triggered an update.
-                assert mock_update.call_count == 1
+                # The first append fired an update on its own; subsequent
+                # bursts inside the 0.1 s debounce window do not.
+                assert mock_update.call_count == 0
                 am.finish(sources=None)
                 # finish() flushes the buffered tail.
-                assert mock_update.call_count == 2
+                assert mock_update.call_count == 1
                 last_call_text = mock_update.call_args_list[-1].args[0]
                 assert last_call_text == "a b c "
 
@@ -102,6 +136,28 @@ class TestAssistantMessageAsync:
             am.append_content("token1")
             am.append_content("token2")
             assert am._content_parts == ["token1", "token2"]
+
+    async def test_first_content_token_dismisses_thinking_header(self) -> None:
+        """Without any reasoning, the first content token retires the header."""
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am._thinking_header is not None
+            am.append_content("hi")
+            await pilot.pause()
+            assert am._thinking_header is None
+
+    async def test_first_content_token_after_reasoning_keeps_header(self) -> None:
+        """When reasoning has already fired, the header stays until ``finish``."""
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_reasoning("step 1")
+            am.append_content("answer")
+            await pilot.pause()
+            assert am._thinking_header is not None
 
     async def test_finish_with_sources_shows_citations(self) -> None:
         app = _MsgApp()
@@ -115,16 +171,21 @@ class TestAssistantMessageAsync:
             assert am._reasoning_widget is not None
             assert "reasoning" in am._reasoning_widget.title
             assert "token" in am._reasoning_widget.title
+            assert am._reasoning_widget.collapsed is True
+            assert "-streaming" not in am._reasoning_widget.classes
+            assert am._thinking_header is None
 
-    async def test_finish_without_reasoning_hides_widget(self) -> None:
+    async def test_finish_without_reasoning_leaves_widget_unmounted(self) -> None:
+        """No reasoning emitted => no Collapsible was ever mounted."""
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            am.append_content("hi")
             am.finish(sources=None)
             assert am._finished is True
-            assert am._reasoning_widget is not None
-            assert am._reasoning_widget.display is False
+            assert am._reasoning_widget is None
+            assert am._thinking_header is None
 
     async def test_finish_without_sources_hides_citation(self) -> None:
         app = _MsgApp()
@@ -191,6 +252,102 @@ class TestAssistantMessageAsync:
             am._content_widget = None
             await am.rebuild_content_widget(use_markdown=False)
             assert am._content_widget is None
+
+    async def test_on_mount_noop_when_content_widget_missing(self) -> None:
+        """on_mount returns early if compose was bypassed (defensive guard)."""
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        app = _MsgApp()
+        async with app.run_test():
+            am = AssistantMessage()
+            am._content_widget = None
+            am.on_mount()
+            assert am._thinking_header is None
+
+
+class _ThinkingHeaderApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
+
+        self._header = ThinkingHeader()
+        yield self._header
+
+
+class TestThinkingHeader:
+    """The thinking header animates a snake + shimmering word until stopped."""
+
+    def test_frame_content_shifts_filled_block_with_frame(self) -> None:
+        """Frame N renders the filled block at column N % snake-length."""
+        from lilbee.cli.tui.widgets.thinking_header import (
+            _BLOCK_EMPTY,
+            _BLOCK_FILLED,
+            _SNAKE_CELLS,
+            _frame_content,
+        )
+
+        rendered_frame_0 = str(_frame_content(0))
+        rendered_frame_1 = str(_frame_content(1))
+        # The same set of cells appears, but the filled cell moved.
+        assert rendered_frame_0.count(_BLOCK_FILLED) == 1
+        assert rendered_frame_1.count(_BLOCK_FILLED) == 1
+        assert rendered_frame_0.count(_BLOCK_EMPTY) == _SNAKE_CELLS - 1
+        assert rendered_frame_0 != rendered_frame_1
+        # Cycles back after _SNAKE_CELLS frames.
+        assert str(_frame_content(_SNAKE_CELLS)) == rendered_frame_0
+
+    def test_frame_content_shimmers_thinking_word(self) -> None:
+        """Each frame shifts the bright letter one slot through THINKING…."""
+        from lilbee.cli.tui.widgets.thinking_header import _THINKING_WORD, _frame_content
+
+        rendered = str(_frame_content(0))
+        # Every letter of the word is in the rendered output.
+        for ch in _THINKING_WORD:
+            assert ch in rendered
+
+    async def test_tick_advances_frame_and_repaints(self) -> None:
+        """Calling _tick increments the internal frame counter and repaints."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            start = header._frame
+            with mock.patch.object(header, "update") as update_mock:
+                header._tick()
+                assert header._frame == start + 1
+                update_mock.assert_called_once()
+
+    async def test_redirect_to_routes_frames_to_target(self) -> None:
+        """``redirect_to`` swaps the render target so callers can intercept frames."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            sink = mock.Mock()
+            header.redirect_to(sink)
+            with mock.patch.object(header, "update") as update_mock:
+                header._tick()
+                update_mock.assert_not_called()
+                sink.assert_called_once()
+
+    async def test_on_unmount_stops_timer(self) -> None:
+        """Unmounting the header cancels the running interval."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            assert header._timer is not None
+            header.on_unmount()
+            assert header._timer is None
+
+    async def test_stop_is_idempotent(self) -> None:
+        """``stop`` can be called repeatedly without raising."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            header.stop()
+            header.stop()
+            assert header._timer is None
 
 
 class _HelpApp(App):
@@ -582,8 +739,8 @@ class TestModelBar:
                 toggle.action_select_search()
                 assert cfg.chat_mode == "chat"
 
-    async def test_chat_mode_toggle_renders_subtle_label(self) -> None:
-        """Both halves render as plain text with a dot divider, no pill chrome."""
+    async def test_chat_mode_toggle_renders_two_pill_children(self) -> None:
+        """Active half wears ``-active``; the search half disables when embedding is missing."""
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -594,12 +751,33 @@ class TestModelBar:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
-                rendered = str(toggle.render())
-                assert "▌" not in rendered
-                assert "▐" not in rendered
-                assert "Search" in rendered
-                assert "Chat" in rendered
-                assert "·" in rendered
+                search = toggle.query_one("#chat-mode-search", Static)
+                chat = toggle.query_one("#chat-mode-chat", Static)
+                assert "Search" in str(search.render())
+                assert "Chat" in str(chat.render())
+                assert "-active" in search.classes
+                assert "-active" not in chat.classes
+                assert "-disabled" not in search.classes
+                assert "chat-mode-pill" in search.classes
+                assert "chat-mode-pill" in chat.classes
+
+    async def test_chat_mode_toggle_disabled_class_lives_on_search_pill(self) -> None:
+        """When embedding is missing, the search pill alone gets the disabled mark."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                search = toggle.query_one("#chat-mode-search", Static)
+                chat = toggle.query_one("#chat-mode-chat", Static)
+                assert "-disabled" in search.classes
+                assert "-disabled" not in chat.classes
+                assert "-active" in chat.classes
 
     async def test_picker_buttons_have_tooltips(self) -> None:
         """Chat and Embed pickers expose hover tooltips like the scope chip does."""
@@ -812,6 +990,33 @@ class TestModelPickerButton:
                 await pilot.pause()
                 assert cfg.chat_mode == "chat"
 
+    async def test_chat_mode_pill_click_routes_per_id(self) -> None:
+        """Click on the search/chat pill calls ``_set_mode`` for that side only."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                    search = toggle.query_one("#chat-mode-search", Static)
+                    click = mock.MagicMock(spec=events.Click)
+                    click.widget = search
+                    toggle.on_click(click)
+                    set_mode.assert_called_once_with("search")
+                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                    chat = toggle.query_one("#chat-mode-chat", Static)
+                    click = mock.MagicMock(spec=events.Click)
+                    click.widget = chat
+                    toggle.on_click(click)
+                    set_mode.assert_called_once_with("chat")
+
 
 class _ScopeChipApp(App):
     def compose(self) -> ComposeResult:
@@ -869,9 +1074,8 @@ class TestScopeChip:
             chip = app.query_one(ScopeChip)
             assert chip.scope is SearchScope.BOTH
 
-    async def test_scope_property_reflects_select_change(self) -> None:
-        from textual.widgets import Select
-
+    async def test_cycle_walks_both_wiki_raw_and_back(self) -> None:
+        """cycle_scope() advances Both -> Wiki -> Raw -> Both, repaints each step."""
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.data.store import SearchScope
 
@@ -880,16 +1084,21 @@ class TestScopeChip:
         app = _ScopeChipApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            select = app.query_one("#scope-select", Select)
-            select.value = SearchScope.WIKI.value
-            await pilot.pause()
-            assert app.query_one(ScopeChip).scope is SearchScope.WIKI
+            chip = app.query_one(ScopeChip)
+            label = app.query_one("#scope-chip-pill", Static)
+            assert chip.scope is SearchScope.BOTH
+            assert "Scope: Both" in str(label.render())
+            assert chip.cycle_scope() is SearchScope.WIKI
+            assert chip.scope is SearchScope.WIKI
+            assert "Scope: Wiki" in str(label.render())
+            assert chip.cycle_scope() is SearchScope.RAW
+            assert "Scope: Raw" in str(label.render())
+            assert chip.cycle_scope() is SearchScope.BOTH
+            assert "Scope: Both" in str(label.render())
 
-    async def test_blank_select_value_returns_both(self) -> None:
-        """A spurious BLANK from Textual maps to SearchScope.BOTH so callers never crash."""
-        from unittest.mock import patch
-
-        from textual.widgets import Select
+    async def test_click_cycles_scope_and_stops_event(self) -> None:
+        """Clicking anywhere on the pill advances the scope and stops propagation."""
+        from textual import events
 
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.data.store import SearchScope
@@ -900,28 +1109,10 @@ class TestScopeChip:
         async with app.run_test() as pilot:
             await pilot.pause()
             chip = app.query_one(ScopeChip)
-            select = app.query_one("#scope-select", Select)
-            with patch.object(type(select), "value", new_callable=lambda: Select.BLANK):
-                assert chip.scope is SearchScope.BOTH
-
-    async def test_on_unmount_collapses_open_dropdown(self) -> None:
-        """The Select overlay is collapsed on unmount so it doesn't bleed cells."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
-
-        cfg.chat_mode = "search"
-        cfg.wiki = True
-        app = _ScopeChipApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            select = app.query_one("#scope-select", Select)
-            select.expanded = True
-            await pilot.pause()
-            assert select.expanded is True
-            chip = app.query_one(ScopeChip)
-            chip.on_unmount()
-            assert select.expanded is False
+            click = mock.MagicMock(spec=events.Click)
+            chip.on_click(click)
+            click.stop.assert_called_once()
+            assert chip.scope is SearchScope.WIKI
 
     async def test_on_settings_changed_chat_mode_recomputes_visibility(self) -> None:
         """A chat_mode flip in the signal payload toggles the chip visibility."""
@@ -950,10 +1141,9 @@ class TestScopeChip:
             chip._on_settings_changed(("temperature", 0.5))
             assert "-hidden" not in chip.classes
 
-    async def test_swallow_blank_stops_blank_event(self) -> None:
-        """A spurious BLANK Select.Changed event is dropped, not propagated."""
-        from textual.widgets import Select
-
+    async def test_pill_renders_cycle_glyph(self) -> None:
+        """The rendered pill text carries the cycle glyph from messages.py."""
+        from lilbee.cli.tui import messages as msg_mod
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
         cfg.chat_mode = "search"
@@ -961,32 +1151,11 @@ class TestScopeChip:
         app = _ScopeChipApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            chip = app.query_one(ScopeChip)
-            select = app.query_one("#scope-select", Select)
-            event = mock.MagicMock(spec=Select.Changed)
-            event.value = Select.BLANK
-            event.select = select
-            chip._swallow_blank(event)
-            event.stop.assert_called_once()
-
-    async def test_outer_click_focuses_select(self) -> None:
-        """Clicks on the ScopeChip frame forward focus to the inner Select."""
-        from textual import events
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
-
-        cfg.chat_mode = "search"
-        cfg.wiki = True
-        app = _ScopeChipApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            chip = app.query_one(ScopeChip)
-            click = mock.MagicMock(spec=events.Click)
-            click.widget = chip
-            chip.on_click(click)
-            await pilot.pause()
-            assert app.query_one("#scope-select", Select).has_focus
+            label = app.query_one("#scope-chip-pill", Static)
+            rendered = str(label.render())
+            assert msg_mod.SCOPE_CYCLE_GLYPH in rendered
+            # Sanity: the chip queries cleanly.
+            assert app.query_one(ScopeChip) is not None
 
 
 def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:

@@ -22,6 +22,9 @@ _MD_UPDATE_INTERVAL = 0.1
 _SPEAKER_YOU = "[bold $primary]you[/]"
 _SPEAKER_LILBEE = "[bold $success]lilbee[/]"
 
+_REASONING_BLOCK_CLASS = "reasoning-block"
+_REASONING_STREAMING_CLASS = "-streaming"
+
 _CSS_FILE = Path(__file__).parent / "message.tcss"
 _MESSAGE_CSS = _CSS_FILE.read_text(encoding="utf-8")
 
@@ -61,12 +64,21 @@ class AssistantMessage(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(_SPEAKER_LILBEE, classes="speaker-label")
-        self._thinking_header = ThinkingHeader()
-        yield self._thinking_header
         self._content_widget = self._build_content_widget()
         yield self._content_widget
         self._citation_widget = Static("", classes="source-citation")
         yield self._citation_widget
+
+    def on_mount(self) -> None:
+        """Mount the thinking header above the content widget.
+
+        ``compose`` populates ``_content_widget`` before this hook runs.
+        """
+        if self._content_widget is None:
+            return
+        header = ThinkingHeader()
+        self._thinking_header = header
+        self.mount(header, before=self._content_widget)
 
     def _build_content_widget(self) -> Markdown | Static:
         """Create the content widget based on the current rendering mode."""
@@ -120,8 +132,9 @@ class AssistantMessage(Vertical):
     def finish(self, sources: list[str] | None = None) -> None:
         """Mark response as complete and show citations."""
         self._finished = True
-        if self._thinking_header is not None:
-            self._thinking_header.stop()
+        # Always retire the standalone header on finish; the reasoning fold
+        # (if mounted) carries the post-stream title.
+        self._dismiss_thinking_header()
         if self._content_widget is not None and self._content_parts:
             self._content_widget.update("".join(self._content_parts))
             self.refresh()
@@ -129,10 +142,9 @@ class AssistantMessage(Vertical):
             if self._reasoning_static is not None:
                 self._reasoning_static.update("".join(self._reasoning_parts))
             token_count = len("".join(self._reasoning_parts).split())
+            self._reasoning_widget.remove_class(_REASONING_STREAMING_CLASS)
             self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)
             self._reasoning_widget.collapsed = True
-        else:
-            self._dismiss_thinking_header()
 
         if sources and self._citation_widget is not None:
             self._citation_widget.update(_build_citation_content(sources))
@@ -140,46 +152,29 @@ class AssistantMessage(Vertical):
             self._citation_widget.display = False
 
     def _mount_reasoning_collapsible(self) -> None:
-        """Replace the standalone header with a Collapsible whose title shimmers."""
-        if not self.is_mounted:
-            # Pre-mount path: lazy-create the static + collapsible without
-            # touching the DOM. The first append_reasoning before mount is
-            # rare but possible in tests.
-            self._reasoning_static = Static("", classes="reasoning-text")
-            self._reasoning_widget = Collapsible(
-                self._reasoning_static,
-                title=msg.CHAT_REASONING_STREAMING,
-                collapsed=False,
-                classes="reasoning-block",
-            )
-            return
-        header = self._thinking_header
+        """Mount the reasoning Collapsible with the streaming-state class.
+
+        Called from ``append_reasoning`` on the first reasoning token, after
+        the message itself is mounted. The Collapsible slots in beneath the
+        ``ThinkingHeader`` so the animator continues to drive the visual
+        weight while the toggle row is hidden by the ``-streaming`` rule.
+        """
+        classes = f"{_REASONING_BLOCK_CLASS} {_REASONING_STREAMING_CLASS}"
         self._reasoning_static = Static("", classes="reasoning-text")
         collapsible = Collapsible(
             self._reasoning_static,
-            title=msg.CHAT_REASONING_STREAMING,
+            title=msg.CHAT_REASONING_FINISHED.format(tokens=0),
             collapsed=False,
-            classes="reasoning-block",
+            classes=classes,
         )
-        if header is not None:
-            self.mount(collapsible, after=header)
-            header.redirect_to(lambda content: self._set_collapsible_title(collapsible, content))
-            header.display = False
-        else:
-            content = self._content_widget
-            if content is not None:
-                self.mount(collapsible, before=content)
-            else:
-                self.mount(collapsible)
         self._reasoning_widget = collapsible
-
-    @staticmethod
-    def _set_collapsible_title(target: Collapsible, content: Content) -> None:
-        """Push a styled frame into a Collapsible's title (a plain string slot)."""
-        # Collapsible.title is a string, not a widget. ``Content.markup``
-        # round-trips the styled frame through Textual's markup parser so
-        # the colours survive the assignment.
-        target.title = content.markup
+        header = self._thinking_header
+        if header is not None and header.is_mounted:
+            self.mount(collapsible, after=header)
+            return
+        content = self._content_widget
+        if content is not None:
+            self.mount(collapsible, before=content)
 
     def _dismiss_thinking_header(self) -> None:
         """Stop the animator and remove the standalone header from the DOM."""

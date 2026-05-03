@@ -179,6 +179,7 @@ class ChatScreen(Screen[None]):
         ),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
+        Binding("s", "cycle_scope", "Scope", show=False),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -1183,6 +1184,18 @@ class ChatScreen(Screen[None]):
             else msg.CHAT_MODE_CHAT_LABEL
         )
         self.notify(msg.CHAT_MODE_SET.format(label=label))
+
+    def action_cycle_scope(self) -> None:
+        """``s``: cycle the scope chip when it is currently visible."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        try:
+            chip = self.query_one("#scope-chip", ScopeChip)
+        except NoMatches:
+            return
+        if chip.has_class("-hidden"):
+            return
+        chip.cycle_scope()
 
     def action_complete(self) -> None:
         """Tab: cycle autocomplete, insert a literal tab, or advance focus.

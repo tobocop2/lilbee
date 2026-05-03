@@ -2148,20 +2148,67 @@ async def test_chat_slash_unknown_command():
 
 
 async def test_chat_current_chunk_type_reflects_scope_chip():
-    """The helper reads the scope Select via the ScopeChip widget."""
-    from textual.widgets import Select
-
-    from lilbee.data.store import SearchScope
+    """The helper reads the cycling pill state via the ScopeChip widget."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # Default scope is "both" -> chunk_type None
+        # Default scope is "both" -> chunk_type None.
         assert app.screen._current_chunk_type() is None
 
-        select = app.screen.query_one("#scope-select", Select)
-        select.value = SearchScope.WIKI.value
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        chip.cycle_scope()  # both -> wiki
         await _pilot.pause()
         assert app.screen._current_chunk_type() == "wiki"
+
+
+async def test_chat_action_cycle_scope_advances_visible_chip():
+    """``s`` on ChatScreen cycles the chip when wiki+search make it visible."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+    from lilbee.data.store import SearchScope
+
+    cfg.chat_mode = "search"
+    cfg.wiki = True
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        assert "-hidden" not in chip.classes
+        assert chip.scope is SearchScope.BOTH
+        app.screen.action_cycle_scope()
+        await pilot.pause()
+        assert chip.scope is SearchScope.WIKI
+
+
+async def test_chat_action_cycle_scope_noop_when_chip_hidden():
+    """``s`` is a no-op when the chip is hidden (chat mode or wiki off)."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+    from lilbee.data.store import SearchScope
+
+    cfg.chat_mode = "chat"
+    cfg.wiki = True
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        assert "-hidden" in chip.classes
+        app.screen.action_cycle_scope()
+        await pilot.pause()
+        assert chip.scope is SearchScope.BOTH
+
+
+async def test_chat_action_cycle_scope_noop_when_chip_unmounted():
+    """``s`` is a no-op when no ScopeChip is in the DOM (mid-screen-tear)."""
+    from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chip = app.screen.query_one("#scope-chip", ScopeChip)
+        await chip.remove()
+        await pilot.pause()
+        # action returns cleanly without raising NoMatches.
+        app.screen.action_cycle_scope()
 
 
 async def test_chat_current_chunk_type_without_scope_chip_returns_none():
