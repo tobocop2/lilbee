@@ -2918,6 +2918,46 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming is False
 
+    async def test_enter_in_normal_mode_flips_to_insert_without_submit(
+        self, _mock_resolve, _mock_services
+    ):
+        """Enter in normal mode flips the screen back to insert mode and
+        does NOT submit whatever stale text the input still holds.
+
+        Drive ``_on_chat_submitted`` directly so the test exercises the
+        normal-mode early-return regardless of which keybinding the
+        on_key handler intercepted along the way.
+        """
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.value = "stale text"
+            app.screen._insert_mode = False
+            event = ChatInput.Submitted(inp, "stale text")
+            app.screen._on_chat_submitted(event)
+            await pilot.pause()
+            assert app.screen._insert_mode is True
+            # The stale input text was NOT submitted as a chat turn.
+            assert len(list(app.screen.query(UserMessage))) == 0
+
+    async def test_exit_streaming_drains_queued_prompt(self, _mock_resolve, _mock_services):
+        """A prompt parked while streaming fires automatically once the
+        stream settles, instead of being silently dropped on the floor."""
+        with self._patch_stream_response():
+            app = ChatTestApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                sent: list[str] = []
+                app.screen._send_message = lambda text: sent.append(text)  # type: ignore[method-assign]
+                app.screen._queued_prompt = "deferred prompt"
+                app.screen._exit_streaming_state()
+                await pilot.pause()
+                assert app.screen._queued_prompt is None
+                assert sent == ["deferred prompt"]
+
 
 class TestStreamFlushCoalescing:
     """Token coalescing in _consume_stream prevents per-token call_from_thread floods."""

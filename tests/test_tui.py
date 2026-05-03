@@ -900,8 +900,13 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
-        # Tab is shown so keyboard users can discover model dropdown navigation.
-        assert len(visible) <= 4
+        # The chat screen exposes 4 distinct keys in the footer: slash
+        # (Commands), tab (model nav / completion), m (Models), and
+        # escape. Escape has two declarations (``Cancel stream`` while
+        # streaming, ``Normal mode`` otherwise) gated by ``check_action``
+        # so only one is visible at runtime; dedupe by key for the count.
+        unique_keys = {b.key for b in ChatScreen.BINDINGS if b.show}
+        assert len(unique_keys) <= 4
 
     def test_catalog_tab_bindings_removed(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
