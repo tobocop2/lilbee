@@ -211,10 +211,24 @@ class TestStatusScreen:
             def on_mount(self) -> None:
                 self.push_screen(StatusScreen())
 
+        import asyncio
+
         app = _StatusApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            # The Documents table is populated by ``_fetch_sources_worker``
+            # asynchronously. The first row painted is the "Loading..."
+            # placeholder; the worker callback replaces it with the real
+            # rows once ``store.get_sources`` returns. On slow runners
+            # (Windows in particular) the placeholder lands first and the
+            # row count stays at 1 until the worker finishes; pace the
+            # check until the worker has surfaced its results.
             table = app.screen.query_one("#docs-table", DataTable)
+            for _ in range(60):
+                if table.row_count >= 9:
+                    break
+                await pilot.pause()
+                await asyncio.sleep(0.1)
             row_count = table.row_count
             assert row_count >= 9, f"Expected >= 9 document rows, got {row_count}"
 
