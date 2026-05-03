@@ -64,7 +64,6 @@ class ScopeChip(Widget):
 
     def on_mount(self) -> None:
         self._refresh_visibility()
-        self._repaint()
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):
@@ -81,7 +80,7 @@ class ScopeChip(Widget):
 
     def cycle_scope(self) -> SearchScope:
         """Advance to the next scope in the cycle; return the new scope."""
-        idx = _SCOPE_CYCLE.index(self._scope) if self._scope in _SCOPE_CYCLE else 0
+        idx = _SCOPE_CYCLE.index(self._scope)
         self._scope = _SCOPE_CYCLE[(idx + 1) % len(_SCOPE_CYCLE)]
         self._repaint()
         return self._scope
