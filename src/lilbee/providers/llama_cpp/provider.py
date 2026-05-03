@@ -57,6 +57,7 @@ from lilbee.providers.model_cache import (
 from lilbee.providers.worker import WorkerManager
 from lilbee.providers.worker.embed_worker import embed_worker_main
 from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, WorkerPool
+from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import WorkerError
 
@@ -117,6 +118,7 @@ class LlamaCppProvider(LLMProvider):
         self._pool: WorkerPool | None = None
         self._pool_runtime: PoolRuntime | None = None
         self._pool_embed_accessor: RoleAccessor | None = None
+        self._pool_rerank_accessor: RoleAccessor | None = None
         self._pool_lock = threading.Lock()
 
     def _embed_worker(self) -> None:
@@ -232,20 +234,42 @@ class LlamaCppProvider(LLMProvider):
             self._subprocess_worker = WorkerManager()
         return self._subprocess_worker
 
+    def _ensure_pool(self) -> WorkerPool:
+        """Lazy-create the pool + runtime; safe to call from any role accessor.
+
+        Caller must already hold ``self._pool_lock``.
+        """
+        if self._pool is None:
+            self._pool = WorkerPool()
+            self._pool_runtime = PoolRuntime()
+            self._pool_runtime.start()
+        return self._pool
+
     def _get_pool_embed_accessor(self) -> RoleAccessor:
         """Lazy-create the pool, register the embed role, return its accessor."""
         with self._pool_lock:
             if self._pool_embed_accessor is not None:
                 return self._pool_embed_accessor
-            self._pool = WorkerPool()
-            self._pool_runtime = PoolRuntime()
-            self._pool_runtime.start()
-            self._pool_embed_accessor = self._pool.register(
+            pool = self._ensure_pool()
+            self._pool_embed_accessor = pool.register(
                 "embed",
                 embed_worker_main,
                 _make_embed_role_config_factory(),
             )
             return self._pool_embed_accessor
+
+    def _get_pool_rerank_accessor(self) -> RoleAccessor:
+        """Lazy-create the pool, register the rerank role, return its accessor."""
+        with self._pool_lock:
+            if self._pool_rerank_accessor is not None:
+                return self._pool_rerank_accessor
+            pool = self._ensure_pool()
+            self._pool_rerank_accessor = pool.register(
+                "rerank",
+                rerank_worker_main,
+                _make_rerank_role_config_factory(),
+            )
+            return self._pool_rerank_accessor
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts. Routes through the persistent worker pool by default.
@@ -292,12 +316,40 @@ class LlamaCppProvider(LLMProvider):
         return result
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Score *candidates* by relevance to *query*, queued through a single worker."""
+        """Score *candidates* by relevance to *query*.
+
+        Routes through the persistent worker pool when
+        ``cfg.worker_pool_enabled`` (default True), with the in-process
+        batching thread as the fallback path. The fallback runs on pool
+        failure so a worker crash does not break in-flight reranks.
+        """
         if not candidates:
             return []
+        if cfg.worker_pool_enabled:
+            try:
+                return self._rerank_via_pool(query, candidates)
+            except (OSError, RuntimeError, WorkerError) as exc:
+                log.warning("Pool rerank failed, falling back to in-process: %s", exc)
         fut: Future[list[float]] = Future()
         self._rerank_queue.put(RerankRequest(query=query, candidates=candidates, future=fut))
         return fut.result(timeout=RERANK_FUTURE_TIMEOUT_S)
+
+    def _rerank_via_pool(self, query: str, candidates: list[str]) -> list[float]:
+        """Run one rerank batch through the persistent pool worker."""
+        accessor = self._get_pool_rerank_accessor()
+        runtime = self._pool_runtime
+        assert runtime is not None  # noqa: S101  set by _get_pool_rerank_accessor
+        result = runtime.run_sync(
+            accessor.call("rerank", (query, candidates), timeout=cfg.worker_pool_call_timeout_s),
+            timeout=cfg.worker_pool_call_timeout_s,
+        )
+        if not isinstance(result, list):
+            raise WorkerError(
+                "ProtocolError",
+                f"Pool rerank returned {type(result).__name__}, expected list[float].",
+                "",
+            )
+        return result
 
     def supports_rerank(self) -> bool:
         """llama-cpp can rerank iff llama-cpp-python exposes the rank pooling type."""
@@ -406,6 +458,7 @@ class LlamaCppProvider(LLMProvider):
             self._pool = None
             self._pool_runtime = None
             self._pool_embed_accessor = None
+            self._pool_rerank_accessor = None
         if pool is not None and runtime is not None:
             try:
                 runtime.run_sync(pool.shutdown(), timeout=10.0)
@@ -501,6 +554,26 @@ def _make_embed_role_config_factory() -> Callable[[], RoleConfig]:
             role="embed",
             model_path=resolve_model_path(cfg.embedding_model),
             mode=MODE_EMBED,
+        )
+
+    return _make
+
+
+def _make_rerank_role_config_factory() -> Callable[[], RoleConfig]:
+    """Return a factory that resolves cfg.reranker_model at spawn time."""
+    from lilbee.providers.model_cache import MODE_RERANK
+
+    def _make() -> RoleConfig:
+        model_name = cfg.reranker_model
+        if not model_name:
+            raise ProviderError(
+                "No reranker model configured. Set cfg.reranker_model first.",
+                provider="llama-cpp",
+            )
+        return RoleConfig(
+            role="rerank",
+            model_path=resolve_model_path(model_name),
+            mode=MODE_RERANK,
         )
 
     return _make

@@ -232,6 +232,183 @@ def test_make_embed_role_config_factory_resolves_current_model(monkeypatch, tmp_
     assert role_config.model_path == tmp_path / "models" / "stub.gguf"
 
 
+def _patched_rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+    """Real rerank worker entrypoint with the load step swapped for a stub."""
+    from lilbee.providers.worker import rerank_worker
+
+    def _load(_self) -> Any:
+        class _StubLlama:
+            def create_embedding(self, *, input: str) -> dict[str, Any]:
+                # Length of the candidate substring after the </s></s> sep.
+                sep = "</s></s>"
+                candidate = input.split(sep, 1)[-1] if sep in input else input
+                return {"data": [{"embedding": [float(len(candidate))]}]}
+
+        return _StubLlama()
+
+    rerank_worker._RerankSession._load = _load  # type: ignore[method-assign]
+    rerank_worker.rerank_worker_main(conn, abort_flag, role_config)
+
+
+@pytest.fixture()
+def rerank_pool_provider(monkeypatch, tmp_path):
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/model"
+    cfg.reranker_model = "stub/reranker"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    fake_path = tmp_path / "models" / "stub.gguf"
+    fake_path.write_bytes(b"")
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: fake_path,
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.embed_worker_main",
+        _patched_embed_worker_main,
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.rerank_worker_main",
+        _patched_rerank_worker_main,
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    try:
+        yield provider
+    finally:
+        provider.shutdown()
+
+
+def test_rerank_routes_through_pool_when_enabled(rerank_pool_provider) -> None:
+    scores = rerank_pool_provider.rerank("query", ["aa", "bbbb", "c"])
+    assert scores == [2.0, 4.0, 1.0]
+
+
+def test_repeated_rerank_calls_reuse_one_accessor(rerank_pool_provider) -> None:
+    rerank_pool_provider.rerank("q", ["a"])
+    first = rerank_pool_provider._pool_rerank_accessor
+    rerank_pool_provider.rerank("q", ["b"])
+    rerank_pool_provider.rerank("q", ["c"])
+    # Same accessor across calls (no re-register).
+    assert rerank_pool_provider._pool_rerank_accessor is first
+
+
+def test_rerank_with_empty_candidates_short_circuits(rerank_pool_provider) -> None:
+    assert rerank_pool_provider.rerank("query", []) == []
+    # Empty case must not spawn a pool worker.
+    assert rerank_pool_provider._pool_rerank_accessor is None
+
+
+def test_rerank_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/model"
+    cfg.reranker_model = "stub/reranker"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+
+    def _boom(_query, _candidates):
+        raise RuntimeError("simulated pool failure")
+
+    monkeypatch.setattr(provider, "_rerank_via_pool", _boom)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.compute_rerank_scores",
+        lambda _llm, _q, candidates: [float(len(c)) for c in candidates],
+    )
+    monkeypatch.setattr(provider, "_get_rerank_llm", lambda: object())
+    try:
+        scores = provider.rerank("q", ["abc", "de"])
+        assert scores == [3.0, 2.0]
+    finally:
+        provider.shutdown()
+
+
+def _bad_rerank_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+    """Worker that always replies to rerank with a non-list payload."""
+    while True:
+        if not conn.poll(timeout=0.1):
+            continue
+        try:
+            kind, _ = conn.recv()
+        except EOFError:
+            return
+        if kind == "shutdown":
+            conn.send(("ack", None))
+            return
+        if kind == "rerank":
+            conn.send(("result", "not-a-list"))
+            continue
+        conn.send(("result", "ignored"))
+
+
+def test_rerank_pool_protocol_error_when_worker_returns_non_list(monkeypatch, tmp_path) -> None:
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/model"
+    cfg.reranker_model = "stub/reranker"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.rerank_worker_main",
+        _bad_rerank_protocol_worker_main,
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.compute_rerank_scores",
+        lambda _llm, _q, candidates: [float(len(c)) for c in candidates],
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    monkeypatch.setattr(provider, "_get_rerank_llm", lambda: object())
+    try:
+        scores = provider.rerank("q", ["abc"])
+        assert scores == [3.0]
+    finally:
+        provider.shutdown()
+
+
+def test_make_rerank_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
+    cfg.reranker_model = "stub/reranker"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    from lilbee.providers.llama_cpp.provider import _make_rerank_role_config_factory
+
+    factory = _make_rerank_role_config_factory()
+    role_config = factory()
+    assert role_config.role == "rerank"
+    assert role_config.mode == "rerank"
+
+
+def test_make_rerank_role_config_factory_raises_when_unset(monkeypatch) -> None:
+    cfg.reranker_model = ""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.llama_cpp.provider import _make_rerank_role_config_factory
+
+    factory = _make_rerank_role_config_factory()
+    with pytest.raises(ProviderError, match="No reranker model configured"):
+        factory()
+
+
 def test_shutdown_handles_pool_shutdown_failure(monkeypatch, tmp_path) -> None:
     """A pool that raises during shutdown still tears down the runtime cleanly."""
     cfg.worker_pool_enabled = True
