@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import ClassVar
@@ -194,16 +195,9 @@ class StatusScreen(Screen[None]):
             ]
         )
         self._sections_mounted = True
-        # Collapsible children compose on the next refresh tick, so
-        # querying their inner DataTable / Static immediately after
-        # mount_all races on Windows. Defer the loading-placeholder
-        # paint and any pending worker results until after Textual
-        # finishes composing the freshly-mounted Collapsibles.
-        self.call_after_refresh(self._fill_deferred_sections)
-
-    def _fill_deferred_sections(self) -> None:
-        """Populate placeholders + replay parked worker results."""
         self._show_loading_placeholders()
+        # Replay any worker callbacks that arrived before the deferred
+        # mount completed.
         if self._pending_sources is not None:
             self._load_documents(self._pending_sources)
             self._load_storage(len(self._pending_sources))
@@ -213,13 +207,27 @@ class StatusScreen(Screen[None]):
             self._pending_arch = None
 
     def _show_loading_placeholders(self) -> None:
-        """Surface a 'Loading…' marker for sections backed by workers."""
-        table = self.query_one("#docs-table", DataTable)
-        table.add_columns("Document", "Chunks")
-        table.cursor_type = "row"
-        table.add_row("Loading...", "")
-        self.query_one("#storage-info", Static).update(Content.styled("Loading...", "$text-muted"))
-        self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
+        """Surface a 'Loading…' marker for sections backed by workers.
+
+        Wrapped in NoMatches suppression because Collapsible children
+        compose on the next refresh tick, which on Windows can outlast
+        the synchronous return from mount_all. Worker callbacks repaint
+        the same widgets when they arrive, so a missed placeholder is
+        only a brief cosmetic gap.
+        """
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            table.add_columns("Document", "Chunks")
+            table.cursor_type = "row"
+            table.add_row("Loading...", "")
+        with contextlib.suppress(NoMatches):
+            self.query_one("#storage-info", Static).update(
+                Content.styled("Loading...", "$text-muted")
+            )
+        with contextlib.suppress(NoMatches):
+            self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
     @work(thread=True, name="status_fetch_sources", exit_on_error=False)
     def _fetch_sources_worker(self) -> list[SourceRecord]:
