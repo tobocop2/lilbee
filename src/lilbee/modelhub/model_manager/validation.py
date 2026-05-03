@@ -85,7 +85,13 @@ def validate_persisted_model(ref: str) -> ValidationResult:
 def _first_available_api_chat_ref() -> str | None:
     """Return the first cloud chat ref backed by a configured API key,
     or ``None`` if no provider is configured. Probes providers in the
-    order declared on the Config (llm, openai, anthropic, gemini)."""
+    order declared on the Config (llm, openai, anthropic, gemini).
+
+    The returned ref is provider-prefixed (e.g. ``openai/gpt-4o``) so it
+    round-trips through :class:`Config`'s model-ref validator. The SDK
+    backend exposes bare model names (``gpt-4o``); prefixing here keeps
+    the canonicalization output a valid persisted ref.
+    """
     try:
         groups = discover_api_models()
     except Exception:
@@ -93,7 +99,8 @@ def _first_available_api_chat_ref() -> str | None:
         return None
     for _provider, models in groups.items():
         if models:
-            return models[0].name
+            first = models[0]
+            return f"{first.provider.lower()}/{first.name}"
     return None
 
 
