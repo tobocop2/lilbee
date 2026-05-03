@@ -201,8 +201,9 @@ def test_embed_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> N
         provider.shutdown()
 
 
-def test_embed_pool_protocol_error_when_worker_returns_non_list(monkeypatch, tmp_path) -> None:
-    """Worker returning a non-list payload surfaces as a clear ProtocolError."""
+def test_embed_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-list payload trips ProtocolError, which is
+    caught at the provider boundary and degrades to the in-process queue."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -372,7 +373,9 @@ def _bad_rerank_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleC
         conn.send(("result", "ignored"))
 
 
-def test_rerank_pool_protocol_error_when_worker_returns_non_list(monkeypatch, tmp_path) -> None:
+def test_rerank_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-list payload trips ProtocolError, which is
+    caught at the provider boundary and degrades to the in-process queue."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -602,7 +605,9 @@ def _bad_chat_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleCon
         conn.send(("result", "ignored"))
 
 
-def test_chat_pool_protocol_error_when_worker_returns_non_str(monkeypatch, tmp_path) -> None:
+def test_chat_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-string payload trips ProtocolError, which is
+    caught at the provider boundary and degrades to the in-process chat path."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
@@ -790,7 +795,12 @@ def _bad_vision_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleC
         conn.send(("result", "ignored"))
 
 
-def test_vision_ocr_pool_protocol_error_when_worker_returns_non_str(monkeypatch, tmp_path) -> None:
+def test_vision_ocr_pool_protocol_error_falls_back_to_legacy_subprocess(
+    monkeypatch, tmp_path
+) -> None:
+    """A worker returning a non-string payload trips ProtocolError, which is
+    caught at the provider boundary and degrades to the legacy per-call
+    subprocess WorkerManager."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
