@@ -62,6 +62,7 @@ from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, WorkerPool
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import WorkerError
+from lilbee.providers.worker.vision_worker import vision_worker_main
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class LlamaCppProvider(LLMProvider):
         self._pool_embed_accessor: RoleAccessor | None = None
         self._pool_rerank_accessor: RoleAccessor | None = None
         self._pool_chat_accessor: RoleAccessor | None = None
+        self._pool_vision_accessor: RoleAccessor | None = None
         self._pool_lock = threading.Lock()
 
     def _embed_worker(self) -> None:
@@ -287,6 +289,19 @@ class LlamaCppProvider(LLMProvider):
             )
             return self._pool_chat_accessor
 
+    def _get_pool_vision_accessor(self) -> RoleAccessor:
+        """Lazy-create the pool, register the vision role, return its accessor."""
+        with self._pool_lock:
+            if self._pool_vision_accessor is not None:
+                return self._pool_vision_accessor
+            pool = self._ensure_pool()
+            self._pool_vision_accessor = pool.register(
+                "vision",
+                vision_worker_main,
+                _make_vision_role_config_factory(),
+            )
+            return self._pool_vision_accessor
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts. Routes through the persistent worker pool by default.
 
@@ -374,8 +389,59 @@ class LlamaCppProvider(LLMProvider):
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
-        """Run vision OCR via the subprocess worker, honouring an optional per-call timeout."""
+        """Run vision OCR. Routes through the persistent worker pool by default.
+
+        Pool failures fall back to the legacy per-call ``WorkerManager``
+        path so a vision-worker crash does not break ingest in flight.
+        """
+        if cfg.worker_pool_enabled:
+            try:
+                return self._vision_ocr_via_pool(
+                    png_bytes=png_bytes, model=model, prompt=prompt, timeout=timeout
+                )
+            except (OSError, RuntimeError, WorkerError) as exc:
+                log.warning("Pool vision_ocr failed, falling back to legacy subprocess: %s", exc)
         return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
+
+    def _vision_ocr_via_pool(
+        self,
+        *,
+        png_bytes: bytes,
+        model: str,
+        prompt: str,
+        timeout: float | None,
+    ) -> str:
+        """Run one vision OCR call through the persistent pool worker."""
+        accessor = self._get_pool_vision_accessor()
+        runtime = self._pool_runtime
+        assert runtime is not None  # noqa: S101  set by _get_pool_vision_accessor
+        budget = self._vision_call_budget(timeout)
+        payload = {"png_bytes": png_bytes, "model": model or None, "prompt": prompt}
+        result = runtime.run_sync(
+            accessor.call("vision_ocr", payload, timeout=budget),
+            timeout=budget,
+        )
+        if not isinstance(result, str):
+            raise WorkerError(
+                "ProtocolError",
+                f"Pool vision_ocr returned {type(result).__name__}, expected str.",
+                "",
+            )
+        return result
+
+    @staticmethod
+    def _vision_call_budget(timeout: float | None) -> float:
+        """Pick the wall-clock budget for one pool vision_ocr call.
+
+        Mirrors ``WorkerManager.vision_ocr`` semantics: per-call ``timeout``
+        wins when set, otherwise falls back to ``cfg.ocr_timeout``;
+        ``0`` or ``None`` means no cap (substituted with ``_NO_CAP_TIMEOUT_S``
+        for the round-trip wait loop).
+        """
+        from lilbee.providers.worker.manager import _NO_CAP_TIMEOUT_S
+
+        effective = timeout if timeout is not None else cfg.ocr_timeout
+        return float(effective) if effective and effective > 0 else _NO_CAP_TIMEOUT_S
 
     def chat(
         self,
@@ -542,6 +608,7 @@ class LlamaCppProvider(LLMProvider):
             self._pool_embed_accessor = None
             self._pool_rerank_accessor = None
             self._pool_chat_accessor = None
+            self._pool_vision_accessor = None
         if pool is not None and runtime is not None:
             try:
                 runtime.run_sync(pool.shutdown(), timeout=10.0)
@@ -741,6 +808,31 @@ def _make_chat_role_config_factory() -> Callable[[], RoleConfig]:
             role="chat",
             model_path=resolve_model_path(model_name),
             mode=MODE_CHAT,
+        )
+
+    return _make
+
+
+def _make_vision_role_config_factory() -> Callable[[], RoleConfig]:
+    """Return a factory that resolves cfg.vision_model at spawn time.
+
+    Vision uses a custom mtmd loader (not the standard load_llama path),
+    so ``mode`` is set to ``"vision"`` here purely as documentation; the
+    worker's ``_VisionSession._ensure_loaded`` calls ``load_vision_llama``
+    directly and ignores the mode hint.
+    """
+
+    def _make() -> RoleConfig:
+        model_name = cfg.vision_model
+        if not model_name:
+            raise ProviderError(
+                "No vision model configured. Set cfg.vision_model first.",
+                provider="llama-cpp",
+            )
+        return RoleConfig(
+            role="vision",
+            model_path=resolve_model_path(model_name),
+            mode="vision",
         )
 
     return _make

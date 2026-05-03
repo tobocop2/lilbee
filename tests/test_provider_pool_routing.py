@@ -658,6 +658,193 @@ def test_chat_kwargs_filter_handles_empty_options() -> None:
     assert LlamaCppProvider._chat_kwargs_from_options({}) == {}
 
 
+def _stub_vision_load(_self) -> Any:
+    class _StubLlama:
+        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
+            return {
+                "choices": [{"message": {"content": "vision-result"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    return _StubLlama()
+
+
+def _patched_vision_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+    from lilbee.providers.worker import vision_worker
+
+    vision_worker._VisionSession._ensure_loaded = lambda self, _o: _stub_vision_load(self)  # type: ignore[method-assign]
+    vision_worker.vision_worker_main(conn, abort_flag, role_config)
+
+
+@pytest.fixture()
+def vision_pool_provider(monkeypatch, tmp_path):
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/embed"
+    cfg.vision_model = "stub/vision"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    fake_path = tmp_path / "models" / "stub.gguf"
+    fake_path.write_bytes(b"")
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: fake_path,
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.vision_worker_main",
+        _patched_vision_worker_main,
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    try:
+        yield provider
+    finally:
+        provider.shutdown()
+
+
+def test_vision_ocr_routes_through_pool(vision_pool_provider) -> None:
+    result = vision_pool_provider.vision_ocr(b"\x89PNG", "stub/vision", "describe")
+    assert result == "vision-result"
+
+
+def test_vision_ocr_repeated_calls_reuse_one_accessor(vision_pool_provider) -> None:
+    vision_pool_provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
+    first = vision_pool_provider._pool_vision_accessor
+    vision_pool_provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
+    assert vision_pool_provider._pool_vision_accessor is first
+
+
+def test_vision_ocr_falls_back_to_legacy_subprocess_on_pool_failure(monkeypatch, tmp_path) -> None:
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/embed"
+    cfg.vision_model = "stub/vision"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+
+    def _boom(**_kwargs):
+        raise RuntimeError("simulated pool failure")
+
+    monkeypatch.setattr(provider, "_vision_ocr_via_pool", _boom)
+
+    class _LegacyWorker:
+        def vision_ocr(self, png_bytes, model, prompt, *, timeout):
+            return "legacy-result"
+
+    monkeypatch.setattr(provider, "_get_subprocess_worker", lambda: _LegacyWorker())
+    try:
+        result = provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
+        assert result == "legacy-result"
+    finally:
+        provider.shutdown()
+
+
+def _bad_vision_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+    """Worker that always replies to vision_ocr with a non-str payload."""
+    while True:
+        if not conn.poll(timeout=0.1):
+            continue
+        try:
+            kind, _ = conn.recv()
+        except EOFError:
+            return
+        if kind == "shutdown":
+            conn.send(("ack", None))
+            return
+        if kind == "vision_ocr":
+            conn.send(("result", 12345))
+            continue
+        conn.send(("result", "ignored"))
+
+
+def test_vision_ocr_pool_protocol_error_when_worker_returns_non_str(monkeypatch, tmp_path) -> None:
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/embed"
+    cfg.vision_model = "stub/vision"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.vision_worker_main",
+        _bad_vision_protocol_worker_main,
+    )
+
+    class _LegacyWorker:
+        def vision_ocr(self, png_bytes, model, prompt, *, timeout):
+            return "legacy-fallback"
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    monkeypatch.setattr(provider, "_get_subprocess_worker", lambda: _LegacyWorker())
+    try:
+        result = provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
+        assert result == "legacy-fallback"
+    finally:
+        provider.shutdown()
+
+
+def test_make_vision_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
+    cfg.vision_model = "stub/vision"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    from lilbee.providers.llama_cpp.provider import _make_vision_role_config_factory
+
+    factory = _make_vision_role_config_factory()
+    role_config = factory()
+    assert role_config.role == "vision"
+    assert role_config.mode == "vision"
+
+
+def test_make_vision_role_config_factory_raises_when_unset(monkeypatch) -> None:
+    object.__setattr__(cfg, "vision_model", "")
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.llama_cpp.provider import _make_vision_role_config_factory
+
+    factory = _make_vision_role_config_factory()
+    with pytest.raises(ProviderError, match="No vision model configured"):
+        factory()
+
+
+def test_vision_call_budget_uses_per_call_timeout_when_set() -> None:
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    assert LlamaCppProvider._vision_call_budget(45.0) == 45.0
+
+
+def test_vision_call_budget_falls_back_to_cfg_ocr_timeout(monkeypatch) -> None:
+    cfg.ocr_timeout = 17.5
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    assert LlamaCppProvider._vision_call_budget(None) == 17.5
+
+
+def test_vision_call_budget_uses_no_cap_when_zero() -> None:
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    from lilbee.providers.worker.manager import _NO_CAP_TIMEOUT_S
+
+    assert LlamaCppProvider._vision_call_budget(0) == _NO_CAP_TIMEOUT_S
+
+
 def test_shutdown_handles_pool_shutdown_failure(monkeypatch, tmp_path) -> None:
     """A pool that raises during shutdown still tears down the runtime cleanly."""
     cfg.worker_pool_enabled = True
