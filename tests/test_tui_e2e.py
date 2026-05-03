@@ -1183,6 +1183,8 @@ class TestCatalogInteractions:
 
     async def test_grid_cta_removed_when_search_cleared(self, _mock_resolve):
         """Grid-view CTA unmounts once the user wipes the search input."""
+        import asyncio
+
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -1194,17 +1196,23 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "anything"
-                # Mounting the CTA is async (container.mount). On slower runners
-                # a single pilot.pause isn't enough; poll until it settles.
-                for _ in range(10):
+                # Mounting the CTA is async (container.mount). On slower
+                # runners (Windows in particular) the search-debounce timer
+                # plus the mount round-trip exceed the single-pause budget;
+                # pace with explicit sleeps so the wallclock advances enough
+                # for the CTA to settle to its final state.
+                for _ in range(20):
                     await pilot.pause()
-                    if list(app.screen.query("#catalog-grid > .search-hf-cta")):
+                    await asyncio.sleep(0.05)
+                    ctas = list(app.screen.query("#catalog-grid > .search-hf-cta"))
+                    if len(ctas) == 1:
                         break
                 assert len(list(app.screen.query("#catalog-grid > .search-hf-cta"))) == 1
 
                 search.value = ""
-                for _ in range(10):
+                for _ in range(20):
                     await pilot.pause()
+                    await asyncio.sleep(0.05)
                     if not list(app.screen.query("#catalog-grid > .search-hf-cta")):
                         break
                 assert not list(app.screen.query("#catalog-grid > .search-hf-cta"))
