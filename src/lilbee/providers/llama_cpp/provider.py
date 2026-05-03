@@ -726,6 +726,16 @@ class _PoolChatStreamIterator:
         except StopAsyncIteration:
             self._exhausted = True
             raise StopIteration from None
+        except WorkerError as exc:
+            # Mid-stream worker crashes propagate as ProviderError so the
+            # streaming path matches the non-streaming contract. Without
+            # this, callers see the raw RuntimeError-shaped WorkerError
+            # bypassing the "Chat worker crashed during request" wrapper.
+            self._exhausted = True
+            raise ProviderError(
+                f"Chat worker crashed during request: {exc}. Please try again.",
+                provider="llama-cpp",
+            ) from exc
 
     def close(self) -> None:
         """Cancel mid-stream and drain remaining tokens from the pipe.

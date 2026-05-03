@@ -546,6 +546,36 @@ def test_chat_streaming_close_before_exhaustion_releases(chat_pool_provider) -> 
     iterator.close()
 
 
+def test_chat_streaming_mid_stream_worker_error_raises_provider_error(
+    chat_pool_provider,
+) -> None:
+    """A WorkerError raised by ``__anext__`` mid-stream surfaces to the caller
+    as ``ProviderError`` so the streaming path matches the non-streaming
+    contract. Without the translation the raw RuntimeError-shaped WorkerError
+    leaks past the provider boundary.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    class _AnextWorkerError:
+        async def __anext__(self):
+            raise WorkerError("RuntimeError", "worker died mid-stream", "")
+
+    iterator._async_iter = _AnextWorkerError()
+    with pytest.raises(ProviderError, match="Chat worker crashed"):
+        next(iter(iterator))
+    # Iterator must mark itself exhausted so subsequent next() returns
+    # StopIteration instead of repeatedly raising the same crash error.
+    assert iterator._exhausted is True
+    with pytest.raises(StopIteration):
+        next(iter(iterator))
+
+
 def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool worker errors must propagate as ProviderError, not silently fall back."""
     cfg.worker_pool_enabled = True
