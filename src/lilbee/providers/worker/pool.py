@@ -115,9 +115,9 @@ class RoleDegradedError(WorkerError):
         super().__init__(
             "RoleDegradedError",
             (
-                f"Worker '{role}' crashed {attempts} times in the last "
-                f"{window_s:.0f}s and is now disabled. Restart lilbee or "
-                f"call Services.worker_pool.reset_role_failures({role!r})."
+                f"The {role} worker crashed {attempts} times in the last "
+                f"{window_s:.0f} seconds and is now disabled. Restart "
+                "lilbee to recover."
             ),
             "",
         )
@@ -245,6 +245,7 @@ class WorkerPool:
         max_idle_s: float = _DEFAULT_MAX_IDLE_S,
         restart_attempts: int = _DEFAULT_RESTART_ATTEMPTS,
         restart_window_s: float = _DEFAULT_RESTART_WINDOW_S,
+        health_timeout_s: float = _DEFAULT_HEALTH_TIMEOUT_S,
     ) -> None:
         self._spawner: WorkerSpawner = spawner if spawner is not None else PipeSpawner()
         self._roles: dict[str, _Role] = {}
@@ -253,6 +254,7 @@ class WorkerPool:
         self._max_idle_s = max_idle_s
         self._restart_attempts = restart_attempts
         self._restart_window_s = restart_window_s
+        self._health_timeout_s = health_timeout_s
 
     def register(
         self,
@@ -459,17 +461,20 @@ class WorkerPool:
         self,
         role: str,
         *,
-        timeout: float = _DEFAULT_HEALTH_TIMEOUT_S,
+        timeout: float | None = None,
     ) -> None:
         """Round-trip a ping/pong against *role*; raise on timeout / crash.
 
-        Spawns the worker on first use, same as a real call. Caller
+        ``timeout`` defaults to the pool's ``health_timeout_s`` (sourced
+        from ``cfg.worker_pool_health_timeout_s`` at Services construction
+        time). Spawns the worker on first use, same as a real call. Caller
         (typically a background health monitor) decides cadence and
         whether to respond by reaping/restarting; this method only
         propagates the round-trip outcome.
         """
         accessor = self.accessor(role)
-        await accessor.ping(timeout=timeout)
+        budget = timeout if timeout is not None else self._health_timeout_s
+        await accessor.ping(timeout=budget)
 
     async def release(self, role: str) -> None:
         """Close *role*'s live worker and forget the registration entirely.

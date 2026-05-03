@@ -120,6 +120,22 @@ class WorkerChannel(Protocol):
     worker's lifetime, torn down via :meth:`close`. Methods are ordered
     by the typical call sequence (call/stream during inference, ping for
     health, cancel/clear_abort to interrupt, close on shutdown).
+
+    Call-ordering contract
+    ----------------------
+
+    1. The spawner returns a channel ready for ``call`` / ``stream`` /
+       ``ping`` immediately. There is no ``initialize`` step.
+    2. ``is_alive`` and ``in_flight`` are safe to read at any time,
+       including concurrently with an in-flight ``call`` / ``stream``.
+    3. ``call``, ``stream``, and ``ping`` may run concurrently with each
+       other (each acquires its own send/recv lock internally), but the
+       worker process serializes them on the wire.
+    4. ``cancel`` / ``clear_abort`` are best-effort and never block on a
+       lock; safe to call from any thread, including during a streaming
+       ``__anext__`` so the consumer can interrupt itself.
+    5. ``close`` is final. After it returns, ``call`` / ``stream`` /
+       ``ping`` must raise :class:`WorkerError`. ``close`` is idempotent.
     """
 
     @property

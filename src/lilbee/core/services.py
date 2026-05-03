@@ -126,6 +126,7 @@ def get_services() -> Services:
         max_idle_s=cfg.worker_pool_max_idle_s,
         restart_attempts=cfg.worker_pool_restart_attempts,
         restart_window_s=cfg.worker_pool_restart_window_s,
+        health_timeout_s=cfg.worker_pool_health_timeout_s,
     )
     pool_runtime = PoolRuntime()
     provider = create_provider(cfg)
