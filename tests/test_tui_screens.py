@@ -4018,6 +4018,27 @@ async def test_catalog_get_search_text_returns_empty_when_input_missing():
     assert screen._get_search_text() == ""
 
 
+async def test_catalog_update_sort_label_swallows_missing_widget():
+    """``_update_sort_label`` early-returns when ``#sort-label`` is unmounted,
+    so worker callbacks racing the screen's ``compose`` cannot crash with
+    NoMatches (the source of an intermittent Windows CI failure)."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # Remove the sort-label widget so the next call hits NoMatches.
+            screen.query_one("#sort-label", Static).remove()
+            await _pilot.pause()
+            # Must not raise.
+            screen._update_sort_label()
+
+
 async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
     """_initial_focus_first_grid is a no-op once a focus owner exists."""
     from textual.widgets import Input

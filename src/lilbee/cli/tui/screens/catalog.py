@@ -996,8 +996,20 @@ class CatalogScreen(Screen[None]):
             )
 
     def _update_sort_label(self) -> None:
-        """Update the sort indicator label, switching copy by active tab."""
-        label = self.query_one("#sort-label", Static)
+        """Update the sort indicator label, switching copy by active tab.
+
+        Wrapped in NoMatches suppression because the worker callbacks that
+        trigger an update (``_fetch_remote_models``, ``_fetch_frontier_models``)
+        can fire on the next loop tick after a screen switch, before the
+        new screen's ``compose`` has finished mounting ``#sort-label``.
+        On Windows that race lands often enough to fail CI.
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            label = self.query_one("#sort-label", Static)
+        except NoMatches:
+            return
         if self._active_tab_id() == _FRONTIER_TAB_ID:
             label.update(self._frontier_label_text())
             return
