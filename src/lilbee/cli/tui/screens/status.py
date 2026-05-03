@@ -194,9 +194,16 @@ class StatusScreen(Screen[None]):
             ]
         )
         self._sections_mounted = True
+        # Collapsible children compose on the next refresh tick, so
+        # querying their inner DataTable / Static immediately after
+        # mount_all races on Windows. Defer the loading-placeholder
+        # paint and any pending worker results until after Textual
+        # finishes composing the freshly-mounted Collapsibles.
+        self.call_after_refresh(self._fill_deferred_sections)
+
+    def _fill_deferred_sections(self) -> None:
+        """Populate placeholders + replay parked worker results."""
         self._show_loading_placeholders()
-        # If a worker callback fired before the deferred mount completed,
-        # the result is parked on the screen and replayed here.
         if self._pending_sources is not None:
             self._load_documents(self._pending_sources)
             self._load_storage(len(self._pending_sources))

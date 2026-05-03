@@ -10264,3 +10264,48 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             await _pilot.pause()
             hint = screen.query_one("#catalog-grid > .scroll-hint", Static)
             assert "loading" in str(hint.render()).lower()
+
+
+def test_status_worker_state_changed_dispatches_when_sections_mounted():
+    """on_worker_state_changed routes results into _load_* once sections mounted."""
+    from textual.worker import WorkerState
+
+    from lilbee.cli.tui.screens.status import ModelArchInfo, StatusScreen
+
+    screen = StatusScreen.__new__(StatusScreen)
+    screen._sections_mounted = True
+    screen._pending_sources = None
+    screen._pending_arch = None
+
+    loaded_docs: list[list] = []
+    loaded_storage: list[int] = []
+    loaded_arch: list[ModelArchInfo] = []
+    screen._load_documents = loaded_docs.append
+    screen._load_storage = loaded_storage.append
+    screen._load_arch = loaded_arch.append
+
+    sources_event = type(
+        "Ev",
+        (),
+        {
+            "state": WorkerState.SUCCESS,
+            "worker": type(
+                "W", (), {"name": "status_fetch_sources", "result": [{"a": 1}, {"b": 2}]}
+            )(),
+        },
+    )()
+    screen.on_worker_state_changed(sources_event)
+    assert loaded_docs == [[{"a": 1}, {"b": 2}]]
+    assert loaded_storage == [2]
+
+    arch_payload = ModelArchInfo()
+    arch_event = type(
+        "Ev",
+        (),
+        {
+            "state": WorkerState.SUCCESS,
+            "worker": type("W", (), {"name": "status_fetch_arch", "result": arch_payload})(),
+        },
+    )()
+    screen.on_worker_state_changed(arch_event)
+    assert loaded_arch == [arch_payload]

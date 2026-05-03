@@ -1069,13 +1069,18 @@ class TestCatalogInteractions:
                 initial_count = len(app.screen.query(ModelCard))
                 assert initial_count > 0
 
+                # Reveal the catalog filter (hidden by default) before
+                # writing into it; otherwise the Input.Changed handler
+                # never wires up.
+                await pilot.press("slash")
+                await pilot.pause()
                 search = app.screen.query_one("#catalog-search")
                 # Filter to a string that no fixture matches so we can
                 # observe narrowing without depending on fixture cardinality.
                 search.value = "definitely-no-such-model-xyz"
                 # Wait past the catalog search debounce (80 ms) so the
                 # filter actually runs.
-                await pilot.pause(0.15)
+                await pilot.pause(0.2)
 
                 # Filter rebuilds the VirtualGrid dataset; non-matching
                 # cards are not mounted at all.

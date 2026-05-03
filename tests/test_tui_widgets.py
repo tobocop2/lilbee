@@ -5058,3 +5058,62 @@ class TestVirtualGridLayoutEdges:
             # Some of the originally-mounted top rows should have been
             # unmounted; otherwise the unmount branch is dead code.
             assert any(k not in after_keys for k in initial_keys)
+
+
+class TestVirtualGridHighlightHelpers:
+    """Cover highlight_first / highlight_last and the cursor-step branches."""
+
+    def test_highlight_first_sets_index_zero_when_rows_present(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = None
+        grid.highlight_first()
+        assert grid.highlighted == 0
+
+    def test_highlight_first_no_op_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([])
+        grid.highlight_first()
+        assert grid.highlighted is None
+
+    def test_highlight_last_lands_on_final_row(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([_vgrid_row("a"), _vgrid_row("b"), _vgrid_row("c")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlight_last()
+        assert grid.highlighted == 2
+
+    def test_highlight_last_no_op_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        grid = VirtualGrid([])
+        grid.highlight_last()
+        assert grid.highlighted is None
+
+    def test_action_cursor_up_steps_one_row_when_above_first_row(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = VirtualGrid(rows)
+        grid._cards_per_row = 4
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 5
+        grid.action_cursor_up()
+        # 5 - 4 = 1
+        assert grid.highlighted == 1
+
+    def test_action_cursor_down_steps_one_row(self) -> None:
+        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = VirtualGrid(rows)
+        grid._cards_per_row = 4
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.action_cursor_down()
+        # 1 + 4 = 5
+        assert grid.highlighted == 5
