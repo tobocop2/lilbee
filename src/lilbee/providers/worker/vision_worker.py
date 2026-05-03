@@ -33,24 +33,26 @@ import os
 import time
 from typing import Any
 
-from lilbee.providers.worker.embed_worker import (
-    _configure_worker_logging,
-    _redirect_stdio_to_devnull,
-)
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
+from lilbee.providers.worker.wire_kinds import (
+    ACK_KIND,
+    ERROR_KIND,
+    PING_KIND,
+    PONG_KIND,
+    RESULT_KIND,
+    SHUTDOWN_KIND,
+    VISION_KIND,
+)
+from lilbee.providers.worker.worker_runtime import (
+    configure_worker_logging,
+    redirect_stdio_to_devnull,
+)
 
 log = logging.getLogger(__name__)
 
 
 _POLL_TIMEOUT_S = 0.5
-_VISION_KIND = "vision_ocr"
-_PING_KIND = "ping"
-_SHUTDOWN_KIND = "shutdown"
-_RESULT_KIND = "result"
-_ERROR_KIND = "error"
-_PONG_KIND = "pong"
-_ACK_KIND = "ack"
 
 
 class _VisionSession:
@@ -111,14 +113,14 @@ def _handle_vision(conn: Any, payload: Any, session: _VisionSession) -> None:
         try:
             raise TypeError(f"vision_ocr payload must be dict, got {type(payload).__name__}")
         except TypeError as exc:
-            conn.send((_ERROR_KIND, _serialize_exception(exc)))
+            conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     png_bytes = payload.get("png_bytes")
     if not isinstance(png_bytes, (bytes, bytearray)):
         try:
             raise TypeError("vision_ocr payload.png_bytes must be bytes")
         except TypeError as exc:
-            conn.send((_ERROR_KIND, _serialize_exception(exc)))
+            conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     try:
         text = session.ocr(
@@ -127,33 +129,33 @@ def _handle_vision(conn: Any, payload: Any, session: _VisionSession) -> None:
             model=payload.get("model"),
         )
     except Exception as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
-    conn.send((_RESULT_KIND, text))
+    conn.send((RESULT_KIND, text))
 
 
 def _dispatch(conn: Any, kind: str, payload: Any, session: _VisionSession) -> bool:
     """Handle one request. Return False to stop the worker loop."""
-    if kind == _SHUTDOWN_KIND:
-        conn.send((_ACK_KIND, None))
+    if kind == SHUTDOWN_KIND:
+        conn.send((ACK_KIND, None))
         return False
-    if kind == _PING_KIND:
-        conn.send((_PONG_KIND, None))
+    if kind == PING_KIND:
+        conn.send((PONG_KIND, None))
         return True
-    if kind == _VISION_KIND:
+    if kind == VISION_KIND:
         _handle_vision(conn, payload, session)
         return True
     try:
         raise ValueError(f"Vision worker received unknown kind {kind!r}")
     except ValueError as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
     return True
 
 
 def vision_worker_main(conn: Any, _abort_flag: Any, role_config: RoleConfig) -> None:
     """Vision-OCR worker entrypoint: load llama-cpp lazily, serve until shutdown."""
-    _redirect_stdio_to_devnull()
-    _configure_worker_logging(role_config.role)
+    redirect_stdio_to_devnull()
+    configure_worker_logging(role_config.role)
     log.info("vision worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
     session = _VisionSession(role_config)
     try:

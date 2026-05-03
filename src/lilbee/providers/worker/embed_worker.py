@@ -22,11 +22,23 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import sys
 from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
+from lilbee.providers.worker.wire_kinds import (
+    ACK_KIND,
+    EMBED_KIND,
+    ERROR_KIND,
+    PING_KIND,
+    PONG_KIND,
+    RESULT_KIND,
+    SHUTDOWN_KIND,
+)
+from lilbee.providers.worker.worker_runtime import (
+    configure_worker_logging,
+    redirect_stdio_to_devnull,
+)
 
 log = logging.getLogger(__name__)
 
@@ -34,46 +46,6 @@ log = logging.getLogger(__name__)
 _POLL_TIMEOUT_S = 0.5
 """Discipline rule 3: bounded poll so the worker can react to shutdown
 within a tick instead of blocking forever on bare recv."""
-
-_EMBED_KIND = "embed"
-_PING_KIND = "ping"
-_SHUTDOWN_KIND = "shutdown"
-_RESULT_KIND = "result"
-_ERROR_KIND = "error"
-_PONG_KIND = "pong"
-_ACK_KIND = "ack"
-
-
-def _redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swap
-    """Send stdout/stderr to /dev/null so llama-cpp's C-level prints stay quiet.
-
-    The pool transport speaks pickle over a pipe; nothing the worker
-    process writes to fd 1 or fd 2 is ever consumed by the parent.
-    Carries ``# pragma: no cover`` because closing fds 1/2 inside the
-    pytest-runner process would deadlock pytest-xdist.
-    """
-    devnull_fd = os.open(os.devnull, os.O_RDWR)
-    os.dup2(devnull_fd, 1)
-    os.dup2(devnull_fd, 2)
-    os.close(devnull_fd)
-    sys.stdout = open(os.devnull, "w")  # noqa: SIM115
-    sys.stderr = open(os.devnull, "w")  # noqa: SIM115
-
-
-def _configure_worker_logging(role: str) -> None:
-    """Append worker logs to ``$LILBEE_DATA/logs/worker-<role>.log`` if set."""
-    data_dir = os.environ.get("LILBEE_DATA")
-    if not data_dir:
-        return
-    logs_dir = os.path.join(data_dir, "logs")
-    with contextlib.suppress(OSError):
-        os.makedirs(logs_dir, exist_ok=True)
-    log_path = os.path.join(logs_dir, f"worker-{role}.log")
-    handler = logging.FileHandler(log_path)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    root = logging.getLogger()
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
 
 
 class _EmbedSession:
@@ -122,38 +94,38 @@ def _handle_embed(conn: Any, payload: Any, session: _EmbedSession) -> None:
         try:
             raise TypeError(f"embed payload must be list[str], got {type(payload).__name__}")
         except TypeError as exc:
-            conn.send((_ERROR_KIND, _serialize_exception(exc)))
+            conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     try:
         vectors = session.embed(payload)
     except Exception as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
-    conn.send((_RESULT_KIND, vectors))
+    conn.send((RESULT_KIND, vectors))
 
 
 def _dispatch(conn: Any, kind: str, payload: Any, session: _EmbedSession) -> bool:
     """Handle one request. Return False to stop the worker loop."""
-    if kind == _SHUTDOWN_KIND:
-        conn.send((_ACK_KIND, None))
+    if kind == SHUTDOWN_KIND:
+        conn.send((ACK_KIND, None))
         return False
-    if kind == _PING_KIND:
-        conn.send((_PONG_KIND, None))
+    if kind == PING_KIND:
+        conn.send((PONG_KIND, None))
         return True
-    if kind == _EMBED_KIND:
+    if kind == EMBED_KIND:
         _handle_embed(conn, payload, session)
         return True
     try:
         raise ValueError(f"Embed worker received unknown kind {kind!r}")
     except ValueError as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
     return True
 
 
 def embed_worker_main(conn: Any, _abort_flag: Any, role_config: RoleConfig) -> None:
     """Embed worker entrypoint: load llama-cpp lazily, serve requests until shutdown."""
-    _redirect_stdio_to_devnull()
-    _configure_worker_logging(role_config.role)
+    redirect_stdio_to_devnull()
+    configure_worker_logging(role_config.role)
     log.info("embed worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
     session = _EmbedSession(role_config)
     try:

@@ -17,25 +17,27 @@ import logging
 import os
 from typing import Any
 
-from lilbee.providers.worker.embed_worker import (
-    _configure_worker_logging,
-    _redirect_stdio_to_devnull,
-)
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
+from lilbee.providers.worker.wire_kinds import (
+    ACK_KIND,
+    ERROR_KIND,
+    PING_KIND,
+    PONG_KIND,
+    RERANK_KIND,
+    RESULT_KIND,
+    SHUTDOWN_KIND,
+)
+from lilbee.providers.worker.worker_runtime import (
+    configure_worker_logging,
+    redirect_stdio_to_devnull,
+)
 
 log = logging.getLogger(__name__)
 
 
 _POLL_TIMEOUT_S = 0.5
-_RERANK_KIND = "rerank"
 _RERANK_PAYLOAD_LEN = 2
-_PING_KIND = "ping"
-_SHUTDOWN_KIND = "shutdown"
-_RESULT_KIND = "result"
-_ERROR_KIND = "error"
-_PONG_KIND = "pong"
-_ACK_KIND = "ack"
 
 
 class _RerankSession:
@@ -86,39 +88,39 @@ def _handle_rerank(conn: Any, payload: Any, session: _RerankSession) -> None:
                 f"got {type(payload).__name__}"
             )
         except TypeError as exc:
-            conn.send((_ERROR_KIND, _serialize_exception(exc)))
+            conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     query, candidates = payload
     try:
         scores = session.score(query, candidates)
     except Exception as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
-    conn.send((_RESULT_KIND, scores))
+    conn.send((RESULT_KIND, scores))
 
 
 def _dispatch(conn: Any, kind: str, payload: Any, session: _RerankSession) -> bool:
     """Handle one request. Return False to stop the worker loop."""
-    if kind == _SHUTDOWN_KIND:
-        conn.send((_ACK_KIND, None))
+    if kind == SHUTDOWN_KIND:
+        conn.send((ACK_KIND, None))
         return False
-    if kind == _PING_KIND:
-        conn.send((_PONG_KIND, None))
+    if kind == PING_KIND:
+        conn.send((PONG_KIND, None))
         return True
-    if kind == _RERANK_KIND:
+    if kind == RERANK_KIND:
         _handle_rerank(conn, payload, session)
         return True
     try:
         raise ValueError(f"Rerank worker received unknown kind {kind!r}")
     except ValueError as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
     return True
 
 
 def rerank_worker_main(conn: Any, _abort_flag: Any, role_config: RoleConfig) -> None:
     """Rerank worker entrypoint: load llama-cpp lazily, serve until shutdown."""
-    _redirect_stdio_to_devnull()
-    _configure_worker_logging(role_config.role)
+    redirect_stdio_to_devnull()
+    configure_worker_logging(role_config.role)
     log.info("rerank worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
     session = _RerankSession(role_config)
     try:

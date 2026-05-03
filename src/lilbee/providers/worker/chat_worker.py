@@ -36,26 +36,28 @@ import logging
 import os
 from typing import Any
 
-from lilbee.providers.worker.embed_worker import (
-    _configure_worker_logging,
-    _redirect_stdio_to_devnull,
-)
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
+from lilbee.providers.worker.wire_kinds import (
+    ACK_KIND,
+    CHAT_KIND,
+    ERROR_KIND,
+    PING_KIND,
+    PONG_KIND,
+    RESULT_KIND,
+    SHUTDOWN_KIND,
+    STREAM_CHUNK_KIND,
+    STREAM_END_KIND,
+)
+from lilbee.providers.worker.worker_runtime import (
+    configure_worker_logging,
+    redirect_stdio_to_devnull,
+)
 
 log = logging.getLogger(__name__)
 
 
 _POLL_TIMEOUT_S = 0.5
-_CHAT_KIND = "chat"
-_PING_KIND = "ping"
-_SHUTDOWN_KIND = "shutdown"
-_RESULT_KIND = "result"
-_ERROR_KIND = "error"
-_STREAM_CHUNK_KIND = "stream_chunk"
-_STREAM_END_KIND = "stream_end"
-_PONG_KIND = "pong"
-_ACK_KIND = "ack"
 
 
 def _make_abort_callback(abort_flag: Any) -> Any:
@@ -154,14 +156,14 @@ def _handle_chat_streaming(conn: Any, response_iter: Any) -> None:
     for raw_chunk in response_iter:
         content = _extract_stream_content(raw_chunk)
         if content is not None:
-            conn.send((_STREAM_CHUNK_KIND, content))
-    conn.send((_STREAM_END_KIND, None))
+            conn.send((STREAM_CHUNK_KIND, content))
+    conn.send((STREAM_END_KIND, None))
 
 
 def _handle_chat_non_streaming(conn: Any, response: Any) -> None:
     """Emit one result frame with the full assistant message text."""
     text = response["choices"][0]["message"]["content"] or ""
-    conn.send((_RESULT_KIND, text))
+    conn.send((RESULT_KIND, text))
 
 
 def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
@@ -170,7 +172,7 @@ def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
         try:
             raise TypeError(f"chat payload must be dict, got {type(payload).__name__}")
         except TypeError as exc:
-            conn.send((_ERROR_KIND, _serialize_exception(exc)))
+            conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     try:
         response = session.chat(
@@ -180,7 +182,7 @@ def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
             model=payload.get("model"),
         )
     except Exception as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     try:
         if payload.get("stream"):
@@ -188,31 +190,31 @@ def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
         else:
             _handle_chat_non_streaming(conn, response)
     except Exception as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
 
 
 def _dispatch(conn: Any, kind: str, payload: Any, session: _ChatSession) -> bool:
     """Handle one request. Return False to stop the worker loop."""
-    if kind == _SHUTDOWN_KIND:
-        conn.send((_ACK_KIND, None))
+    if kind == SHUTDOWN_KIND:
+        conn.send((ACK_KIND, None))
         return False
-    if kind == _PING_KIND:
-        conn.send((_PONG_KIND, None))
+    if kind == PING_KIND:
+        conn.send((PONG_KIND, None))
         return True
-    if kind == _CHAT_KIND:
+    if kind == CHAT_KIND:
         _handle_chat(conn, payload, session)
         return True
     try:
         raise ValueError(f"Chat worker received unknown kind {kind!r}")
     except ValueError as exc:
-        conn.send((_ERROR_KIND, _serialize_exception(exc)))
+        conn.send((ERROR_KIND, _serialize_exception(exc)))
     return True
 
 
 def chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
     """Chat worker entrypoint: load llama-cpp lazily, serve until shutdown."""
-    _redirect_stdio_to_devnull()
-    _configure_worker_logging(role_config.role)
+    redirect_stdio_to_devnull()
+    configure_worker_logging(role_config.role)
     log.info("chat worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
     session = _ChatSession(role_config, abort_flag)
     try:

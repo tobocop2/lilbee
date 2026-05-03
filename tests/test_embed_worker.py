@@ -306,16 +306,16 @@ def test_session_load_routes_through_real_loader(monkeypatch, tmp_path) -> None:
 
 
 def test_configure_worker_logging_writes_to_logs_dir(tmp_path, monkeypatch) -> None:
-    """_configure_worker_logging routes logs to $LILBEE_DATA/logs/worker-<role>.log."""
+    """configure_worker_logging routes logs to $LILBEE_DATA/logs/worker-<role>.log."""
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     import logging as _logging
 
-    from lilbee.providers.worker.embed_worker import _configure_worker_logging
+    from lilbee.providers.worker.worker_runtime import configure_worker_logging
 
     root = _logging.getLogger()
     handlers_before = list(root.handlers)
     try:
-        _configure_worker_logging("embed")
+        configure_worker_logging("embed")
         log_path = tmp_path / "logs" / "worker-embed.log"
         assert log_path.parent.is_dir()
         # Emit a record and verify the handler picked it up.
@@ -334,11 +334,11 @@ def test_configure_worker_logging_noop_when_lilbee_data_unset(monkeypatch) -> No
     monkeypatch.delenv("LILBEE_DATA", raising=False)
     import logging as _logging
 
-    from lilbee.providers.worker.embed_worker import _configure_worker_logging
+    from lilbee.providers.worker.worker_runtime import configure_worker_logging
 
     root = _logging.getLogger()
     handlers_before = len(root.handlers)
-    _configure_worker_logging("embed")
+    configure_worker_logging("embed")
     assert len(root.handlers) == handlers_before
 
 
@@ -400,11 +400,11 @@ def _stub_load_for_in_process(_self: _EmbedSession) -> Any:
 def test_embed_worker_main_serves_requests_then_exits_on_shutdown(monkeypatch, tmp_path) -> None:
     """In-process drive of the worker loop with the load step stubbed."""
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.embed_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker._configure_worker_logging",
+        "lilbee.providers.worker.embed_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
@@ -429,11 +429,11 @@ def test_embed_worker_main_serves_requests_then_exits_on_shutdown(monkeypatch, t
 def test_embed_worker_main_skips_idle_polls_then_serves(monkeypatch, tmp_path) -> None:
     """poll() returning False loops back without recv'ing, then serves the next message."""
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.embed_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker._configure_worker_logging",
+        "lilbee.providers.worker.embed_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
@@ -462,11 +462,11 @@ def test_embed_worker_main_skips_idle_polls_then_serves(monkeypatch, tmp_path) -
 def test_embed_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     """Loop exits cleanly when the parent closes the pipe (EOFError on recv)."""
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.embed_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker._configure_worker_logging",
+        "lilbee.providers.worker.embed_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)

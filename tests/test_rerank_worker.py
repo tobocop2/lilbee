@@ -276,11 +276,11 @@ def _stub_load_for_in_process(_self: _RerankSession) -> Any:
 
 def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.rerank_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker._configure_worker_logging",
+        "lilbee.providers.worker.rerank_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
@@ -301,11 +301,11 @@ def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> Non
 
 def test_rerank_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.rerank_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker._configure_worker_logging",
+        "lilbee.providers.worker.rerank_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
@@ -323,11 +323,11 @@ def test_rerank_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
 def test_rerank_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.rerank_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker._configure_worker_logging",
+        "lilbee.providers.worker.rerank_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)

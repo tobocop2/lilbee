@@ -328,11 +328,11 @@ def _stub_load_for_in_process(_self: _VisionSession) -> Any:
 
 def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.vision_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker._configure_worker_logging",
+        "lilbee.providers.worker.vision_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
@@ -354,11 +354,11 @@ def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
 
 def test_vision_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.vision_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker._configure_worker_logging",
+        "lilbee.providers.worker.vision_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
@@ -378,11 +378,11 @@ def test_vision_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
 def test_vision_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker._redirect_stdio_to_devnull",
+        "lilbee.providers.worker.vision_worker.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker._configure_worker_logging",
+        "lilbee.providers.worker.vision_worker.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(

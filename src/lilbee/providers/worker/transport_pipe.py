@@ -60,6 +60,15 @@ from lilbee.providers.worker.transport import (
     WorkerEntrypoint,
     WorkerHandle,
 )
+from lilbee.providers.worker.wire_kinds import (
+    ERROR_KIND,
+    PING_KIND,
+    PONG_KIND,
+    RESULT_KIND,
+    SHUTDOWN_KIND,
+    STREAM_CHUNK_KIND,
+    STREAM_END_KIND,
+)
 
 log = logging.getLogger(__name__)
 
@@ -71,14 +80,6 @@ _PICKLE_MAX_BYTES = 32 * 1024 * 1024
 streams and embedding vectors fit comfortably; vision images and rerank
 batches must stay under this limit (or move to ``send_bytes``).
 """
-
-_STREAM_END_KIND = "stream_end"
-_STREAM_CHUNK_KIND = "stream_chunk"
-_RESULT_KIND = "result"
-_ERROR_KIND = "error"
-_PING_KIND = "ping"
-_PONG_KIND = "pong"
-_SHUTDOWN_KIND = "shutdown"
 
 
 @dataclass(frozen=True)
@@ -268,9 +269,9 @@ class PipeChannel:
         try:
             await self._send(kind, payload)
             msg_kind, value = await asyncio.wait_for(self._recv(), timeout=timeout)
-            if msg_kind == _ERROR_KIND:
+            if msg_kind == ERROR_KIND:
                 raise _deserialize_exception(value)
-            if msg_kind != _RESULT_KIND:
+            if msg_kind != RESULT_KIND:
                 raise WorkerError(
                     "ProtocolError",
                     f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
@@ -294,11 +295,11 @@ class PipeChannel:
         try:
             while True:
                 msg_kind, value = await self._recv()
-                if msg_kind == _STREAM_CHUNK_KIND:
+                if msg_kind == STREAM_CHUNK_KIND:
                     yield value
-                elif msg_kind == _STREAM_END_KIND:
+                elif msg_kind == STREAM_END_KIND:
                     return
-                elif msg_kind == _ERROR_KIND:
+                elif msg_kind == ERROR_KIND:
                     raise _deserialize_exception(value)
                 else:
                     raise WorkerError(
@@ -314,9 +315,9 @@ class PipeChannel:
         self._ensure_open()
         self._bump_in_flight(1)
         try:
-            await self._send(_PING_KIND, None)
+            await self._send(PING_KIND, None)
             msg_kind, _ = await asyncio.wait_for(self._recv(), timeout=timeout)
-            if msg_kind != _PONG_KIND:
+            if msg_kind != PONG_KIND:
                 raise WorkerError(
                     "ProtocolError",
                     f"Worker '{self._role}' ping reply was {msg_kind!r}, want 'pong'.",
@@ -346,7 +347,7 @@ class PipeChannel:
             self._closed = True
         try:
             with contextlib.suppress(asyncio.TimeoutError, WorkerError):
-                await self._send(_SHUTDOWN_KIND, None)
+                await self._send(SHUTDOWN_KIND, None)
                 with contextlib.suppress(asyncio.TimeoutError, WorkerError):
                     await asyncio.wait_for(self._recv(), timeout=timeout)
             await asyncio.get_running_loop().run_in_executor(
