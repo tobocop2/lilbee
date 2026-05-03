@@ -2625,6 +2625,16 @@ class TestSetupWizard:
         assert row.featured is False
         assert row.backend == ""
 
+    def test_installed_name_to_row_cleans_native_gguf_ref(self) -> None:
+        """Native GGUF refs should render as a clean label, not the raw filename."""
+        from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+        ref = "unsloth/embeddinggemma-300M-qat-GGUF/embeddinggemma-300M-qat-Q8_0.gguf"
+        row = _installed_name_to_row(ref, "embedding")
+        assert row.name == "embeddinggemma 300M"
+        assert row.quant == "Q8_0"
+        assert row.ref == ref
+
     def test_model_card_from_table_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard

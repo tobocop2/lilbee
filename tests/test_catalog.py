@@ -1764,6 +1764,20 @@ class TestCleanDisplayName:
         result = clean_display_name("mistralai/Mistral-7B-Instruct-v0.3-GGUF")
         assert result == "Mistral 7B v0.3"
 
+    def test_strips_qat_marker(self) -> None:
+        assert clean_display_name("unsloth/embeddinggemma-300M-qat-GGUF") == "embeddinggemma 300M"
+
+    def test_strips_embedding_suffix(self) -> None:
+        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Embedding-GGUF") == "all MiniLM L6 v2"
+
+    def test_strips_trailing_quant(self) -> None:
+        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Q8_0") == "all MiniLM L6 v2"
+
+    def test_strips_combined_quant_and_qat(self) -> None:
+        assert (
+            clean_display_name("unsloth/embeddinggemma-300M-qat-Q8_0-GGUF") == "embeddinggemma 300M"
+        )
+
 
 class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
