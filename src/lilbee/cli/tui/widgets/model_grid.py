@@ -151,8 +151,6 @@ class ModelGrid(Widget, can_focus=True):
         rows = (len(self._rows) + cols - 1) // cols
         return rows * _ROW_HEIGHT - 1
 
-    # ---- highlight + actions -------------------------------------------------
-
     def watch_highlighted(self, _old: int | None, _new: int | None) -> None:
         """Repaint after every highlight move; cell selection re-renders inline."""
         self.refresh()
@@ -205,8 +203,6 @@ class ModelGrid(Widget, can_focus=True):
         if self._rows:
             self.highlighted = len(self._rows) - 1
 
-    # ---- click handling ------------------------------------------------------
-
     def _cell_at(self, x: int, y: int) -> int | None:
         """Return the dataset index at terminal-local ``(x, y)`` or None."""
         if not self._rows or self._cards_per_row <= 0:
@@ -235,8 +231,6 @@ class ModelGrid(Widget, can_focus=True):
         else:
             self.highlighted = index
         self.focus()
-
-    # ---- rendering -----------------------------------------------------------
 
     def render_line(self, y: int) -> Strip:
         """Compose one terminal line by stitching the per-column card slices."""
