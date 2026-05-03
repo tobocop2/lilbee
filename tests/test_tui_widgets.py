@@ -108,6 +108,28 @@ class TestAssistantMessageAsync:
             assert "reasoning-block" in am._reasoning_widget.classes
             assert "-streaming" in am._reasoning_widget.classes
 
+    async def test_reasoning_after_content_mounts_collapsible_before_content(self) -> None:
+        """Content-token-then-reasoning-token ordering still mounts the
+        Collapsible above the content widget.
+
+        The ThinkingHeader path is the common case; this test covers the
+        defensive branch where content streamed first (header dismissed
+        early) and reasoning arrives later. Without this, the collapsible
+        would orphan and the user would see no thinking section even when
+        the model emits one.
+        """
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("answer first")
+            await pilot.pause()
+            assert am._content_widget is not None
+            am.append_reasoning("step 1")
+            await pilot.pause()
+            assert am._reasoning_widget is not None
+            assert am._reasoning_widget.is_mounted
+
     async def test_append_reasoning_debounces_static_updates(self) -> None:
         """Reasoning bursts collapse to one ``Static.update``; ``finish`` flushes the tail."""
         app = _MsgApp()
