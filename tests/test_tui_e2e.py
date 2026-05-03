@@ -980,7 +980,7 @@ class TestCatalogInteractions:
     async def test_grid_view_is_default(self, _mock_resolve):
         """Grid view is shown on mount by default."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid as GridSelect
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -988,7 +988,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                grids = app.screen.query(GridSelect)
+                grids = app.screen.query(ModelGrid)
                 assert len(grids) > 0
                 assert app.screen.has_class("-grid-view")
 
@@ -1054,9 +1054,9 @@ class TestCatalogInteractions:
                 assert list_container.display is True
 
     async def test_search_filters_cards_in_grid_view(self, _mock_resolve):
-        """Type search text in grid view, verify cards filter by visibility."""
+        """Type search text in grid view, verify the grid dataset narrows."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_card import ModelCard
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1066,7 +1066,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await pilot.pause()
 
-                initial_count = len(app.screen.query(ModelCard))
+                initial_count = sum(len(g.rows) for g in app.screen.query(ModelGrid))
                 assert initial_count > 0
 
                 # Reveal the catalog filter (hidden by default) before
@@ -1082,9 +1082,9 @@ class TestCatalogInteractions:
                 # filter actually runs.
                 await pilot.pause(0.2)
 
-                # Filter rebuilds the VirtualGrid dataset; non-matching
-                # cards are not mounted at all.
-                after_count = len(app.screen.query(ModelCard))
+                # _refresh_grid rebuilds the ModelGrid dataset; non-matching
+                # rows drop out of the grid entirely.
+                after_count = sum(len(g.rows) for g in app.screen.query(ModelGrid))
                 assert after_count < initial_count
 
     async def test_search_input_is_visible_when_opened(self, _mock_resolve):
@@ -1117,7 +1117,7 @@ class TestCatalogInteractions:
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1132,7 +1132,7 @@ class TestCatalogInteractions:
                 search.value = "test"
                 await search.action_submit()
                 await pilot.pause()
-                grid = app.screen.query_one(VirtualGrid)
+                grid = app.screen.query_one(ModelGrid)
                 assert grid.has_focus
 
     async def test_search_filters_list_view(self, _mock_resolve):
@@ -1418,9 +1418,9 @@ class TestCatalogInteractions:
                 assert app.screen._list_widget.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
-        """Verify correct number of cards for featured models."""
+        """The grid dataset surfaces every featured family as a row."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_card import ModelCard
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1428,8 +1428,8 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                cards = app.screen.query(ModelCard)
-                assert len(cards) == 2
+                total_rows = sum(len(g.rows) for g in app.screen.query(ModelGrid))
+                assert total_rows == 2
 
     async def test_list_view_j_k_navigation(self, _mock_resolve):
         """In list view, cursor actions move focus up/down through list items."""
@@ -2572,27 +2572,27 @@ class TestCatalogPickBadge:
     """Test that featured cards show the pick badge."""
 
     async def test_featured_card_has_pick_label(self, _mock_resolve):
-        """Featured ModelCard renders the 'pick' pill in its body content."""
-        from textual.widgets import Static
-
+        """Featured catalog rows surface the 'pick' pill via _render_card_strip."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_card import ModelCard
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid, _render_card_strip
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                # Two pauses: ModelCard's inner .card-body Static composes
-                # on a later refresh tick than the card itself mounts on
-                # Windows, so a single pause races the lookup.
                 await pilot.pause()
                 await pilot.pause()
-                cards = app.screen.query(ModelCard)
-                featured = [c for c in cards if c.row.featured]
-                assert len(featured) > 0
-                body = featured[0].query_one(".card-body", Static)
-                assert "pick" in str(body.content)
+                featured_rows = [
+                    row
+                    for grid in app.screen.query(ModelGrid)
+                    for row in grid.rows
+                    if getattr(row, "featured", False)
+                ]
+                assert featured_rows, "expected at least one featured row in the catalog"
+                rendered = _render_card_strip(featured_rows[0], selected=False, width=40)
+                joined = "\n".join(str(line) for line in rendered.lines)
+                assert "pick" in joined
 
 
 class TestCatalogLazyLoad:
@@ -2918,45 +2918,37 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming is False
 
-    async def test_enter_in_normal_mode_flips_to_insert_without_submit(
-        self, _mock_resolve, _mock_services
-    ):
-        """Enter in normal mode flips the screen back to insert mode and
-        does NOT submit whatever stale text the input still holds.
-
-        Drive ``_on_chat_submitted`` directly so the test exercises the
-        normal-mode early-return regardless of which keybinding the
-        on_key handler intercepted along the way.
-        """
-        from lilbee.cli.tui.widgets.message import UserMessage
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            inp = app.screen.query_one("#chat-input", ChatInput)
-            inp.value = "stale text"
-            app.screen._insert_mode = False
-            event = ChatInput.Submitted(inp, "stale text")
-            app.screen._on_chat_submitted(event)
-            await pilot.pause()
-            assert app.screen._insert_mode is True
-            # The stale input text was NOT submitted as a chat turn.
-            assert len(list(app.screen.query(UserMessage))) == 0
-
     async def test_exit_streaming_drains_queued_prompt(self, _mock_resolve, _mock_services):
-        """A prompt parked while streaming fires automatically once the
-        stream settles, instead of being silently dropped on the floor."""
+        """Once the active stream settles, the queued prompt fires through ``_send_message``."""
         with self._patch_stream_response():
             app = ChatTestApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                sent: list[str] = []
-                app.screen._send_message = lambda text: sent.append(text)  # type: ignore[method-assign]
-                app.screen._queued_prompt = "deferred prompt"
-                app.screen._exit_streaming_state()
+                screen = app.screen
+                screen._queued_prompt = "follow-up"
+                with mock.patch.object(screen, "_send_message") as send_mock:
+                    screen._exit_streaming_state()
+                    await pilot.pause()
+                    send_mock.assert_called_once_with("follow-up")
+                assert screen._queued_prompt is None
+
+    async def test_chat_submit_in_normal_mode_flips_to_insert(self, _mock_resolve, _mock_services):
+        """Enter while in normal mode flips back to insert without spawning a turn."""
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        with self._patch_stream_response():
+            app = ChatTestApp()
+            async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                assert app.screen._queued_prompt is None
-                assert sent == ["deferred prompt"]
+                screen = app.screen
+                screen._insert_mode = False
+                inp = screen.query_one("#chat-input", ChatInput)
+                inp.value = "stale text"
+                await pilot.press("enter")
+                await pilot.pause()
+                assert screen._insert_mode is True
+                # No assistant turn was spawned by that Enter press.
+                assert len(list(screen.query(UserMessage))) == 0
 
 
 class TestStreamFlushCoalescing:

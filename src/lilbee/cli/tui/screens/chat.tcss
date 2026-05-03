@@ -12,16 +12,23 @@ ChatWelcome {
 }
 
 .user-message {
-    border-left: thick $primary;
+    border-left: solid $surface-lighten-2;
     padding: 0 1;
     margin: 1 0 0 0;
     height: auto;
 }
 
 .assistant-message {
-    border-left: thick $success;
+    border-left: solid $surface-lighten-2;
     padding: 0 1;
     height: auto;
+}
+
+/* Reasoning fold while a stream is live: the toggle row is hidden so the
+ * sibling ThinkingHeader carries the visual weight. finish() drops the
+ * -streaming class to reveal the toggle and the formatted token count. */
+.reasoning-block.-streaming > CollapsibleTitle {
+    display: none;
 }
 
 .speaker-label {
@@ -44,21 +51,21 @@ Markdown {
     margin: 0 1;
 }
 
-/* ChatInput is a TextArea subclass. height: auto reflows on every
- * keystroke even when the content stays single-line, so pin height: 1
- * by default and only grow when the content actually has a newline.
- * The widget toggles the .-multiline class via _track_multiline. */
+/* ChatInput is a TextArea subclass. The default height keeps a comfortable
+ * three-row pad (one row text, one row top/bottom padding) so the input
+ * never feels cramped. _track_multiline toggles -multiline when the user
+ * adds a newline; the input then grows up to 10 rows. */
 #chat-input {
     border: none;
-    height: 1;
-    padding: 0 1;
+    height: 3;
+    padding: 1 1;
     margin: 0;
     background: $surface;
 }
 
 #chat-input.-multiline {
     height: auto;
-    min-height: 2;
+    min-height: 3;
     max-height: 10;
 }
 

@@ -11,7 +11,6 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
-from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -212,9 +211,11 @@ def _options_fingerprint(opts: list[ModelOption], default: str) -> tuple[tuple[s
 _CSS_FILE = Path(__file__).parent / "model_bar.tcss"
 
 _CHAT_MODE_TOGGLE_ID = "chat-mode-toggle"
+_CHAT_MODE_SEARCH_PILL_ID = "chat-mode-search"
+_CHAT_MODE_CHAT_PILL_ID = "chat-mode-chat"
+_CHAT_MODE_PILL_CLASS = "chat-mode-pill"
 _CHAT_MODE_DISABLED_CLASS = "-disabled"
-_CHAT_MODE_SEARCH_CLASS = "-search"
-_CHAT_MODE_CHAT_CLASS = "-chat"
+_CHAT_MODE_ACTIVE_CLASS = "-active"
 
 
 class ModelPickerButton(Static, can_focus=True):
@@ -279,7 +280,7 @@ class ModelPickerButton(Static, can_focus=True):
             b._after_model_change()
 
 
-class ChatModeToggle(Static, can_focus=True):
+class ChatModeToggle(Widget, can_focus=True):
     """Two-pill control toggling cfg.chat_mode between Search and Chat."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -292,6 +293,19 @@ class ChatModeToggle(Static, can_focus=True):
     def __init__(self) -> None:
         super().__init__(id=_CHAT_MODE_TOGGLE_ID)
 
+    def compose(self) -> ComposeResult:
+        with Horizontal():
+            yield Static(
+                msg.CHAT_MODE_SEARCH_LABEL,
+                id=_CHAT_MODE_SEARCH_PILL_ID,
+                classes=_CHAT_MODE_PILL_CLASS,
+            )
+            yield Static(
+                msg.CHAT_MODE_CHAT_LABEL,
+                id=_CHAT_MODE_CHAT_PILL_ID,
+                classes=_CHAT_MODE_PILL_CLASS,
+            )
+
     def on_mount(self) -> None:
         self._refresh()
 
@@ -303,29 +317,21 @@ class ChatModeToggle(Static, can_focus=True):
     def _embedding_ready(self) -> bool:
         return is_model_available(cfg.embedding_model, get_services().provider)
 
-    def _render_label(self, label: str, *, active: bool, disabled: bool) -> Content:
-        """Render a half of the toggle as styled text (no pill chrome)."""
-        if disabled:
-            return Content.styled(label, "strike $text-muted")
-        if active:
-            return Content.styled(label, "bold $primary")
-        return Content.styled(label, "$text-muted")
-
     def _refresh(self) -> None:
         ready = self._embedding_ready()
         mode = cfg.chat_mode if ready else ChatMode.CHAT.value
         active_search = mode == ChatMode.SEARCH.value
-        search_label = self._render_label(
-            msg.CHAT_MODE_SEARCH_LABEL, active=active_search, disabled=not ready
-        )
-        chat_label = self._render_label(
-            msg.CHAT_MODE_CHAT_LABEL, active=not active_search, disabled=False
-        )
-        divider = Content.styled(" · ", "$text-muted")
-        self.update(Content.assemble(search_label, divider, chat_label))
+        search_pill = self.query_one(f"#{_CHAT_MODE_SEARCH_PILL_ID}", Static)
+        chat_pill = self.query_one(f"#{_CHAT_MODE_CHAT_PILL_ID}", Static)
+        # Search half is disabled whenever embedding isn't ready; Chat is
+        # always reachable so it never carries the disabled class.
+        search_pill.set_class(active_search, _CHAT_MODE_ACTIVE_CLASS)
+        search_pill.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
+        chat_pill.set_class(not active_search, _CHAT_MODE_ACTIVE_CLASS)
+        chat_pill.set_class(False, _CHAT_MODE_DISABLED_CLASS)
+        # Parent carries the disabled class so external selectors can
+        # disable interaction on the whole toggle when search is gated.
         self.set_class(not ready, _CHAT_MODE_DISABLED_CLASS)
-        self.set_class(active_search, _CHAT_MODE_SEARCH_CLASS)
-        self.set_class(not active_search, _CHAT_MODE_CHAT_CLASS)
         self.tooltip = (
             msg.CHAT_MODE_TOGGLE_DISABLED_TOOLTIP if not ready else msg.CHAT_MODE_TOGGLE_TOOLTIP
         )
@@ -349,6 +355,17 @@ class ChatModeToggle(Static, can_focus=True):
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
+        # Click on a specific pill picks that side; click on the container
+        # frame falls through to a toggle.
+        widget = event.widget
+        if widget is not None:
+            wid = widget.id
+            if wid == _CHAT_MODE_SEARCH_PILL_ID:
+                self._set_mode(ChatMode.SEARCH.value)
+                return
+            if wid == _CHAT_MODE_CHAT_PILL_ID:
+                self._set_mode(ChatMode.CHAT.value)
+                return
         self.toggle()
 
     def action_flip_mode(self) -> None:

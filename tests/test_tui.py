@@ -99,7 +99,9 @@ class TestAssistantMessage:
     def test_compose_yields_widgets(self) -> None:
         msg = AssistantMessage()
         children = list(msg.compose())
-        assert len(children) == 4  # speaker label, reasoning, markdown, citation
+        # Compose-time children are speaker label, content, citation. The
+        # ThinkingHeader and reasoning Collapsible are mounted lazily.
+        assert len(children) == 3
 
     def test_append_content(self) -> None:
         msg = AssistantMessage()
@@ -900,13 +902,10 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
-        # The chat screen exposes 4 distinct keys in the footer: slash
-        # (Commands), tab (model nav / completion), m (Models), and
-        # escape. Escape has two declarations (``Cancel stream`` while
-        # streaming, ``Normal mode`` otherwise) gated by ``check_action``
-        # so only one is visible at runtime; dedupe by key for the count.
-        unique_keys = {b.key for b in ChatScreen.BINDINGS if b.show}
-        assert len(unique_keys) <= 4
+        # Footer shows the small discoverable set: slash commands, Tab
+        # completion, the dual-purpose Esc dispatch, and Models. Hidden
+        # helpers (history, scope cycle, F-keys) stay show=False.
+        assert len(visible) <= 5
 
     def test_catalog_tab_bindings_removed(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
