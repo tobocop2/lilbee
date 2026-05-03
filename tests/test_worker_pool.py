@@ -97,6 +97,7 @@ class FakeSpawner:
     spawned: list[FakeChannel] = field(default_factory=list)
     next_pid: int = 1000
     fail_with: BaseException | None = None
+    spawn_delay_s: float = 0.0
 
     def spawn(
         self,
@@ -105,6 +106,10 @@ class FakeSpawner:
     ) -> tuple[WorkerChannel, WorkerHandle]:
         if self.fail_with is not None:
             raise self.fail_with
+        if self.spawn_delay_s > 0.0:
+            import time as _time
+
+            _time.sleep(self.spawn_delay_s)
         channel = FakeChannel(role_config=role_config, pid=self.next_pid)
         self.next_pid += 1
         self.spawned.append(channel)
@@ -225,7 +230,8 @@ async def test_repeated_calls_reuse_one_channel(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_first_callers_share_one_spawn(tmp_path) -> None:
-    spawner = FakeSpawner()
+    """Spawn is slow on purpose so the second caller exercises the inner-lock alive check."""
+    spawner = FakeSpawner(spawn_delay_s=0.05)
     pool = WorkerPool(spawner=spawner)
     embed = pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
     try:
