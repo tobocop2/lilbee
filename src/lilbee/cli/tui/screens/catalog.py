@@ -45,11 +45,11 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
-from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
@@ -256,8 +256,8 @@ class CatalogScreen(Screen[None]):
         )
 
     def _focus_first_grid(self) -> None:
-        """Focus the first grid widget (VirtualGrid in grid view) if any."""
-        for cls in (VirtualGrid, GridSelect):
+        """Focus the first grid widget (ModelGrid in grid view) if any."""
+        for cls in (ModelGrid, GridSelect):
             with contextlib.suppress(Exception):
                 self.query_one(cls).focus()
                 return
@@ -319,7 +319,7 @@ class CatalogScreen(Screen[None]):
                 with self.app.batch_update():
                     self._refresh_grid()
                 with contextlib.suppress(Exception):
-                    self.query_one("#catalog-grid VirtualGrid", VirtualGrid).focus()
+                    self.query_one("#catalog-grid ModelGrid", ModelGrid).focus()
         finally:
             self._view_switching = False
         self._sync_grid_list_toggle()
@@ -341,11 +341,10 @@ class CatalogScreen(Screen[None]):
     def _on_search_changed(self, event: Input.Changed) -> None:
         """Schedule a filter pass after a short debounce.
 
-        Per keystroke the filter walks every visible ``ModelCard`` /
-        ``ModelListItem`` and toggles ``display``, which Textual treats
-        as a layout invalidation. Without the debounce, a 5-char term
-        produces 5 full layout passes; with it, typing collapses to a
-        single pass once the user pauses.
+        Each keystroke triggers a grid re-render or a list redraw, both of
+        which Textual treats as layout invalidations. Without the debounce
+        a 5-char term produces 5 full passes; with it, typing collapses
+        to a single pass once the user pauses.
         """
         if self._search_filter_timer is not None:
             self._search_filter_timer.stop()
@@ -369,7 +368,7 @@ class CatalogScreen(Screen[None]):
         """Enter installs the first visible match; falls through to a remote
         HF search when nothing matches locally."""
         if self._grid_view:
-            if any(card.display for card in self.query(ModelCard)):
+            if any(grid.rows for grid in self.query(ModelGrid)):
                 self._select_first_visible_grid_card()
                 return
         elif self._list_widget.option_count:
@@ -402,7 +401,7 @@ class CatalogScreen(Screen[None]):
         install fires on what the user can actually see.
         """
         with contextlib.suppress(Exception):
-            for grid in self.query(VirtualGrid):
+            for grid in self.query(ModelGrid):
                 if grid.rows:
                     grid.focus()
                     grid.highlighted = 0
@@ -747,7 +746,7 @@ class CatalogScreen(Screen[None]):
 
         Initial paint mounts everything (first time a tab is opened).
         Subsequent dataset updates (HF pagination, sort change, filter)
-        update each existing VirtualGrid via set_rows rather than tearing
+        update each existing ModelGrid via set_rows rather than tearing
         the container down and re-mounting from scratch. Avoids a 100%
         CPU spike on every "Browse more" return.
         """
@@ -776,8 +775,8 @@ class CatalogScreen(Screen[None]):
             return
         # Extend in-place when we already have a grid mounted. Each
         # section heading is keyed by its text so we can match a new
-        # section to its existing VirtualGrid without tearing down.
-        existing_grids = list(self._grid_container.query(VirtualGrid))
+        # section to its existing ModelGrid without tearing down.
+        existing_grids = list(self._grid_container.query(ModelGrid))
         existing_headings = [
             w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
         ]
@@ -799,7 +798,7 @@ class CatalogScreen(Screen[None]):
         self._update_sort_label()
 
     def _mount_grid_section(self, section: GridSection) -> None:
-        grid = VirtualGrid(section.rows, classes="vg-section")
+        grid = ModelGrid(section.rows, classes="catalog-section")
         self._grid_container.mount_all(
             [
                 Static(section.heading, classes="section-heading"),
@@ -880,24 +879,28 @@ class CatalogScreen(Screen[None]):
             self._fetch_all_hf_models()
 
     @on(GridSelect.LeaveDown)
-    @on(VirtualGrid.LeaveDown)
+    @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
         """Move focus to the next grid widget."""
         self.focus_next()
 
     @on(GridSelect.LeaveUp)
-    @on(VirtualGrid.LeaveUp)
+    @on(ModelGrid.LeaveUp)
     def _on_grid_leave_up(self, event: Message) -> None:
         """Move focus to the previous grid widget."""
         self.focus_previous()
 
     @on(GridSelect.Selected)
-    @on(VirtualGrid.Selected)
-    def _on_grid_selected(self, event: Message) -> None:
-        """Handle model selection from the grid view."""
-        widget = getattr(event, "widget", None)
+    def _on_grid_select_selected(self, event: GridSelect.Selected) -> None:
+        """Handle model selection from a GridSelect (setup wizard path)."""
+        widget = event.widget
         if isinstance(widget, ModelCard):
             self._select_row(widget.row)
+
+    @on(ModelGrid.Selected)
+    def _on_grid_selected(self, event: ModelGrid.Selected) -> None:
+        """Handle model selection from the catalog grid view."""
+        self._select_row(event.row)
 
     @on(ModelList.Selected)
     def _on_model_list_selected(self, event: ModelList.Selected) -> None:
@@ -1175,7 +1178,7 @@ class CatalogScreen(Screen[None]):
         focused_grid = self._focused_grid()
         if focused_grid is None or focused_grid.highlighted is None:
             return None
-        if isinstance(focused_grid, VirtualGrid):
+        if isinstance(focused_grid, ModelGrid):
             rows = focused_grid.rows
             index = focused_grid.highlighted
             if 0 <= index < len(rows):
@@ -1217,9 +1220,9 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
         self._fetch_remote_models()
 
-    def _focused_grid(self) -> VirtualGrid | GridSelect | None:
+    def _focused_grid(self) -> ModelGrid | GridSelect | None:
         """Return the focused grid widget (grid view), else None."""
-        if self._grid_view and isinstance(self.focused, (VirtualGrid, GridSelect)):
+        if self._grid_view and isinstance(self.focused, (ModelGrid, GridSelect)):
             return self.focused
         return None
 

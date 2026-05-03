@@ -7697,7 +7697,7 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 async def test_catalog_grid_leave_down_focuses_next():
     """GridSelect.LeaveDown moves focus to the next focusable widget."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -7705,11 +7705,11 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            grids = list(screen.query(VirtualGrid))
+            grids = list(screen.query(ModelGrid))
             if grids:
                 grids[0].focus()
                 await pilot.pause()
-                grids[0].post_message(VirtualGrid.LeaveDown(grids[0]))
+                grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
                 await pilot.pause()
                 assert screen.focused is not grids[0]
 
@@ -7717,7 +7717,7 @@ async def test_catalog_grid_leave_down_focuses_next():
 async def test_catalog_grid_leave_up_focuses_previous():
     """GridSelect.LeaveUp moves focus to the previous focusable widget."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -7725,11 +7725,11 @@ async def test_catalog_grid_leave_up_focuses_previous():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            grids = list(screen.query(VirtualGrid))
+            grids = list(screen.query(ModelGrid))
             assert grids, "Expected at least one GridSelect"
             grids[0].focus()
             await pilot.pause()
-            grids[0].post_message(VirtualGrid.LeaveUp(grids[0]))
+            grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
             await pilot.pause()
             assert screen.focused is not grids[0]
 
@@ -9448,12 +9448,11 @@ async def test_catalog_browse_more_clicked():
                 mock_fetch.assert_called_once()
 
 
-async def test_catalog_grid_selected_with_model_card():
-    """Grid selection with ModelCard delegates to _select_row."""
+async def test_catalog_grid_selected_delegates_to_select_row():
+    """ModelGrid.Selected delegates to _select_row with the underlying row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.model_card import ModelCard
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9474,12 +9473,45 @@ async def test_catalog_grid_selected_with_model_card():
                 sort_downloads=1000,
                 sort_size=4.0,
             )
-            mock_card = MagicMock(spec=ModelCard)
-            mock_card.row = row
-            event = MagicMock(spec=VirtualGrid.Selected)
-            event.widget = mock_card
+            event = MagicMock(spec=ModelGrid.Selected)
+            event.row = row
             with patch.object(screen, "_select_row") as mock_sel:
                 screen._on_grid_selected(event)
+                mock_sel.assert_called_once_with(row)
+
+
+async def test_catalog_grid_select_selected_with_model_card():
+    """Setup-wizard GridSelect.Selected with a ModelCard delegates to _select_row."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            row = LocalCatalogRow(
+                name="grid-select-row",
+                task="chat",
+                params="7B",
+                size="4.0 GB",
+                quant="Q4_K_M",
+                downloads="1K",
+                installed=False,
+                featured=False,
+                sort_downloads=1000,
+                sort_size=4.0,
+            )
+            mock_card = MagicMock(spec=ModelCard)
+            mock_card.row = row
+            event = MagicMock(spec=GridSelect.Selected)
+            event.widget = mock_card
+            with patch.object(screen, "_select_row") as mock_sel:
+                screen._on_grid_select_selected(event)
                 mock_sel.assert_called_once_with(row)
 
 
@@ -9745,7 +9777,7 @@ async def test_catalog_search_submit_installs_first_visible_match():
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -9753,11 +9785,11 @@ async def test_catalog_search_submit_installs_first_visible_match():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grids = list(screen.query(VirtualGrid))
-            assert grids, "catalog should mount at least one VirtualGrid"
+            grids = list(screen.query(ModelGrid))
+            assert grids, "catalog should mount at least one ModelGrid"
             grid = grids[0]
             assert len(grid.rows) >= 2
-            # VirtualGrid filters at the dataset level: set_rows replaces
+            # ModelGrid filters at the dataset level: set_rows replaces
             # the visible set. Simulate "filter narrows to the second
             # row" by trimming the dataset to that single row.
             target_row = grid.rows[1]
@@ -9953,11 +9985,11 @@ def test_catalog_grid_scroll_hint_text_all_loaded_branch():
     assert "loading" not in text
 
 
-async def test_catalog_get_highlighted_model_name_virtual_grid_branch():
-    """_get_highlighted_model_name reads VirtualGrid.rows by index, not children."""
+async def test_catalog_get_highlighted_model_name_model_grid_branch():
+    """_get_highlighted_model_name reads ModelGrid.rows by index, not children."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     rows = [
         LocalCatalogRow(
@@ -9982,7 +10014,7 @@ async def test_catalog_get_highlighted_model_name_virtual_grid_branch():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grid = VirtualGrid(rows, id="vg-name-test")
+            grid = ModelGrid(rows, id="vg-name-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
             grid.focus()
@@ -10155,11 +10187,11 @@ def test_settings_on_model_picker_pressed_ignores_unknown_key():
     assert discover_calls == []
 
 
-async def test_catalog_get_highlighted_model_name_virtual_grid_out_of_range():
-    """An out-of-range VirtualGrid.highlighted index returns None instead of raising."""
+async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
+    """An out-of-range ModelGrid.highlighted index returns None instead of raising."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-    from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     rows = [
         LocalCatalogRow(
@@ -10183,7 +10215,7 @@ async def test_catalog_get_highlighted_model_name_virtual_grid_out_of_range():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            grid = VirtualGrid(rows, id="vg-oob-test")
+            grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
             # Highlight an index past the end of the dataset.
             grid.highlighted = 99

@@ -4863,70 +4863,74 @@ def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
     )
 
 
-class TestVirtualGridOnClick:
-    """Cover the click handler that was missing after the GridSelect migration."""
+class TestModelGridOnClick:
+    """Click hit-test math: first click highlights, second click posts Selected."""
 
-    def test_click_on_card_first_highlights_then_second_selects(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    @staticmethod
+    def _click(x: int, y: int) -> object:
+        click = mock.Mock()
+        click.x = x
+        click.y = y
+        return click
+
+    def test_first_click_highlights_second_click_selects(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(2)]
-        grid = VirtualGrid(rows)
-        # Stand-in cards: ancestors_with_self resolves to themselves so the
-        # ancestor walk finds the ModelCard branch without mounting the grid.
-        stand_in_cards = [mock.Mock(spec=ModelCard), mock.Mock(spec=ModelCard)]
-        for card in stand_in_cards:
-            card.ancestors_with_self = [card]
-        grid._iter_mounted_cards = lambda: iter(  # type: ignore[method-assign]
-            list(enumerate(stand_in_cards))
-        )
-        # watch_highlighted touches the layout / scroll engine which needs
-        # an active App; stub it so the test stays in plain-Python land.
-        grid.watch_highlighted = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-        received: list[VirtualGrid.Selected] = []
-        grid.post_message = received.append  # type: ignore[method-assign]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.focus = lambda: None  # type: ignore[method-assign]
-        click = mock.Mock()
-        click.widget = stand_in_cards[1]
+        # Stub the size so _cell_at gets non-zero width without an app.
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        click = self._click(60, 1)  # second column, first card line
         grid.on_click(click)
         assert grid.highlighted == 1
         assert received == []
         grid.on_click(click)
-        assert received and isinstance(received[0], VirtualGrid.Selected)
-        assert received[0].widget is stand_in_cards[1]
+        assert received and isinstance(received[0], ModelGrid.Selected)
+        assert received[0].row is rows[1]
 
-    def test_click_with_no_widget_is_ignored(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_click_outside_dataset_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
-        click = mock.Mock()
-        click.widget = None
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 4
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        click = self._click(70, 1)  # column 3 with only 1 row -> out of range
         grid.on_click(click)
         assert grid.highlighted is None
 
-    def test_click_on_non_card_ancestor_is_ignored(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_click_in_gutter_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
-        bystander = mock.Mock()
-        bystander.ancestors_with_self = [bystander]
-        click = mock.Mock()
-        click.widget = bystander
+        rows = [_vgrid_row(f"m{i}") for i in range(4)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        grid._size = mock.Mock(width=60, height=20)  # type: ignore[attr-defined]
+        # y=5 lands in the gutter row between grid row 0 and grid row 1.
+        click = self._click(0, 5)
         grid.on_click(click)
         assert grid.highlighted is None
 
-    def test_click_on_unmounted_card_is_ignored(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import ModelCard
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_click_on_empty_grid_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
-        # ModelCard exists in the ancestor chain but is not in the mounted
-        # window, so _iter_mounted_cards never yields it.
-        orphan = mock.Mock(spec=ModelCard)
-        orphan.ancestors_with_self = [orphan]
-        grid._iter_mounted_cards = lambda: iter([])  # type: ignore[method-assign]
-        click = mock.Mock()
-        click.widget = orphan
+        grid = ModelGrid([])
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        click = self._click(10, 1)
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+    def test_click_at_negative_y_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 1
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        click = self._click(10, -1)
         grid.on_click(click)
         assert grid.highlighted is None
 
@@ -4947,205 +4951,161 @@ class TestModelPickerScopeTitles:
         assert _picker_title("rerank") == msg.MODEL_PICKER_TITLE_RERANK
 
 
-class TestVirtualGridUtilityMethods:
-    """Direct unit coverage of VirtualGrid helpers + simple message wrappers."""
+class TestModelGridUtilityMethods:
+    """Direct unit coverage of ModelGrid helpers + simple message wrappers."""
 
-    def test_selected_control_returns_grid(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_selected_carries_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
-        msg = VirtualGrid.Selected(grid, mock.Mock())
-        assert msg.control is grid
+        rows = [_vgrid_row("a")]
+        grid = ModelGrid(rows)
+        message = ModelGrid.Selected(grid, rows[0])
+        assert message.control is grid
+        assert message.row is rows[0]
 
     def test_columns_for_width_zero_returns_default(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import _DEFAULT_COLUMNS, VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import _DEFAULT_COLUMNS, ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
-        assert grid._columns_for_width(0) == _DEFAULT_COLUMNS
-        assert grid._columns_for_width(-5) == _DEFAULT_COLUMNS
+        assert ModelGrid._columns_for_width(0) == _DEFAULT_COLUMNS
+        assert ModelGrid._columns_for_width(-5) == _DEFAULT_COLUMNS
 
     def test_total_rows_zero_when_empty(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([])
-        assert grid._total_rows() == 0
+        assert ModelGrid([])._total_rows() == 0
 
     def test_total_rows_when_columns_zero(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
+        grid = ModelGrid([_vgrid_row("a")])
         grid._cards_per_row = 0
         assert grid._total_rows() == 0
 
-    def test_update_layout_no_spacers_short_circuits(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_get_content_height_scales_with_dataset(self) -> None:
+        """Height grows linearly in the number of grid rows the dataset needs."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a")])
-        # Spacers are None until on_mount; calling _update_layout before
-        # mount must not raise.
-        grid._update_layout()
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        # Width 80 with the default _CARD_MIN_WIDTH lays out 2 cards per row.
+        size = mock.Mock(width=80, height=24)
+        height = grid.get_content_height(size, size, 80)
+        # 8 rows / 2 cols = 4 grid rows; 4 * _ROW_HEIGHT - 1 (no trailing gutter).
+        assert height == 4 * _ROW_HEIGHT - 1
 
-    async def test_full_layout_lifecycle_mounts_unmounts_rows(self) -> None:
-        """End-to-end: scroll causes rows to mount and unmount."""
-        from textual.containers import VerticalScroll
+    def test_get_content_height_zero_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        size = mock.Mock(width=80, height=24)
+        assert ModelGrid([]).get_content_height(size, size, 80) == 0
 
-        rows = [_vgrid_row(f"m{i}") for i in range(40)]
-        grid = VirtualGrid(rows, id="vg-full-test")
+    def test_get_content_width_returns_container_width(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        class _GridApp(App):
-            CSS = "VirtualGrid { height: 12; width: 60; }"
+        grid = ModelGrid([_vgrid_row("a")])
+        size = mock.Mock(width=42, height=24)
+        assert grid.get_content_width(size, size) == 42
 
-            def compose(self) -> ComposeResult:
-                yield VerticalScroll(grid)
+    def test_action_select_no_op_when_unset(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        app = _GridApp()
-        async with app.run_test(size=(60, 20)) as pilot:
-            await pilot.pause()
-            initial_rows = len(grid._row_widgets)
-            assert initial_rows >= 1
-            grid.scroll_to(y=24, animate=False)
-            await pilot.pause(0.2)
-            assert grid._row_widgets, "Some rows should still be mounted after a scroll"
+        grid = ModelGrid([_vgrid_row("a")])
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_select()
+        assert received == []
 
-    async def test_cursor_actions_when_highlight_unset(self) -> None:
-        """First cursor action lands on index 0 instead of moving from None."""
-        from textual.containers import VerticalScroll
+    def test_action_select_no_op_when_dataset_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
-
-        rows = [_vgrid_row(f"m{i}") for i in range(4)]
-        grid = VirtualGrid(rows, id="vg-cursor-test")
-
-        class _GridApp(App):
-            CSS = "VirtualGrid { height: 12; width: 80; }"
-
-            def compose(self) -> ComposeResult:
-                yield VerticalScroll(grid)
-
-        app = _GridApp()
-        async with app.run_test(size=(80, 20)) as pilot:
-            await pilot.pause()
-            for action in (
-                grid.action_cursor_up,
-                grid.action_cursor_down,
-                grid.action_cursor_left,
-                grid.action_cursor_right,
-            ):
-                grid.highlighted = None
-                action()
-                assert grid.highlighted == 0
-
-    async def test_action_select_no_op_when_unset(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
-
-        grid = VirtualGrid([_vgrid_row("a")])
-        received: list[VirtualGrid.Selected] = []
+        grid = ModelGrid([])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 0  # set despite empty dataset to exercise the guard
+        received: list[ModelGrid.Selected] = []
         grid.post_message = received.append  # type: ignore[method-assign]
         grid.action_select()
         assert received == []
 
 
-class TestVirtualGridCursorEdges:
-    """Cover the LeaveDown and bound-clip branches of cursor actions."""
+class TestModelGridCursorEdges:
+    """Cover the LeaveDown / LeaveUp and bound-clip branches of cursor actions."""
 
     def test_action_cursor_down_at_last_row_emits_leave_down(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(3)]
-        grid = VirtualGrid(rows)
-        grid._cards_per_row = 4  # next_index from 0 lands beyond the dataset
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 4  # next_index from any cell falls past the end
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlighted = 2
-        received: list[VirtualGrid.LeaveDown] = []
+        received: list[ModelGrid.LeaveDown] = []
         grid.post_message = received.append  # type: ignore[method-assign]
         grid.action_cursor_down()
-        assert received and isinstance(received[0], VirtualGrid.LeaveDown)
+        assert received and isinstance(received[0], ModelGrid.LeaveDown)
+
+    def test_action_cursor_up_emits_leave_up_at_first_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 4
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        received: list[ModelGrid.LeaveUp] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_cursor_up()
+        assert received and isinstance(received[0], ModelGrid.LeaveUp)
 
     def test_action_cursor_left_clamps_to_zero(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlighted = 0
         grid.action_cursor_left()
         assert grid.highlighted == 0
 
     def test_action_cursor_right_clamps_to_last_index(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(2)]
-        grid = VirtualGrid(rows)
+        grid = ModelGrid(rows)
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlighted = 1
         grid.action_cursor_right()
         assert grid.highlighted == 1
 
-    def test_scroll_index_into_view_no_op_on_empty_grid(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_cursor_actions_initialize_highlight_when_unset(self) -> None:
+        """First cursor action lands on index 0 instead of moving from None."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([])
-        # Must not raise: the empty branch returns before any scrolling.
-        grid._scroll_index_into_view(5)
+        grid = ModelGrid([_vgrid_row(f"m{i}") for i in range(4)])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        for action in (
+            grid.action_cursor_up,
+            grid.action_cursor_down,
+            grid.action_cursor_left,
+            grid.action_cursor_right,
+        ):
+            grid.highlighted = None
+            action()
+            assert grid.highlighted == 0
 
-    async def test_watch_scroll_y_resets_pending_debounce(self) -> None:
-        """Two scroll events back-to-back stop the first timer before scheduling the second."""
+
+class TestModelGridLayoutEdges:
+    """Cover render_line edge cases and the on_resize column recompute."""
+
+    async def test_render_line_blank_above_dataset(self) -> None:
+        """A negative y request returns a blank strip rather than crashing."""
         from textual.containers import VerticalScroll
 
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        rows = [_vgrid_row(f"m{i}") for i in range(20)]
-        grid = VirtualGrid(rows, id="vg-debounce-test")
-
-        class _GridApp(App):
-            CSS = "VirtualGrid { height: 12; width: 60; }"
-
-            def compose(self) -> ComposeResult:
-                yield VerticalScroll(grid)
-
-        app = _GridApp()
-        async with app.run_test(size=(60, 20)) as pilot:
-            await pilot.pause()
-            grid.scroll_to(y=12, animate=False)
-            grid.scroll_to(y=24, animate=False)
-            await pilot.pause(0.15)
-            assert grid._scroll_debounce is not None
-
-
-class TestVirtualGridLayoutEdges:
-    """Cover the remaining _update_layout and _scroll_index_into_view branches."""
-
-    async def test_update_layout_empty_rows_zero_spacer_height(self) -> None:
-        from textual.containers import VerticalScroll
-
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
-
-        grid = VirtualGrid([], id="vg-empty-test")
+        rows = [_vgrid_row(f"m{i}") for i in range(4)]
+        grid = ModelGrid(rows, id="mg-render-test")
 
         class _GridApp(App):
-            CSS = "VirtualGrid { height: 12; width: 60; }"
-
-            def compose(self) -> ComposeResult:
-                yield VerticalScroll(grid)
-
-        app = _GridApp()
-        async with app.run_test(size=(60, 20)) as pilot:
-            await pilot.pause()
-            # The empty branch flips both spacers to height 0.
-            assert grid._top_spacer.styles.height.value == 0
-            assert grid._bot_spacer.styles.height.value == 0
-
-    async def test_scroll_index_into_view_scrolls_back_when_above_window(self) -> None:
-        from textual.containers import VerticalScroll
-
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
-
-        rows = [_vgrid_row(f"m{i}") for i in range(60)]
-        grid = VirtualGrid(rows, id="vg-scrollback-test")
-
-        class _GridApp(App):
-            CSS = "VirtualGrid { height: 12; width: 80; }"
+            CSS = "ModelGrid { height: 12; width: 80; }"
 
             def compose(self) -> ComposeResult:
                 yield VerticalScroll(grid)
@@ -5153,25 +5113,21 @@ class TestVirtualGridLayoutEdges:
         app = _GridApp()
         async with app.run_test(size=(80, 20)) as pilot:
             await pilot.pause()
-            # Scroll deep into the dataset so a small index is above the
-            # current viewport. _scroll_index_into_view should then move
-            # the scroll position back up.
-            grid.scroll_to(y=120, animate=False)
-            await pilot.pause(0.2)
-            grid._scroll_index_into_view(0)
-            await pilot.pause()
-            assert grid.scroll_y < 120
+            strip = grid.render_line(-1)
+            # Strip cell length cleanly maps onto the configured grid width.
+            assert strip.cell_length == grid.size.width
 
-    async def test_layout_unmount_path_drops_offscreen_rows(self) -> None:
+    async def test_render_line_blank_past_dataset(self) -> None:
+        """Rendering a line past the last grid row returns blank padding."""
         from textual.containers import VerticalScroll
 
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        rows = [_vgrid_row(f"m{i}") for i in range(80)]
-        grid = VirtualGrid(rows, id="vg-unmount-test")
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows, id="mg-render-past")
 
         class _GridApp(App):
-            CSS = "VirtualGrid { height: 12; width: 80; }"
+            CSS = "ModelGrid { height: 12; width: 80; }"
 
             def compose(self) -> ComposeResult:
                 yield VerticalScroll(grid)
@@ -5179,55 +5135,92 @@ class TestVirtualGridLayoutEdges:
         app = _GridApp()
         async with app.run_test(size=(80, 20)) as pilot:
             await pilot.pause()
-            initial_keys = set(grid._row_widgets)
-            grid.scroll_to(y=240, animate=False)
-            await pilot.pause(0.3)
-            grid._update_layout()
-            after_keys = set(grid._row_widgets)
-            # Some of the originally-mounted top rows should have been
-            # unmounted; otherwise the unmount branch is dead code.
-            assert any(k not in after_keys for k in initial_keys)
+            strip = grid.render_line(grid.size.height * 4)
+            assert strip.cell_length == grid.size.width
+
+    async def test_render_line_paints_blank_cells_for_short_last_row(self) -> None:
+        """When the last row has fewer cards than columns, blank padding fills the gap."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(3)]  # 3 rows, 2-cols => one short
+        grid = ModelGrid(rows, id="mg-short-row")
+
+        class _GridApp(App):
+            CSS = "ModelGrid { height: 12; width: 60; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.pause()
+            grid._cards_per_row = 2
+            # Second grid row, first card line.
+            strip = grid.render_line(_row_height_offset(1))
+            assert strip.cell_length == grid.size.width
+
+    async def test_on_resize_recomputes_columns(self) -> None:
+        """Resizing the container shrinks/grows the column count."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows, id="mg-resize")
+
+        class _GridApp(App):
+            CSS = "ModelGrid { height: 12; width: 30; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(30, 20)) as pilot:
+            await pilot.pause()
+            assert grid.columns_per_row == 1
 
 
-class TestVirtualGridHighlightHelpers:
+class TestModelGridHighlightHelpers:
     """Cover highlight_first / highlight_last and the cursor-step branches."""
 
     def test_highlight_first_sets_index_zero_when_rows_present(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlighted = None
         grid.highlight_first()
         assert grid.highlighted == 0
 
     def test_highlight_first_no_op_when_empty(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([])
+        grid = ModelGrid([])
         grid.highlight_first()
         assert grid.highlighted is None
 
     def test_highlight_last_lands_on_final_row(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([_vgrid_row("a"), _vgrid_row("b"), _vgrid_row("c")])
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b"), _vgrid_row("c")])
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlight_last()
         assert grid.highlighted == 2
 
     def test_highlight_last_no_op_when_empty(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        grid = VirtualGrid([])
+        grid = ModelGrid([])
         grid.highlight_last()
         assert grid.highlighted is None
 
-    def test_action_cursor_up_steps_one_row_when_above_first_row(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+    def test_action_cursor_up_steps_one_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(8)]
-        grid = VirtualGrid(rows)
+        grid = ModelGrid(rows)
         grid._cards_per_row = 4
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlighted = 5
@@ -5236,13 +5229,125 @@ class TestVirtualGridHighlightHelpers:
         assert grid.highlighted == 1
 
     def test_action_cursor_down_steps_one_row(self) -> None:
-        from lilbee.cli.tui.widgets.virtual_grid import VirtualGrid
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(8)]
-        grid = VirtualGrid(rows)
+        grid = ModelGrid(rows)
         grid._cards_per_row = 4
         grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
         grid.highlighted = 1
         grid.action_cursor_down()
         # 1 + 4 = 5
         assert grid.highlighted == 5
+
+    def test_set_rows_replaces_dataset_and_resets_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        new_rows = [_vgrid_row("c"), _vgrid_row("d"), _vgrid_row("e")]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.set_rows(new_rows)
+        assert grid.rows == new_rows
+        assert grid.highlighted is None
+
+
+def _row_height_offset(grid_row: int) -> int:
+    from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT
+
+    return grid_row * _ROW_HEIGHT
+
+
+class TestModelGridCardRendering:
+    """``_render_card_strip`` covers both row dataclasses and selection state."""
+
+    def test_local_row_unselected_renders_full_height(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _render_card_strip
+
+        out = _render_card_strip(_vgrid_row("phi-3"), selected=False, width=40)
+        assert len(out.lines) == _CARD_HEIGHT
+
+    def test_local_row_selected_paints_install_hint(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        out = _render_card_strip(_vgrid_row("phi-3"), selected=True, width=40)
+        # The hint slot is the last line; rendered text contains the
+        # SETUP_CARD_HINT copy when the local card is highlighted-but-not-installed.
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "Enter to install" in rendered
+
+    def test_installed_row_renders_status_pill(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("phi-3")
+        row.installed = True
+        out = _render_card_strip(row, selected=False, width=40)
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "installed" in rendered
+
+    def test_frontier_row_renders_provider_and_key_status(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = FrontierCatalogRow(
+            name="gpt-4o",
+            ref="openai/gpt-4o",
+            task="chat",
+            provider="OpenAI",
+            provider_id="openai",
+            key_status=KeyStatus.READY,
+        )
+        out = _render_card_strip(row, selected=False, width=40)
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "OpenAI" in rendered
+        assert "ready" in rendered
+
+    def test_frontier_row_missing_key_renders_warning_pill(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = FrontierCatalogRow(
+            name="claude",
+            ref="anthropic/claude",
+            task="chat",
+            provider="Anthropic",
+            provider_id="anthropic",
+            key_status=KeyStatus.MISSING_KEY,
+        )
+        out = _render_card_strip(row, selected=False, width=40)
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "needs key" in rendered
+
+    def test_local_row_with_zero_downloads_skips_status_line(self) -> None:
+        """Local rows with no downloads omit the download-count line entirely."""
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("noisy")
+        # _vgrid_row defaults sort_downloads=0, so this branch is hit by default.
+        out = _render_card_strip(row, selected=False, width=40)
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "↓" not in rendered
+
+    def test_local_row_with_downloads_renders_download_count(self) -> None:
+        """A non-zero sort_downloads value renders the ``↓ ...`` muted glyph."""
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("popular")
+        row.sort_downloads = 12345
+        row.downloads = "12K"
+        out = _render_card_strip(row, selected=False, width=40)
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "↓ 12K" in rendered
+
+    def test_local_row_pads_short_specs_with_double_dash(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _build_specs
+
+        # All-default-row specs produce the placeholder.
+        assert str(_build_specs("--", "--", "--")) == "--"
+
+    def test_pad_line_is_a_no_op_when_content_already_full(self) -> None:
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        content = Content("0123456789")
+        assert _pad_line(content, 5, "$primary") is content

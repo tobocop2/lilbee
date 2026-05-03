@@ -27,7 +27,7 @@
     padding: 0 1;
 }
 
-VirtualGrid {
+ModelGrid {
     height: auto;
     min-height: 6;
     border: none;
@@ -36,19 +36,8 @@ VirtualGrid {
     margin: 0 1;
 }
 
-VirtualGrid:focus {
+ModelGrid:focus {
     border: none;
-}
-
-VirtualGrid > .vg-row {
-    height: auto;
-    width: 100%;
-    grid-gutter: 1;
-}
-
-VirtualGrid > .vg-row > ModelCard {
-    width: 1fr;
-    margin: 0 1 0 0;
 }
 
 #catalog-list {
