@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import RoleConfig, VisionRequest
 from lilbee.providers.worker.transport_pipe import (
     PipeSpawner,
     WorkerError,
@@ -66,7 +66,7 @@ def spawner() -> PipeSpawner:
 async def test_vision_worker_returns_text(spawner: PipeSpawner, role_config: RoleConfig) -> None:
     channel, _ = spawner.spawn(_patched_vision_worker_main, role_config)
     try:
-        payload = {"png_bytes": b"\x89PNG fake", "model": None, "prompt": "describe"}
+        payload = VisionRequest(png_bytes=b"\x89PNG fake", model=None, prompt="describe")
         result = await channel.call("vision_ocr", payload, timeout=_TEST_CALL_TIMEOUT_S)
         assert result == "OCR<describe>"
     finally:
@@ -92,7 +92,7 @@ async def test_vision_worker_rejects_non_bytes_png(
 ) -> None:
     channel, _ = spawner.spawn(_patched_vision_worker_main, role_config)
     try:
-        payload = {"png_bytes": "not-bytes", "model": None, "prompt": ""}
+        payload = VisionRequest(png_bytes="not-bytes", model=None, prompt="")
         with pytest.raises(WorkerError) as excinfo:
             await channel.call("vision_ocr", payload, timeout=_TEST_CALL_TIMEOUT_S)
         assert excinfo.value.original_type == "TypeError"
@@ -140,7 +140,7 @@ class _StubSession:
         self.calls: list[dict[str, Any]] = []
 
     def ocr(self, *, png_bytes: bytes, prompt: str, model: str | None) -> str:
-        self.calls.append({"png_bytes": png_bytes, "prompt": prompt, "model": model})
+        self.calls.append(VisionRequest(png_bytes=png_bytes, prompt=prompt, model=model))
         if self._exc is not None:
             raise self._exc
         return self._text
@@ -163,16 +163,16 @@ def test_dispatch_handles_ping() -> None:
 def test_dispatch_handles_vision_emits_result() -> None:
     conn = _RecordingConn()
     session = _StubSession(text="hello")
-    payload = {"png_bytes": b"x", "prompt": "p", "model": None}
+    payload = VisionRequest(png_bytes=b"x", prompt="p", model=None)
     assert _dispatch(conn, "vision_ocr", payload, session) is True  # type: ignore[arg-type]
     assert conn.sent == [("result", "hello")]
-    assert session.calls == [{"png_bytes": b"x", "prompt": "p", "model": None}]
+    assert session.calls == [VisionRequest(png_bytes=b"x", prompt="p", model=None)]
 
 
 def test_dispatch_handles_vision_emits_error_on_exception() -> None:
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
-    payload = {"png_bytes": b"x", "prompt": "", "model": None}
+    payload = VisionRequest(png_bytes=b"x", prompt="", model=None)
     assert _dispatch(conn, "vision_ocr", payload, session) is True  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "RuntimeError"
@@ -185,7 +185,7 @@ def test_dispatch_handles_unknown_kind_emits_error() -> None:
     assert conn.sent[0][0] == "error"
 
 
-def test_handle_vision_rejects_non_dict_payload() -> None:
+def test_handle_vision_rejects_non_visionrequest_payload() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
 
     conn = _RecordingConn()
@@ -195,14 +195,38 @@ def test_handle_vision_rejects_non_dict_payload() -> None:
     assert conn.sent[0][1].type_name == "TypeError"
 
 
+def test_handle_vision_rejects_dict_payload() -> None:
+    """Bare dicts no longer accepted; only VisionRequest."""
+    from lilbee.providers.worker.vision_worker import _handle_vision
+
+    conn = _RecordingConn()
+    session = _StubSession()
+    _handle_vision(conn, {"png_bytes": b"x", "prompt": "p", "model": None}, session)  # type: ignore[arg-type]
+    assert conn.sent[0][0] == "error"
+    assert conn.sent[0][1].type_name == "TypeError"
+
+
 def test_handle_vision_rejects_non_bytes_png() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
 
     conn = _RecordingConn()
     session = _StubSession()
-    _handle_vision(conn, {"png_bytes": "string-not-bytes"}, session)  # type: ignore[arg-type]
+    payload = VisionRequest(png_bytes="string-not-bytes", prompt="", model=None)  # type: ignore[arg-type]
+    _handle_vision(conn, payload, session)
     assert conn.sent[0][0] == "error"
-    assert conn.sent[0][1].type_name == "TypeError"
+
+
+def test_extract_vision_content_walks_defensively() -> None:
+    from lilbee.providers.worker.vision_worker import _extract_vision_content
+
+    assert _extract_vision_content({"choices": [{"message": {"content": "x"}}]}) == "x"
+    assert _extract_vision_content({"choices": [{"message": {"content": None}}]}) == ""
+    with pytest.raises(TypeError):
+        _extract_vision_content("not a dict")
+    with pytest.raises(TypeError):
+        _extract_vision_content({"choices": []})
+    with pytest.raises(TypeError):
+        _extract_vision_content({"choices": [{"message": "not a dict"}]})
 
 
 def test_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_path) -> None:
@@ -343,7 +367,7 @@ def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
     conn = _FakeConn(
         inbound=[
             ("ping", None),
-            ("vision_ocr", {"png_bytes": b"x", "prompt": "p", "model": None}),
+            ("vision_ocr", VisionRequest(png_bytes=b"x", prompt="p", model=None)),
             ("shutdown", None),
         ]
     )

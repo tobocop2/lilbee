@@ -6,8 +6,11 @@ lifetime. Wire protocol mirrors the embed worker:
 
 * ``("ping", None)`` -> ``("pong", None)``
 * ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("rerank", (query: str, candidates: list[str]))`` -> ``("result", list[float])``
-  or ``("error", _SerializedException)``
+* ``("rerank", RerankPayload)`` -> ``("result", list[float])`` or
+  ``("error", _SerializedException)``
+
+``RerankPayload`` (see :mod:`transport`) carries the query and the
+candidate list as named attributes.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import logging
 import os
 from typing import Any
 
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import RerankPayload, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import (
     ACK_KIND,
@@ -37,7 +40,6 @@ log = logging.getLogger(__name__)
 
 
 _POLL_TIMEOUT_S = 0.5
-_RERANK_PAYLOAD_LEN = 2
 
 
 class _RerankSession:
@@ -76,23 +78,14 @@ class _RerankSession:
 
 def _handle_rerank(conn: Any, payload: Any, session: _RerankSession) -> None:
     """Run one rerank request and send the typed reply (or error)."""
-    if (
-        not isinstance(payload, tuple)
-        or len(payload) != _RERANK_PAYLOAD_LEN
-        or not isinstance(payload[0], str)
-        or not isinstance(payload[1], list)
-    ):
+    if not isinstance(payload, RerankPayload):
         try:
-            raise TypeError(
-                f"rerank payload must be (query: str, candidates: list[str]); "
-                f"got {type(payload).__name__}"
-            )
+            raise TypeError(f"rerank payload must be RerankPayload, got {type(payload).__name__}")
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
-    query, candidates = payload
     try:
-        scores = session.score(query, candidates)
+        scores = session.score(payload.query, payload.candidates)
     except Exception as exc:
         conn.send((ERROR_KIND, _serialize_exception(exc)))
         return

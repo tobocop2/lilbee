@@ -60,7 +60,12 @@ from lilbee.providers.worker.chat_worker import chat_worker_main
 from lilbee.providers.worker.embed_worker import embed_worker_main
 from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import (
+    ChatRequest,
+    RerankPayload,
+    RoleConfig,
+    VisionRequest,
+)
 from lilbee.providers.worker.transport_pipe import WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
 
@@ -334,8 +339,9 @@ class LlamaCppProvider(LLMProvider):
             _RERANK_ROLE, rerank_worker_main, _make_rerank_role_config_factory()
         )
         runtime = self._pool_runtime()
+        request = RerankPayload(query=query, candidates=candidates)
         result = runtime.run_sync(
-            accessor.call("rerank", (query, candidates), timeout=cfg.worker_pool_call_timeout_s),
+            accessor.call("rerank", request, timeout=cfg.worker_pool_call_timeout_s),
             timeout=cfg.worker_pool_call_timeout_s,
         )
         if not isinstance(result, list):
@@ -381,9 +387,9 @@ class LlamaCppProvider(LLMProvider):
         )
         runtime = self._pool_runtime()
         budget = self._vision_call_budget(timeout)
-        payload = {"png_bytes": png_bytes, "model": model or None, "prompt": prompt}
+        request = VisionRequest(png_bytes=png_bytes, prompt=prompt, model=model or None)
         result = runtime.run_sync(
-            accessor.call("vision_ocr", payload, timeout=budget),
+            accessor.call("vision_ocr", request, timeout=budget),
             timeout=budget,
         )
         if not isinstance(result, str):
@@ -442,6 +448,8 @@ class LlamaCppProvider(LLMProvider):
         model: str | None,
     ) -> str | ClosableIterator[str]:
         """Original in-process chat path; reached when the pool is off or fails."""
+        from lilbee.providers.worker.chat_worker import _extract_non_streaming_content
+
         self._chat_lock.acquire()
         # Clear AFTER the lock acquires so a concurrent chat can't clobber a
         # mid-stream cancel still being honored by the prior holder.
@@ -452,8 +460,7 @@ class LlamaCppProvider(LLMProvider):
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
                 return _LockedStreamIterator(response, self._chat_lock)
-            result: str = response["choices"][0]["message"]["content"] or ""
-            return result
+            return _extract_non_streaming_content(response)
         finally:
             if not stream:
                 self._chat_lock.release()
@@ -472,19 +479,19 @@ class LlamaCppProvider(LLMProvider):
         )
         runtime = self._pool_runtime()
         accessor.clear_abort()  # honor mid-stream cancels from the previous turn
-        payload = {
-            "messages": messages,
-            "stream": stream,
-            "options": self._chat_kwargs_from_options(options) or None,
-            "model": model,
-        }
+        request = ChatRequest(
+            messages=messages,
+            stream=stream,
+            options=self._chat_kwargs_from_options(options) or None,
+            model=model,
+        )
         if stream:
-            async_iter = accessor.stream("chat", payload)
+            async_iter = accessor.stream("chat", request)
             return _PoolChatStreamIterator(
                 runtime=runtime, accessor=accessor, async_iter=async_iter
             )
         result = runtime.run_sync(
-            accessor.call("chat", payload, timeout=cfg.worker_pool_call_timeout_s),
+            accessor.call("chat", request, timeout=cfg.worker_pool_call_timeout_s),
             timeout=cfg.worker_pool_call_timeout_s,
         )
         if not isinstance(result, str):

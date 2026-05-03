@@ -10,23 +10,15 @@ Wire protocol (each message is a tuple ``(kind, payload)``):
 
 * ``("ping", None)`` -> ``("pong", None)``
 * ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("chat", payload_dict)`` -> ``("result", str)`` (non-streaming) or
+* ``("chat", ChatRequest)`` -> ``("result", str)`` (non-streaming) or
   a sequence of ``("stream_chunk", str)`` followed by
   ``("stream_end", None)`` (streaming). Errors at any point yield
   ``("error", _SerializedException)``.
 
-The chat ``payload_dict`` is::
-
-    {
-        "messages": list[dict[str, str]],
-        "stream": bool,
-        "options": dict[str, Any] | None,
-        "model": str | None,
-    }
-
-``model`` is the optional override for the worker's role-config model.
-A non-None value triggers a transparent reload inside the worker (one
-extra cold-load) rather than respawning the whole worker process.
+``ChatRequest`` (see :mod:`transport`) carries the messages list,
+streaming flag, llama-cpp kwargs, and an optional ``model`` override
+that triggers a transparent in-worker reload (one extra cold-load)
+rather than respawning the whole worker process.
 """
 
 from __future__ import annotations
@@ -36,7 +28,7 @@ import logging
 import os
 from typing import Any
 
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import ChatRequest, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import (
     ACK_KIND,
@@ -160,32 +152,55 @@ def _handle_chat_streaming(conn: Any, response_iter: Any) -> None:
     conn.send((STREAM_END_KIND, None))
 
 
+def _extract_non_streaming_content(response: Any) -> str:
+    """Pull the assistant text out of one llama-cpp non-streaming response.
+
+    Mirrors :func:`_extract_stream_content`'s defensive walk so a
+    malformed (or truncated) response surfaces as a typed
+    :class:`TypeError` we can serialize back to the parent, instead of
+    a raw :class:`KeyError` / :class:`IndexError` deep in the worker.
+    """
+    if not isinstance(response, dict):
+        raise TypeError(f"chat response must be dict, got {type(response).__name__}")
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise TypeError("chat response missing 'choices' list")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise TypeError(f"chat choices[0] must be dict, got {type(first).__name__}")
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise TypeError("chat choices[0].message missing or not dict")
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _handle_chat_non_streaming(conn: Any, response: Any) -> None:
     """Emit one result frame with the full assistant message text."""
-    text = response["choices"][0]["message"]["content"] or ""
+    text = _extract_non_streaming_content(response)
     conn.send((RESULT_KIND, text))
 
 
 def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
     """Run one chat request and dispatch to the streaming/non-streaming handler."""
-    if not isinstance(payload, dict):
+    if not isinstance(payload, ChatRequest):
         try:
-            raise TypeError(f"chat payload must be dict, got {type(payload).__name__}")
+            raise TypeError(f"chat payload must be ChatRequest, got {type(payload).__name__}")
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     try:
         response = session.chat(
-            messages=payload.get("messages", []),
-            stream=bool(payload.get("stream", False)),
-            options=payload.get("options"),
-            model=payload.get("model"),
+            messages=payload.messages,
+            stream=payload.stream,
+            options=payload.options,
+            model=payload.model,
         )
     except Exception as exc:
         conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
     try:
-        if payload.get("stream"):
+        if payload.stream:
             _handle_chat_streaming(conn, response)
         else:
             _handle_chat_non_streaming(conn, response)

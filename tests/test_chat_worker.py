@@ -21,7 +21,7 @@ from lilbee.providers.worker.chat_worker import (
     _make_abort_callback,
     chat_worker_main,
 )
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import ChatRequest, RoleConfig
 from lilbee.providers.worker.transport_pipe import (
     PipeSpawner,
     WorkerError,
@@ -119,7 +119,7 @@ async def test_chat_worker_streams_chunks(
     channel, _ = spawner.spawn(_patched_chat_worker_main, role_config)
     try:
         chunks: list[str] = []
-        payload = {"messages": [{"role": "user", "content": "hi"}], "stream": True}
+        payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
         async for chunk in channel.stream("chat", payload):
             chunks.append(chunk)
         assert chunks == ["hello", " ", "world"]
@@ -134,7 +134,7 @@ async def test_chat_worker_non_streaming_returns_joined_text(
 ) -> None:
     channel, _ = spawner.spawn(_patched_chat_worker_main, role_config)
     try:
-        payload = {"messages": [{"role": "user", "content": "hi"}], "stream": False}
+        payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=False)
         result = await channel.call("chat", payload, timeout=_TEST_CALL_TIMEOUT_S)
         assert result == "hello world"
     finally:
@@ -142,14 +142,14 @@ async def test_chat_worker_non_streaming_returns_joined_text(
 
 
 @pytest.mark.asyncio
-async def test_chat_worker_rejects_non_dict_payload(
+async def test_chat_worker_rejects_non_chatrequest_payload(
     spawner: PipeSpawner,
     role_config: RoleConfig,
 ) -> None:
     channel, _ = spawner.spawn(_patched_chat_worker_main, role_config)
     try:
         with pytest.raises(WorkerError) as excinfo:
-            await channel.call("chat", "not-a-dict", timeout=_TEST_CALL_TIMEOUT_S)
+            await channel.call("chat", "not-a-chatrequest", timeout=_TEST_CALL_TIMEOUT_S)
         assert excinfo.value.original_type == "TypeError"
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
@@ -193,7 +193,7 @@ async def test_chat_worker_honors_abort_flag_mid_stream(
     channel, _ = spawner.spawn(_aborting_chat_worker_main, role_config)
     try:
         chunks: list[str] = []
-        payload = {"messages": [{"role": "user", "content": "hi"}], "stream": True}
+        payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
         import asyncio as _asyncio
 
         async def _flip_abort_after_first_chunk() -> None:
@@ -299,7 +299,7 @@ def test_dispatch_handles_chat_streaming() -> None:
             ]
         )
     )
-    payload = {"messages": [{"role": "user", "content": "hi"}], "stream": True}
+    payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
     assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
     assert conn.sent == [
         ("stream_chunk", "a"),
@@ -311,7 +311,7 @@ def test_dispatch_handles_chat_streaming() -> None:
 def test_dispatch_handles_chat_non_streaming() -> None:
     conn = _RecordingConn()
     session = _StubSession(response={"choices": [{"message": {"content": "joined"}}]})
-    payload = {"messages": [], "stream": False}
+    payload = ChatRequest(messages=[], stream=False)
     assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
     assert conn.sent == [("result", "joined")]
 
@@ -319,7 +319,7 @@ def test_dispatch_handles_chat_non_streaming() -> None:
 def test_dispatch_handles_chat_emits_error_on_setup_exception() -> None:
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("setup boom"))
-    payload = {"messages": [], "stream": False}
+    payload = ChatRequest(messages=[], stream=False)
     assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "RuntimeError"
@@ -333,7 +333,7 @@ def test_dispatch_handles_chat_emits_error_on_stream_failure() -> None:
         raise RuntimeError("stream broke")
 
     session = _StubSession(response=_generator())
-    payload = {"messages": [], "stream": True}
+    payload = ChatRequest(messages=[], stream=True)
     assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
     # First chunk arrived, then error.
     kinds = [m[0] for m in conn.sent]
@@ -347,14 +347,45 @@ def test_dispatch_handles_unknown_kind_emits_error() -> None:
     assert conn.sent[0][0] == "error"
 
 
-def test_handle_chat_rejects_non_dict_payload() -> None:
+def test_handle_chat_rejects_non_chatrequest_payload() -> None:
     from lilbee.providers.worker.chat_worker import _handle_chat
 
     conn = _RecordingConn()
     session = _StubSession()
-    _handle_chat(conn, "not-a-dict", session)  # type: ignore[arg-type]
+    _handle_chat(conn, "not-a-chatrequest", session)  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
+
+
+def test_handle_chat_rejects_dict_payload() -> None:
+    """Bare dicts no longer accepted; only ChatRequest."""
+    from lilbee.providers.worker.chat_worker import _handle_chat
+
+    conn = _RecordingConn()
+    session = _StubSession()
+    _handle_chat(conn, {"messages": [], "stream": False}, session)  # type: ignore[arg-type]
+    assert conn.sent[0][0] == "error"
+    assert conn.sent[0][1].type_name == "TypeError"
+
+
+def test_extract_non_streaming_content_walks_defensively() -> None:
+    from lilbee.providers.worker.chat_worker import _extract_non_streaming_content
+
+    # Happy path.
+    assert _extract_non_streaming_content({"choices": [{"message": {"content": "hi"}}]}) == "hi"
+    # None content -> empty string.
+    assert _extract_non_streaming_content({"choices": [{"message": {"content": None}}]}) == ""
+    # Malformed shapes raise typed errors.
+    with pytest.raises(TypeError):
+        _extract_non_streaming_content("not a dict")
+    with pytest.raises(TypeError):
+        _extract_non_streaming_content({})
+    with pytest.raises(TypeError):
+        _extract_non_streaming_content({"choices": []})
+    with pytest.raises(TypeError):
+        _extract_non_streaming_content({"choices": ["not a dict"]})
+    with pytest.raises(TypeError):
+        _extract_non_streaming_content({"choices": [{"message": "not a dict"}]})
 
 
 def test_chat_session_close_idempotent_and_swallows() -> None:
@@ -511,7 +542,7 @@ def test_chat_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
     conn = _FakeConn(
         inbound=[
             ("ping", None),
-            ("chat", {"messages": [], "stream": False}),
+            ("chat", ChatRequest(messages=[], stream=False)),
             ("shutdown", None),
         ]
     )

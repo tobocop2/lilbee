@@ -50,6 +50,54 @@ class RoleConfig:
 
 
 @dataclass(frozen=True)
+class ChatRequest:
+    """Pickle-friendly chat request that crosses the parent->worker pipe.
+
+    Replaces the inline ``{"messages": ..., "stream": ..., ...}`` dict
+    so a typo on either side surfaces as a type error (or attribute
+    miss) instead of a silent ``payload.get("missing", default)`` that
+    masks the bug. ``messages`` is the standard llama-cpp message list;
+    ``stream`` decides between single-result and chunked replies;
+    ``options`` is the post-``filter_options`` kwarg dict the worker
+    forwards to ``create_chat_completion``; ``model`` triggers a
+    transparent reload inside the worker if it differs from the
+    role-config model.
+    """
+
+    messages: list[dict[str, str]]
+    stream: bool = False
+    options: dict[str, Any] | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class VisionRequest:
+    """Pickle-friendly vision-OCR request that crosses the parent->worker pipe.
+
+    Replaces the inline ``{"png_bytes": ..., "model": ..., "prompt": ...}``
+    dict. ``model`` is optional: ``None`` means "use the role-config
+    model unchanged".
+    """
+
+    png_bytes: bytes
+    prompt: str = ""
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class RerankPayload:
+    """Pickle-friendly rerank request.
+
+    Replaces the bare ``(query, candidates)`` tuple so the worker can
+    type-check the shape via attribute access instead of length / index
+    juggling.
+    """
+
+    query: str
+    candidates: list[str]
+
+
+@dataclass(frozen=True)
 class WorkerHandle:
     """Opaque handle to a spawned worker, returned alongside the channel.
 
@@ -140,7 +188,10 @@ class WorkerSpawner(Protocol):
 
 
 __all__ = [
+    "ChatRequest",
+    "RerankPayload",
     "RoleConfig",
+    "VisionRequest",
     "WorkerChannel",
     "WorkerEntrypoint",
     "WorkerHandle",

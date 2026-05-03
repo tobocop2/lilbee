@@ -16,7 +16,7 @@ from lilbee.providers.worker.rerank_worker import (
     _RerankSession,
     rerank_worker_main,
 )
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import RerankPayload, RoleConfig
 from lilbee.providers.worker.transport_pipe import (
     PipeSpawner,
     WorkerError,
@@ -69,7 +69,7 @@ async def test_rerank_worker_returns_scores(
     try:
         scores = await channel.call(
             "rerank",
-            ("query", ["aa", "bbbb", "c"]),
+            RerankPayload(query="query", candidates=["aa", "bbbb", "c"]),
             timeout=_TEST_CALL_TIMEOUT_S,
         )
         assert scores == [2.0, 4.0, 1.0]
@@ -85,7 +85,7 @@ async def test_rerank_worker_rejects_malformed_payload(
     channel, _ = spawner.spawn(_patched_rerank_worker_main, role_config)
     try:
         with pytest.raises(WorkerError) as excinfo:
-            await channel.call("rerank", "not-a-tuple", timeout=_TEST_CALL_TIMEOUT_S)
+            await channel.call("rerank", "not-a-rerankpayload", timeout=_TEST_CALL_TIMEOUT_S)
         assert excinfo.value.original_type == "TypeError"
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
@@ -151,7 +151,7 @@ def test_dispatch_handles_ping() -> None:
 def test_dispatch_handles_rerank_emits_result() -> None:
     conn = _RecordingConn()
     session = _StubSession(scores=[0.7, 0.2])
-    payload = ("q", ["a", "b"])
+    payload = RerankPayload(query="q", candidates=["a", "b"])
     assert _dispatch(conn, "rerank", payload, session) is True  # type: ignore[arg-type]
     assert conn.sent == [("result", [0.7, 0.2])]
     assert session.calls == [("q", ["a", "b"])]
@@ -160,7 +160,8 @@ def test_dispatch_handles_rerank_emits_result() -> None:
 def test_dispatch_handles_rerank_emits_error_on_exception() -> None:
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
-    assert _dispatch(conn, "rerank", ("q", ["a"]), session) is True  # type: ignore[arg-type]
+    payload = RerankPayload(query="q", candidates=["a"])
+    assert _dispatch(conn, "rerank", payload, session) is True  # type: ignore[arg-type]
     assert len(conn.sent) == 1
     kind, payload = conn.sent[0]
     assert kind == "error"
@@ -174,7 +175,7 @@ def test_dispatch_handles_unknown_kind_emits_error() -> None:
     assert conn.sent[0][0] == "error"
 
 
-def test_handle_rerank_rejects_non_tuple_payload() -> None:
+def test_handle_rerank_rejects_non_rerankpayload() -> None:
     """Cover the malformed-payload guard with an in-process dispatch."""
     from lilbee.providers.worker.rerank_worker import _handle_rerank
 
@@ -185,12 +186,13 @@ def test_handle_rerank_rejects_non_tuple_payload() -> None:
         mode="rerank",
     )
     session = _RerankSession(role_config)
-    _handle_rerank(conn, "not-a-tuple", session)  # type: ignore[arg-type]
+    _handle_rerank(conn, "not-a-rerankpayload", session)  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 
 
-def test_handle_rerank_rejects_wrong_arity() -> None:
+def test_handle_rerank_rejects_dict_payload() -> None:
+    """Bare dicts no longer accepted; only RerankPayload."""
     from lilbee.providers.worker.rerank_worker import _handle_rerank
 
     conn = _RecordingConn()
@@ -200,8 +202,9 @@ def test_handle_rerank_rejects_wrong_arity() -> None:
         mode="rerank",
     )
     session = _RerankSession(role_config)
-    _handle_rerank(conn, ("only-one",), session)  # type: ignore[arg-type]
+    _handle_rerank(conn, {"query": "q", "candidates": ["a"]}, session)  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
+    assert conn.sent[0][1].type_name == "TypeError"
 
 
 def test_session_load_routes_through_real_loader(monkeypatch, tmp_path) -> None:
@@ -289,7 +292,7 @@ def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> Non
     conn = _FakeConn(
         inbound=[
             ("ping", None),
-            ("rerank", ("q", ["aa"])),
+            ("rerank", RerankPayload(query="q", candidates=["aa"])),
             ("shutdown", None),
         ]
     )

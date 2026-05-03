@@ -8,21 +8,12 @@ Wire protocol:
 
 * ``("ping", None)`` -> ``("pong", None)``
 * ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("vision_ocr", payload_dict)`` -> ``("result", str)`` or
+* ``("vision_ocr", VisionRequest)`` -> ``("result", str)`` or
   ``("error", _SerializedException)``
 
-The ``payload_dict`` is::
-
-    {
-        "png_bytes": bytes,
-        "model": str | None,    # override; falls back to role-config path
-        "prompt": str,          # OCR_PROMPT default supplied by caller
-    }
-
-Per-call ``model`` triggers a transparent reload inside the worker if it
-differs from the currently loaded one. The pool's standard model-swap
-path (``invalidate_load_cache`` + lazy respawn) still applies when
-``cfg.vision_model`` itself changes.
+``VisionRequest`` (see :mod:`transport`) carries the PNG bytes, prompt,
+and an optional ``model`` override that triggers a transparent in-worker
+reload when it differs from the role-config model.
 """
 
 from __future__ import annotations
@@ -33,7 +24,7 @@ import os
 import time
 from typing import Any
 
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import RoleConfig, VisionRequest
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import (
     ACK_KIND,
@@ -71,8 +62,10 @@ class _VisionSession:
         messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
         start = time.monotonic()
         response = llm.create_chat_completion(messages=messages, stream=False)
-        text: str = response["choices"][0]["message"]["content"] or ""
-        usage = response.get("usage", {}) or {}
+        text = _extract_vision_content(response)
+        usage = response.get("usage", {}) if isinstance(response, dict) else {}
+        if not isinstance(usage, dict):
+            usage = {}
         log.info(
             "vision_ocr wall=%.1fs prompt_tokens=%s completion_tokens=%s chars=%d",
             time.monotonic() - start,
@@ -107,16 +100,39 @@ class _VisionSession:
         self._close_model()
 
 
+def _extract_vision_content(response: Any) -> str:
+    """Pull the OCR text out of one llama-cpp vision response.
+
+    Mirrors the chat path's defensive walk so a malformed response
+    surfaces as a typed :class:`TypeError` we can serialize, instead of
+    a raw :class:`KeyError` / :class:`IndexError` deep in the worker.
+    """
+    if not isinstance(response, dict):
+        raise TypeError(f"vision response must be dict, got {type(response).__name__}")
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise TypeError("vision response missing 'choices' list")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise TypeError(f"vision choices[0] must be dict, got {type(first).__name__}")
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise TypeError("vision choices[0].message missing or not dict")
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _handle_vision(conn: Any, payload: Any, session: _VisionSession) -> None:
     """Run one vision OCR request and send the typed reply (or error)."""
-    if not isinstance(payload, dict):
+    if not isinstance(payload, VisionRequest):
         try:
-            raise TypeError(f"vision_ocr payload must be dict, got {type(payload).__name__}")
+            raise TypeError(
+                f"vision_ocr payload must be VisionRequest, got {type(payload).__name__}"
+            )
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
-    png_bytes = payload.get("png_bytes")
-    if not isinstance(png_bytes, (bytes, bytearray)):
+    if not isinstance(payload.png_bytes, (bytes, bytearray)):
         try:
             raise TypeError("vision_ocr payload.png_bytes must be bytes")
         except TypeError as exc:
@@ -124,9 +140,9 @@ def _handle_vision(conn: Any, payload: Any, session: _VisionSession) -> None:
         return
     try:
         text = session.ocr(
-            png_bytes=bytes(png_bytes),
-            prompt=str(payload.get("prompt", "")),
-            model=payload.get("model"),
+            png_bytes=bytes(payload.png_bytes),
+            prompt=payload.prompt,
+            model=payload.model,
         )
     except Exception as exc:
         conn.send((ERROR_KIND, _serialize_exception(exc)))
