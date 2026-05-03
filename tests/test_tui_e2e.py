@@ -2232,14 +2232,33 @@ class TestChatSlashCommands:
             assert app.screen.is_current
 
     async def test_cmd_reset_with_confirm(self, _mock_resolve):
-        """/reset confirm performs reset."""
+        """/reset followed by Yes deletes data AND drops the cached Services.
+
+        Without the reset_services() call the Status modal still serves the
+        pre-reset source list because it queries the cached Store handle.
+        """
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._cmd_reset") as mock_reset:
-                app.screen._cmd_reset("confirm")
+            with (
+                mock.patch("lilbee.app.reset.perform_reset") as mock_perform,
+                mock.patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset_svc,
+            ):
+                from lilbee.app.reset import ResetResult
+
+                mock_perform.return_value = ResetResult(
+                    deleted_docs=1,
+                    deleted_data=1,
+                    skipped=[],
+                    documents_dir=str(cfg.documents_dir),
+                    data_dir=str(cfg.data_dir),
+                )
+                app.screen._handle_slash("/reset")
                 await pilot.pause()
-            mock_reset.assert_called_once_with("confirm")
+                await pilot.press("y")
+                await pilot.pause()
+            mock_perform.assert_called_once()
+            mock_reset_svc.assert_called_once()
 
     async def test_cmd_cancel(self, _mock_resolve):
         """/cancel cancels workers."""

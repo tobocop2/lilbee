@@ -788,16 +788,22 @@ class ChatScreen(Screen[None]):
 
             try:
                 result = perform_reset()
-                if result.skipped:
-                    self.notify(
-                        msg.CMD_RESET_PARTIAL.format(skipped=len(result.skipped)),
-                        severity="warning",
-                    )
-                else:
-                    self.notify(msg.CMD_RESET_SUCCESS)
             except Exception as exc:
                 log.warning("Reset failed", exc_info=True)
                 self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")
+                return
+
+            # Drop the cached Services so the next get_services() reopens LanceDB
+            # against the now-empty data dir.
+            reset_services()
+
+            if result.skipped:
+                self.notify(
+                    msg.CMD_RESET_PARTIAL.format(skipped=len(result.skipped)),
+                    severity="warning",
+                )
+            else:
+                self.notify(msg.CMD_RESET_SUCCESS)
 
         self.app.push_screen(
             ConfirmDialog("Reset Knowledge Base", "This will permanently delete all data."),

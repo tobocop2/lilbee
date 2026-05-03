@@ -18,6 +18,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output, render_status
 from lilbee.core.config import cfg
+from lilbee.core.services import reset_services
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
 
@@ -65,6 +66,8 @@ def reset(
             raise SystemExit(0)
 
     result = perform_reset()
+    # Drop the cached Services so any in-process follow-up sees the empty data dir.
+    reset_services()
 
     if cfg.json_mode:
         json_output(result.model_dump())
