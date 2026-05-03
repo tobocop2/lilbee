@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from pathlib import Path
@@ -195,6 +196,10 @@ class StatusScreen(Screen[None]):
             ]
         )
         self._sections_mounted = True
+        # Yield once so Textual gets a chance to compose the freshly-
+        # mounted Collapsibles' children. Without this, querying
+        # #docs-table immediately after mount_all races on Windows.
+        await asyncio.sleep(0)
         self._show_loading_placeholders()
         # Replay any worker callbacks that arrived before the deferred
         # mount completed.

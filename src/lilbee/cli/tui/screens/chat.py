@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from textual import getters, on, work
+from textual import events, getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -35,7 +35,6 @@ from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
-from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -161,7 +160,24 @@ class ChatScreen(Screen[None]):
         # inside the prompt still works via PgUp/PgDn/Home/End.
         Binding("up", "history_prev", "Up", show=False, priority=True),
         Binding("down", "history_next", "Down", show=False, priority=True),
-        Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
+        # Esc dispatches to ``action_enter_normal_mode``, which cancels
+        # an active stream first and otherwise drops the screen back
+        # into normal mode. The footer label flips to "Cancel stream"
+        # while streaming via ``check_action`` parameter dispatch.
+        Binding(
+            "escape",
+            "esc_dispatch('cancel')",
+            "Cancel stream",
+            show=True,
+            priority=True,
+        ),
+        Binding(
+            "escape",
+            "esc_dispatch('normal')",
+            "Normal mode",
+            show=True,
+            priority=True,
+        ),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
@@ -178,6 +194,9 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
+        # Mid-stream submissions are parked here; _exit_streaming_state
+        # fires the queued prompt once the current stream finishes.
+        self._queued_prompt: str | None = None
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -314,6 +333,18 @@ class ChatScreen(Screen[None]):
             event.stop()
             return
 
+    @on(events.DescendantFocus, "#chat-input")
+    def _on_chat_input_focused(self, event: events.DescendantFocus) -> None:
+        """Focusing the chat input always implies insert mode.
+
+        Without this, a normal-mode user who clicks back into the input
+        (or whose focus is restored after a screen pop) keeps typing
+        even though the screen still thinks it's in normal mode -- which
+        bypasses the vim-style guards everywhere else.
+        """
+        if not self._insert_mode:
+            self._enter_insert_mode()
+
     @on(ChatInput.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
         if not self._insert_mode:
@@ -332,6 +363,12 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         if self.streaming:
+            # Park the prompt instead of silently dropping it; it fires
+            # automatically once the active stream finishes or is
+            # cancelled. A second submission overwrites the first --
+            # the most recent prompt wins.
+            self._queued_prompt = text
+            self.notify(msg.CHAT_PROMPT_QUEUED, timeout=2)
             return
         self._send_message(text)
 
@@ -357,25 +394,19 @@ class ChatScreen(Screen[None]):
 
     def _enter_streaming_state(self) -> None:
         self.add_class("streaming")
-        # Both cancel paths and the natural finalize write streaming=False;
-        # reactive dedupe makes the watcher a no-op on equal values, so the
-        # button mount happens exactly once per streaming session.
-        with contextlib.suppress(Exception):
-            self.query_one("#chat-prompt-area", PromptArea).mount(
-                ChatStopButton(button_id="chat-stop"),
-                before="#chat-input",
-            )
+        # Cancel + finalize both write streaming=False; reactive dedupe
+        # keeps the watcher a no-op on equal values.
+        self.refresh_bindings()
 
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
-        for w in self.query("#chat-stop"):
-            w.remove()
         self._remove_thinking_indicator()
-
-    @on(ChatStopButton.Pressed)
-    def _on_chat_stop_pressed(self, event: ChatStopButton.Pressed) -> None:
-        event.stop()
-        self.action_cancel_stream()
+        self.refresh_bindings()
+        # Drain any prompt the user submitted mid-stream so it doesn't
+        # get silently dropped on the floor.
+        if self._queued_prompt is not None:
+            text, self._queued_prompt = self._queued_prompt, None
+            self.call_later(self._send_message, text)
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -1014,6 +1045,17 @@ class ChatScreen(Screen[None]):
 
     def action_scroll_down(self) -> None:
         self._chat_log.scroll_page_down()
+
+    def action_esc_dispatch(self, _variant: str = "normal") -> None:
+        """Esc dispatch -- both the 'cancel' and 'normal' variants share logic."""
+        self.action_enter_normal_mode()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Footer-binding gating: show 'Cancel stream' only while streaming."""
+        if action == "esc_dispatch":
+            wants_cancel = parameters == ("cancel",)
+            return self.streaming if wants_cancel else not self.streaming
+        return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""

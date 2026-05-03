@@ -4634,46 +4634,6 @@ def _make_click(widget: Any, button: int = 1) -> Any:
     )
 
 
-class TestChatStopButton:
-    """Direct-construction tests for ChatStopButton."""
-
-    def test_action_press_posts_pressed_message(self) -> None:
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        btn = ChatStopButton()
-        received: list[ChatStopButton.Pressed] = []
-        btn.post_message = received.append  # type: ignore[method-assign]
-        btn.action_press()
-        assert len(received) == 1
-        assert isinstance(received[0], ChatStopButton.Pressed)
-
-    def test_on_click_stops_event_and_posts(self) -> None:
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        btn = ChatStopButton()
-        received: list[ChatStopButton.Pressed] = []
-        btn.post_message = received.append  # type: ignore[method-assign]
-        evt = _make_click(btn)
-        btn.on_click(evt)
-        assert received and isinstance(received[0], ChatStopButton.Pressed)
-
-    async def test_renders_message_key_label(self) -> None:
-        from textual.app import App
-
-        from lilbee.cli.tui import messages as msg_module
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        class _App(App):
-            def compose(self) -> ComposeResult:
-                yield ChatStopButton()
-
-        app = _App()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            btn = app.query_one(ChatStopButton)
-            assert msg_module.CHAT_STOP_BUTTON_LABEL in str(btn.render())
-
-
 class TestSearchHFCtaItem:
     """Direct-construction tests for SearchHFCtaItem."""
 

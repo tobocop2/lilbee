@@ -2844,27 +2844,12 @@ class TestChatStreaming:
                 inp.value = "second message"
                 await pilot.press("enter")
                 await pilot.pause()
+                # First message is mid-stream; second submission was queued
+                # rather than dropped, so still only one user/assistant pair
+                # is visible until the queue drains.
                 assert len(list(app.screen.query(UserMessage))) == 1
                 assert len(list(app.screen.query(AssistantMessage))) == 1
-
-    async def test_stop_button_cancels_active_stream(self, _mock_resolve, _mock_services):
-        """Clicking the Stop button cancels the worker and re-enables input."""
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        with self._patch_stream_response():
-            app = ChatTestApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                inp = app.screen.query_one("#chat-input", ChatInput)
-                inp.value = "stop me"
-                await pilot.press("enter")
-                await pilot.pause()
-                assert app.screen.streaming
-                button = app.screen.query_one(ChatStopButton)
-                button.action_press()
-                await pilot.pause()
-                assert app.screen.streaming is False
-                assert not list(app.screen.query(ChatStopButton))
+                assert app.screen._queued_prompt == "second message"
 
     async def test_esc_cancels_active_stream(self, _mock_resolve, _mock_services):
         """Esc keystroke cancels the worker (regression for action_enter_normal_mode path)."""
