@@ -11,6 +11,7 @@ through the batching thread.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -55,6 +56,7 @@ from lilbee.providers.model_cache import (
     kv_bytes_per_token,
 )
 from lilbee.providers.worker import WorkerManager
+from lilbee.providers.worker.chat_worker import chat_worker_main
 from lilbee.providers.worker.embed_worker import embed_worker_main
 from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, WorkerPool
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
@@ -119,6 +121,7 @@ class LlamaCppProvider(LLMProvider):
         self._pool_runtime: PoolRuntime | None = None
         self._pool_embed_accessor: RoleAccessor | None = None
         self._pool_rerank_accessor: RoleAccessor | None = None
+        self._pool_chat_accessor: RoleAccessor | None = None
         self._pool_lock = threading.Lock()
 
     def _embed_worker(self) -> None:
@@ -271,6 +274,19 @@ class LlamaCppProvider(LLMProvider):
             )
             return self._pool_rerank_accessor
 
+    def _get_pool_chat_accessor(self) -> RoleAccessor:
+        """Lazy-create the pool, register the chat role, return its accessor."""
+        with self._pool_lock:
+            if self._pool_chat_accessor is not None:
+                return self._pool_chat_accessor
+            pool = self._ensure_pool()
+            self._pool_chat_accessor = pool.register(
+                "chat",
+                chat_worker_main,
+                _make_chat_role_config_factory(),
+            )
+            return self._pool_chat_accessor
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts. Routes through the persistent worker pool by default.
 
@@ -369,20 +385,39 @@ class LlamaCppProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
-        """Chat completion: serialized via lock (Llama is not thread-safe)."""
+        """Chat completion. Routes through the pool when enabled.
+
+        Streaming returns a :class:`ClosableIterator[str]` whose
+        ``close()`` flips the worker's abort flag and lets the in-flight
+        generation drain. Non-streaming returns the joined assistant
+        message text. Pool failures fall back to the in-process path so
+        a worker crash does not break an in-flight conversation.
+        """
+        if cfg.worker_pool_enabled:
+            try:
+                return self._chat_via_pool(
+                    messages=messages, stream=stream, options=options, model=model
+                )
+            except (OSError, RuntimeError, WorkerError) as exc:
+                log.warning("Pool chat failed, falling back to in-process: %s", exc)
+        return self._chat_in_process(messages=messages, stream=stream, options=options, model=model)
+
+    def _chat_in_process(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        stream: bool,
+        options: dict[str, Any] | None,
+        model: str | None,
+    ) -> str | ClosableIterator[str]:
+        """Original in-process chat path; reached when the pool is off or fails."""
         self._chat_lock.acquire()
         # Clear AFTER the lock acquires so a concurrent chat can't clobber a
         # mid-stream cancel still being honored by the prior holder.
         clear_abort()
         try:
             llm = self._get_chat_llm(model)
-            kwargs: dict[str, Any] = {}
-            if options:
-                filtered = filter_options(options)
-                if "num_predict" in filtered:
-                    filtered["max_tokens"] = filtered.pop("num_predict")
-                filtered.pop("num_ctx", None)  # model-load param, not per-call
-                kwargs.update(filtered)
+            kwargs = self._chat_kwargs_from_options(options)
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
                 return _LockedStreamIterator(response, self._chat_lock)
@@ -391,6 +426,53 @@ class LlamaCppProvider(LLMProvider):
         finally:
             if not stream:
                 self._chat_lock.release()
+
+    def _chat_via_pool(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        stream: bool,
+        options: dict[str, Any] | None,
+        model: str | None,
+    ) -> str | ClosableIterator[str]:
+        """Run one chat via the persistent pool worker."""
+        accessor = self._get_pool_chat_accessor()
+        runtime = self._pool_runtime
+        assert runtime is not None  # noqa: S101  set by _get_pool_chat_accessor
+        accessor.clear_abort()  # honor mid-stream cancels from the previous turn
+        payload = {
+            "messages": messages,
+            "stream": stream,
+            "options": self._chat_kwargs_from_options(options) or None,
+            "model": model,
+        }
+        if stream:
+            async_iter = accessor.stream("chat", payload)
+            return _PoolChatStreamIterator(
+                runtime=runtime, accessor=accessor, async_iter=async_iter
+            )
+        result = runtime.run_sync(
+            accessor.call("chat", payload, timeout=cfg.worker_pool_call_timeout_s),
+            timeout=cfg.worker_pool_call_timeout_s,
+        )
+        if not isinstance(result, str):
+            raise WorkerError(
+                "ProtocolError",
+                f"Pool chat returned {type(result).__name__}, expected str.",
+                "",
+            )
+        return result
+
+    @staticmethod
+    def _chat_kwargs_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
+        """Translate user-facing options into llama-cpp create_chat_completion kwargs."""
+        if not options:
+            return {}
+        filtered = filter_options(options)
+        if "num_predict" in filtered:
+            filtered["max_tokens"] = filtered.pop("num_predict")
+        filtered.pop("num_ctx", None)  # model-load param, not per-call
+        return filtered
 
     def list_models(self) -> list[str]:
         """List installed models from registry."""
@@ -459,6 +541,7 @@ class LlamaCppProvider(LLMProvider):
             self._pool_runtime = None
             self._pool_embed_accessor = None
             self._pool_rerank_accessor = None
+            self._pool_chat_accessor = None
         if pool is not None and runtime is not None:
             try:
                 runtime.run_sync(pool.shutdown(), timeout=10.0)
@@ -541,6 +624,70 @@ class _LockedStreamIterator:
         self._release()
 
 
+class _PoolChatStreamIterator:
+    """Sync facade over an async chat-stream iterator from the worker pool.
+
+    Each ``__next__`` submits one ``__anext__`` to the pool's runtime
+    loop and blocks for the result. ``close()`` flips the worker's abort
+    flag so any in-flight generation stops at the next token-tick;
+    in-flight chunks already in the pipe still drain (transport rule 8).
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime: PoolRuntime,
+        accessor: RoleAccessor,
+        async_iter: Any,
+    ) -> None:
+        self._runtime = runtime
+        self._accessor = accessor
+        self._async_iter = async_iter
+        self._exhausted = False
+
+    def __iter__(self) -> _PoolChatStreamIterator:
+        return self
+
+    def __next__(self) -> str:
+        if self._exhausted:
+            raise StopIteration
+        try:
+            chunk: str = self._runtime.run_sync(
+                self._async_iter.__anext__(),
+                timeout=cfg.worker_pool_call_timeout_s,
+            )
+            return chunk
+        except StopAsyncIteration:
+            self._exhausted = True
+            raise StopIteration from None
+
+    def close(self) -> None:
+        """Cancel mid-stream and drain remaining tokens from the pipe.
+
+        Drain is bounded by ``_LOCKED_STREAM_DRAIN_CAP`` so a stuck
+        worker cannot block close() indefinitely; once the cap fires we
+        accept the partial-state for not hanging the UI.
+        """
+        if self._exhausted:
+            return
+        self._accessor.cancel()
+        drained = 0
+        while drained < _LOCKED_STREAM_DRAIN_CAP:
+            try:
+                next(self)
+            except StopIteration:
+                break
+            except Exception:
+                break
+            drained += 1
+        self._accessor.clear_abort()
+        self._exhausted = True
+
+    def __del__(self) -> None:  # pragma: no cover
+        with contextlib.suppress(Exception):
+            self.close()
+
+
 def _make_embed_role_config_factory() -> Callable[[], RoleConfig]:
     """Return a factory that resolves cfg.embedding_model at spawn time.
 
@@ -574,6 +721,26 @@ def _make_rerank_role_config_factory() -> Callable[[], RoleConfig]:
             role="rerank",
             model_path=resolve_model_path(model_name),
             mode=MODE_RERANK,
+        )
+
+    return _make
+
+
+def _make_chat_role_config_factory() -> Callable[[], RoleConfig]:
+    """Return a factory that resolves cfg.chat_model at spawn time."""
+    from lilbee.providers.model_cache import MODE_CHAT
+
+    def _make() -> RoleConfig:
+        model_name = cfg.chat_model
+        if not model_name:
+            raise ProviderError(
+                "No chat model configured. Set cfg.chat_model first.",
+                provider="llama-cpp",
+            )
+        return RoleConfig(
+            role="chat",
+            model_path=resolve_model_path(model_name),
+            mode=MODE_CHAT,
         )
 
     return _make

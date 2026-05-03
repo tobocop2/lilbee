@@ -409,6 +409,255 @@ def test_make_rerank_role_config_factory_raises_when_unset(monkeypatch) -> None:
         factory()
 
 
+def _stub_chat_load(_self) -> Any:
+    class _StubLlama:
+        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
+            tokens = ["hi", " ", "there"]
+            if stream:
+                return iter({"choices": [{"delta": {"content": tok}}]} for tok in tokens)
+            return {"choices": [{"message": {"content": "".join(tokens)}}]}
+
+    return _StubLlama()
+
+
+def _patched_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+    from lilbee.providers.worker import chat_worker
+
+    chat_worker._ChatSession._ensure_loaded = lambda self, _o: _stub_chat_load(self)  # type: ignore[method-assign]
+    chat_worker.chat_worker_main(conn, abort_flag, role_config)
+
+
+@pytest.fixture()
+def chat_pool_provider(monkeypatch, tmp_path):
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/embed"
+    cfg.chat_model = "stub/chat"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    fake_path = tmp_path / "models" / "stub.gguf"
+    fake_path.write_bytes(b"")
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: fake_path,
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.chat_worker_main",
+        _patched_chat_worker_main,
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    try:
+        yield provider
+    finally:
+        provider.shutdown()
+
+
+def test_chat_routes_through_pool_non_streaming(chat_pool_provider) -> None:
+    result = chat_pool_provider.chat([{"role": "user", "content": "hi"}])
+    assert result == "hi there"
+
+
+def test_repeated_chat_calls_reuse_one_accessor(chat_pool_provider) -> None:
+    chat_pool_provider.chat([{"role": "user", "content": "a"}])
+    first = chat_pool_provider._pool_chat_accessor
+    chat_pool_provider.chat([{"role": "user", "content": "b"}])
+    assert chat_pool_provider._pool_chat_accessor is first
+
+
+def test_chat_streaming_iterator_stops_after_exhaustion(chat_pool_provider) -> None:
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    list(iterator)  # exhaust
+    # Subsequent next() must raise StopIteration cleanly, not WorkerError.
+    with pytest.raises(StopIteration):
+        next(iter(iterator))
+
+
+def test_chat_streaming_close_swallows_drain_exceptions(chat_pool_provider) -> None:
+    """Mid-stream close handles exceptions raised by next() during drain.
+
+    Forces __next__ to raise something other than StopIteration so the
+    drain loop's exception-break branch is hit. Wraps the real async
+    iterator in a stand-in whose __anext__ raises after the first call.
+    """
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    # Pull one chunk so the iterator is mid-stream.
+    next(iter(iterator))
+
+    class _AnextRaises:
+        def __anext__(self):
+            raise RuntimeError("simulated drain failure")
+
+    iterator._async_iter = _AnextRaises()
+    iterator.close()
+    assert iterator._exhausted is True
+
+
+def test_chat_routes_through_pool_streaming_yields_chunks(chat_pool_provider) -> None:
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    chunks = list(iterator)
+    assert chunks == ["hi", " ", "there"]
+
+
+def test_chat_streaming_close_is_idempotent(chat_pool_provider) -> None:
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    list(iterator)  # exhaust
+    iterator.close()
+    iterator.close()
+
+
+def test_chat_streaming_close_before_exhaustion_releases(chat_pool_provider) -> None:
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    # Pull one chunk only, then close mid-stream.
+    next(iter(iterator))
+    iterator.close()
+
+
+def test_chat_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/embed"
+    cfg.chat_model = "stub/chat"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+
+    def _boom(*, messages, stream, options, model):
+        raise RuntimeError("simulated pool failure")
+
+    monkeypatch.setattr(provider, "_chat_via_pool", _boom)
+
+    class _StubLlama:
+        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
+            return {"choices": [{"message": {"content": "in-process"}}]}
+
+    monkeypatch.setattr(provider, "_get_chat_llm", lambda _model=None: _StubLlama())
+    try:
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result == "in-process"
+    finally:
+        provider.shutdown()
+
+
+def _bad_chat_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+    """Worker that always replies to non-streaming chat with a non-str payload."""
+    while True:
+        if not conn.poll(timeout=0.1):
+            continue
+        try:
+            kind, _ = conn.recv()
+        except EOFError:
+            return
+        if kind == "shutdown":
+            conn.send(("ack", None))
+            return
+        if kind == "chat":
+            conn.send(("result", 12345))  # non-string protocol violation
+            continue
+        conn.send(("result", "ignored"))
+
+
+def test_chat_pool_protocol_error_when_worker_returns_non_str(monkeypatch, tmp_path) -> None:
+    cfg.worker_pool_enabled = True
+    cfg.worker_pool_call_timeout_s = 30.0
+    cfg.embedding_model = "stub/embed"
+    cfg.chat_model = "stub/chat"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.chat_worker_main",
+        _bad_chat_protocol_worker_main,
+    )
+
+    class _StubLlama:
+        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
+            return {"choices": [{"message": {"content": "in-process"}}]}
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    monkeypatch.setattr(provider, "_get_chat_llm", lambda _model=None: _StubLlama())
+    try:
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result == "in-process"
+    finally:
+        provider.shutdown()
+
+
+def test_make_chat_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
+    cfg.chat_model = "stub/chat"
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+    from lilbee.providers.llama_cpp.provider import _make_chat_role_config_factory
+
+    factory = _make_chat_role_config_factory()
+    role_config = factory()
+    assert role_config.role == "chat"
+    assert role_config.mode == "chat"
+
+
+def test_make_chat_role_config_factory_raises_when_unset(monkeypatch) -> None:
+    """Empty chat_model raises ProviderError. Bypass pydantic validator with object.__setattr__
+    since the field carries min_length=1; we are testing the factory's defensive check, not the
+    config schema."""
+    object.__setattr__(cfg, "chat_model", "")
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.llama_cpp.provider import _make_chat_role_config_factory
+
+    factory = _make_chat_role_config_factory()
+    with pytest.raises(ProviderError, match="No chat model configured"):
+        factory()
+
+
+def test_chat_kwargs_filter_translates_options_correctly() -> None:
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    kwargs = LlamaCppProvider._chat_kwargs_from_options(
+        {"num_predict": 50, "num_ctx": 1024, "temperature": 0.7}
+    )
+    # num_predict becomes max_tokens; num_ctx is dropped.
+    assert kwargs == {"max_tokens": 50, "temperature": 0.7}
+
+
+def test_chat_kwargs_filter_handles_empty_options() -> None:
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    assert LlamaCppProvider._chat_kwargs_from_options(None) == {}
+    assert LlamaCppProvider._chat_kwargs_from_options({}) == {}
+
+
 def test_shutdown_handles_pool_shutdown_failure(monkeypatch, tmp_path) -> None:
     """A pool that raises during shutdown still tears down the runtime cleanly."""
     cfg.worker_pool_enabled = True
