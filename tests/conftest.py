@@ -189,25 +189,6 @@ def _drain_textual_threads():
 
 
 @pytest.fixture(autouse=True)
-def _disable_worker_pool_by_default(request):
-    """Default cfg.worker_pool_enabled = False for unit tests.
-
-    The persistent worker pool spawns real llama-cpp subprocesses that
-    would crash on the in-memory test models. Tests that need the pool
-    opt in with ``@pytest.mark.worker_pool`` to keep the production
-    default of ``True``. Integration tests honor the production default
-    too (their fixtures set up real models).
-    """
-    if "integration" in request.node.nodeid.split("/"):
-        return
-    if "worker_pool" in {m.name for m in request.node.iter_markers()}:
-        return
-    from lilbee.core.config import cfg as _cfg
-
-    _cfg.worker_pool_enabled = False
-
-
-@pytest.fixture(autouse=True)
 def _isolate_cfg(tmp_path, request):
     """Snapshot and restore cfg for every test to prevent cross-test pollution.
 
@@ -233,6 +214,29 @@ def _isolate_cfg(tmp_path, request):
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
     cfg.clear_model_defaults()
+
+
+@pytest.fixture(autouse=True)
+def _disable_worker_pool_by_default(_isolate_cfg, request):
+    """Default cfg.worker_pool_enabled = False for unit tests.
+
+    The persistent worker pool spawns real llama-cpp subprocesses that
+    would crash on the in-memory test models. Tests that need the pool
+    opt in with ``@pytest.mark.worker_pool`` to keep the production
+    default of ``True``. Integration tests honor the production default
+    too (their fixtures set up real models).
+
+    Depends on ``_isolate_cfg`` so the snapshot/restore happens around
+    this assignment: a worker_pool-marked test that forgets to set
+    ``cfg.worker_pool_enabled = True`` explicitly inherits the
+    production default cleanly instead of accidentally seeing the
+    previous test's ``False`` snapshot.
+    """
+    if "integration" in request.node.nodeid.split("/"):
+        return
+    if "worker_pool" in {m.name for m in request.node.iter_markers()}:
+        return
+    cfg.worker_pool_enabled = False
 
 
 def _default_store_mock():
