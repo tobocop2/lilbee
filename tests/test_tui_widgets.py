@@ -5029,6 +5029,74 @@ class TestModelGridOnClick:
         assert grid.highlighted is None
 
 
+class TestModelGridScrollIntoView:
+    """watch_highlighted must scroll the highlighted cell into view so that
+    cursor moves wake the outer container's scroll watcher (the trigger that
+    drives pagination)."""
+
+    @staticmethod
+    def _patch_size(grid: object, width: int, height: int = 20):
+        from unittest.mock import PropertyMock
+
+        from textual.geometry import Size
+
+        return mock.patch.object(
+            type(grid),
+            "size",
+            new_callable=PropertyMock,
+            return_value=Size(width, height),
+        )
+
+    def test_cursor_move_calls_scroll_to_region(self) -> None:
+        from textual.geometry import Region
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        captured: list[Region] = []
+        grid.scroll_to_region = lambda region, **_: captured.append(region)  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+        with self._patch_size(grid, 80):
+            grid.watch_highlighted(None, 4)
+
+        assert captured, "scroll_to_region must run on cursor moves"
+        region = captured[0]
+        assert region.y == (4 // 2) * (5 + 1)
+        assert region.height == 5
+
+    def test_highlight_set_to_none_does_not_scroll(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 2
+        captured: list[object] = []
+        grid.scroll_to_region = lambda region, **_: captured.append(region)  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+        with self._patch_size(grid, 80):
+            grid.watch_highlighted(0, None)
+
+        assert captured == []
+
+    def test_zero_width_skips_scroll(self) -> None:
+        """At initial mount the size is (0, 0); guard prevents a bogus Region."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 1
+        captured: list[object] = []
+        grid.scroll_to_region = lambda region, **_: captured.append(region)  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+        with self._patch_size(grid, 0, 0):
+            grid.watch_highlighted(None, 0)
+
+        assert captured == []
+
+
 class TestModelPickerScopeTitles:
     """Cover the vision and rerank title branches of _picker_title."""
 

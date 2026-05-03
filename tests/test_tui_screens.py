@@ -3690,6 +3690,184 @@ async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
                 assert not load_more.called
 
 
+async def test_catalog_mouse_scroll_at_max_y_unsticks_pagination():
+    """Wheeling at max_scroll_y has no scroll_y delta, so the scroll watcher
+    can never fire. on_mouse_scroll_down must force one _load_more."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert load_more.called
+
+
+async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
+    """When scroll_y < max_scroll_y the wheel handler must NOT fire so the
+    scroll watcher's threshold logic stays in charge."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=50.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
+    """Repeat wheel events at max_y inside the cooldown must not cascade."""
+    import time as _time
+
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = _time.monotonic()
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_catalog_grid_leave_down_at_last_section_loads_more():
+    """LeaveDown from the final grid section must fetch more rather than
+    move focus past the grid area when there is more data to fetch."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            last_grid = ModelGrid([])
+            event = ModelGrid.LeaveDown(last_grid)
+            with (
+                patch.object(
+                    type(screen._grid_container),
+                    "query",
+                    return_value=[last_grid],
+                ),
+                patch.object(screen, "_load_more") as load_more,
+                patch.object(screen, "focus_next") as focus_next,
+            ):
+                screen._on_grid_leave_down(event)
+                assert load_more.called
+                assert not focus_next.called
+
+
+async def test_catalog_grid_leave_down_in_middle_focuses_next():
+    """LeaveDown from a non-last grid must move focus to the next sibling,
+    not fetch more rows."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            middle_grid = ModelGrid([])
+            tail_grid = ModelGrid([])
+            event = ModelGrid.LeaveDown(middle_grid)
+            with (
+                patch.object(
+                    type(screen._grid_container),
+                    "query",
+                    return_value=[middle_grid, tail_grid],
+                ),
+                patch.object(screen, "_load_more") as load_more,
+                patch.object(screen, "focus_next") as focus_next,
+            ):
+                screen._on_grid_leave_down(event)
+                assert focus_next.called
+                assert not load_more.called
+
+
 async def test_catalog_load_more_deduplicated_while_in_flight():
     """A second _load_more during an in-flight fetch does not re-advance the offset."""
     from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
@@ -7695,7 +7873,8 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 
 
 async def test_catalog_grid_leave_down_focuses_next():
-    """GridSelect.LeaveDown moves focus to the next focusable widget."""
+    """GridSelect.LeaveDown moves focus to the next focusable widget when
+    there is no more remote data to fetch."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -7705,6 +7884,7 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._hf_has_more = False  # exhausts the load-more branch
             grids = list(screen.query(ModelGrid))
             if grids:
                 grids[0].focus()

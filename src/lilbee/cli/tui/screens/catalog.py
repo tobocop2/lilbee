@@ -12,7 +12,7 @@ from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
-from textual.events import Click
+from textual.events import Click, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
@@ -881,7 +881,12 @@ class CatalogScreen(Screen[None]):
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
-        """Move focus to the next grid widget."""
+        """Move focus to the next grid widget, or fetch more if at the end."""
+        if isinstance(event, ModelGrid.LeaveDown):
+            grids = list(self._grid_container.query(ModelGrid))
+            if grids and event.grid is grids[-1] and self._hf_has_more and not self._loading_more:
+                self._load_more()
+                return
         self.focus_next()
 
     @on(GridSelect.LeaveUp)
@@ -1276,6 +1281,27 @@ class CatalogScreen(Screen[None]):
             return
         if not self._scroll_prefetch_due(self._grid_container):
             return
+        self._scroll_prefetch_armed_at = time.monotonic()
+        self._load_more()
+
+    def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
+        """Force pagination when wheeling at max_scroll_y.
+
+        At ``scroll_y == max_scroll_y`` further wheel events produce no
+        ``scroll_y`` delta, so ``_on_grid_scrolled`` never fires and the user
+        appears stuck. This handler re-checks at the bottom and respects the
+        same cooldown.
+        """
+        if not self._grid_view or not self._hf_has_more or self._loading_more:
+            return
+        container = self._grid_container
+        max_y = container.max_scroll_y
+        if max_y <= 0 or container.scroll_y < max_y:
+            return
+        if self._scroll_prefetch_armed_at:
+            elapsed = time.monotonic() - self._scroll_prefetch_armed_at
+            if elapsed < self._SCROLL_PREFETCH_COOLDOWN:
+                return
         self._scroll_prefetch_armed_at = time.monotonic()
         self._load_more()
 

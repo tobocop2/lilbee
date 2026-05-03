@@ -22,7 +22,7 @@ from typing import ClassVar
 from textual import events
 from textual.binding import Binding, BindingType
 from textual.content import Content
-from textual.geometry import Size
+from textual.geometry import Region, Size
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -151,9 +151,20 @@ class ModelGrid(Widget, can_focus=True):
         rows = (len(self._rows) + cols - 1) // cols
         return rows * _ROW_HEIGHT - 1
 
-    def watch_highlighted(self, _old: int | None, _new: int | None) -> None:
-        """Repaint after every highlight move; cell selection re-renders inline."""
+    def watch_highlighted(self, _old: int | None, new: int | None) -> None:
+        """Repaint and scroll the highlighted cell into view.
+
+        The scroll-into-view side effect lets the outer ``VerticalScroll``
+        update ``scroll_y`` on every cursor move, which is what wakes the
+        catalog screen's pagination watcher.
+        """
         self.refresh()
+        if new is None or self._cards_per_row <= 0 or self.size.width <= 0:
+            return
+        col_width = max(1, self.size.width // self._cards_per_row)
+        row = new // self._cards_per_row
+        col = new % self._cards_per_row
+        self.scroll_to_region(Region(col * col_width, row * _ROW_HEIGHT, col_width, _CARD_HEIGHT))
 
     def action_cursor_up(self) -> None:
         if self.highlighted is None:
