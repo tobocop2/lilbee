@@ -302,6 +302,24 @@ class WorkerPool:
             with contextlib.suppress(WorkerError):
                 await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
 
+    async def release(self, role: str) -> None:
+        """Close *role*'s live worker and forget the registration entirely.
+
+        Used by callers (notably ``LlamaCppProvider.invalidate_load_cache``)
+        that want the next request to respawn with a fresh model picked
+        from the current cfg. The role can be re-registered immediately
+        after with :meth:`register`. No-op if the role is unregistered.
+        """
+        registration = self._roles.pop(role, None)
+        if registration is None:
+            return
+        channel = registration.channel
+        registration.channel = None
+        registration.handle = None
+        if channel is not None:
+            with contextlib.suppress(WorkerError):
+                await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
+
     def _raise_if_shutdown(self) -> None:
         if self._shutdown:
             raise PoolShutdownError()

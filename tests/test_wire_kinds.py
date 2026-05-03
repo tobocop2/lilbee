@@ -74,6 +74,5 @@ def test_no_worker_module_redefines_kinds_as_literals() -> None:
             offenders.append(f"{module_name}: {line.strip()}")
     assert not offenders, (
         "Worker modules must import wire-kind constants from "
-        "lilbee.providers.worker.wire_kinds, not redefine them. Offenders:\n"
-        + "\n".join(offenders)
+        "lilbee.providers.worker.wire_kinds, not redefine them. Offenders:\n" + "\n".join(offenders)
     )

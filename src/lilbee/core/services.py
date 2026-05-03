@@ -1,9 +1,9 @@
 """Typed service container: single point of access for all singletons.
 
 All runtime dependencies (provider, store, embedder, reranker, concepts,
-clusterer, searcher) are created lazily on first call to ``get_services()``
-and cached for the process lifetime. Tests call ``reset_services()``
-between runs.
+clusterer, searcher, worker pool) are created lazily on first call to
+``get_services()`` and cached for the process lifetime. Tests call
+``reset_services()`` between runs.
 """
 
 from __future__ import annotations
@@ -21,10 +21,12 @@ _DEPRECATED_SUBPROCESS_EMBED_LOGGED = False
 
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
+    from lilbee.core.config import Config
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -43,7 +45,15 @@ class CrawlerSyncState:
 
 @dataclass(frozen=True)
 class Services:
-    """Holds all runtime service instances."""
+    """Holds all runtime service instances.
+
+    The worker pool sits on Services (not on the provider) so any
+    subsystem can reach it for cancellation, health checks, or
+    diagnostics without crossing into ``LlamaCppProvider``'s private
+    API. ``cancel_inference()`` is the canonical entry point used by
+    Ctrl+C and the chat-stream cancel action; it bridges pool-mode
+    (subprocess abort flag) and fallback-mode (in-process Event).
+    """
 
     provider: LLMProvider
     store: Store
@@ -58,6 +68,25 @@ class Services:
     model_manager: ModelManager
     crawler_semaphore: asyncio.Semaphore | None
     crawler_sync_state: CrawlerSyncState
+    worker_pool: WorkerPool
+    pool_runtime: PoolRuntime
+
+    def cancel_inference(self) -> None:
+        """Interrupt any in-flight inference call.
+
+        Routes the cancel to the right destination based on
+        ``cfg.worker_pool_enabled``: pool-mode flips the subprocess
+        abort flag (``mp.Value``) for every live role; fallback-mode
+        sets the in-process ``threading.Event`` honored by
+        ``llama_cpp``'s in-process abort callback. Idempotent.
+        """
+        from lilbee.core.config import cfg
+        from lilbee.providers.llama_cpp.abort_signal import request_abort
+
+        if cfg.worker_pool_enabled:
+            for role_name in self.worker_pool.registered_roles:
+                self.worker_pool.accessor(role_name).cancel()
+        request_abort()
 
 
 _svc: Services | None = None
@@ -83,6 +112,7 @@ def get_services() -> Services:
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
+    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -91,6 +121,8 @@ def get_services() -> Services:
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     _log_subprocess_embed_deprecation_once(cfg)
+    worker_pool = WorkerPool()
+    pool_runtime = PoolRuntime()
     provider = create_provider(cfg)
     store = Store(cfg)
     embedder = Embedder(cfg, provider)
@@ -120,6 +152,8 @@ def get_services() -> Services:
         model_manager=model_manager,
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
+        worker_pool=worker_pool,
+        pool_runtime=pool_runtime,
     )
     return _svc
 
@@ -130,7 +164,7 @@ def set_services(services: Services | None) -> None:
     _svc = services
 
 
-def _log_subprocess_embed_deprecation_once(cfg_obj: object) -> None:
+def _log_subprocess_embed_deprecation_once(cfg_obj: Config) -> None:
     """Emit a one-time deprecation warning if cfg.subprocess_embed is True.
 
     The new ``worker_pool_enabled`` (default True) supersedes the
@@ -143,7 +177,7 @@ def _log_subprocess_embed_deprecation_once(cfg_obj: object) -> None:
     global _DEPRECATED_SUBPROCESS_EMBED_LOGGED
     if _DEPRECATED_SUBPROCESS_EMBED_LOGGED:
         return
-    if not getattr(cfg_obj, "subprocess_embed", False):
+    if not cfg_obj.subprocess_embed:
         return
     _DEPRECATED_SUBPROCESS_EMBED_LOGGED = True
     log.warning(
@@ -158,10 +192,22 @@ def reset_services() -> None:
     """Shut down and discard all cached instances."""
     global _svc, _DEPRECATED_SUBPROCESS_EMBED_LOGGED
     if _svc is not None:
+        _shutdown_pool(_svc)
         _svc.provider.shutdown()
         _svc.store.close()
     _svc = None
     _DEPRECATED_SUBPROCESS_EMBED_LOGGED = False
+
+
+def _shutdown_pool(services: Services) -> None:
+    """Drain the worker pool and stop its runtime loop. Idempotent."""
+    pool = services.worker_pool
+    runtime = services.pool_runtime
+    try:
+        runtime.run_sync(pool.shutdown(), timeout=10.0)
+    except (TimeoutError, RuntimeError, OSError) as exc:
+        log.warning("Pool shutdown raised %s; forcing runtime stop", exc)
+    runtime.shutdown(timeout=5.0)
 
 
 atexit.register(reset_services)

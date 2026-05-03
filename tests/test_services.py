@@ -35,6 +35,8 @@ class TestServicesDataclass:
             model_manager=MagicMock(),
             crawler_semaphore=None,
             crawler_sync_state=CrawlerSyncState(),
+            worker_pool=MagicMock(),
+            pool_runtime=MagicMock(),
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]
@@ -80,21 +82,70 @@ class TestSubprocessEmbedDeprecationLog:
             services_mod._log_subprocess_embed_deprecation_once(_Cfg())
         assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
-    def test_does_not_log_when_attribute_missing(self, caplog):
-        from lilbee.core import services as services_mod
-
-        services_mod._DEPRECATED_SUBPROCESS_EMBED_LOGGED = False
-
-        class _Cfg:
-            pass
-
-        with caplog.at_level("WARNING", logger="lilbee.core.services"):
-            services_mod._log_subprocess_embed_deprecation_once(_Cfg())
-        assert not [r for r in caplog.records if r.levelname == "WARNING"]
-
     def test_reset_services_clears_logged_flag(self):
         from lilbee.core import services as services_mod
 
         services_mod._DEPRECATED_SUBPROCESS_EMBED_LOGGED = True
         services_mod.reset_services()
         assert services_mod._DEPRECATED_SUBPROCESS_EMBED_LOGGED is False
+
+
+class TestCancelInference:
+    """Services.cancel_inference must reach pool-mode AND fallback Event."""
+
+    def test_pool_mode_flips_per_role_abort_flag(self, monkeypatch):
+        """Pool mode (default): cancel reaches every registered role."""
+        cfg.worker_pool_enabled = True
+        from lilbee.providers.llama_cpp import abort_signal
+
+        called: list[str] = []
+
+        class _FakeAccessor:
+            def __init__(self, role: str) -> None:
+                self.role = role
+
+            def cancel(self) -> None:
+                called.append(self.role)
+
+        class _FakePool:
+            registered_roles = ("embed", "chat")
+
+            def accessor(self, role: str) -> _FakeAccessor:
+                return _FakeAccessor(role)
+
+        from tests.conftest import make_mock_services
+
+        services = make_mock_services(worker_pool=_FakePool())
+        # Make sure we reset the in-process abort flag too.
+        abort_signal.clear_abort()
+        services.cancel_inference()
+        assert called == ["embed", "chat"]
+        # In-process Event also flipped (fallback path coexists).
+        assert abort_signal.is_abort_set()
+        abort_signal.clear_abort()
+
+    def test_fallback_mode_only_sets_inprocess_event(self):
+        """Fallback mode: pool roles untouched, in-process Event set."""
+        cfg.worker_pool_enabled = False
+        from lilbee.providers.llama_cpp import abort_signal
+
+        called: list[str] = []
+
+        class _FakeAccessor:
+            def cancel(self) -> None:
+                called.append("should-not-be-called")
+
+        class _FakePool:
+            registered_roles = ("chat",)
+
+            def accessor(self, _role: str) -> _FakeAccessor:
+                return _FakeAccessor()
+
+        from tests.conftest import make_mock_services
+
+        services = make_mock_services(worker_pool=_FakePool())
+        abort_signal.clear_abort()
+        services.cancel_inference()
+        assert called == []
+        assert abort_signal.is_abort_set()
+        abort_signal.clear_abort()

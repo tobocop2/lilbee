@@ -30,6 +30,14 @@ pytestmark = [
 ]
 
 
+# 200ms p95 budget for one asyncio.sleep(0.05) tick under concurrent
+# pool embed activity. Rationale: a real user types in the TUI at sub-
+# second cadence; if embed ever runs back on the asyncio loop, ticks
+# spike into multi-second territory (we measured >2s prior to the
+# pool). 200ms gives generous headroom over the ~50ms tick target so
+# loaded CI runners do not flake while still catching any inline
+# regression by 10x. The test is xdist-grouped so concurrent files do
+# not eat the budget.
 _LATENCY_P95_BUDGET_S = 0.200
 _TICK_INTERVAL_S = 0.05
 _TICK_COUNT = 30
@@ -76,9 +84,12 @@ def pool_provider(monkeypatch, tmp_path):
         _patched_embed_worker_main,
     )
 
+    from lilbee.core.services import set_services
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    from tests.conftest import make_mock_services
 
     provider = LlamaCppProvider()
+    set_services(make_mock_services(provider=provider))
     try:
         yield provider
     finally:
@@ -120,7 +131,9 @@ async def test_asyncio_loop_stays_responsive_during_pool_embed(pool_provider) ->
     await asyncio.gather(embed_task, tick_task)
 
     # All embed calls completed (no exceptions raised).
-    assert pool_provider._pool is not None
+    from lilbee.core.services import get_services
+
+    assert "embed" in get_services().worker_pool.registered_roles
 
     # Latency budget: p95 under threshold. Sort + index avoids importing
     # a percentile helper just for this assertion.

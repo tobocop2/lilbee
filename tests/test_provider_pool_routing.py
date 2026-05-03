@@ -71,6 +71,16 @@ def _bad_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) 
 # =====================================================================
 
 
+def _install_mock_services_with_provider(provider):
+    """Install a mock Services container holding *provider* and a real pool."""
+    from lilbee.core.services import set_services
+    from tests.conftest import make_mock_services
+
+    services = make_mock_services(provider=provider)
+    set_services(services)
+    return services
+
+
 @pytest.fixture()
 def pool_provider(monkeypatch, tmp_path):
     cfg.worker_pool_enabled = True
@@ -93,6 +103,7 @@ def pool_provider(monkeypatch, tmp_path):
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
     try:
         yield provider
     finally:
@@ -108,46 +119,53 @@ def test_embed_routes_through_pool_when_enabled(pool_provider) -> None:
 
 
 def test_pool_is_lazy_no_spawn_until_first_call(pool_provider) -> None:
-    # Before any call, _pool is None.
-    assert pool_provider._pool is None
+    from lilbee.core.services import get_services
+
+    pool = get_services().worker_pool
+    # Before any call, no roles registered yet.
+    assert pool.registered_roles == ()
+    assert pool_provider._registered_roles == set()
     pool_provider.embed(["x"])
-    # After the first call, the pool is up.
-    assert pool_provider._pool is not None
-    assert pool_provider._pool_runtime is not None
+    # After the first call, the embed role is registered.
+    assert "embed" in pool.registered_roles
+    assert "embed" in pool_provider._registered_roles
 
 
 def test_repeated_embed_calls_reuse_one_worker(pool_provider) -> None:
+    from lilbee.core.services import get_services
+
     pool_provider.embed(["a"])
-    first_pool = pool_provider._pool
+    first_accessor = get_services().worker_pool.accessor("embed")
     pool_provider.embed(["b"])
     pool_provider.embed(["c"])
-    # Same pool object across calls (no respawn).
-    assert pool_provider._pool is first_pool
+    # Same accessor across calls (registration not repeated).
+    assert pool_provider._registered_roles == {"embed"}
+    second_accessor = get_services().worker_pool.accessor("embed")
+    assert second_accessor._role == first_accessor._role
 
 
 def test_invalidate_load_cache_drops_pool(pool_provider) -> None:
     pool_provider.embed(["a"])
-    assert pool_provider._pool is not None
+    assert "embed" in pool_provider._registered_roles
     pool_provider.invalidate_load_cache()
-    assert pool_provider._pool is None
+    assert pool_provider._registered_roles == set()
     # Next call rebuilds.
     pool_provider.embed(["b"])
-    assert pool_provider._pool is not None
+    assert "embed" in pool_provider._registered_roles
 
 
 def test_invalidate_load_cache_with_path_drops_pool(pool_provider, tmp_path) -> None:
     pool_provider.embed(["a"])
-    assert pool_provider._pool is not None
+    assert "embed" in pool_provider._registered_roles
     pool_provider.invalidate_load_cache(tmp_path / "anything.gguf")
-    assert pool_provider._pool is None
+    assert pool_provider._registered_roles == set()
 
 
 def test_shutdown_idempotent_after_pool_use(pool_provider) -> None:
     pool_provider.embed(["a"])
     pool_provider.shutdown()
     pool_provider.shutdown()
-    assert pool_provider._pool is None
-    assert pool_provider._pool_runtime is None
+    assert pool_provider._registered_roles == set()
 
 
 def test_embed_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
@@ -277,6 +295,7 @@ def rerank_pool_provider(monkeypatch, tmp_path):
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
     try:
         yield provider
     finally:
@@ -290,17 +309,18 @@ def test_rerank_routes_through_pool_when_enabled(rerank_pool_provider) -> None:
 
 def test_repeated_rerank_calls_reuse_one_accessor(rerank_pool_provider) -> None:
     rerank_pool_provider.rerank("q", ["a"])
-    first = rerank_pool_provider._pool_rerank_accessor
+    assert "rerank" in rerank_pool_provider._registered_roles
     rerank_pool_provider.rerank("q", ["b"])
     rerank_pool_provider.rerank("q", ["c"])
-    # Same accessor across calls (no re-register).
-    assert rerank_pool_provider._pool_rerank_accessor is first
+    # Re-register would have raised; presence of the role at the end means
+    # the registration is idempotent across repeat calls.
+    assert rerank_pool_provider._registered_roles == {"rerank"}
 
 
 def test_rerank_with_empty_candidates_short_circuits(rerank_pool_provider) -> None:
     assert rerank_pool_provider.rerank("query", []) == []
-    # Empty case must not spawn a pool worker.
-    assert rerank_pool_provider._pool_rerank_accessor is None
+    # Empty case must not register the rerank role.
+    assert "rerank" not in rerank_pool_provider._registered_roles
 
 
 def test_rerank_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
@@ -450,6 +470,7 @@ def chat_pool_provider(monkeypatch, tmp_path):
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
     try:
         yield provider
     finally:
@@ -463,9 +484,9 @@ def test_chat_routes_through_pool_non_streaming(chat_pool_provider) -> None:
 
 def test_repeated_chat_calls_reuse_one_accessor(chat_pool_provider) -> None:
     chat_pool_provider.chat([{"role": "user", "content": "a"}])
-    first = chat_pool_provider._pool_chat_accessor
+    assert chat_pool_provider._registered_roles == {"chat"}
     chat_pool_provider.chat([{"role": "user", "content": "b"}])
-    assert chat_pool_provider._pool_chat_accessor is first
+    assert chat_pool_provider._registered_roles == {"chat"}
 
 
 def test_chat_streaming_iterator_stops_after_exhaustion(chat_pool_provider) -> None:
@@ -699,6 +720,7 @@ def vision_pool_provider(monkeypatch, tmp_path):
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
     try:
         yield provider
     finally:
@@ -712,9 +734,9 @@ def test_vision_ocr_routes_through_pool(vision_pool_provider) -> None:
 
 def test_vision_ocr_repeated_calls_reuse_one_accessor(vision_pool_provider) -> None:
     vision_pool_provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
-    first = vision_pool_provider._pool_vision_accessor
+    assert vision_pool_provider._registered_roles == {"vision"}
     vision_pool_provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
-    assert vision_pool_provider._pool_vision_accessor is first
+    assert vision_pool_provider._registered_roles == {"vision"}
 
 
 def test_vision_ocr_falls_back_to_legacy_subprocess_on_pool_failure(monkeypatch, tmp_path) -> None:
@@ -845,8 +867,8 @@ def test_vision_call_budget_uses_no_cap_when_zero() -> None:
     assert LlamaCppProvider._vision_call_budget(0) == _NO_CAP_TIMEOUT_S
 
 
-def test_shutdown_handles_pool_shutdown_failure(monkeypatch, tmp_path) -> None:
-    """A pool that raises during shutdown still tears down the runtime cleanly."""
+def test_shutdown_handles_pool_release_failure(monkeypatch, tmp_path) -> None:
+    """A pool that raises during release still tears down the provider cleanly."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -861,17 +883,19 @@ def test_shutdown_handles_pool_shutdown_failure(monkeypatch, tmp_path) -> None:
         _patched_embed_worker_main,
     )
 
+    from lilbee.core.services import get_services
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
     provider.embed(["x"])
-    real_pool = provider._pool
-    assert real_pool is not None
+    pool = get_services().worker_pool
+    assert "embed" in pool.registered_roles
 
-    async def _boom() -> None:
-        raise RuntimeError("simulated shutdown failure")
+    async def _boom(_role: str) -> None:
+        raise RuntimeError("simulated release failure")
 
-    monkeypatch.setattr(real_pool, "shutdown", _boom)
+    monkeypatch.setattr(pool, "release", _boom)
     provider.shutdown()
-    assert provider._pool is None
-    assert provider._pool_runtime is None
+    # Release failure does not leave registrations behind.
+    assert provider._registered_roles == set()

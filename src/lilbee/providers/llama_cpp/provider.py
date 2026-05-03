@@ -58,11 +58,16 @@ from lilbee.providers.model_cache import (
 from lilbee.providers.worker import WorkerManager
 from lilbee.providers.worker.chat_worker import chat_worker_main
 from lilbee.providers.worker.embed_worker import embed_worker_main
-from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, WorkerPool
+from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
+
+_EMBED_ROLE = "embed"
+_RERANK_ROLE = "rerank"
+_CHAT_ROLE = "chat"
+_VISION_ROLE = "vision"
 
 log = logging.getLogger(__name__)
 
@@ -118,13 +123,8 @@ class LlamaCppProvider(LLMProvider):
         self._rerank_thread.start()
         self._subprocess_worker: WorkerManager | None = None
         self._subprocess_enabled = cfg.subprocess_embed
-        self._pool: WorkerPool | None = None
-        self._pool_runtime: PoolRuntime | None = None
-        self._pool_embed_accessor: RoleAccessor | None = None
-        self._pool_rerank_accessor: RoleAccessor | None = None
-        self._pool_chat_accessor: RoleAccessor | None = None
-        self._pool_vision_accessor: RoleAccessor | None = None
         self._pool_lock = threading.Lock()
+        self._registered_roles: set[str] = set()
 
     def _embed_worker(self) -> None:
         """Background thread: drain queue, batch, inference, dispatch results."""
@@ -239,68 +239,30 @@ class LlamaCppProvider(LLMProvider):
             self._subprocess_worker = WorkerManager()
         return self._subprocess_worker
 
-    def _ensure_pool(self) -> WorkerPool:
-        """Lazy-create the pool + runtime; safe to call from any role accessor.
+    def _pool_runtime(self) -> PoolRuntime:
+        """Return the Services-owned :class:`PoolRuntime`, starting it lazily."""
+        runtime = get_services().pool_runtime
+        runtime.start()
+        return runtime
 
-        Caller must already hold ``self._pool_lock``.
+    def _get_pool_accessor(
+        self,
+        role: str,
+        worker_main: Any,
+        config_factory: Callable[[], RoleConfig],
+    ) -> RoleAccessor:
+        """Register *role* on the Services pool the first time it is used.
+
+        Subsequent calls return the same accessor without touching the
+        pool state. Registration is gated by ``self._pool_lock`` so two
+        concurrent first-callers do not race to register the role twice.
         """
-        if self._pool is None:
-            self._pool = WorkerPool()
-            self._pool_runtime = PoolRuntime()
-            self._pool_runtime.start()
-        return self._pool
-
-    def _get_pool_embed_accessor(self) -> RoleAccessor:
-        """Lazy-create the pool, register the embed role, return its accessor."""
+        pool = get_services().worker_pool
         with self._pool_lock:
-            if self._pool_embed_accessor is not None:
-                return self._pool_embed_accessor
-            pool = self._ensure_pool()
-            self._pool_embed_accessor = pool.register(
-                "embed",
-                embed_worker_main,
-                _make_embed_role_config_factory(),
-            )
-            return self._pool_embed_accessor
-
-    def _get_pool_rerank_accessor(self) -> RoleAccessor:
-        """Lazy-create the pool, register the rerank role, return its accessor."""
-        with self._pool_lock:
-            if self._pool_rerank_accessor is not None:
-                return self._pool_rerank_accessor
-            pool = self._ensure_pool()
-            self._pool_rerank_accessor = pool.register(
-                "rerank",
-                rerank_worker_main,
-                _make_rerank_role_config_factory(),
-            )
-            return self._pool_rerank_accessor
-
-    def _get_pool_chat_accessor(self) -> RoleAccessor:
-        """Lazy-create the pool, register the chat role, return its accessor."""
-        with self._pool_lock:
-            if self._pool_chat_accessor is not None:
-                return self._pool_chat_accessor
-            pool = self._ensure_pool()
-            self._pool_chat_accessor = pool.register(
-                "chat",
-                chat_worker_main,
-                _make_chat_role_config_factory(),
-            )
-            return self._pool_chat_accessor
-
-    def _get_pool_vision_accessor(self) -> RoleAccessor:
-        """Lazy-create the pool, register the vision role, return its accessor."""
-        with self._pool_lock:
-            if self._pool_vision_accessor is not None:
-                return self._pool_vision_accessor
-            pool = self._ensure_pool()
-            self._pool_vision_accessor = pool.register(
-                "vision",
-                vision_worker_main,
-                _make_vision_role_config_factory(),
-            )
-            return self._pool_vision_accessor
+            if role not in self._registered_roles:
+                pool.register(role, worker_main, config_factory)
+                self._registered_roles.add(role)
+        return pool.accessor(role)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts. Routes through the persistent worker pool by default.
@@ -331,9 +293,10 @@ class LlamaCppProvider(LLMProvider):
 
     def _embed_via_pool(self, texts: list[str]) -> list[list[float]]:
         """Run one embed batch through the persistent pool worker."""
-        accessor = self._get_pool_embed_accessor()
-        runtime = self._pool_runtime
-        assert runtime is not None  # noqa: S101  set by _get_pool_embed_accessor
+        accessor = self._get_pool_accessor(
+            _EMBED_ROLE, embed_worker_main, _make_embed_role_config_factory()
+        )
+        runtime = self._pool_runtime()
         result = runtime.run_sync(
             accessor.call("embed", texts, timeout=cfg.worker_pool_call_timeout_s),
             timeout=cfg.worker_pool_call_timeout_s,
@@ -367,9 +330,10 @@ class LlamaCppProvider(LLMProvider):
 
     def _rerank_via_pool(self, query: str, candidates: list[str]) -> list[float]:
         """Run one rerank batch through the persistent pool worker."""
-        accessor = self._get_pool_rerank_accessor()
-        runtime = self._pool_runtime
-        assert runtime is not None  # noqa: S101  set by _get_pool_rerank_accessor
+        accessor = self._get_pool_accessor(
+            _RERANK_ROLE, rerank_worker_main, _make_rerank_role_config_factory()
+        )
+        runtime = self._pool_runtime()
         result = runtime.run_sync(
             accessor.call("rerank", (query, candidates), timeout=cfg.worker_pool_call_timeout_s),
             timeout=cfg.worker_pool_call_timeout_s,
@@ -412,9 +376,10 @@ class LlamaCppProvider(LLMProvider):
         timeout: float | None,
     ) -> str:
         """Run one vision OCR call through the persistent pool worker."""
-        accessor = self._get_pool_vision_accessor()
-        runtime = self._pool_runtime
-        assert runtime is not None  # noqa: S101  set by _get_pool_vision_accessor
+        accessor = self._get_pool_accessor(
+            _VISION_ROLE, vision_worker_main, _make_vision_role_config_factory()
+        )
+        runtime = self._pool_runtime()
         budget = self._vision_call_budget(timeout)
         payload = {"png_bytes": png_bytes, "model": model or None, "prompt": prompt}
         result = runtime.run_sync(
@@ -502,9 +467,10 @@ class LlamaCppProvider(LLMProvider):
         model: str | None,
     ) -> str | ClosableIterator[str]:
         """Run one chat via the persistent pool worker."""
-        accessor = self._get_pool_chat_accessor()
-        runtime = self._pool_runtime
-        assert runtime is not None  # noqa: S101  set by _get_pool_chat_accessor
+        accessor = self._get_pool_accessor(
+            _CHAT_ROLE, chat_worker_main, _make_chat_role_config_factory()
+        )
+        runtime = self._pool_runtime()
         accessor.clear_abort()  # honor mid-stream cancels from the previous turn
         payload = {
             "messages": messages,
@@ -587,7 +553,14 @@ class LlamaCppProvider(LLMProvider):
         return caps
 
     def shutdown(self) -> None:
-        """Stop workers and unload all cached models."""
+        """Stop workers and unload all cached models.
+
+        The Services-owned worker pool is drained by ``reset_services()``;
+        the provider only forgets its registration handles so a follow-up
+        ``LlamaCppProvider`` instance can re-register cleanly on the same
+        pool. The legacy per-call ``WorkerManager`` and the in-process
+        embed/rerank threads are still owned here.
+        """
         self._embed_queue.put(None)
         self._embed_thread.join(timeout=2)
         self._rerank_queue.put(None)
@@ -595,40 +568,42 @@ class LlamaCppProvider(LLMProvider):
         if self._subprocess_worker is not None:
             self._subprocess_worker.stop()
             self._subprocess_worker = None
-        self._shutdown_pool()
+        self._release_pool_roles()
         self._cache.unload_all()
 
-    def _shutdown_pool(self) -> None:
-        """Drain pool workers and stop the runtime loop. Idempotent."""
+    def _release_pool_roles(self) -> None:
+        """Drop our registrations on the Services pool so the next call respawns.
+
+        Safe even when Services has not yet been built (early shutdown
+        on import-time failure). Holds ``self._pool_lock`` so a concurrent
+        ``_get_pool_accessor`` does not race the role removal.
+        """
         with self._pool_lock:
-            pool = self._pool
-            runtime = self._pool_runtime
-            self._pool = None
-            self._pool_runtime = None
-            self._pool_embed_accessor = None
-            self._pool_rerank_accessor = None
-            self._pool_chat_accessor = None
-            self._pool_vision_accessor = None
-        if pool is not None and runtime is not None:
+            roles = tuple(self._registered_roles)
+            self._registered_roles.clear()
+        if not roles:
+            return
+        services = get_services()
+        runtime = services.pool_runtime
+        for role in roles:
             try:
-                runtime.run_sync(pool.shutdown(), timeout=10.0)
+                runtime.run_sync(services.worker_pool.release(role), timeout=10.0)
             except (TimeoutError, RuntimeError, OSError) as exc:
-                log.warning("Pool shutdown raised %s; forcing runtime stop", exc)
-            runtime.shutdown(timeout=5.0)
+                log.warning("Pool release of role=%s raised %s", role, exc)
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Evict cached models so the next call reloads with current settings.
 
-        Also tears down the pool's per-role workers; the next call will
-        respawn them with the new ``cfg.embedding_model``. In-place model
-        swap inside a worker is a follow-up; for now the lazy respawn
-        on the next call is the simpler correctness story.
+        Also drops the pool's per-role workers; the next call will
+        respawn them with the new ``cfg.embedding_model``. In-place
+        model swap inside a worker is a follow-up; lazy respawn on the
+        next call is the simpler correctness story.
         """
         if model_path is None:
             self._cache.unload_all()
         else:
             self._cache.unload_path(model_path)
-        self._shutdown_pool()
+        self._release_pool_roles()
 
 
 class _LockedStreamIterator:

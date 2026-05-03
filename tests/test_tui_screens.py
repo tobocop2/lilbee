@@ -8487,24 +8487,53 @@ async def test_app_action_quit_routes_to_wizard_cancel():
             assert not isinstance(app.screen, SetupWizard)
 
 
-async def test_action_quit_calls_request_abort_before_exit():
-    """Ctrl+C calls ``request_abort()`` before ``exit`` so ggml unblocks first."""
+async def test_action_quit_calls_cancel_inference_before_exit():
+    """Ctrl+C calls ``Services.cancel_inference()`` before ``exit`` so subprocess
+    workers unblock first.
+
+    Cancel routes through Services so pool-mode (subprocess abort flag)
+    AND fallback-mode (in-process Event) both fire. Tested through the
+    LilbeeApp action so the full quit path is covered.
+    """
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         parent = MagicMock()
+
+        from lilbee.core.services import get_services, set_services
+        from tests.conftest import make_mock_services
+
+        # Build a stub Services whose cancel_inference is a MagicMock so we
+        # can observe ordering without trying to mutate the real frozen
+        # dataclass field. Services itself is frozen; the methods are
+        # not, but bound-method patching needs a fresh container.
+        original_services = get_services()
+        stub = make_mock_services(provider=original_services.provider)
+        # Replace the method with our mock at the class level temporarily.
+        from lilbee.core import services as services_mod
+
+        cancel_calls: list[str] = []
+
+        def _stub_cancel(self):
+            parent.cancel_inference()
+            cancel_calls.append("called")
+
         with (
-            patch("lilbee.cli.tui.app.request_abort", parent.request_abort),
+            patch.object(services_mod.Services, "cancel_inference", _stub_cancel),
             patch.object(app, "exit", parent.exit),
         ):
-            await pilot.press("ctrl+c")
-            await pilot.pause()
+            set_services(stub)
+            try:
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+            finally:
+                set_services(original_services)
             call_names = [c[0] for c in parent.mock_calls]
-            assert "request_abort" in call_names
-            # ``request_abort`` must come no later than ``exit`` in the call order.
-            assert call_names.index("request_abort") <= call_names.index("exit")
+            assert "cancel_inference" in call_names
+            # cancel_inference must come no later than exit in the call order.
+            assert call_names.index("cancel_inference") <= call_names.index("exit")
 
 
 async def test_no_force_quit_attribute():

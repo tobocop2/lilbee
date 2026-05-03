@@ -1060,9 +1060,7 @@ class ChatScreen(Screen[None]):
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
         if self.streaming:
-            for worker in self.workers:
-                worker.cancel()
-            self.streaming = False
+            self._cancel_inflight_stream()
             return
         if isinstance(self.focused, (Select, ModelPickerButton)):
             self._chat_input.focus()
@@ -1074,13 +1072,24 @@ class ChatScreen(Screen[None]):
     def action_cancel_stream(self) -> None:
         """Context-aware Escape: cancel stream -> blur input -> no-op."""
         if self.streaming:
-            for worker in self.workers:
-                worker.cancel()
-            self.streaming = False
+            self._cancel_inflight_stream()
             return
         inp = self._chat_input
         if inp.has_focus:
             self._chat_log.focus()
+
+    def _cancel_inflight_stream(self) -> None:
+        """Stop the streaming Textual worker AND interrupt its inference call.
+
+        Cancelling the Textual worker alone unwinds the producer task but
+        does not reach into the chat subprocess; the worker subprocess
+        keeps generating until ``Services.cancel_inference()`` flips its
+        abort flag (or sets the in-process Event in fallback mode).
+        """
+        get_services().cancel_inference()
+        for worker in self.workers:
+            worker.cancel()
+        self.streaming = False
 
     def apply_model_change(self) -> None:
         """Cancel active stream (if any) and reset services for the new model."""

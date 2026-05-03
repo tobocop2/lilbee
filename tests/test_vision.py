@@ -46,6 +46,8 @@ def mock_provider():
         model_manager=mock.MagicMock(),
         crawler_semaphore=None,
         crawler_sync_state=CrawlerSyncState(),
+        worker_pool=mock.MagicMock(),
+        pool_runtime=mock.MagicMock(),
     )
     set_services(services)
     yield provider
@@ -184,6 +186,8 @@ class TestExtractPageTextSubprocess:
             model_manager=mock.MagicMock(),
             crawler_semaphore=None,
             crawler_sync_state=CrawlerSyncState(),
+            worker_pool=mock.MagicMock(),
+            pool_runtime=mock.MagicMock(),
         )
         set_services(services)
 
@@ -211,6 +215,8 @@ class TestExtractPageTextSubprocess:
             model_manager=mock.MagicMock(),
             crawler_semaphore=None,
             crawler_sync_state=CrawlerSyncState(),
+            worker_pool=mock.MagicMock(),
+            pool_runtime=mock.MagicMock(),
         )
         set_services(services)
 

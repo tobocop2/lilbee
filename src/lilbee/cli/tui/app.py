@@ -20,7 +20,6 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
-from lilbee.providers.llama_cpp.abort_signal import request_abort
 
 log = logging.getLogger(__name__)
 
@@ -273,7 +272,7 @@ class LilbeeApp(App[None]):
 
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
-        request_abort()
+        get_services().cancel_inference()
 
         if not self.task_bar.queue.is_empty:
             active = self.task_bar.queue.active_task
