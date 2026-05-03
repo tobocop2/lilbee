@@ -2,8 +2,11 @@
 
 Includes a thread-safe batching queue for embeddings so that concurrent
 ingest threads don't hit the non-thread-safe Llama object simultaneously.
-When subprocess_embed is enabled, embedding and vision calls are delegated
-to a persistent child process to avoid GIL contention.
+With ``cfg.worker_pool_enabled = True`` (the default) embed routes through
+a persistent worker subprocess so the asyncio loop stays responsive under
+load. The legacy ``subprocess_embed`` per-call worker is the fallback when
+the pool is disabled. When both flags are off, embeddings run in-process
+through the batching thread.
 """
 
 from __future__ import annotations
@@ -52,6 +55,10 @@ from lilbee.providers.model_cache import (
     kv_bytes_per_token,
 )
 from lilbee.providers.worker import WorkerManager
+from lilbee.providers.worker.embed_worker import embed_worker_main
+from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, WorkerPool
+from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport_pipe import WorkerError
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +114,10 @@ class LlamaCppProvider(LLMProvider):
         self._rerank_thread.start()
         self._subprocess_worker: WorkerManager | None = None
         self._subprocess_enabled = cfg.subprocess_embed
+        self._pool: WorkerPool | None = None
+        self._pool_runtime: PoolRuntime | None = None
+        self._pool_embed_accessor: RoleAccessor | None = None
+        self._pool_lock = threading.Lock()
 
     def _embed_worker(self) -> None:
         """Background thread: drain queue, batch, inference, dispatch results."""
@@ -221,8 +232,38 @@ class LlamaCppProvider(LLMProvider):
             self._subprocess_worker = WorkerManager()
         return self._subprocess_worker
 
+    def _get_pool_embed_accessor(self) -> RoleAccessor:
+        """Lazy-create the pool, register the embed role, return its accessor."""
+        with self._pool_lock:
+            if self._pool_embed_accessor is not None:
+                return self._pool_embed_accessor
+            self._pool = WorkerPool()
+            self._pool_runtime = PoolRuntime()
+            self._pool_runtime.start()
+            self._pool_embed_accessor = self._pool.register(
+                "embed",
+                embed_worker_main,
+                _make_embed_role_config_factory(),
+            )
+            return self._pool_embed_accessor
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts. Delegates to subprocess worker if enabled, with fallback."""
+        """Embed texts. Routes through the persistent worker pool by default.
+
+        Order of preference:
+
+        1. ``cfg.worker_pool_enabled`` (default True): per-role pool worker.
+        2. ``cfg.subprocess_embed``: legacy per-call WorkerManager.
+        3. In-process via the batching thread.
+
+        Pool failures fall back to the in-process path so a worker crash
+        does not break ingest in-flight; the next call retries the pool.
+        """
+        if cfg.worker_pool_enabled:
+            try:
+                return self._embed_via_pool(texts)
+            except (OSError, RuntimeError, WorkerError) as exc:
+                log.warning("Pool embed failed, falling back to in-process: %s", exc)
         if self._subprocess_enabled:
             try:
                 return self._get_subprocess_worker().embed(texts)
@@ -232,6 +273,23 @@ class LlamaCppProvider(LLMProvider):
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(EmbedRequest(texts=texts, future=fut))
         return fut.result(timeout=EMBED_FUTURE_TIMEOUT_S)
+
+    def _embed_via_pool(self, texts: list[str]) -> list[list[float]]:
+        """Run one embed batch through the persistent pool worker."""
+        accessor = self._get_pool_embed_accessor()
+        runtime = self._pool_runtime
+        assert runtime is not None  # noqa: S101  set by _get_pool_embed_accessor
+        result = runtime.run_sync(
+            accessor.call("embed", texts, timeout=cfg.worker_pool_call_timeout_s),
+            timeout=cfg.worker_pool_call_timeout_s,
+        )
+        if not isinstance(result, list):
+            raise WorkerError(
+                "ProtocolError",
+                f"Pool embed returned {type(result).__name__}, expected list[list[float]].",
+                "",
+            )
+        return result
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Score *candidates* by relevance to *query*, queued through a single worker."""
@@ -337,14 +395,37 @@ class LlamaCppProvider(LLMProvider):
         if self._subprocess_worker is not None:
             self._subprocess_worker.stop()
             self._subprocess_worker = None
+        self._shutdown_pool()
         self._cache.unload_all()
 
+    def _shutdown_pool(self) -> None:
+        """Drain pool workers and stop the runtime loop. Idempotent."""
+        with self._pool_lock:
+            pool = self._pool
+            runtime = self._pool_runtime
+            self._pool = None
+            self._pool_runtime = None
+            self._pool_embed_accessor = None
+        if pool is not None and runtime is not None:
+            try:
+                runtime.run_sync(pool.shutdown(), timeout=10.0)
+            except (TimeoutError, RuntimeError, OSError) as exc:
+                log.warning("Pool shutdown raised %s; forcing runtime stop", exc)
+            runtime.shutdown(timeout=5.0)
+
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Evict cached models so the next call reloads with current settings."""
+        """Evict cached models so the next call reloads with current settings.
+
+        Also tears down the pool's per-role workers; the next call will
+        respawn them with the new ``cfg.embedding_model``. In-place model
+        swap inside a worker is a follow-up; for now the lazy respawn
+        on the next call is the simpler correctness story.
+        """
         if model_path is None:
             self._cache.unload_all()
         else:
             self._cache.unload_path(model_path)
+        self._shutdown_pool()
 
 
 class _LockedStreamIterator:
@@ -405,6 +486,24 @@ class _LockedStreamIterator:
 
     def __del__(self) -> None:  # pragma: no cover
         self._release()
+
+
+def _make_embed_role_config_factory() -> Callable[[], RoleConfig]:
+    """Return a factory that resolves cfg.embedding_model at spawn time.
+
+    The pool calls the factory on every spawn (lazy or restart) so model
+    swaps in cfg propagate without an explicit invalidation call.
+    """
+    from lilbee.providers.model_cache import MODE_EMBED
+
+    def _make() -> RoleConfig:
+        return RoleConfig(
+            role="embed",
+            model_path=resolve_model_path(cfg.embedding_model),
+            mode=MODE_EMBED,
+        )
+
+    return _make
 
 
 def resolve_model_path(model: str) -> Path:

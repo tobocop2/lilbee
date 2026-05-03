@@ -238,7 +238,20 @@ class Config(BaseSettings):
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
     # Run embedding and vision inference in a subprocess (llama-cpp only).
+    # Legacy per-call subprocess. Superseded by ``worker_pool_enabled`` (default
+    # True), which keeps a persistent worker process per role for the TUI's
+    # lifetime. Honored only when ``worker_pool_enabled`` is False.
     subprocess_embed: bool = ConfigField(default=False, writable=True)
+
+    # Persistent per-role worker processes for llama-cpp inference. Default
+    # True takes embed (and later chat/rerank/vision) off the TUI process so
+    # the asyncio event loop stays responsive under load.
+    worker_pool_enabled: bool = ConfigField(default=True, writable=True)
+
+    # Per-call deadline for one pool round-trip (send + recv). Embed batches
+    # larger than this on slow machines surface as TimeoutError; raise for
+    # heavy ingest jobs.
+    worker_pool_call_timeout_s: float = ConfigField(default=300.0, gt=0.0, writable=True)
 
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
     # largest 256-multiple ctx that fits in available memory and the

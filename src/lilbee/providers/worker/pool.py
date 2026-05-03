@@ -38,9 +38,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Callable
+import threading
+from collections.abc import AsyncIterator, Callable, Coroutine
+from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from lilbee.providers.worker.transport import (
     RoleConfig,
@@ -59,9 +61,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 _DEFAULT_SHUTDOWN_TIMEOUT_S = 5.0
 _DEFAULT_CALL_TIMEOUT_S = 300.0
+_RUNTIME_THREAD_NAME = "lilbee-worker-pool-loop"
 
 
 class PoolShutdownError(WorkerError):
@@ -302,7 +307,89 @@ class WorkerPool:
             raise PoolShutdownError()
 
 
+class PoolRuntime:
+    """Background asyncio loop dedicated to a single :class:`WorkerPool`.
+
+    Sync callers (``LlamaCppProvider.embed`` and friends) invoke pool
+    coroutines via :meth:`run_sync`, which submits them onto this loop
+    and blocks the caller's thread for the result. Because every pool
+    operation runs on the same loop, the per-role asyncio.Lock instances
+    inside :class:`_Role` retain their semantics across concurrent
+    sync callers.
+
+    Constructed once per pool. :meth:`shutdown` stops the loop and
+    joins the thread; subsequent :meth:`run_sync` calls raise
+    :class:`PoolShutdownError`.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._stopped = False
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        """Spin up the background thread + loop. Idempotent."""
+        with self._lock:
+            if self._thread is not None:
+                return
+            if self._stopped:
+                raise PoolShutdownError()
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name=_RUNTIME_THREAD_NAME,
+                daemon=True,
+            )
+            self._thread.start()
+        self._ready.wait()
+
+    def _run_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+    def run_sync(self, coro: Coroutine[Any, Any, _T], *, timeout: float | None = None) -> _T:
+        """Submit *coro* to the background loop and block for the result.
+
+        On timeout, cancels the underlying asyncio task before raising so
+        the loop does not log "Task was destroyed but it is pending".
+        """
+        if self._stopped:
+            coro.close()
+            raise PoolShutdownError()
+        if self._thread is None:
+            self.start()
+        loop = self._loop
+        assert loop is not None  # _ready signaled, loop is set  # noqa: S101
+        future: Future[_T] = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return future.result(timeout=timeout)
+        except BaseException:
+            future.cancel()
+            raise
+
+    def shutdown(self, *, timeout: float = _DEFAULT_SHUTDOWN_TIMEOUT_S) -> None:
+        """Stop the loop and join the thread. Idempotent."""
+        with self._lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            loop = self._loop
+            thread = self._thread
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=timeout)
+
+
 __all__ = [
+    "PoolRuntime",
     "PoolShutdownError",
     "RoleAccessor",
     "WorkerPool",

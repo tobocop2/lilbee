@@ -174,6 +174,25 @@ def _drain_textual_threads():
 
 
 @pytest.fixture(autouse=True)
+def _disable_worker_pool_by_default(request):
+    """Default cfg.worker_pool_enabled = False for unit tests.
+
+    The persistent worker pool spawns real llama-cpp subprocesses that
+    would crash on the in-memory test models. Tests that need the pool
+    opt in with ``@pytest.mark.worker_pool`` to keep the production
+    default of ``True``. Integration tests honor the production default
+    too (their fixtures set up real models).
+    """
+    if "integration" in request.node.nodeid.split("/"):
+        return
+    if "worker_pool" in {m.name for m in request.node.iter_markers()}:
+        return
+    from lilbee.core.config import cfg as _cfg
+
+    _cfg.worker_pool_enabled = False
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cfg(tmp_path, request):
     """Snapshot and restore cfg for every test to prevent cross-test pollution.
 

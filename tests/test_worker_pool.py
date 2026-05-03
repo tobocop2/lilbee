@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from lilbee.providers.worker.pool import (
+    PoolRuntime,
     PoolShutdownError,
     RoleAccessor,
     WorkerPool,
@@ -476,3 +477,103 @@ async def test_worker_error_does_not_drop_channel(tmp_path) -> None:
         assert pool._channel_if_alive("embed") is spawner.spawned[0]
     finally:
         await pool.shutdown()
+
+
+# =====================================================================
+# PoolRuntime: sync bridge that hosts the background asyncio loop.
+# =====================================================================
+
+
+def test_pool_runtime_runs_coroutine_to_completion() -> None:
+    runtime = PoolRuntime()
+    try:
+
+        async def _double(x: int) -> int:
+            await asyncio.sleep(0)
+            return x * 2
+
+        assert runtime.run_sync(_double(21)) == 42
+    finally:
+        runtime.shutdown()
+
+
+def test_pool_runtime_starts_lazily_on_first_call() -> None:
+    runtime = PoolRuntime()
+    try:
+        assert runtime._thread is None
+
+        async def _identity() -> str:
+            return "ready"
+
+        assert runtime.run_sync(_identity()) == "ready"
+        assert runtime._thread is not None
+        assert runtime._thread.is_alive()
+    finally:
+        runtime.shutdown()
+
+
+def test_pool_runtime_propagates_exceptions() -> None:
+    runtime = PoolRuntime()
+    try:
+
+        async def _boom() -> None:
+            raise ValueError("kaboom")
+
+        with pytest.raises(ValueError, match="kaboom"):
+            runtime.run_sync(_boom())
+    finally:
+        runtime.shutdown()
+
+
+def test_pool_runtime_run_sync_after_shutdown_raises() -> None:
+    runtime = PoolRuntime()
+    runtime.shutdown()
+
+    async def _noop() -> None:
+        pass
+
+    coro = _noop()
+    try:
+        with pytest.raises(PoolShutdownError):
+            runtime.run_sync(coro)
+    finally:
+        coro.close()
+
+
+def test_pool_runtime_start_after_shutdown_raises() -> None:
+    runtime = PoolRuntime()
+    runtime.shutdown()
+    with pytest.raises(PoolShutdownError):
+        runtime.start()
+
+
+def test_pool_runtime_shutdown_is_idempotent() -> None:
+    runtime = PoolRuntime()
+    runtime.shutdown()
+    runtime.shutdown()
+
+
+def test_pool_runtime_start_is_idempotent() -> None:
+    runtime = PoolRuntime()
+    try:
+        runtime.start()
+        first = runtime._thread
+        runtime.start()
+        assert runtime._thread is first
+    finally:
+        runtime.shutdown()
+
+
+def test_pool_runtime_run_sync_respects_timeout() -> None:
+    runtime = PoolRuntime()
+    try:
+
+        async def _hang() -> None:
+            await asyncio.sleep(60)
+
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+        with pytest.raises(FuturesTimeoutError):
+            runtime.run_sync(_hang(), timeout=0.05)
+    finally:
+        runtime.shutdown()
