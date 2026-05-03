@@ -585,6 +585,34 @@ def test_pool_runtime_run_sync_respects_timeout() -> None:
         runtime.shutdown()
 
 
+def test_pool_runtime_submit_lazy_starts_thread() -> None:
+    """submit() must spin up the runtime thread on first call, like run_sync."""
+    runtime = PoolRuntime()
+    try:
+
+        async def _noop() -> str:
+            return "ok"
+
+        future = runtime.submit(_noop())
+        assert future.result(timeout=2.0) == "ok"
+        assert runtime._thread is not None
+    finally:
+        runtime.shutdown()
+
+
+def test_pool_runtime_submit_after_shutdown_raises() -> None:
+    """submit() on a shut-down runtime must surface PoolShutdownError."""
+    runtime = PoolRuntime()
+    runtime.start()
+    runtime.shutdown()
+
+    async def _noop() -> None:
+        return None
+
+    with pytest.raises(PoolShutdownError):
+        runtime.submit(_noop())
+
+
 # =====================================================================
 # Lifecycle features: idle reap, restart bookkeeping, health pings.
 # =====================================================================
@@ -754,5 +782,190 @@ async def test_call_stamps_last_used(tmp_path) -> None:
         await pool.accessor("embed").call("echo", "x")
         after = pool._roles["embed"].last_used
         assert after > before
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_dead_channel(tmp_path) -> None:
+    """Reap walks past a registered role whose channel is None or not alive."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.01)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        # Channel never spawned: reap must walk past without crashing.
+        reaped = await pool.reap_idle()
+        assert reaped == ()
+
+        await pool.accessor("embed").call("echo", "x")
+        channel = spawner.spawned[0]
+        # Mark the channel dead; reap must skip it.
+        channel.alive = False
+        reaped = await pool.reap_idle()
+        assert reaped == ()
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_role_with_zero_last_used(tmp_path) -> None:
+    """A registered role that never serviced a call has last_used=0.0; reap leaves it."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.01)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        # Spawn the channel directly without going through accessor.call (which stamps).
+        await pool._ensure_channel("embed")
+        pool._roles["embed"].last_used = 0.0
+        reaped = await pool.reap_idle()
+        assert reaped == ()
+        assert spawner.spawned[0].closed is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_recently_used_role(tmp_path) -> None:
+    """A role used inside the max_idle window is left alone."""
+    import time as _time
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=60.0)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        # last_used is now-ish; max_idle=60s; reap must skip.
+        pool._roles["embed"].last_used = _time.monotonic()
+        reaped = await pool.reap_idle()
+        assert reaped == ()
+        assert spawner.spawned[0].closed is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_when_in_flight_appears_inside_lock(tmp_path) -> None:
+    """A racy in_flight bump after the outer check still aborts the reap.
+
+    The reap re-checks ``in_flight`` inside the spawn_lock so a coroutine
+    that started a call between the outer pass and the lock acquisition
+    does not get its channel yanked.
+    """
+    import time as _time
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.01)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        channel = spawner.spawned[0]
+        registration = pool._roles["embed"]
+        registration.last_used = _time.monotonic() - 10.0
+
+        # Pre-acquire the spawn_lock from this coroutine. Start reap as a task;
+        # it will pass the outer check (in_flight=0, last_used old) and queue
+        # on the lock. While it waits, bump in_flight, then release. The reap
+        # acquires the lock, inner check sees in_flight > 0, takes line 440.
+        await registration.spawn_lock.acquire()
+        try:
+            reap_task = asyncio.create_task(pool.reap_idle())
+            await asyncio.sleep(0)  # let reap reach the lock acquisition
+            channel.in_flight_count = 1
+        finally:
+            registration.spawn_lock.release()
+        reaped = await reap_task
+        assert reaped == ()
+        assert channel.closed is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_when_last_used_refreshes_inside_lock(tmp_path) -> None:
+    """A racy last_used refresh after the outer check still aborts the reap.
+
+    The reap re-checks ``last_used`` inside the spawn_lock so a coroutine
+    that just stamped the role does not get its channel yanked.
+    """
+    import time as _time
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, max_idle_s=0.01)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        channel = spawner.spawned[0]
+        registration = pool._roles["embed"]
+        registration.last_used = _time.monotonic() - 10.0
+
+        # Same pattern: pre-acquire the lock, queue the reap, refresh last_used
+        # mid-wait, then release. Inner check sees the fresh stamp and continues.
+        await registration.spawn_lock.acquire()
+        try:
+            reap_task = asyncio.create_task(pool.reap_idle())
+            await asyncio.sleep(0)
+            registration.last_used = _time.monotonic()
+        finally:
+            registration.spawn_lock.release()
+        reaped = await reap_task
+        assert reaped == ()
+        assert channel.closed is False
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_unregistered_role_is_noop(tmp_path) -> None:
+    """``release(role)`` on an unregistered role returns silently."""
+    pool = WorkerPool(spawner=FakeSpawner())
+    try:
+        # Must not raise; release for a never-registered role is a no-op.
+        await pool.release("nope")
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_drops_registration_and_closes_live_channel(tmp_path) -> None:
+    """``release`` closes the live channel and forgets the role."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool.accessor("embed").call("echo", "x")
+        channel = spawner.spawned[0]
+        await pool.release("embed")
+        assert channel.closed is True
+        # Re-register works after release.
+        pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ensure_channel_raises_when_role_degraded_after_outer_check(tmp_path) -> None:
+    """The inner ``degraded`` check inside spawn_lock catches the race where the role
+    was marked degraded between the pre-lock check and the lock acquisition."""
+    from lilbee.providers.worker.pool import RoleDegradedError
+
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner, restart_attempts=1, restart_window_s=10.0)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        registration = pool._roles["embed"]
+
+        # Acquire the spawn_lock so _ensure_channel must wait. Inside our hold,
+        # mark the role degraded; release the lock; the queued _ensure_channel
+        # acquires it and re-checks degraded inside the lock (line 334).
+        await registration.spawn_lock.acquire()
+        try:
+            ensure_task = asyncio.create_task(pool._ensure_channel("embed"))
+            # Yield so the task gets to the spawn_lock.acquire() await point.
+            await asyncio.sleep(0)
+            registration.degraded = True
+        finally:
+            registration.spawn_lock.release()
+        with pytest.raises(RoleDegradedError, match="embed"):
+            await ensure_task
     finally:
         await pool.shutdown()

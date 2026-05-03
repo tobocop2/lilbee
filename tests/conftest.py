@@ -145,9 +145,19 @@ def _reset_services_after_test():
     from contextlib import suppress
 
     import lilbee.core.services as services_mod
+    from lilbee.providers.worker.health_ticker import (
+        HealthTickerHandle,
+        stop_health_ticker,
+    )
 
     svc = services_mod._svc
     if svc is not None:
+        # Stop the health ticker before draining the runtime so it cannot
+        # schedule a fresh pool op against an already-stopped loop.
+        ticker = getattr(svc, "pool_health_ticker", None)
+        if isinstance(ticker, HealthTickerHandle):
+            with suppress(Exception):
+                stop_health_ticker(ticker, timeout=2.0)
         runtime = svc.pool_runtime
         pool = svc.worker_pool
         # Real pool/runtime have these methods. Mocks no-op safely.
@@ -287,6 +297,7 @@ def make_mock_services(**overrides):
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.services import CrawlerSyncState, Services
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
@@ -308,6 +319,9 @@ def make_mock_services(**overrides):
     crawler_sync_state = overrides.pop("crawler_sync_state", None) or CrawlerSyncState()
     worker_pool = overrides.pop("worker_pool", None) or WorkerPool()
     pool_runtime = overrides.pop("pool_runtime", None) or PoolRuntime()
+    # Default to an idle ticker handle: tests that exercise the ticker
+    # build a real one explicitly via start_health_ticker.
+    pool_health_ticker = overrides.pop("pool_health_ticker", None) or HealthTickerHandle()
 
     return Services(
         provider=provider,
@@ -325,6 +339,7 @@ def make_mock_services(**overrides):
         crawler_sync_state=crawler_sync_state,
         worker_pool=worker_pool,
         pool_runtime=pool_runtime,
+        pool_health_ticker=pool_health_ticker,
     )
 
 

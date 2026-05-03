@@ -168,8 +168,8 @@ def test_shutdown_idempotent_after_pool_use(pool_provider) -> None:
     assert pool_provider._registered_roles == set()
 
 
-def test_embed_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
-    """Pool failure must not break embed; the in-process queue path takes over."""
+def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """Pool worker errors must propagate as ProviderError, not silently fall back."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -181,29 +181,27 @@ def test_embed_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> N
         lambda _name: tmp_path / "models" / "stub.gguf",
     )
 
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    from lilbee.providers.worker.transport_pipe import WorkerError
 
     provider = LlamaCppProvider()
 
     def _boom(_texts):
-        raise RuntimeError("simulated pool failure")
+        raise WorkerError("RuntimeError", "simulated pool failure", "")
 
     monkeypatch.setattr(provider, "_embed_via_pool", _boom)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.embed_one",
-        lambda _llm, text: [float(len(text))],
-    )
-    monkeypatch.setattr(provider, "_get_embed_llm", lambda: object())
     try:
-        result = provider.embed(["hello"])
-        assert result == [[5.0]]
+        with pytest.raises(ProviderError, match="Embedding worker crashed"):
+            provider.embed(["hello"])
     finally:
         provider.shutdown()
 
 
-def test_embed_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path) -> None:
-    """A worker returning a non-list payload trips ProtocolError, which is
-    caught at the provider boundary and degrades to the in-process queue."""
+def test_embed_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-list payload trips a protocol-shaped WorkerError,
+    which surfaces to the caller as ProviderError instead of being silently
+    swapped for the in-process path."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -218,18 +216,15 @@ def test_embed_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_pat
         "lilbee.providers.llama_cpp.provider.embed_worker_main",
         _bad_protocol_worker_main,
     )
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.embed_one",
-        lambda _llm, text: [float(len(text))],
-    )
 
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
-    monkeypatch.setattr(provider, "_get_embed_llm", lambda: object())
+    _install_mock_services_with_provider(provider)
     try:
-        result = provider.embed(["abc"])
-        assert result == [[3.0]]
+        with pytest.raises(ProviderError, match="Embedding worker crashed"):
+            provider.embed(["abc"])
     finally:
         provider.shutdown()
 
@@ -324,7 +319,8 @@ def test_rerank_with_empty_candidates_short_circuits(rerank_pool_provider) -> No
     assert "rerank" not in rerank_pool_provider._registered_roles
 
 
-def test_rerank_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
+def test_rerank_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """Pool worker errors must propagate as ProviderError, not silently fall back."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -335,22 +331,19 @@ def test_rerank_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> 
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         lambda _name: tmp_path / "models" / "stub.gguf",
     )
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    from lilbee.providers.worker.transport_pipe import WorkerError
 
     provider = LlamaCppProvider()
 
     def _boom(_query, _candidates):
-        raise RuntimeError("simulated pool failure")
+        raise WorkerError("RuntimeError", "simulated pool failure", "")
 
     monkeypatch.setattr(provider, "_rerank_via_pool", _boom)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.compute_rerank_scores",
-        lambda _llm, _q, candidates: [float(len(c)) for c in candidates],
-    )
-    monkeypatch.setattr(provider, "_get_rerank_llm", lambda: object())
     try:
-        scores = provider.rerank("q", ["abc", "de"])
-        assert scores == [3.0, 2.0]
+        with pytest.raises(ProviderError, match="Rerank worker crashed"):
+            provider.rerank("q", ["abc", "de"])
     finally:
         provider.shutdown()
 
@@ -373,9 +366,10 @@ def _bad_rerank_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleC
         conn.send(("result", "ignored"))
 
 
-def test_rerank_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path) -> None:
-    """A worker returning a non-list payload trips ProtocolError, which is
-    caught at the provider boundary and degrades to the in-process queue."""
+def test_rerank_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-list payload trips a protocol-shaped WorkerError,
+    which surfaces to the caller as ProviderError instead of being silently
+    swapped for the in-process path."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
@@ -390,18 +384,15 @@ def test_rerank_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_pa
         "lilbee.providers.llama_cpp.provider.rerank_worker_main",
         _bad_rerank_protocol_worker_main,
     )
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.compute_rerank_scores",
-        lambda _llm, _q, candidates: [float(len(c)) for c in candidates],
-    )
 
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
-    monkeypatch.setattr(provider, "_get_rerank_llm", lambda: object())
+    _install_mock_services_with_provider(provider)
     try:
-        scores = provider.rerank("q", ["abc"])
-        assert scores == [3.0]
+        with pytest.raises(ProviderError, match="Rerank worker crashed"):
+            provider.rerank("q", ["abc"])
     finally:
         provider.shutdown()
 
@@ -555,7 +546,8 @@ def test_chat_streaming_close_before_exhaustion_releases(chat_pool_provider) -> 
     iterator.close()
 
 
-def test_chat_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> None:
+def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """Pool worker errors must propagate as ProviderError, not silently fall back."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
@@ -566,23 +558,19 @@ def test_chat_falls_back_to_inproc_when_pool_raises(monkeypatch, tmp_path) -> No
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         lambda _name: tmp_path / "models" / "stub.gguf",
     )
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    from lilbee.providers.worker.transport_pipe import WorkerError
 
     provider = LlamaCppProvider()
 
     def _boom(*, messages, stream, options, model):
-        raise RuntimeError("simulated pool failure")
+        raise WorkerError("RuntimeError", "simulated pool failure", "")
 
     monkeypatch.setattr(provider, "_chat_via_pool", _boom)
-
-    class _StubLlama:
-        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
-            return {"choices": [{"message": {"content": "in-process"}}]}
-
-    monkeypatch.setattr(provider, "_get_chat_llm", lambda _model=None: _StubLlama())
     try:
-        result = provider.chat([{"role": "user", "content": "hi"}])
-        assert result == "in-process"
+        with pytest.raises(ProviderError, match="Chat worker crashed"):
+            provider.chat([{"role": "user", "content": "hi"}])
     finally:
         provider.shutdown()
 
@@ -605,9 +593,10 @@ def _bad_chat_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleCon
         conn.send(("result", "ignored"))
 
 
-def test_chat_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path) -> None:
-    """A worker returning a non-string payload trips ProtocolError, which is
-    caught at the provider boundary and degrades to the in-process chat path."""
+def test_chat_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-string payload trips a protocol-shaped WorkerError,
+    which surfaces to the caller as ProviderError instead of being silently
+    swapped for the in-process path."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
@@ -623,17 +612,14 @@ def test_chat_pool_protocol_error_falls_back_to_in_process(monkeypatch, tmp_path
         _bad_chat_protocol_worker_main,
     )
 
-    class _StubLlama:
-        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
-            return {"choices": [{"message": {"content": "in-process"}}]}
-
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
-    monkeypatch.setattr(provider, "_get_chat_llm", lambda _model=None: _StubLlama())
+    _install_mock_services_with_provider(provider)
     try:
-        result = provider.chat([{"role": "user", "content": "hi"}])
-        assert result == "in-process"
+        with pytest.raises(ProviderError, match="Chat worker crashed"):
+            provider.chat([{"role": "user", "content": "hi"}])
     finally:
         provider.shutdown()
 
@@ -744,7 +730,8 @@ def test_vision_ocr_repeated_calls_reuse_one_accessor(vision_pool_provider) -> N
     assert vision_pool_provider._registered_roles == {"vision"}
 
 
-def test_vision_ocr_falls_back_to_legacy_subprocess_on_pool_failure(monkeypatch, tmp_path) -> None:
+def test_vision_ocr_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """Pool worker errors must propagate as ProviderError, not silently fall back."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
@@ -756,23 +743,19 @@ def test_vision_ocr_falls_back_to_legacy_subprocess_on_pool_failure(monkeypatch,
         lambda _name: tmp_path / "models" / "stub.gguf",
     )
 
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    from lilbee.providers.worker.transport_pipe import WorkerError
 
     provider = LlamaCppProvider()
 
     def _boom(**_kwargs):
-        raise RuntimeError("simulated pool failure")
+        raise WorkerError("RuntimeError", "simulated pool failure", "")
 
     monkeypatch.setattr(provider, "_vision_ocr_via_pool", _boom)
-
-    class _LegacyWorker:
-        def vision_ocr(self, png_bytes, model, prompt, *, timeout):
-            return "legacy-result"
-
-    monkeypatch.setattr(provider, "_get_subprocess_worker", lambda: _LegacyWorker())
     try:
-        result = provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
-        assert result == "legacy-result"
+        with pytest.raises(ProviderError, match="Vision worker crashed"):
+            provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
     finally:
         provider.shutdown()
 
@@ -795,12 +778,10 @@ def _bad_vision_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleC
         conn.send(("result", "ignored"))
 
 
-def test_vision_ocr_pool_protocol_error_falls_back_to_legacy_subprocess(
-    monkeypatch, tmp_path
-) -> None:
-    """A worker returning a non-string payload trips ProtocolError, which is
-    caught at the provider boundary and degrades to the legacy per-call
-    subprocess WorkerManager."""
+def test_vision_ocr_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """A worker returning a non-string payload trips a protocol-shaped WorkerError,
+    which surfaces to the caller as ProviderError instead of being silently
+    swapped for the legacy subprocess path."""
     cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
@@ -816,17 +797,14 @@ def test_vision_ocr_pool_protocol_error_falls_back_to_legacy_subprocess(
         _bad_vision_protocol_worker_main,
     )
 
-    class _LegacyWorker:
-        def vision_ocr(self, png_bytes, model, prompt, *, timeout):
-            return "legacy-fallback"
-
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
-    monkeypatch.setattr(provider, "_get_subprocess_worker", lambda: _LegacyWorker())
+    _install_mock_services_with_provider(provider)
     try:
-        result = provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
-        assert result == "legacy-fallback"
+        with pytest.raises(ProviderError, match="Vision worker crashed"):
+            provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
     finally:
         provider.shutdown()
 

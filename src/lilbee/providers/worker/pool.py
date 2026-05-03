@@ -559,6 +559,23 @@ class PoolRuntime:
             future.cancel()
             raise
 
+    def submit(self, coro: Coroutine[Any, Any, _T]) -> Future[_T]:
+        """Schedule *coro* on the background loop without blocking the caller.
+
+        Returns the :class:`concurrent.futures.Future` for the call so the
+        caller can await it (via :func:`asyncio.wrap_future` from another
+        loop) or cancel it. Used by the Services-owned health ticker so a
+        long pool ping does not stall the bg-loop.
+        """
+        if self._stopped:
+            coro.close()
+            raise PoolShutdownError()
+        if self._thread is None:
+            self.start()
+        loop = self._loop
+        assert loop is not None  # _ready signaled, loop is set  # noqa: S101
+        return asyncio.run_coroutine_threadsafe(coro, loop)
+
     def shutdown(self, *, timeout: float = _DEFAULT_SHUTDOWN_TIMEOUT_S) -> None:
         """Stop the loop and join the thread. Idempotent."""
         with self._lock:

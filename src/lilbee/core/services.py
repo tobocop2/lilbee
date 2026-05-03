@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -51,8 +52,7 @@ class Services:
     subsystem can reach it for cancellation, health checks, or
     diagnostics without crossing into ``LlamaCppProvider``'s private
     API. ``cancel_inference()`` is the canonical entry point used by
-    Ctrl+C and the chat-stream cancel action; it bridges pool-mode
-    (subprocess abort flag) and fallback-mode (in-process Event).
+    Ctrl+C and the chat-stream cancel action.
     """
 
     provider: LLMProvider
@@ -70,15 +70,14 @@ class Services:
     crawler_sync_state: CrawlerSyncState
     worker_pool: WorkerPool
     pool_runtime: PoolRuntime
+    pool_health_ticker: HealthTickerHandle
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight inference call.
 
-        Routes the cancel to the right destination based on
-        ``cfg.worker_pool_enabled``: pool-mode flips the subprocess
-        abort flag (``mp.Value``) for every live role; fallback-mode
-        sets the in-process ``threading.Event`` honored by
-        ``llama_cpp``'s in-process abort callback. Idempotent.
+        Always sets the in-process abort flag, plus the pool's per-role
+        abort flag when pool mode is enabled, so any in-flight inference
+        is interrupted regardless of which path produced it. Idempotent.
         """
         from lilbee.core.config import cfg
         from lilbee.providers.llama_cpp.abort_signal import request_abort
@@ -112,12 +111,14 @@ def get_services() -> Services:
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
+    from lilbee.providers.worker.health_ticker import HealthTickerHandle, start_health_ticker
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
+    from lilbee.runtime.asyncio_loop import get_loop
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     _log_subprocess_embed_deprecation_once(cfg)
@@ -144,6 +145,11 @@ def get_services() -> Services:
         asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
     )
     crawler_sync_state = CrawlerSyncState()
+    pool_health_ticker: HealthTickerHandle = (
+        start_health_ticker(worker_pool, pool_runtime, get_loop())
+        if cfg.worker_pool_enabled
+        else HealthTickerHandle()
+    )
     _svc = Services(
         provider=provider,
         store=store,
@@ -160,6 +166,7 @@ def get_services() -> Services:
         crawler_sync_state=crawler_sync_state,
         worker_pool=worker_pool,
         pool_runtime=pool_runtime,
+        pool_health_ticker=pool_health_ticker,
     )
     # Eager start is opt-in: pays the per-worker cold-start (1-3s each)
     # at TUI mount instead of on first request. Most users keep it off
@@ -215,7 +222,15 @@ def reset_services() -> None:
 
 
 def _shutdown_pool(services: Services) -> None:
-    """Drain the worker pool and stop its runtime loop. Idempotent."""
+    """Drain the worker pool, stop the health ticker, then stop the runtime loop.
+
+    Order matters: cancel the ticker first so it cannot schedule a fresh
+    pool op against a draining runtime; then drain the pool; then stop
+    the runtime thread. Idempotent.
+    """
+    from lilbee.providers.worker.health_ticker import stop_health_ticker
+
+    stop_health_ticker(services.pool_health_ticker)
     pool = services.worker_pool
     runtime = services.pool_runtime
     try:

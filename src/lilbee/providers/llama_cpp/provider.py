@@ -4,9 +4,10 @@ Includes a thread-safe batching queue for embeddings so that concurrent
 ingest threads don't hit the non-thread-safe Llama object simultaneously.
 With ``cfg.worker_pool_enabled = True`` (the default) embed routes through
 a persistent worker subprocess so the asyncio loop stays responsive under
-load. The legacy ``subprocess_embed`` per-call worker is the fallback when
-the pool is disabled. When both flags are off, embeddings run in-process
-through the batching thread.
+load. Worker crashes surface to the caller as :class:`ProviderError`; the
+pool respawns the role lazily on the next call. The legacy
+``subprocess_embed`` per-call worker and the in-process batching path
+remain available when the pool is disabled.
 """
 
 from __future__ import annotations
@@ -278,14 +279,19 @@ class LlamaCppProvider(LLMProvider):
         2. ``cfg.subprocess_embed``: legacy per-call WorkerManager.
         3. In-process via the batching thread.
 
-        Pool failures fall back to the in-process path so a worker crash
-        does not break ingest in-flight; the next call retries the pool.
+        Worker crashes propagate as :class:`ProviderError`; the pool
+        respawns the embed role lazily on the next call. Falling back
+        to in-process here would re-introduce the GIL contention the
+        pool exists to avoid, with no signal to the user.
         """
         if cfg.worker_pool_enabled:
             try:
                 return self._embed_via_pool(texts)
-            except (OSError, RuntimeError, WorkerError) as exc:
-                log.warning("Pool embed failed, falling back to in-process: %s", exc)
+            except WorkerError as exc:
+                raise ProviderError(
+                    f"Embedding worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
         if self._subprocess_enabled:
             try:
                 return self._get_subprocess_worker().embed(texts)
@@ -318,17 +324,20 @@ class LlamaCppProvider(LLMProvider):
         """Score *candidates* by relevance to *query*.
 
         Routes through the persistent worker pool when
-        ``cfg.worker_pool_enabled`` (default True), with the in-process
-        batching thread as the fallback path. The fallback runs on pool
-        failure so a worker crash does not break in-flight reranks.
+        ``cfg.worker_pool_enabled`` (default True). Worker crashes
+        propagate as :class:`ProviderError`; the pool respawns the
+        rerank role lazily on the next call.
         """
         if not candidates:
             return []
         if cfg.worker_pool_enabled:
             try:
                 return self._rerank_via_pool(query, candidates)
-            except (OSError, RuntimeError, WorkerError) as exc:
-                log.warning("Pool rerank failed, falling back to in-process: %s", exc)
+            except WorkerError as exc:
+                raise ProviderError(
+                    f"Rerank worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
         fut: Future[list[float]] = Future()
         self._rerank_queue.put(RerankRequest(query=query, candidates=candidates, future=fut))
         return fut.result(timeout=RERANK_FUTURE_TIMEOUT_S)
@@ -361,16 +370,21 @@ class LlamaCppProvider(LLMProvider):
     ) -> str:
         """Run vision OCR. Routes through the persistent worker pool by default.
 
-        Pool failures fall back to the legacy per-call ``WorkerManager``
-        path so a vision-worker crash does not break ingest in flight.
+        Worker crashes propagate as :class:`ProviderError`; the pool
+        respawns the vision role lazily on the next call. The legacy
+        per-call ``WorkerManager`` path remains for users who keep the
+        pool disabled.
         """
         if cfg.worker_pool_enabled:
             try:
                 return self._vision_ocr_via_pool(
                     png_bytes=png_bytes, model=model, prompt=prompt, timeout=timeout
                 )
-            except (OSError, RuntimeError, WorkerError) as exc:
-                log.warning("Pool vision_ocr failed, falling back to legacy subprocess: %s", exc)
+            except WorkerError as exc:
+                raise ProviderError(
+                    f"Vision worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
         return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
     def _vision_ocr_via_pool(
@@ -427,16 +441,19 @@ class LlamaCppProvider(LLMProvider):
         Streaming returns a :class:`ClosableIterator[str]` whose
         ``close()`` flips the worker's abort flag and lets the in-flight
         generation drain. Non-streaming returns the joined assistant
-        message text. Pool failures fall back to the in-process path so
-        a worker crash does not break an in-flight conversation.
+        message text. Worker crashes propagate as :class:`ProviderError`;
+        the pool respawns the chat role lazily on the next call.
         """
         if cfg.worker_pool_enabled:
             try:
                 return self._chat_via_pool(
                     messages=messages, stream=stream, options=options, model=model
                 )
-            except (OSError, RuntimeError, WorkerError) as exc:
-                log.warning("Pool chat failed, falling back to in-process: %s", exc)
+            except WorkerError as exc:
+                raise ProviderError(
+                    f"Chat worker crashed during request: {exc}. Please try again.",
+                    provider="llama-cpp",
+                ) from exc
         return self._chat_in_process(messages=messages, stream=stream, options=options, model=model)
 
     def _chat_in_process(

@@ -226,8 +226,31 @@ def test_extract_vision_content_walks_defensively() -> None:
         _extract_vision_content("not a dict")
     with pytest.raises(TypeError):
         _extract_vision_content({"choices": []})
+    with pytest.raises(TypeError, match="choices\\[0\\] must be dict"):
+        _extract_vision_content({"choices": ["not a dict"]})
     with pytest.raises(TypeError):
         _extract_vision_content({"choices": [{"message": "not a dict"}]})
+
+
+def test_session_ocr_treats_non_dict_usage_as_empty(tmp_path, monkeypatch) -> None:
+    """Defensive guard: if llama-cpp returns ``usage`` as something other than a dict,
+    we coerce to ``{}`` so the log line still renders without raising."""
+    from lilbee.providers.worker.vision_worker import _VisionSession
+
+    role_config = RoleConfig(role="vision", model_path=tmp_path / "v.gguf", mode="vision")
+    flag = multiprocessing.Value("b", 0)
+    session = _VisionSession(role_config, flag)
+
+    class _StubLlama:
+        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": "not a dict",
+            }
+
+    monkeypatch.setattr(_VisionSession, "_ensure_loaded", lambda self, _o: _StubLlama())
+    text = session.ocr(png_bytes=b"\x89PNG", prompt="p", model=None)
+    assert text == "ok"
 
 
 def test_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_path) -> None:

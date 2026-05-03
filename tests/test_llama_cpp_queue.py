@@ -955,6 +955,55 @@ class TestAbortCallbackWiring:
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["abort_callback"] is expected_cb
 
+    def test_load_llama_uses_abort_callback_override_when_provided(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Pool workers pass an mp.Value-backed callback so the parent's
+        cancel reaches the subprocess; the override replaces the default
+        threading.Event-backed callback."""
+        from lilbee.providers.llama_cpp.provider import load_llama
+        from lilbee.providers.model_cache import MODE_CHAT
+
+        cfg.num_ctx = 2048
+        mock_llama_cpp.Llama.return_value.metadata = {}
+
+        def _override_cb() -> bool:
+            return False
+
+        load_llama(
+            models_dir / "test-model.gguf",
+            mode=MODE_CHAT,
+            abort_callback_override=_override_cb,
+        )
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is _override_cb
+
+    def test_load_vision_llama_uses_abort_callback_override_when_provided(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``load_vision_llama`` honors abort_callback_override the same way
+        the chat/embed loader does."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+
+        def _override_cb() -> bool:
+            return False
+
+        with mock.patch(
+            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+            return_value=mock.MagicMock(),
+        ):
+            load_vision_llama(
+                models_dir / "test-model.gguf",
+                mmproj_path,
+                abort_callback_override=_override_cb,
+            )
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["abort_callback"] is _override_cb
+
     def test_chat_iterator_releases_lock_when_stream_returns_early(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
