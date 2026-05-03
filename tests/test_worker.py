@@ -22,7 +22,7 @@ from lilbee.providers.worker import (
     VisionResponse,
     WorkerManager,
 )
-from lilbee.providers.worker.protocol import config_snapshot_from_cfg
+from lilbee.providers.worker.legacy_protocol import config_snapshot_from_cfg
 from lilbee.providers.worker.worker import (
     _close_model,
     _handle_embed,

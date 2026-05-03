@@ -17,7 +17,7 @@ from multiprocessing import get_context
 from typing import Any, TypeVar
 
 from lilbee.core.config import cfg
-from lilbee.providers.worker.protocol import (
+from lilbee.providers.worker.legacy_protocol import (
     ConfigSnapshot,
     EmbedRequest,
     EmbedResponse,

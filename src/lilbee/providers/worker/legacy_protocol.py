@@ -1,4 +1,11 @@
-"""Message dataclasses exchanged between the parent and the worker subprocess."""
+"""Per-call worker subprocess protocol used by the legacy ``WorkerManager``.
+
+Used only when ``cfg.worker_pool_enabled = False`` (the fallback path
+preserved for existing ``test_llama_cpp_queue.py`` mocks). The default
+path uses :mod:`lilbee.providers.worker.channel` (pickle on
+:class:`multiprocessing.Pipe`) plus :mod:`lilbee.providers.worker.pool`
+for the persistent worker pool.
+"""
 
 from __future__ import annotations
 
