@@ -37,7 +37,6 @@ def models_dir(tmp_path: Path) -> Path:
     cfg.models_dir = models
     cfg.embedding_model = TEST_EMBED_REF
     cfg.chat_model = TEST_LOCAL_REF
-    cfg.subprocess_embed = False
     patcher = mock.patch(
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=lambda m: models / f"{m.rsplit('/', 1)[-1]}",

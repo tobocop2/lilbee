@@ -5,9 +5,9 @@ ingest threads don't hit the non-thread-safe Llama object simultaneously.
 With ``cfg.worker_pool_enabled = True`` (the default) embed routes through
 a persistent worker subprocess so the asyncio loop stays responsive under
 load. Worker crashes surface to the caller as :class:`ProviderError`; the
-pool respawns the role lazily on the next call. The legacy
-``subprocess_embed`` per-call worker and the in-process batching path
-remain available when the pool is disabled.
+pool respawns the role lazily on the next call. With the pool disabled,
+embed and rerank fall through to the in-process batching threads, and
+vision OCR uses the per-call :class:`WorkerManager` subprocess.
 """
 
 from __future__ import annotations
@@ -128,7 +128,6 @@ class LlamaCppProvider(LLMProvider):
         self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
         self._rerank_thread.start()
         self._subprocess_worker: WorkerManager | None = None
-        self._subprocess_enabled = cfg.subprocess_embed
         self._pool_lock = threading.Lock()
         self._registered_roles: set[str] = set()
 
@@ -271,13 +270,7 @@ class LlamaCppProvider(LLMProvider):
         return pool.accessor(role)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts. Routes through the persistent worker pool by default.
-
-        Order of preference:
-
-        1. ``cfg.worker_pool_enabled`` (default True): per-role pool worker.
-        2. ``cfg.subprocess_embed``: legacy per-call WorkerManager.
-        3. In-process via the batching thread.
+        """Embed texts via the persistent pool, or the in-process thread when off.
 
         Worker crashes propagate as :class:`ProviderError`; the pool
         respawns the embed role lazily on the next call. Falling back
@@ -297,12 +290,6 @@ class LlamaCppProvider(LLMProvider):
                     "Embedding worker timed out. Please try again.",
                     provider="llama-cpp",
                 ) from exc
-        if self._subprocess_enabled:
-            try:
-                return self._get_subprocess_worker().embed(texts)
-            except (OSError, RuntimeError) as exc:
-                log.warning("Subprocess embed failed, falling back to in-process: %s", exc)
-                self._subprocess_enabled = False
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(EmbedRequest(texts=texts, future=fut))
         return fut.result(timeout=EMBED_FUTURE_TIMEOUT_S)

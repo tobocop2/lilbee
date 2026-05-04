@@ -237,12 +237,6 @@ class Config(BaseSettings):
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Run embedding and vision inference in a subprocess (llama-cpp only).
-    # Legacy per-call subprocess. Superseded by ``worker_pool_enabled`` (default
-    # True), which keeps a persistent worker process per role for the TUI's
-    # lifetime. Honored only when ``worker_pool_enabled`` is False.
-    subprocess_embed: bool = ConfigField(default=False, writable=True)
-
     # Persistent per-role worker processes for llama-cpp inference. Default
     # True takes embed (and later chat/rerank/vision) off the TUI process so
     # the asyncio event loop stays responsive under load.

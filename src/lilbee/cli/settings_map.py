@@ -503,15 +503,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Ingest",
         help_text="Concurrent vision-OCR pages per document (1 keeps memory predictable)",
     ),
-    "subprocess_embed": SettingDef(
-        bool,
-        nullable=False,
-        group="Ingest",
-        help_text=(
-            "Deprecated. Per-call embedding subprocess. Superseded by worker_pool_enabled "
-            "(default True), which keeps a persistent worker per role"
-        ),
-    ),
     "worker_pool_enabled": SettingDef(
         bool,
         nullable=False,

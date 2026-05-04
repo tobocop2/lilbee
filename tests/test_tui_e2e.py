@@ -31,7 +31,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
-    cfg.subprocess_embed = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)

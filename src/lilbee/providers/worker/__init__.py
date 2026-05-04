@@ -7,9 +7,8 @@ stays responsive. Two transports coexist:
   exchanging pickled messages over a duplex :class:`multiprocessing.Pipe`.
   See :mod:`lilbee.providers.worker.pool` and
   :mod:`lilbee.providers.worker.channel`.
-* :class:`WorkerManager` (legacy): per-call subprocess for embed and
-  vision only, reachable when ``cfg.worker_pool_enabled = False``.
-  Preserved so existing tests that mock ``Llama`` directly keep working.
+* :class:`WorkerManager`: per-call subprocess for vision OCR, reachable
+  when ``cfg.worker_pool_enabled = False``.
 """
 
 from lilbee.providers.worker.legacy_protocol import (

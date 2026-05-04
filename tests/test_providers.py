@@ -103,7 +103,6 @@ class TestLlamaCppProvider:
         cfg.models_dir = models_dir
         cfg.embedding_model = TEST_MODEL_REF
         cfg.chat_model = TEST_MODEL_REF
-        cfg.subprocess_embed = False
         self._providers: list = []
         self._resolve_patcher = mock.patch(
             "lilbee.providers.llama_cpp.provider.resolve_model_path",
@@ -1475,34 +1474,6 @@ class TestDispatchBatch:
             fut.result()
 
 
-class TestEmbedSubprocessFallback:
-    def test_oserror_disables_subprocess(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """OSError from subprocess worker falls back to in-process embedding."""
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        provider = LlamaCppProvider()
-        provider._subprocess_enabled = True
-        mock_worker = mock.MagicMock()
-        mock_worker.embed.side_effect = OSError("No child processes")
-        provider._subprocess_worker = mock_worker
-
-        # The in-process fallback puts a request on the embed queue.
-        # Mock the queue to capture the request and resolve the future.
-        original_put = provider._embed_queue.put
-
-        def _intercept_put(item):
-            if isinstance(item, EmbedRequest):
-                item.future.set_result([[0.5]])
-            else:
-                original_put(item)
-
-        with mock.patch.object(provider._embed_queue, "put", side_effect=_intercept_put):
-            result = provider.embed(["test"])
-        assert result == [[0.5]]
-        assert provider._subprocess_enabled is False
-
-
 class TestVisionOcr:
     def test_delegates_to_subprocess(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
@@ -2327,45 +2298,6 @@ class TestLlamaCppProviderMethods:
         mock_subprocess.stop.assert_called_once()
         assert provider._subprocess_worker is None
         provider._cache.unload_all.assert_called_once()
-
-    def test_embed_subprocess_enabled(self) -> None:
-        """embed delegates to subprocess worker when enabled."""
-        provider = _make_provider_no_thread()
-        provider._subprocess_enabled = True
-
-        mock_worker = mock.MagicMock()
-        mock_worker.embed.return_value = [[0.1, 0.2]]
-
-        with mock.patch.object(provider, "_get_subprocess_worker", return_value=mock_worker):
-            result = provider.embed(["hello"])
-
-        assert result == [[0.1, 0.2]]
-
-    def test_embed_subprocess_fallback(self) -> None:
-        """embed falls back to in-process on subprocess failure."""
-        from concurrent.futures import Future
-
-        provider = _make_provider_no_thread()
-        provider._subprocess_enabled = True
-
-        mock_worker = mock.MagicMock()
-        mock_worker.embed.side_effect = OSError("worker crashed")
-
-        fut: Future[list[list[float]]] = Future()
-        fut.set_result([[0.3, 0.4]])
-
-        with mock.patch.object(provider, "_get_subprocess_worker", return_value=mock_worker):
-            # The embed will try subprocess, fail, then queue in-process
-            # We need to handle the queue - put a pre-resolved future
-
-            def intercept_put(req: object) -> None:
-                req.future.set_result([[0.3, 0.4]])
-
-            provider._embed_queue.put = intercept_put
-            result = provider.embed(["hello"])
-
-        assert result == [[0.3, 0.4]]
-        assert provider._subprocess_enabled is False
 
     def test_vision_ocr(self) -> None:
         """vision_ocr delegates to subprocess worker."""
