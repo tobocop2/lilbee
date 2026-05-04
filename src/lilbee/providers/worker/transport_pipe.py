@@ -249,6 +249,11 @@ class PipeChannel:
         exception), or pipe EOF (worker crash). The in-flight counter
         stays positive for the entire streaming window so the idle reaper
         does not race with a long generation.
+
+        Pong frames received here are silently consumed: an orphaned pong
+        from a prior health ping (parent ping coroutine cancelled / timed
+        out before its pong arrived) sits in the pipe FIFO and would
+        otherwise corrupt the next stream's first frame.
         """
         self._ensure_open()
         self._bump_in_flight(1)
@@ -262,6 +267,8 @@ class PipeChannel:
                     return
                 elif msg_kind == ERROR_KIND:
                     raise _deserialize_exception(value)
+                elif msg_kind == PONG_KIND:
+                    continue
                 else:
                     raise WorkerError(
                         "ProtocolError",

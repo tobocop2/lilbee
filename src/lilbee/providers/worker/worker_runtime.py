@@ -1,9 +1,7 @@
 """Cross-role helpers for worker subprocesses.
 
-Bootstraps the per-role workers (embed, chat, rerank, vision): silences
-C-level stdio, appends to ``$LILBEE_DATA/logs/worker-<role>.log`` if
-the env var is set, and runs the recv loop with shared ping/shutdown
-handling via :func:`run_worker`.
+Bootstraps the per-role workers (embed, chat, rerank, vision) and runs
+the recv loop with shared ping/shutdown handling via :func:`run_worker`.
 """
 
 from __future__ import annotations
@@ -12,7 +10,9 @@ import contextlib
 import logging
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
@@ -64,8 +64,42 @@ def configure_worker_logging(role: str) -> None:
     root.setLevel(logging.INFO)
 
 
-KindHandler = Callable[[Any, Any, Any], None]
-"""Per-role handler signature: ``(conn, payload, session) -> None``."""
+@dataclass
+class WorkerLoopState:
+    """Per-loop state shared by the dispatcher and the role's handlers.
+
+    ``stream_in_flight`` is flipped on for the emission window of a
+    streaming response (via :func:`stream_window`); the dispatcher
+    silently drops pings dispatched during that window so no pong frame
+    interleaves with the stream output. Combined with the parent-side
+    ``stream`` reader filter that consumes orphan pongs and the parent
+    accessor's ``ping`` skip when the channel reports in-flight work,
+    this completes the worker-pool defence against bb-ubnm.
+    """
+
+    session: Any
+    stream_in_flight: bool = False
+
+
+@contextmanager
+def stream_window(state: WorkerLoopState) -> Iterator[None]:
+    """Mark *state* as actively streaming for the duration of the block.
+
+    The flag is always cleared on exit so a streaming error does not
+    leave the worker permanently ping-deaf.
+    """
+    state.stream_in_flight = True
+    try:
+        yield
+    finally:
+        state.stream_in_flight = False
+
+
+KindHandler = Callable[[Any, Any, WorkerLoopState], None]
+"""Per-role handler signature: ``(conn, payload, state) -> None``.
+
+Handlers reach their role-specific session via ``state.session``.
+"""
 
 
 def run_worker(
@@ -92,7 +126,7 @@ def run_worker(
         os.getpid(),
         role_config.model_path,
     )
-    session = session_factory(role_config, abort_flag)
+    state = WorkerLoopState(session=session_factory(role_config, abort_flag))
     try:
         while True:
             if not conn.poll(timeout=_POLL_TIMEOUT_S):
@@ -101,12 +135,12 @@ def run_worker(
                 kind, payload = conn.recv()
             except EOFError:
                 return
-            if not _dispatch_kind(conn, kind, payload, session, kind_handlers, role_config.role):
+            if not _dispatch_kind(conn, kind, payload, state, kind_handlers, role_config.role):
                 return
     finally:
         # session.close() swallows its own teardown errors per role-specific
         # contract. conn.close() can raise if the parent already tore down.
-        session.close()
+        state.session.close()
         with contextlib.suppress(Exception):
             conn.close()
 
@@ -115,7 +149,7 @@ def _dispatch_kind(
     conn: Any,
     kind: str,
     payload: Any,
-    session: Any,
+    state: WorkerLoopState,
     kind_handlers: dict[str, KindHandler],
     role: str,
 ) -> bool:
@@ -124,11 +158,15 @@ def _dispatch_kind(
         conn.send((ACK_KIND, None))
         return False
     if kind == PING_KIND:
+        if state.stream_in_flight:
+            # Drop the ping rather than emit a pong frame the parent's
+            # stream consumer would read out of band. The next tick re-pings.
+            return True
         conn.send((PONG_KIND, None))
         return True
     handler = kind_handlers.get(kind)
     if handler is not None:
-        handler(conn, payload, session)
+        handler(conn, payload, state)
         return True
     try:
         raise ValueError(f"{role} worker received unknown kind {kind!r}")
@@ -139,7 +177,9 @@ def _dispatch_kind(
 
 __all__ = [
     "KindHandler",
+    "WorkerLoopState",
     "configure_worker_logging",
     "redirect_stdio_to_devnull",
     "run_worker",
+    "stream_window",
 ]

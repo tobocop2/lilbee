@@ -148,32 +148,35 @@ class _StubSession:
 
 def test_handle_vision_emits_result() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(text="hello")
     payload = VisionRequest(png_bytes=b"x", prompt="p", model=None)
-    _handle_vision(conn, payload, session)  # type: ignore[arg-type]
+    _handle_vision(conn, payload, WorkerLoopState(session=session))
     assert conn.sent == [("result", "hello")]
     assert session.calls == [VisionRequest(png_bytes=b"x", prompt="p", model=None)]
 
 
 def test_handle_vision_emits_error_on_exception() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
     payload = VisionRequest(png_bytes=b"x", prompt="", model=None)
-    _handle_vision(conn, payload, session)  # type: ignore[arg-type]
+    _handle_vision(conn, payload, WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "RuntimeError"
 
 
 def test_handle_vision_rejects_non_visionrequest_payload() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession()
-    _handle_vision(conn, "garbage", session)  # type: ignore[arg-type]
+    _handle_vision(conn, "garbage", WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 
@@ -181,21 +184,25 @@ def test_handle_vision_rejects_non_visionrequest_payload() -> None:
 def test_handle_vision_rejects_dict_payload() -> None:
     """Bare dicts no longer accepted; only VisionRequest."""
     from lilbee.providers.worker.vision_worker import _handle_vision
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession()
-    _handle_vision(conn, {"png_bytes": b"x", "prompt": "p", "model": None}, session)  # type: ignore[arg-type]
+    _handle_vision(
+        conn, {"png_bytes": b"x", "prompt": "p", "model": None}, WorkerLoopState(session=session)
+    )
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 
 
 def test_handle_vision_rejects_non_bytes_png() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession()
     payload = VisionRequest(png_bytes="string-not-bytes", prompt="", model=None)  # type: ignore[arg-type]
-    _handle_vision(conn, payload, session)
+    _handle_vision(conn, payload, WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
 
 

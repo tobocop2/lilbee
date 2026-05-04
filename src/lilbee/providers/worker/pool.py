@@ -130,8 +130,18 @@ class RoleAccessor:
         return _spawn_and_stream(self._pool, self._role, kind, payload)
 
     async def ping(self, *, timeout: float) -> None:
-        """Health check: lazy-spawn if needed, then ping the worker."""
+        """Health check: lazy-spawn if needed, then ping the worker.
+
+        Skips when the channel already has in-flight work: that work is
+        itself liveness evidence, and an out-of-band ping would race the
+        in-flight frames on the pipe (the parent's ping recv could read
+        a stream chunk, the worker's pong reply could land in front of a
+        subsequent stream's frames).
+        """
         channel = await self._pool._ensure_channel(self._role)
+        if channel.in_flight > 0:
+            self._pool._stamp_used(self._role)
+            return
         try:
             await channel.ping(timeout=timeout)
         except WorkerCrashError:

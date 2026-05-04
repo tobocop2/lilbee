@@ -135,22 +135,24 @@ class _StubSession:
 
 def test_handle_rerank_emits_result() -> None:
     from lilbee.providers.worker.rerank_worker import _handle_rerank
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(scores=[0.7, 0.2])
     payload = RerankPayload(query="q", candidates=["a", "b"])
-    _handle_rerank(conn, payload, session)  # type: ignore[arg-type]
+    _handle_rerank(conn, payload, WorkerLoopState(session=session))
     assert conn.sent == [("result", [0.7, 0.2])]
     assert session.calls == [("q", ["a", "b"])]
 
 
 def test_handle_rerank_emits_error_on_exception() -> None:
     from lilbee.providers.worker.rerank_worker import _handle_rerank
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
     payload = RerankPayload(query="q", candidates=["a"])
-    _handle_rerank(conn, payload, session)  # type: ignore[arg-type]
+    _handle_rerank(conn, payload, WorkerLoopState(session=session))
     assert len(conn.sent) == 1
     kind, payload = conn.sent[0]
     assert kind == "error"
@@ -160,6 +162,7 @@ def test_handle_rerank_emits_error_on_exception() -> None:
 def test_handle_rerank_rejects_non_rerankpayload() -> None:
     """Cover the malformed-payload guard with an in-process dispatch."""
     from lilbee.providers.worker.rerank_worker import _handle_rerank
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     role_config = RoleConfig(
@@ -168,7 +171,7 @@ def test_handle_rerank_rejects_non_rerankpayload() -> None:
         mode="rerank",
     )
     session = _RerankSession(role_config)
-    _handle_rerank(conn, "not-a-rerankpayload", session)  # type: ignore[arg-type]
+    _handle_rerank(conn, "not-a-rerankpayload", WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 
@@ -176,6 +179,7 @@ def test_handle_rerank_rejects_non_rerankpayload() -> None:
 def test_handle_rerank_rejects_dict_payload() -> None:
     """Bare dicts no longer accepted; only RerankPayload."""
     from lilbee.providers.worker.rerank_worker import _handle_rerank
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     role_config = RoleConfig(
@@ -184,7 +188,7 @@ def test_handle_rerank_rejects_dict_payload() -> None:
         mode="rerank",
     )
     session = _RerankSession(role_config)
-    _handle_rerank(conn, {"query": "q", "candidates": ["a"]}, session)  # type: ignore[arg-type]
+    _handle_rerank(conn, {"query": "q", "candidates": ["a"]}, WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 

@@ -8,7 +8,7 @@ from typing import Any
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import EMBED_KIND, ERROR_KIND, RESULT_KIND
-from lilbee.providers.worker.worker_runtime import run_worker
+from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker
 
 
 class _EmbedSession:
@@ -51,7 +51,7 @@ class _EmbedSession:
         self._llm = None
 
 
-def _handle_embed(conn: Any, payload: Any, session: _EmbedSession) -> None:
+def _handle_embed(conn: Any, payload: Any, state: WorkerLoopState) -> None:
     """Run one embed request and send the typed reply (or error)."""
     if not isinstance(payload, list):
         try:
@@ -59,6 +59,7 @@ def _handle_embed(conn: Any, payload: Any, session: _EmbedSession) -> None:
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
+    session: _EmbedSession = state.session
     try:
         vectors = session.embed(payload)
     except Exception as exc:

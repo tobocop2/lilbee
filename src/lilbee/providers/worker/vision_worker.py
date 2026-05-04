@@ -10,7 +10,7 @@ from typing import Any
 from lilbee.providers.worker.transport import RoleConfig, VisionRequest
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import ERROR_KIND, RESULT_KIND, VISION_KIND
-from lilbee.providers.worker.worker_runtime import run_worker
+from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def _extract_vision_content(response: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _handle_vision(conn: Any, payload: Any, session: _VisionSession) -> None:
+def _handle_vision(conn: Any, payload: Any, state: WorkerLoopState) -> None:
     """Run one vision OCR request and send the typed reply (or error)."""
     if not isinstance(payload, VisionRequest):
         try:
@@ -123,6 +123,7 @@ def _handle_vision(conn: Any, payload: Any, session: _VisionSession) -> None:
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
+    session: _VisionSession = state.session
     try:
         text = session.ocr(
             png_bytes=bytes(payload.png_bytes),

@@ -8,7 +8,7 @@ from typing import Any
 from lilbee.providers.worker.transport import RerankPayload, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import ERROR_KIND, RERANK_KIND, RESULT_KIND
-from lilbee.providers.worker.worker_runtime import run_worker
+from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker
 
 
 class _RerankSession:
@@ -45,7 +45,7 @@ class _RerankSession:
         self._llm = None
 
 
-def _handle_rerank(conn: Any, payload: Any, session: _RerankSession) -> None:
+def _handle_rerank(conn: Any, payload: Any, state: WorkerLoopState) -> None:
     """Run one rerank request and send the typed reply (or error)."""
     if not isinstance(payload, RerankPayload):
         try:
@@ -53,6 +53,7 @@ def _handle_rerank(conn: Any, payload: Any, session: _RerankSession) -> None:
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
+    session: _RerankSession = state.session
     try:
         scores = session.score(payload.query, payload.candidates)
     except Exception as exc:

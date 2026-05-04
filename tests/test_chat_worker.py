@@ -103,6 +103,34 @@ def _aborting_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConf
     chat_worker_main(conn, abort_flag, role_config)
 
 
+def _stub_load_paced_stream(_self: _ChatSession) -> Any:
+    """Stub whose stream paces itself so a mid-stream ping has time to land."""
+
+    class _StubLlama:
+        def create_chat_completion(
+            self, *, messages: list[dict[str, str]], stream: bool, **kwargs: Any
+        ) -> Any:
+            tokens = ["alpha", "beta", "gamma", "delta"]
+            if not stream:
+                return {"choices": [{"message": {"content": "".join(tokens)}}]}
+
+            def _gen():
+                for tok in tokens:
+                    yield {"choices": [{"delta": {"content": tok}}]}
+                    time.sleep(0.05)
+
+            return _gen()
+
+    return _StubLlama()
+
+
+def _paced_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+    from lilbee.providers.worker import chat_worker
+
+    chat_worker._ChatSession._ensure_loaded = lambda self, _override: _stub_load_paced_stream(self)  # type: ignore[method-assign]
+    chat_worker_main(conn, abort_flag, role_config)
+
+
 @pytest.fixture()
 def role_config(tmp_path) -> RoleConfig:
     return RoleConfig(role="chat", model_path=tmp_path / "chat.gguf", mode="chat")
@@ -218,6 +246,55 @@ async def test_chat_worker_honors_abort_flag_mid_stream(
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 
 
+@pytest.mark.asyncio
+async def test_chat_worker_back_to_back_streams_after_buffered_ping(
+    spawner: PipeSpawner,
+    role_config: RoleConfig,
+) -> None:
+    """Regression for bb-ubnm: buffered mid-stream pings do not break the next stream.
+
+    Repros the production race end-to-end via real spawn: a ping is sent
+    into the worker pipe mid-stream (the worker buffers it because its
+    main loop is busy emitting chunks), the worker drains the buffered
+    ping after ``stream_end``, the worker's pong then sits in the pipe
+    as an orphan (the parent never issued an ``await`` for it). The next
+    chat stream's first ``_recv`` would see the pong and raise the bug's
+    ``ProtocolError`` without the parent-side stream filter.
+    """
+    import asyncio as _asyncio
+
+    channel, _ = spawner.spawn(_paced_chat_worker_main, role_config)
+    try:
+        chunks: list[str] = []
+        payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
+
+        async def _send_ping_after_first_chunk() -> None:
+            # Send a raw ping into the pipe but do NOT await its pong; the
+            # pong will be orphaned by the time the next stream reads.
+            for _ in range(500):
+                if chunks:
+                    await channel._send("ping", None)
+                    return
+                await _asyncio.sleep(0.01)
+
+        ping_task = _asyncio.create_task(_send_ping_after_first_chunk())
+        async for chunk in channel.stream("chat", payload):
+            chunks.append(chunk)
+        await ping_task
+        assert chunks == ["alpha", "beta", "gamma", "delta"], chunks
+
+        # Give the worker time to process the buffered ping and emit pong.
+        await _asyncio.sleep(0.2)
+
+        # The next stream must complete cleanly despite the orphan pong.
+        chunks_two: list[str] = []
+        async for chunk in channel.stream("chat", payload):
+            chunks_two.append(chunk)
+        assert chunks_two == ["alpha", "beta", "gamma", "delta"], chunks_two
+    finally:
+        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+
+
 # Pure-function helpers.
 
 
@@ -282,6 +359,7 @@ class _StubSession:
 
 def test_handle_chat_streaming() -> None:
     from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(
@@ -293,37 +371,42 @@ def test_handle_chat_streaming() -> None:
         )
     )
     payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
-    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
+    state = WorkerLoopState(session=session)
+    _handle_chat(conn, payload, state)
     assert conn.sent == [
         ("stream_chunk", "a"),
         ("stream_chunk", "b"),
         ("stream_end", None),
     ]
+    assert state.stream_in_flight is False
 
 
 def test_handle_chat_non_streaming() -> None:
     from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(response={"choices": [{"message": {"content": "joined"}}]})
     payload = ChatRequest(messages=[], stream=False)
-    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
+    _handle_chat(conn, payload, WorkerLoopState(session=session))
     assert conn.sent == [("result", "joined")]
 
 
 def test_handle_chat_emits_error_on_setup_exception() -> None:
     from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("setup boom"))
     payload = ChatRequest(messages=[], stream=False)
-    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
+    _handle_chat(conn, payload, WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "RuntimeError"
 
 
 def test_handle_chat_emits_error_on_stream_failure() -> None:
     from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
 
@@ -333,18 +416,22 @@ def test_handle_chat_emits_error_on_stream_failure() -> None:
 
     session = _StubSession(response=_generator())
     payload = ChatRequest(messages=[], stream=True)
-    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
+    state = WorkerLoopState(session=session)
+    _handle_chat(conn, payload, state)
     # First chunk arrived, then error.
     kinds = [m[0] for m in conn.sent]
     assert kinds == ["stream_chunk", "error"]
+    # Stream window must clear even when emission throws.
+    assert state.stream_in_flight is False
 
 
 def test_handle_chat_rejects_non_chatrequest_payload() -> None:
     from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession()
-    _handle_chat(conn, "not-a-chatrequest", session)  # type: ignore[arg-type]
+    _handle_chat(conn, "not-a-chatrequest", WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 
@@ -352,10 +439,11 @@ def test_handle_chat_rejects_non_chatrequest_payload() -> None:
 def test_handle_chat_rejects_dict_payload() -> None:
     """Bare dicts no longer accepted; only ChatRequest."""
     from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession()
-    _handle_chat(conn, {"messages": [], "stream": False}, session)  # type: ignore[arg-type]
+    _handle_chat(conn, {"messages": [], "stream": False}, WorkerLoopState(session=session))
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "TypeError"
 

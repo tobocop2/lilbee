@@ -183,6 +183,31 @@ def _stream_replies_garbage_main(conn: Any, _abort_flag: Any, _role_config: Role
         conn.send(("totally_bogus_kind", None))
 
 
+def _stream_with_pong_interleaved_main(
+    conn: Any, _abort_flag: Any, _role_config: RoleConfig
+) -> None:
+    """Worker that interleaves a pong frame between stream chunks.
+
+    Models the bb-ubnm scenario where an orphan pong from a prior health
+    ping ends up adjacent to legitimate stream frames in the pipe.
+    """
+    while True:
+        if not conn.poll(timeout=_POLL_TIMEOUT_S):
+            continue
+        try:
+            kind, _ = conn.recv()
+        except EOFError:
+            return
+        if kind == "shutdown":
+            conn.send(("ack", None))
+            return
+        if kind == "stream":
+            conn.send(("stream_chunk", "first"))
+            conn.send(("pong", None))
+            conn.send(("stream_chunk", "second"))
+            conn.send(("stream_end", None))
+
+
 # =====================================================================
 # Fixtures: spawn one worker per test, always close in teardown so a
 # failing assertion never leaves a real subprocess behind.
@@ -478,6 +503,28 @@ async def test_stream_raises_on_unexpected_message_kind(
                 pass
         assert excinfo.value.original_type == "ProtocolError"
         assert "totally_bogus_kind" in str(excinfo.value)
+    finally:
+        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+
+
+@pytest.mark.asyncio
+async def test_stream_silently_consumes_orphan_pong_frames(
+    spawner: PipeSpawner,
+    role_config: RoleConfig,
+) -> None:
+    """Regression for bb-ubnm: stream consumer ignores pong frames.
+
+    A health ping whose pong arrives after the parent's ping coroutine
+    has already moved on leaves an orphaned pong frame in the pipe FIFO.
+    Without this guard, the next ``stream`` consumer reads the pong as
+    its first frame and raises ``ProtocolError``. The fix silently
+    consumes ``pong`` frames inside ``stream`` so legitimate streams
+    survive any prior orphan pong.
+    """
+    channel, _ = spawner.spawn(_stream_with_pong_interleaved_main, role_config)
+    try:
+        chunks = [chunk async for chunk in channel.stream("stream", None)]
+        assert chunks == ["first", "second"]
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 

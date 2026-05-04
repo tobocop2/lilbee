@@ -464,6 +464,32 @@ async def test_ping_propagates_crash_and_drops_channel(tmp_path) -> None:
         await pool.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_ping_skips_when_channel_has_in_flight_work(tmp_path) -> None:
+    """In-flight work is its own liveness signal; pinging would race the pipe.
+
+    Regression for bb-ubnm: out-of-band health pings issued during a
+    streaming chat response could leave an orphan pong frame in the pipe
+    that the next stream's first ``_recv`` would read. The accessor now
+    skips the ping when the channel reports in-flight work (which the
+    in-flight work itself proves is responsive).
+    """
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    embed = pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        # Warm the channel so it's spawned.
+        await embed.call("warm", None)
+        channel = spawner.spawned[0]
+        channel.in_flight_count = 1
+        # ping must skip the channel-level ping entirely.
+        await embed.ping(timeout=1.0)
+        # Only the warm-up call appears; no ping was issued.
+        assert ("ping", None) not in channel.call_log
+    finally:
+        await pool.shutdown()
+
+
 # =====================================================================
 # Worker errors that aren't crashes don't drop the channel.
 # =====================================================================

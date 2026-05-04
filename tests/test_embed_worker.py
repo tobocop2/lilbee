@@ -186,20 +186,22 @@ class _StubSession:
 
 def test_handle_embed_emits_result() -> None:
     from lilbee.providers.worker.embed_worker import _handle_embed
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(vectors=[[1.0, 2.0]])
-    _handle_embed(conn, ["hello"], session)  # type: ignore[arg-type]
+    _handle_embed(conn, ["hello"], WorkerLoopState(session=session))
     assert conn.sent == [("result", [[1.0, 2.0]])]
     assert session.calls == [["hello"]]
 
 
 def test_handle_embed_emits_error_on_exception() -> None:
     from lilbee.providers.worker.embed_worker import _handle_embed
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
-    _handle_embed(conn, ["hello"], session)  # type: ignore[arg-type]
+    _handle_embed(conn, ["hello"], WorkerLoopState(session=session))
     assert len(conn.sent) == 1
     kind, payload = conn.sent[0]
     assert kind == "error"
@@ -323,13 +325,14 @@ def test_configure_worker_logging_noop_when_lilbee_data_unset(monkeypatch) -> No
 def test_handle_embed_rejects_non_list_payload_in_process() -> None:
     """In-process coverage for the non-list branch (subprocess test confirms wire shape)."""
     from lilbee.providers.worker.embed_worker import _handle_embed
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     conn = _RecordingConn()
     role_config = RoleConfig(
         role="embed", model_path=__import__("pathlib").Path("/nope"), mode="embed"
     )
     session = _EmbedSession(role_config)
-    _handle_embed(conn, "not-a-list", session)  # type: ignore[arg-type]
+    _handle_embed(conn, "not-a-list", WorkerLoopState(session=session))
     assert len(conn.sent) == 1
     kind, payload = conn.sent[0]
     assert kind == "error"

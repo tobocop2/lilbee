@@ -14,7 +14,7 @@ from lilbee.providers.worker.wire_kinds import (
     STREAM_CHUNK_KIND,
     STREAM_END_KIND,
 )
-from lilbee.providers.worker.worker_runtime import run_worker
+from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker, stream_window
 
 
 def _make_abort_callback(abort_flag: Any) -> Any:
@@ -108,13 +108,23 @@ def _extract_stream_content(chunk: Any) -> str | None:
     return content if isinstance(content, str) and content else None
 
 
-def _handle_chat_streaming(conn: Any, response_iter: Any) -> None:
-    """Drain *response_iter* and emit per-token stream_chunk frames."""
-    for raw_chunk in response_iter:
-        content = _extract_stream_content(raw_chunk)
-        if content is not None:
-            conn.send((STREAM_CHUNK_KIND, content))
-    conn.send((STREAM_END_KIND, None))
+def _handle_chat_streaming(conn: Any, response_iter: Any, state: WorkerLoopState) -> None:
+    """Drain *response_iter* and emit per-token stream_chunk frames.
+
+    Marks *state* as actively streaming for the emission window. Any
+    handler dispatch that happens to land while the flag is set drops
+    health pings rather than emitting pong frames the parent's stream
+    consumer would read out of band. The defense is paired with the
+    parent-side ``stream`` reader's silent consumption of pong frames
+    (which absorbs orphan pongs from pings buffered into the pipe before
+    the worker entered this window).
+    """
+    with stream_window(state):
+        for raw_chunk in response_iter:
+            content = _extract_stream_content(raw_chunk)
+            if content is not None:
+                conn.send((STREAM_CHUNK_KIND, content))
+        conn.send((STREAM_END_KIND, None))
 
 
 def _extract_non_streaming_content(response: Any) -> str:
@@ -146,7 +156,7 @@ def _handle_chat_non_streaming(conn: Any, response: Any) -> None:
     conn.send((RESULT_KIND, text))
 
 
-def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
+def _handle_chat(conn: Any, payload: Any, state: WorkerLoopState) -> None:
     """Run one chat request and dispatch to the streaming/non-streaming handler."""
     if not isinstance(payload, ChatRequest):
         try:
@@ -154,6 +164,7 @@ def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
         except TypeError as exc:
             conn.send((ERROR_KIND, _serialize_exception(exc)))
         return
+    session: _ChatSession = state.session
     try:
         response = session.chat(
             messages=payload.messages,
@@ -166,7 +177,7 @@ def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
         return
     try:
         if payload.stream:
-            _handle_chat_streaming(conn, response)
+            _handle_chat_streaming(conn, response, state)
         else:
             _handle_chat_non_streaming(conn, response)
     except Exception as exc:
