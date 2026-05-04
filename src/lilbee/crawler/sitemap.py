@@ -1,13 +1,4 @@
-"""Best-effort sitemap.xml lookups used as a progress-hint denominator.
-
-Pure HTTP + regex: fetches ``/sitemap.xml`` at the root of the starting
-host, counts ``<loc>`` entries matching the crawl scope, and returns
-the count. Returns ``CRAWL_TOTAL_UNKNOWN`` on any failure so the
-orchestrator can render ``[n/?]`` instead of a hard-coded ceiling.
-
-Not load-bearing: correctness is best-effort and every branch falls
-back cleanly on error.
-"""
+"""Best-effort ``/sitemap.xml`` lookup used as a progress-hint denominator."""
 
 from __future__ import annotations
 

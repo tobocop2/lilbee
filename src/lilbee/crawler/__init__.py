@@ -1,23 +1,4 @@
-"""Web crawling. Fetch pages as markdown and save to the documents directory.
-
-Layout:
-
-- :mod:`lilbee.crawler.models`: value types (``CrawlResult``, ``FetchedPage``,
-  specs)
-- :mod:`lilbee.crawler.fetcher`: ``WebFetcher`` Protocol
-- :mod:`lilbee.crawler.url_filter`: URL validation + host scope
-- :mod:`lilbee.crawler.sitemap`: best-effort sitemap progress hint
-- :mod:`lilbee.crawler.bootstrap`: Playwright Chromium install + detection
-- :mod:`lilbee.crawler.save`: URL-to-filename, metadata I/O, per-page save
-- :mod:`lilbee.crawler.discovery`: ``cfg`` -> backend-neutral concurrency /
-  filter spec builders
-- :mod:`lilbee.crawler.events`: per-page event emission, result translation,
-  cancel-teardown classification
-- :mod:`lilbee.crawler.runner`: orchestration (``crawl_single``,
-  ``crawl_recursive``, ``crawl_and_save``)
-- :mod:`lilbee.crawler.crawl4ai_fetcher`: crawl4ai-backed ``WebFetcher``.
-  ONLY file importing ``crawl4ai``; the swap point for a future backend.
-"""
+"""Web crawling: fetch pages as markdown and save them to the documents directory."""
 
 from __future__ import annotations
 
