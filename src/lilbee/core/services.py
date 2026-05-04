@@ -133,4 +133,36 @@ def reset_services() -> None:
     _svc = None
 
 
+def reset_store() -> None:
+    """Close and rebuild only the Store and its dependents; keep providers loaded.
+
+    Used after a data-dir wipe (``/reset``) where the LanceDB handle is invalid
+    but the loaded llama-cpp/embedder/reranker models are still good. Avoids the
+    multi-second reload cost of ``reset_services()``.
+    """
+    global _svc
+    if _svc is None:
+        return
+    from dataclasses import replace
+
+    from lilbee.core.config import cfg
+    from lilbee.data.store import Store
+    from lilbee.retrieval.clustering import Clusterer
+    from lilbee.retrieval.concepts import ConceptGraph
+    from lilbee.retrieval.query import Searcher
+
+    _svc.store.close()
+    store = Store(cfg)
+    concepts = ConceptGraph(cfg, store)
+    clusterer = Clusterer(cfg, store)
+    searcher = Searcher(cfg, _svc.provider, store, _svc.embedder, _svc.reranker, concepts)
+    _svc = replace(
+        _svc,
+        store=store,
+        concepts=concepts,
+        clusterer=clusterer,
+        searcher=searcher,
+    )
+
+
 atexit.register(reset_services)

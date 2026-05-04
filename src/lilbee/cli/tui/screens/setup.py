@@ -71,13 +71,7 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
 
 
 def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
-    """Create a minimal LocalCatalogRow for an already-installed model.
-
-    *name* is the registry ref (``<repo>/<file>.gguf`` for native GGUF, or
-    a provider-prefixed ref for remote models). The card renders the row's
-    ``name`` field verbatim, so derive a clean label here instead of letting
-    the raw ref leak into the UI.
-    """
+    """Build a LocalCatalogRow for an installed registry ref with a cleaned label."""
     label = display_label_for_ref(name)
     quant = extract_quant(name.rsplit("/", 1)[-1]) or "--"
     return LocalCatalogRow(

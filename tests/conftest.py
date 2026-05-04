@@ -175,18 +175,7 @@ def _drain_textual_threads():
 
 @pytest.fixture(autouse=True)
 def _isolate_provider_env_keys():
-    """Snapshot and restore per-provider API-key env vars for every test.
-
-    ``inject_provider_keys()`` writes ``cfg.openai_api_key`` (and the
-    equivalent for other providers) directly into ``os.environ`` so the
-    SDK backends pick them up at call time. ``monkeypatch.delenv`` does
-    not track that write, so a test that sets ``cfg.openai_api_key``
-    and triggers any backend init leaks ``OPENAI_API_KEY`` into the
-    rest of the xdist worker. Downstream tests that mount ``LilbeeApp``
-    then see ``OPENAI_API_KEY`` set, hit the real litellm catalog, and
-    fail with stale model lists or validator-rejected canonical refs.
-    Snapshotting here keeps every test starting from a clean slate.
-    """
+    """Snapshot and restore per-provider API-key env vars for every test."""
     from lilbee.providers.sdk_backend import PROVIDER_KEYS
 
     env_vars = [env for _prov, _cfg, env, _label in PROVIDER_KEYS]
