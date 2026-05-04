@@ -214,6 +214,26 @@ Standalone mode runs entirely on your machine. No cloud required.
 
 Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
+### Memory layout
+
+lilbee runs each inference role (chat, embed, rerank, vision) in a separate subprocess so that native llama-cpp work cannot stall the TUI. That responsiveness has a memory cost worth knowing about when you pick hardware:
+
+- **TUI process baseline:** ~150 MB (Python interpreter, Textual, LanceDB, dependencies).
+- **Per active role subprocess:** ~50 MB Python overhead plus the resident memory of the loaded model. Typical model sizes:
+  - Embed model: 100–500 MB
+  - Rerank model: 100–300 MB
+  - Chat model: 1–8 GB depending on quantization
+  - Vision model: 2–4 GB
+- **Typical total when all four roles are warm:** 4–8 GB resident, dominated by the chat and vision models. Models load lazily (on first call to that role) and unload after `worker_pool_max_idle_s` seconds of inactivity, so the actual working set follows usage.
+
+If you only chat with frontier APIs and never load a local chat model, only the embed and rerank workers spawn and the resident footprint stays under 2 GB.
+
+### First-call latency
+
+The first inference call to each role spawns its worker process and loads the model. Cold-start is typically 1–3 seconds on Apple Silicon, longer on cold disk or constrained CPUs. Subsequent calls reuse the warm worker. The TUI surfaces a "Starting <role> worker…" notification while a worker is coming up, then a "<role> worker ready" notification once it has finished loading.
+
+For benchmark or production deployments where the first request must land fast, set `worker_pool_eager_start = true` in `config.toml` to spawn all registered roles at TUI launch instead of on first use. The trade is a slower TUI splash in exchange for warm workers from the first interaction.
+
 ## Install
 
 ### Prerequisites

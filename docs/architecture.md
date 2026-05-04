@@ -243,6 +243,12 @@ The cost is that spawn re-imports Python in the child, adding ~1-3s cold start p
 
 The `WorkerChannel` and `WorkerSpawner` Protocols make the IPC primitive swappable. A future `transport_zmq.py` (pyzmq) would only need to add a new factory call site; consumer code never imports `multiprocessing` directly.
 
+### Resource budget
+
+Each active role spawns a subprocess. Memory cost: ~50 MB Python overhead per worker plus the loaded model's resident size. Typical sizes are embed 100–500 MB, rerank 100–300 MB, chat 1–8 GB depending on quantization, vision 2–4 GB. With all four roles warm, total resident memory is usually 4–8 GB, dominated by chat and vision. Idle reaping (`cfg.worker_pool_max_idle_s > 0`) shrinks the working set when a role goes quiet.
+
+First-call latency per role is the spawn + model-load cost: 1–3 s on Apple Silicon, longer on cold disk. The TUI surfaces this via spawn notifications wired through `Services.add_pool_listener` (see `cli/tui/app.py`), and `cfg.worker_pool_eager_start` opts into amortizing the cost at TUI startup.
+
 ---
 
 ## Search Pipeline
