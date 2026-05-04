@@ -34,6 +34,7 @@ class ChatInput(TextArea):
     # this, Textual's binding-chain filter strips the App's `?` binding
     # whenever the chat input is focused (because TextArea consumes any
     # printable). Users who need a literal `?` can paste it.
+    # ``"question_mark"`` is Textual's canonical name for `?`.
     _UNCONSUMED_KEYS: ClassVar[frozenset[str]] = frozenset({"question_mark"})
 
     # Per-keystroke layout cost is dominated by ``height: auto`` reflow.

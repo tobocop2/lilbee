@@ -2595,8 +2595,9 @@ class TestCatalogLazyLoad:
     """Test browse-more card for lazy HF loading."""
 
     async def test_browse_more_card_exists(self, _mock_resolve):
-        """.browse-more-hf card appears before HF fetch."""
+        """The Browse-more CTA card appears before HF fetch."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -2608,9 +2609,9 @@ class TestCatalogLazyLoad:
                 # browse-more card; pause until it lands or timeout.
                 for _ in range(20):
                     await pilot.pause()
-                    if app.screen.query(".browse-more-hf"):
+                    if app.screen.query(BrowseMoreCtaItem):
                         break
-                cards = app.screen.query(".browse-more-hf")
+                cards = app.screen.query(BrowseMoreCtaItem)
                 assert len(cards) >= 1
 
     async def test_browse_more_button_focusable_and_keyboard_activates(self, _mock_resolve):
@@ -2641,8 +2642,8 @@ class TestCatalogLazyLoad:
 class TestCatalogGridFocus:
     """Catalog grid Tab/G key behavior (bb-zp4o, bb-8kxf)."""
 
-    async def test_grid_tab_focus_auto_highlights_first_card(self, _mock_resolve):
-        """Focusing a ModelGrid via Tab must highlight a card so the user sees feedback."""
+    async def test_grid_focus_auto_highlights_first_card(self, _mock_resolve):
+        """A focused ModelGrid must auto-highlight a card so users see Tab feedback."""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 

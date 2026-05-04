@@ -824,7 +824,7 @@ class CatalogScreen(Screen[None]):
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
         ctas: list[Static | BrowseMoreCtaItem] = []
         if not self._hf_fetched and not self._loading_more:
-            ctas.append(BrowseMoreCtaItem(classes="browse-more-hf"))
+            ctas.append(BrowseMoreCtaItem())
         else:
             ctas.append(
                 Static(
