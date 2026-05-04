@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 
 from lilbee.providers.worker.rerank_worker import (
-    _dispatch,
     _RerankSession,
     rerank_worker_main,
 )
@@ -134,45 +133,28 @@ class _StubSession:
         return self._scores
 
 
-def test_dispatch_handles_shutdown_returns_false() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "shutdown", None, session) is False  # type: ignore[arg-type]
-    assert conn.sent == [("ack", None)]
+def test_handle_rerank_emits_result() -> None:
+    from lilbee.providers.worker.rerank_worker import _handle_rerank
 
-
-def test_dispatch_handles_ping() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "ping", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent == [("pong", None)]
-
-
-def test_dispatch_handles_rerank_emits_result() -> None:
     conn = _RecordingConn()
     session = _StubSession(scores=[0.7, 0.2])
     payload = RerankPayload(query="q", candidates=["a", "b"])
-    assert _dispatch(conn, "rerank", payload, session) is True  # type: ignore[arg-type]
+    _handle_rerank(conn, payload, session)  # type: ignore[arg-type]
     assert conn.sent == [("result", [0.7, 0.2])]
     assert session.calls == [("q", ["a", "b"])]
 
 
-def test_dispatch_handles_rerank_emits_error_on_exception() -> None:
+def test_handle_rerank_emits_error_on_exception() -> None:
+    from lilbee.providers.worker.rerank_worker import _handle_rerank
+
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
     payload = RerankPayload(query="q", candidates=["a"])
-    assert _dispatch(conn, "rerank", payload, session) is True  # type: ignore[arg-type]
+    _handle_rerank(conn, payload, session)  # type: ignore[arg-type]
     assert len(conn.sent) == 1
     kind, payload = conn.sent[0]
     assert kind == "error"
     assert payload.type_name == "RuntimeError"
-
-
-def test_dispatch_handles_unknown_kind_emits_error() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "totally_unknown", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent[0][0] == "error"
 
 
 def test_handle_rerank_rejects_non_rerankpayload() -> None:
@@ -279,11 +261,11 @@ def _stub_load_for_in_process(_self: _RerankSession) -> Any:
 
 def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
@@ -296,7 +278,7 @@ def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> Non
             ("shutdown", None),
         ]
     )
-    rerank_worker_main(conn, _abort_flag=None, role_config=role_config)
+    rerank_worker_main(conn, abort_flag=None, role_config=role_config)
     assert conn.sent[0] == ("pong", None)
     assert conn.sent[-1] == ("ack", None)
     assert conn.closed is True
@@ -304,11 +286,11 @@ def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> Non
 
 def test_rerank_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
@@ -319,18 +301,18 @@ def test_rerank_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
     role_config = RoleConfig(role="rerank", model_path=tmp_path / "x.gguf", mode="rerank")
     conn = _EofConn(inbound=[("ignored", None)])
-    rerank_worker_main(conn, _abort_flag=None, role_config=role_config)
+    rerank_worker_main(conn, abort_flag=None, role_config=role_config)
     assert conn.sent == []
     assert conn.closed is True
 
 
 def test_rerank_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.rerank_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
@@ -348,6 +330,6 @@ def test_rerank_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
 
     role_config = RoleConfig(role="rerank", model_path=tmp_path / "x.gguf", mode="rerank")
     conn = _IdleThenWorkConn()
-    rerank_worker_main(conn, _abort_flag=None, role_config=role_config)
+    rerank_worker_main(conn, abort_flag=None, role_config=role_config)
     assert conn._poll_calls >= 2
     assert conn.sent == [("ack", None)]

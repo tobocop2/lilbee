@@ -24,32 +24,18 @@ rather than respawning the whole worker process.
 from __future__ import annotations
 
 import contextlib
-import logging
-import os
 from typing import Any
 
 from lilbee.providers.worker.transport import ChatRequest, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import (
-    ACK_KIND,
     CHAT_KIND,
     ERROR_KIND,
-    PING_KIND,
-    PONG_KIND,
     RESULT_KIND,
-    SHUTDOWN_KIND,
     STREAM_CHUNK_KIND,
     STREAM_END_KIND,
 )
-from lilbee.providers.worker.worker_runtime import (
-    configure_worker_logging,
-    redirect_stdio_to_devnull,
-)
-
-log = logging.getLogger(__name__)
-
-
-_POLL_TIMEOUT_S = 0.5
+from lilbee.providers.worker.worker_runtime import run_worker
 
 
 def _make_abort_callback(abort_flag: Any) -> Any:
@@ -213,44 +199,15 @@ def _handle_chat(conn: Any, payload: Any, session: _ChatSession) -> None:
         conn.send((ERROR_KIND, _serialize_exception(exc)))
 
 
-def _dispatch(conn: Any, kind: str, payload: Any, session: _ChatSession) -> bool:
-    """Handle one request. Return False to stop the worker loop."""
-    if kind == SHUTDOWN_KIND:
-        conn.send((ACK_KIND, None))
-        return False
-    if kind == PING_KIND:
-        conn.send((PONG_KIND, None))
-        return True
-    if kind == CHAT_KIND:
-        _handle_chat(conn, payload, session)
-        return True
-    try:
-        raise ValueError(f"Chat worker received unknown kind {kind!r}")
-    except ValueError as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
-    return True
-
-
 def chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
     """Chat worker entrypoint: load llama-cpp lazily, serve until shutdown."""
-    redirect_stdio_to_devnull()
-    configure_worker_logging(role_config.role)
-    log.info("chat worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
-    session = _ChatSession(role_config, abort_flag)
-    try:
-        while True:
-            if not conn.poll(timeout=_POLL_TIMEOUT_S):
-                continue
-            try:
-                kind, payload = conn.recv()
-            except EOFError:
-                return
-            if not _dispatch(conn, kind, payload, session):
-                return
-    finally:
-        session.close()
-        with contextlib.suppress(Exception):
-            conn.close()
+    run_worker(
+        conn,
+        abort_flag,
+        role_config,
+        session_factory=_ChatSession,
+        kind_handlers={CHAT_KIND: _handle_chat},
+    )
 
 
 __all__ = ["chat_worker_main"]

@@ -16,30 +16,12 @@ candidate list as named attributes.
 from __future__ import annotations
 
 import contextlib
-import logging
-import os
 from typing import Any
 
 from lilbee.providers.worker.transport import RerankPayload, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import (
-    ACK_KIND,
-    ERROR_KIND,
-    PING_KIND,
-    PONG_KIND,
-    RERANK_KIND,
-    RESULT_KIND,
-    SHUTDOWN_KIND,
-)
-from lilbee.providers.worker.worker_runtime import (
-    configure_worker_logging,
-    redirect_stdio_to_devnull,
-)
-
-log = logging.getLogger(__name__)
-
-
-_POLL_TIMEOUT_S = 0.5
+from lilbee.providers.worker.wire_kinds import ERROR_KIND, RERANK_KIND, RESULT_KIND
+from lilbee.providers.worker.worker_runtime import run_worker
 
 
 class _RerankSession:
@@ -92,44 +74,15 @@ def _handle_rerank(conn: Any, payload: Any, session: _RerankSession) -> None:
     conn.send((RESULT_KIND, scores))
 
 
-def _dispatch(conn: Any, kind: str, payload: Any, session: _RerankSession) -> bool:
-    """Handle one request. Return False to stop the worker loop."""
-    if kind == SHUTDOWN_KIND:
-        conn.send((ACK_KIND, None))
-        return False
-    if kind == PING_KIND:
-        conn.send((PONG_KIND, None))
-        return True
-    if kind == RERANK_KIND:
-        _handle_rerank(conn, payload, session)
-        return True
-    try:
-        raise ValueError(f"Rerank worker received unknown kind {kind!r}")
-    except ValueError as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
-    return True
-
-
-def rerank_worker_main(conn: Any, _abort_flag: Any, role_config: RoleConfig) -> None:
+def rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
     """Rerank worker entrypoint: load llama-cpp lazily, serve until shutdown."""
-    redirect_stdio_to_devnull()
-    configure_worker_logging(role_config.role)
-    log.info("rerank worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
-    session = _RerankSession(role_config)
-    try:
-        while True:
-            if not conn.poll(timeout=_POLL_TIMEOUT_S):
-                continue
-            try:
-                kind, payload = conn.recv()
-            except EOFError:
-                return
-            if not _dispatch(conn, kind, payload, session):
-                return
-    finally:
-        session.close()
-        with contextlib.suppress(Exception):
-            conn.close()
+    run_worker(
+        conn,
+        abort_flag,
+        role_config,
+        session_factory=lambda role_cfg, _abort: _RerankSession(role_cfg),
+        kind_handlers={RERANK_KIND: _handle_rerank},
+    )
 
 
 __all__ = ["rerank_worker_main"]

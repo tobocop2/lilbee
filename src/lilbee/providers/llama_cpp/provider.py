@@ -19,6 +19,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -297,7 +298,7 @@ class LlamaCppProvider(LLMProvider):
     def _embed_via_pool(self, texts: list[str]) -> list[list[float]]:
         """Run one embed batch through the persistent pool worker."""
         accessor = self._get_pool_accessor(
-            _EMBED_ROLE, embed_worker_main, _make_embed_role_config_factory()
+            _EMBED_ROLE, embed_worker_main, _make_role_config_factory(_EMBED_ROLE)
         )
         runtime = self._pool_runtime()
         result = runtime.run_sync(
@@ -342,7 +343,7 @@ class LlamaCppProvider(LLMProvider):
     def _rerank_via_pool(self, query: str, candidates: list[str]) -> list[float]:
         """Run one rerank batch through the persistent pool worker."""
         accessor = self._get_pool_accessor(
-            _RERANK_ROLE, rerank_worker_main, _make_rerank_role_config_factory()
+            _RERANK_ROLE, rerank_worker_main, _make_role_config_factory(_RERANK_ROLE)
         )
         runtime = self._pool_runtime()
         request = RerankPayload(query=query, candidates=candidates)
@@ -399,7 +400,7 @@ class LlamaCppProvider(LLMProvider):
     ) -> str:
         """Run one vision OCR call through the persistent pool worker."""
         accessor = self._get_pool_accessor(
-            _VISION_ROLE, vision_worker_main, _make_vision_role_config_factory()
+            _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
         )
         runtime = self._pool_runtime()
         budget = self._vision_call_budget(timeout)
@@ -499,7 +500,7 @@ class LlamaCppProvider(LLMProvider):
     ) -> str | ClosableIterator[str]:
         """Run one chat via the persistent pool worker."""
         accessor = self._get_pool_accessor(
-            _CHAT_ROLE, chat_worker_main, _make_chat_role_config_factory()
+            _CHAT_ROLE, chat_worker_main, _make_role_config_factory(_CHAT_ROLE)
         )
         runtime = self._pool_runtime()
         accessor.clear_abort()  # honor mid-stream cancels from the previous turn
@@ -790,84 +791,43 @@ class _PoolChatStreamIterator:
             self.close()
 
 
-def _make_embed_role_config_factory() -> Callable[[], RoleConfig]:
-    """Return a factory that resolves cfg.embedding_model at spawn time.
+@dataclass(frozen=True)
+class _RoleSpec:
+    """Per-role recipe for building a :class:`RoleConfig` from cfg."""
+
+    cfg_attr: str
+    mode: str
+
+
+_ROLE_SPECS: dict[str, _RoleSpec] = {
+    _EMBED_ROLE: _RoleSpec(cfg_attr="embedding_model", mode=MODE_EMBED),
+    _RERANK_ROLE: _RoleSpec(cfg_attr="reranker_model", mode=MODE_RERANK),
+    _CHAT_ROLE: _RoleSpec(cfg_attr="chat_model", mode=MODE_CHAT),
+    # Vision uses a custom mtmd loader (not load_llama); the mode hint is
+    # documentation only, the vision worker calls load_vision_llama directly.
+    _VISION_ROLE: _RoleSpec(cfg_attr="vision_model", mode="vision"),
+}
+
+
+def _make_role_config_factory(role: str) -> Callable[[], RoleConfig]:
+    """Return a factory that resolves the role's configured model at spawn time.
 
     The pool calls the factory on every spawn (lazy or restart) so model
     swaps in cfg propagate without an explicit invalidation call.
     """
-    from lilbee.providers.model_cache import MODE_EMBED
+    spec = _ROLE_SPECS[role]
 
     def _make() -> RoleConfig:
-        return RoleConfig(
-            role="embed",
-            model_path=resolve_model_path(cfg.embedding_model),
-            mode=MODE_EMBED,
-        )
-
-    return _make
-
-
-def _make_rerank_role_config_factory() -> Callable[[], RoleConfig]:
-    """Return a factory that resolves cfg.reranker_model at spawn time."""
-    from lilbee.providers.model_cache import MODE_RERANK
-
-    def _make() -> RoleConfig:
-        model_name = cfg.reranker_model
+        model_name = getattr(cfg, spec.cfg_attr)
         if not model_name:
             raise ProviderError(
-                "No reranker model configured. Set cfg.reranker_model first.",
+                f"No {role} model configured. Set cfg.{spec.cfg_attr} first.",
                 provider="llama-cpp",
             )
         return RoleConfig(
-            role="rerank",
+            role=role,
             model_path=resolve_model_path(model_name),
-            mode=MODE_RERANK,
-        )
-
-    return _make
-
-
-def _make_chat_role_config_factory() -> Callable[[], RoleConfig]:
-    """Return a factory that resolves cfg.chat_model at spawn time."""
-    from lilbee.providers.model_cache import MODE_CHAT
-
-    def _make() -> RoleConfig:
-        model_name = cfg.chat_model
-        if not model_name:
-            raise ProviderError(
-                "No chat model configured. Set cfg.chat_model first.",
-                provider="llama-cpp",
-            )
-        return RoleConfig(
-            role="chat",
-            model_path=resolve_model_path(model_name),
-            mode=MODE_CHAT,
-        )
-
-    return _make
-
-
-def _make_vision_role_config_factory() -> Callable[[], RoleConfig]:
-    """Return a factory that resolves cfg.vision_model at spawn time.
-
-    Vision uses a custom mtmd loader (not the standard load_llama path),
-    so ``mode`` is set to ``"vision"`` here purely as documentation; the
-    worker's ``_VisionSession._ensure_loaded`` calls ``load_vision_llama``
-    directly and ignores the mode hint.
-    """
-
-    def _make() -> RoleConfig:
-        model_name = cfg.vision_model
-        if not model_name:
-            raise ProviderError(
-                "No vision model configured. Set cfg.vision_model first.",
-                provider="llama-cpp",
-            )
-        return RoleConfig(
-            role="vision",
-            model_path=resolve_model_path(model_name),
-            mode="vision",
+            mode=spec.mode,
         )
 
     return _make

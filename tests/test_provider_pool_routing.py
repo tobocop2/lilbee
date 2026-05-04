@@ -258,21 +258,67 @@ def test_embed_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp
         provider.shutdown()
 
 
-def test_make_embed_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
-    cfg.embedding_model = "stub/model"
+@pytest.mark.parametrize(
+    ("role", "cfg_attr", "expected_mode"),
+    [
+        ("embed", "embedding_model", "embed"),
+        ("rerank", "reranker_model", "rerank"),
+        ("chat", "chat_model", "chat"),
+        ("vision", "vision_model", "vision"),
+    ],
+)
+def test_make_role_config_factory_resolves_current_model(
+    monkeypatch, tmp_path, role, cfg_attr, expected_mode
+) -> None:
+    """Each role's factory pulls its model name from cfg and stamps the right mode."""
+    setattr(cfg, cfg_attr, "stub/model")
     cfg.models_dir = tmp_path / "models"
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         lambda _name: tmp_path / "models" / "stub.gguf",
     )
-    from lilbee.providers.llama_cpp.provider import _make_embed_role_config_factory
+    from lilbee.providers.llama_cpp.provider import _make_role_config_factory
 
-    factory = _make_embed_role_config_factory()
+    factory = _make_role_config_factory(role)
     role_config = factory()
-    assert role_config.role == "embed"
-    assert role_config.mode == "embed"
+    assert role_config.role == role
+    assert role_config.mode == expected_mode
     assert role_config.model_path == tmp_path / "models" / "stub.gguf"
+
+
+@pytest.mark.parametrize(
+    ("role", "cfg_attr", "match"),
+    [
+        ("rerank", "reranker_model", "No rerank model configured"),
+        ("chat", "chat_model", "No chat model configured"),
+        ("vision", "vision_model", "No vision model configured"),
+    ],
+)
+def test_make_role_config_factory_raises_when_unset(monkeypatch, role, cfg_attr, match) -> None:
+    """An empty configured model triggers ProviderError before resolve_model_path runs."""
+    # Bypass pydantic min_length for fields that enforce non-empty; we are
+    # testing the factory's defensive check, not the schema.
+    object.__setattr__(cfg, cfg_attr, "")
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.llama_cpp.provider import _make_role_config_factory
+
+    factory = _make_role_config_factory(role)
+    with pytest.raises(ProviderError, match=match):
+        factory()
+
+
+def test_role_specs_cover_every_pool_role() -> None:
+    """The data table maps every role the provider routes through the pool."""
+    from lilbee.providers.llama_cpp.provider import (
+        _CHAT_ROLE,
+        _EMBED_ROLE,
+        _RERANK_ROLE,
+        _ROLE_SPECS,
+        _VISION_ROLE,
+    )
+
+    assert set(_ROLE_SPECS) == {_EMBED_ROLE, _RERANK_ROLE, _CHAT_ROLE, _VISION_ROLE}
 
 
 def _patched_rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
@@ -452,32 +498,6 @@ def test_rerank_pool_protocol_error_propagates_as_provider_error(monkeypatch, tm
             provider.rerank("q", ["abc"])
     finally:
         provider.shutdown()
-
-
-def test_make_rerank_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
-    cfg.reranker_model = "stub/reranker"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
-    from lilbee.providers.llama_cpp.provider import _make_rerank_role_config_factory
-
-    factory = _make_rerank_role_config_factory()
-    role_config = factory()
-    assert role_config.role == "rerank"
-    assert role_config.mode == "rerank"
-
-
-def test_make_rerank_role_config_factory_raises_when_unset(monkeypatch) -> None:
-    cfg.reranker_model = ""
-    from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import _make_rerank_role_config_factory
-
-    factory = _make_rerank_role_config_factory()
-    with pytest.raises(ProviderError, match="No reranker model configured"):
-        factory()
 
 
 def _stub_chat_load(_self) -> Any:
@@ -763,35 +783,6 @@ def test_chat_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_
         provider.shutdown()
 
 
-def test_make_chat_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
-    cfg.chat_model = "stub/chat"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
-    from lilbee.providers.llama_cpp.provider import _make_chat_role_config_factory
-
-    factory = _make_chat_role_config_factory()
-    role_config = factory()
-    assert role_config.role == "chat"
-    assert role_config.mode == "chat"
-
-
-def test_make_chat_role_config_factory_raises_when_unset(monkeypatch) -> None:
-    """Empty chat_model raises ProviderError. Bypass pydantic validator with object.__setattr__
-    since the field carries min_length=1; we are testing the factory's defensive check, not the
-    config schema."""
-    object.__setattr__(cfg, "chat_model", "")
-    from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import _make_chat_role_config_factory
-
-    factory = _make_chat_role_config_factory()
-    with pytest.raises(ProviderError, match="No chat model configured"):
-        factory()
-
-
 def test_chat_kwargs_filter_translates_options_correctly() -> None:
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
@@ -974,32 +965,6 @@ def test_vision_ocr_pool_protocol_error_propagates_as_provider_error(monkeypatch
             provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
     finally:
         provider.shutdown()
-
-
-def test_make_vision_role_config_factory_resolves_current_model(monkeypatch, tmp_path) -> None:
-    cfg.vision_model = "stub/vision"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
-    from lilbee.providers.llama_cpp.provider import _make_vision_role_config_factory
-
-    factory = _make_vision_role_config_factory()
-    role_config = factory()
-    assert role_config.role == "vision"
-    assert role_config.mode == "vision"
-
-
-def test_make_vision_role_config_factory_raises_when_unset(monkeypatch) -> None:
-    object.__setattr__(cfg, "vision_model", "")
-    from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import _make_vision_role_config_factory
-
-    factory = _make_vision_role_config_factory()
-    with pytest.raises(ProviderError, match="No vision model configured"):
-        factory()
 
 
 def test_vision_call_budget_uses_per_call_timeout_when_set() -> None:

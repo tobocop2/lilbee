@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from lilbee.providers.worker.embed_worker import (
-    _dispatch,
     _EmbedSession,
     embed_worker_main,
 )
@@ -158,7 +157,7 @@ async def test_embed_worker_surfaces_load_failure(
 
 
 # =====================================================================
-# Pure-function tests for the dispatch helpers (no subprocess).
+# Pure-function tests for the embed handler (no subprocess).
 # =====================================================================
 
 
@@ -185,48 +184,27 @@ class _StubSession:
         return self._vectors
 
 
-def test_dispatch_handles_shutdown_returns_false() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "shutdown", None, session) is False  # type: ignore[arg-type]
-    assert conn.sent == [("ack", None)]
+def test_handle_embed_emits_result() -> None:
+    from lilbee.providers.worker.embed_worker import _handle_embed
 
-
-def test_dispatch_handles_ping_continues_loop() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "ping", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent == [("pong", None)]
-
-
-def test_dispatch_handles_embed_emits_result() -> None:
     conn = _RecordingConn()
     session = _StubSession(vectors=[[1.0, 2.0]])
-    assert _dispatch(conn, "embed", ["hello"], session) is True  # type: ignore[arg-type]
+    _handle_embed(conn, ["hello"], session)  # type: ignore[arg-type]
     assert conn.sent == [("result", [[1.0, 2.0]])]
     assert session.calls == [["hello"]]
 
 
-def test_dispatch_handles_embed_emits_error_on_exception() -> None:
+def test_handle_embed_emits_error_on_exception() -> None:
+    from lilbee.providers.worker.embed_worker import _handle_embed
+
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
-    assert _dispatch(conn, "embed", ["hello"], session) is True  # type: ignore[arg-type]
+    _handle_embed(conn, ["hello"], session)  # type: ignore[arg-type]
     assert len(conn.sent) == 1
     kind, payload = conn.sent[0]
     assert kind == "error"
     assert payload.type_name == "RuntimeError"
     assert payload.message == "boom"
-
-
-def test_dispatch_handles_unknown_kind_emits_error() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "totally_unknown", None, session) is True  # type: ignore[arg-type]
-    assert len(conn.sent) == 1
-    kind, payload = conn.sent[0]
-    assert kind == "error"
-    assert payload.type_name == "ValueError"
-    assert "totally_unknown" in payload.message
 
 
 def test_session_embed_lazy_loads_then_reuses(monkeypatch) -> None:
@@ -400,11 +378,11 @@ def _stub_load_for_in_process(_self: _EmbedSession) -> Any:
 def test_embed_worker_main_serves_requests_then_exits_on_shutdown(monkeypatch, tmp_path) -> None:
     """In-process drive of the worker loop with the load step stubbed."""
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
@@ -417,7 +395,7 @@ def test_embed_worker_main_serves_requests_then_exits_on_shutdown(monkeypatch, t
             ("shutdown", None),
         ]
     )
-    embed_worker_main(conn, _abort_flag=None, role_config=role_config)
+    embed_worker_main(conn, abort_flag=None, role_config=role_config)
     assert conn.sent == [
         ("pong", None),
         ("result", [[3.0]]),
@@ -429,11 +407,11 @@ def test_embed_worker_main_serves_requests_then_exits_on_shutdown(monkeypatch, t
 def test_embed_worker_main_skips_idle_polls_then_serves(monkeypatch, tmp_path) -> None:
     """poll() returning False loops back without recv'ing, then serves the next message."""
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
@@ -453,7 +431,7 @@ def test_embed_worker_main_skips_idle_polls_then_serves(monkeypatch, tmp_path) -
 
     role_config = RoleConfig(role="embed", model_path=tmp_path / "x.gguf", mode="embed")
     conn = _IdleThenWorkConn()
-    embed_worker_main(conn, _abort_flag=None, role_config=role_config)
+    embed_worker_main(conn, abort_flag=None, role_config=role_config)
     assert conn.sent == [("pong", None), ("ack", None)]
     # Poll was called at least twice: once idle, once for ping, once for shutdown.
     assert conn._poll_calls >= 3
@@ -462,11 +440,11 @@ def test_embed_worker_main_skips_idle_polls_then_serves(monkeypatch, tmp_path) -
 def test_embed_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     """Loop exits cleanly when the parent closes the pipe (EOFError on recv)."""
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.embed_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
@@ -477,6 +455,6 @@ def test_embed_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
     role_config = RoleConfig(role="embed", model_path=tmp_path / "x.gguf", mode="embed")
     conn = _EofConn(inbound=[("ignored", None)])
-    embed_worker_main(conn, _abort_flag=None, role_config=role_config)
+    embed_worker_main(conn, abort_flag=None, role_config=role_config)
     assert conn.sent == []
     assert conn.closed is True

@@ -20,32 +20,12 @@ bare :meth:`recv` so SIGTERM and shutdown checks fire promptly
 from __future__ import annotations
 
 import contextlib
-import logging
-import os
 from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import (
-    ACK_KIND,
-    EMBED_KIND,
-    ERROR_KIND,
-    PING_KIND,
-    PONG_KIND,
-    RESULT_KIND,
-    SHUTDOWN_KIND,
-)
-from lilbee.providers.worker.worker_runtime import (
-    configure_worker_logging,
-    redirect_stdio_to_devnull,
-)
-
-log = logging.getLogger(__name__)
-
-
-_POLL_TIMEOUT_S = 0.5
-"""Discipline rule 3: bounded poll so the worker can react to shutdown
-within a tick instead of blocking forever on bare recv."""
+from lilbee.providers.worker.wire_kinds import EMBED_KIND, ERROR_KIND, RESULT_KIND
+from lilbee.providers.worker.worker_runtime import run_worker
 
 
 class _EmbedSession:
@@ -104,44 +84,15 @@ def _handle_embed(conn: Any, payload: Any, session: _EmbedSession) -> None:
     conn.send((RESULT_KIND, vectors))
 
 
-def _dispatch(conn: Any, kind: str, payload: Any, session: _EmbedSession) -> bool:
-    """Handle one request. Return False to stop the worker loop."""
-    if kind == SHUTDOWN_KIND:
-        conn.send((ACK_KIND, None))
-        return False
-    if kind == PING_KIND:
-        conn.send((PONG_KIND, None))
-        return True
-    if kind == EMBED_KIND:
-        _handle_embed(conn, payload, session)
-        return True
-    try:
-        raise ValueError(f"Embed worker received unknown kind {kind!r}")
-    except ValueError as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
-    return True
-
-
-def embed_worker_main(conn: Any, _abort_flag: Any, role_config: RoleConfig) -> None:
+def embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
     """Embed worker entrypoint: load llama-cpp lazily, serve requests until shutdown."""
-    redirect_stdio_to_devnull()
-    configure_worker_logging(role_config.role)
-    log.info("embed worker online (pid=%s, model=%s)", os.getpid(), role_config.model_path)
-    session = _EmbedSession(role_config)
-    try:
-        while True:
-            if not conn.poll(timeout=_POLL_TIMEOUT_S):
-                continue
-            try:
-                kind, payload = conn.recv()
-            except EOFError:
-                return
-            if not _dispatch(conn, kind, payload, session):
-                return
-    finally:
-        session.close()
-        with contextlib.suppress(Exception):
-            conn.close()
+    run_worker(
+        conn,
+        abort_flag,
+        role_config,
+        session_factory=lambda role_cfg, _abort: _EmbedSession(role_cfg),
+        kind_handlers={EMBED_KIND: _handle_embed},
+    )
 
 
 __all__ = ["embed_worker_main"]

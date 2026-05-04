@@ -17,7 +17,6 @@ from lilbee.providers.worker.transport_pipe import (
     WorkerError,
 )
 from lilbee.providers.worker.vision_worker import (
-    _dispatch,
     _VisionSession,
     vision_worker_main,
 )
@@ -147,43 +146,26 @@ class _StubSession:
         return self._text
 
 
-def test_dispatch_handles_shutdown_returns_false() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "shutdown", None, session) is False  # type: ignore[arg-type]
-    assert conn.sent == [("ack", None)]
+def test_handle_vision_emits_result() -> None:
+    from lilbee.providers.worker.vision_worker import _handle_vision
 
-
-def test_dispatch_handles_ping() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "ping", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent == [("pong", None)]
-
-
-def test_dispatch_handles_vision_emits_result() -> None:
     conn = _RecordingConn()
     session = _StubSession(text="hello")
     payload = VisionRequest(png_bytes=b"x", prompt="p", model=None)
-    assert _dispatch(conn, "vision_ocr", payload, session) is True  # type: ignore[arg-type]
+    _handle_vision(conn, payload, session)  # type: ignore[arg-type]
     assert conn.sent == [("result", "hello")]
     assert session.calls == [VisionRequest(png_bytes=b"x", prompt="p", model=None)]
 
 
-def test_dispatch_handles_vision_emits_error_on_exception() -> None:
+def test_handle_vision_emits_error_on_exception() -> None:
+    from lilbee.providers.worker.vision_worker import _handle_vision
+
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("boom"))
     payload = VisionRequest(png_bytes=b"x", prompt="", model=None)
-    assert _dispatch(conn, "vision_ocr", payload, session) is True  # type: ignore[arg-type]
+    _handle_vision(conn, payload, session)  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "RuntimeError"
-
-
-def test_dispatch_handles_unknown_kind_emits_error() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "totally_unknown", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent[0][0] == "error"
 
 
 def test_handle_vision_rejects_non_visionrequest_payload() -> None:
@@ -389,11 +371,11 @@ def _stub_load_for_in_process(_self: _VisionSession) -> Any:
 
 def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
@@ -415,11 +397,11 @@ def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
 
 def test_vision_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
@@ -439,11 +421,11 @@ def test_vision_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
 def test_vision_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.vision_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(

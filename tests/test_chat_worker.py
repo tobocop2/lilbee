@@ -16,7 +16,6 @@ import pytest
 
 from lilbee.providers.worker.chat_worker import (
     _ChatSession,
-    _dispatch,
     _extract_stream_content,
     _make_abort_callback,
     chat_worker_main,
@@ -281,21 +280,9 @@ class _StubSession:
         return self._response
 
 
-def test_dispatch_handles_shutdown_returns_false() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "shutdown", None, session) is False  # type: ignore[arg-type]
-    assert conn.sent == [("ack", None)]
+def test_handle_chat_streaming() -> None:
+    from lilbee.providers.worker.chat_worker import _handle_chat
 
-
-def test_dispatch_handles_ping() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "ping", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent == [("pong", None)]
-
-
-def test_dispatch_handles_chat_streaming() -> None:
     conn = _RecordingConn()
     session = _StubSession(
         response=iter(
@@ -306,7 +293,7 @@ def test_dispatch_handles_chat_streaming() -> None:
         )
     )
     payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
-    assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
+    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
     assert conn.sent == [
         ("stream_chunk", "a"),
         ("stream_chunk", "b"),
@@ -314,24 +301,30 @@ def test_dispatch_handles_chat_streaming() -> None:
     ]
 
 
-def test_dispatch_handles_chat_non_streaming() -> None:
+def test_handle_chat_non_streaming() -> None:
+    from lilbee.providers.worker.chat_worker import _handle_chat
+
     conn = _RecordingConn()
     session = _StubSession(response={"choices": [{"message": {"content": "joined"}}]})
     payload = ChatRequest(messages=[], stream=False)
-    assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
+    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
     assert conn.sent == [("result", "joined")]
 
 
-def test_dispatch_handles_chat_emits_error_on_setup_exception() -> None:
+def test_handle_chat_emits_error_on_setup_exception() -> None:
+    from lilbee.providers.worker.chat_worker import _handle_chat
+
     conn = _RecordingConn()
     session = _StubSession(exc=RuntimeError("setup boom"))
     payload = ChatRequest(messages=[], stream=False)
-    assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
+    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
     assert conn.sent[0][0] == "error"
     assert conn.sent[0][1].type_name == "RuntimeError"
 
 
-def test_dispatch_handles_chat_emits_error_on_stream_failure() -> None:
+def test_handle_chat_emits_error_on_stream_failure() -> None:
+    from lilbee.providers.worker.chat_worker import _handle_chat
+
     conn = _RecordingConn()
 
     def _generator():
@@ -340,17 +333,10 @@ def test_dispatch_handles_chat_emits_error_on_stream_failure() -> None:
 
     session = _StubSession(response=_generator())
     payload = ChatRequest(messages=[], stream=True)
-    assert _dispatch(conn, "chat", payload, session) is True  # type: ignore[arg-type]
+    _handle_chat(conn, payload, session)  # type: ignore[arg-type]
     # First chunk arrived, then error.
     kinds = [m[0] for m in conn.sent]
     assert kinds == ["stream_chunk", "error"]
-
-
-def test_dispatch_handles_unknown_kind_emits_error() -> None:
-    conn = _RecordingConn()
-    session = _StubSession()
-    assert _dispatch(conn, "totally_unknown", None, session) is True  # type: ignore[arg-type]
-    assert conn.sent[0][0] == "error"
 
 
 def test_handle_chat_rejects_non_chatrequest_payload() -> None:
@@ -543,11 +529,11 @@ def _stub_load_for_in_process(_self: _ChatSession) -> Any:
 
 def test_chat_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.chat_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.chat_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
@@ -571,11 +557,11 @@ def test_chat_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
 
 def test_chat_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.chat_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.chat_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
@@ -597,11 +583,11 @@ def test_chat_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
 
 def test_chat_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.chat_worker.redirect_stdio_to_devnull",
+        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
         lambda: None,
     )
     monkeypatch.setattr(
-        "lilbee.providers.worker.chat_worker.configure_worker_logging",
+        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
         lambda _role: None,
     )
     monkeypatch.setattr(
