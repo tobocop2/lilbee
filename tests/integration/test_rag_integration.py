@@ -9,7 +9,6 @@ Run with:
 
 from __future__ import annotations
 
-import sys
 from collections import Counter
 
 import pytest
@@ -19,7 +18,6 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.core.services import reset_services as reset_provider
 from lilbee.data.ingest import sync
-from tests.integration.conftest import skip_if_small_chat_model
 
 pytestmark = pytest.mark.slow
 
@@ -167,11 +165,6 @@ class TestAnswerGeneration:
         assert result.answer
         assert len(result.answer) > 0
 
-    @pytest.mark.skipif(
-        sys.platform == "darwin",
-        reason="llama-cpp CPU detokenize exceeds 360s on macOS GitHub runners "
-        "(no Metal); covered on Linux + Windows.",
-    )
     @pytest.mark.timeout(360)
     def test_ask_includes_citations(self, rag_pipeline):
         """ask_raw() returns source references from real search.
@@ -186,7 +179,6 @@ class TestAnswerGeneration:
         source_names = [s.source for s in result.sources]
         assert "specs.md" in source_names
 
-    @skip_if_small_chat_model
     def test_ask_answer_references_facts(self, rag_pipeline):
         """Real LLM answer references known facts from the indexed documents."""
         result = ask_raw("What is the oil capacity of the Thunderbolt X500?", top_k=5)
@@ -440,11 +432,6 @@ class TestAskStream:
         assert len(tokens) > 0
         assert all(isinstance(t, StreamToken) for t in tokens)
 
-    @pytest.mark.skipif(
-        sys.platform == "darwin",
-        reason="llama-cpp CPU detokenize exceeds 360s on macOS GitHub runners "
-        "(no Metal); covered on Linux + Windows.",
-    )
     @pytest.mark.timeout(360)
     def test_stream_ends_with_citations(self, rag_pipeline):
         """The last token from ask_stream() contains source citations.

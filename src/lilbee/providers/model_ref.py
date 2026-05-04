@@ -8,9 +8,12 @@ lilbee.config or lilbee.models to avoid circular imports.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lilbee.providers.base import filter_options
+
+if TYPE_CHECKING:
+    from lilbee.modelhub.model_manager.types import RemoteModel
 
 _API_PROVIDERS = {"openai", "anthropic", "gemini"}
 
@@ -69,6 +72,13 @@ class ProviderModelRef:
     def needs_api_base(self) -> bool:
         """True if the SDK needs an explicit api_base (Ollama/local)."""
         return not self.is_api
+
+
+def format_remote_ref(model: RemoteModel) -> str:
+    """Render a discovered ``RemoteModel`` as a canonical ``provider/name`` ref."""
+    return ProviderModelRef(
+        raw=model.name, provider=model.provider.lower(), name=model.name
+    ).for_openai_prefix()
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:

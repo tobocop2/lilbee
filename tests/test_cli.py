@@ -1422,6 +1422,16 @@ class TestReset:
         assert "Reset complete" in result.output
         assert "0 document(s)" in result.output
 
+    def test_reset_drops_cached_store(self, isolated_env):
+        """reset must invalidate the cached Store so a follow-up sees the empty data dir."""
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "doc.txt").write_text("content")
+
+        with mock.patch("lilbee.cli.commands.meta.reset_store") as mock_reset_store:
+            result = runner.invoke(app, ["reset", "--yes"])
+            assert result.exit_code == 0
+            mock_reset_store.assert_called_once()
+
     def test_reset_with_subdirectories(self, isolated_env):
         """Reset removes subdirectories too."""
         sub = cfg.documents_dir / "subdir"

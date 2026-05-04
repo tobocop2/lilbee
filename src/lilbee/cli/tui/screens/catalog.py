@@ -39,10 +39,12 @@ from lilbee.cli.tui.screens.catalog_utils import (
     frontier_row_from_remote,
     matches_search,
     remote_to_row,
+    row_delete_id,
     variant_to_row,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -54,8 +56,6 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
-from lilbee.providers.model_ref import OLLAMA_PREFIX
-from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
 log = logging.getLogger(__name__)
 
@@ -126,8 +126,10 @@ class CatalogScreen(Screen[None]):
         Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
-        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP),
-        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP),
+        # priority=True so vim jump-to-top/bottom always wins over the
+        # focused ModelGrid's enter/select binding when keys collide.
+        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP, priority=True),
+        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP, priority=True),
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
@@ -820,9 +822,9 @@ class CatalogScreen(Screen[None]):
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
-        ctas: list[Static] = []
+        ctas: list[Static | BrowseMoreCtaItem] = []
         if not self._hf_fetched and not self._loading_more:
-            ctas.append(Static(msg.CATALOG_BROWSE_MORE, classes="grid-cta browse-more-hf"))
+            ctas.append(BrowseMoreCtaItem())
         else:
             ctas.append(
                 Static(
@@ -869,9 +871,9 @@ class CatalogScreen(Screen[None]):
         """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
 
-    @on(Click, ".browse-more-hf")
+    @on(BrowseMoreCtaItem.Selected)
     def _on_browse_more_clicked(self) -> None:
-        """Fetch all models when the browse-more card is clicked."""
+        """Fetch all models when the browse-more card is activated (click or Enter)."""
         if not self._hf_fetched:
             self._hf_fetched = True
             self._loading_more = True
@@ -1060,12 +1062,7 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            ref = (
-                f"{OLLAMA_PREFIX}{row.remote_model.name}"
-                if row.remote_model.provider == OLLAMA_BACKEND_NAME
-                else row.remote_model.name
-            )
-            apply_active_model(self.app, "chat_model", ref)
+            apply_active_model(self.app, "chat_model", row.ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
@@ -1191,7 +1188,7 @@ class CatalogScreen(Screen[None]):
         """Return the registry-compatible model ref for the focused/highlighted row."""
         if not self._grid_view and self._list_widget.has_focus:
             row = self._list_widget.highlighted_row()
-            return row.ref or None if row else None
+            return row_delete_id(row) if row else None
         focused_grid = self._focused_grid()
         if focused_grid is None or focused_grid.highlighted is None:
             return None
@@ -1199,12 +1196,12 @@ class CatalogScreen(Screen[None]):
             rows = focused_grid.rows
             index = focused_grid.highlighted
             if 0 <= index < len(rows):
-                return rows[index].ref or None
+                return row_delete_id(rows[index])
             return None
         # GridSelect path: cards are direct children indexed positionally.
         child = focused_grid.children[focused_grid.highlighted]
         if isinstance(child, ModelCard):
-            return child.row.ref or None
+            return row_delete_id(child.row)
         return None
 
     @work(thread=True)

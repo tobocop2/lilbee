@@ -108,28 +108,6 @@ class TestAssistantMessageAsync:
             assert "reasoning-block" in am._reasoning_widget.classes
             assert "-streaming" in am._reasoning_widget.classes
 
-    async def test_reasoning_after_content_mounts_collapsible_before_content(self) -> None:
-        """Content-token-then-reasoning-token ordering still mounts the
-        Collapsible above the content widget.
-
-        The ThinkingHeader path is the common case; this test covers the
-        defensive branch where content streamed first (header dismissed
-        early) and reasoning arrives later. Without this, the collapsible
-        would orphan and the user would see no thinking section even when
-        the model emits one.
-        """
-        app = _MsgApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            am = app._am
-            am.append_content("answer first")
-            await pilot.pause()
-            assert am._content_widget is not None
-            am.append_reasoning("step 1")
-            await pilot.pause()
-            assert am._reasoning_widget is not None
-            assert am._reasoning_widget.is_mounted
-
     async def test_append_reasoning_debounces_static_updates(self) -> None:
         """Reasoning bursts collapse to one ``Static.update``; ``finish`` flushes the tail."""
         app = _MsgApp()
@@ -180,6 +158,24 @@ class TestAssistantMessageAsync:
             am.append_content("answer")
             await pilot.pause()
             assert am._thinking_header is not None
+
+    async def test_reasoning_after_content_mounts_collapsible_before_content(self) -> None:
+        """Late reasoning (after content already dismissed the header) mounts the
+        Collapsible relative to the existing content widget, not the missing header.
+        """
+        from textual.widgets import Collapsible
+
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("answer first")
+            await pilot.pause()
+            assert am._thinking_header is None, "content should have dismissed the header"
+            am.append_reasoning("late thought")
+            await pilot.pause()
+            assert isinstance(am._reasoning_widget, Collapsible)
+            assert am._reasoning_widget.is_mounted
 
     async def test_finish_with_sources_shows_citations(self) -> None:
         app = _MsgApp()
@@ -2910,6 +2906,16 @@ class TestSetupWizard:
         assert row.featured is False
         assert row.backend == ""
 
+    def test_installed_name_to_row_cleans_native_gguf_ref(self) -> None:
+        """Native GGUF refs should render as a clean label, not the raw filename."""
+        from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+        ref = "unsloth/embeddinggemma-300M-qat-GGUF/embeddinggemma-300M-qat-Q8_0.gguf"
+        row = _installed_name_to_row(ref, "embedding")
+        assert row.name == "embeddinggemma 300M"
+        assert row.quant == "Q8_0"
+        assert row.ref == ref
+
     def test_model_card_from_table_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -4960,6 +4966,50 @@ class TestSearchHFCtaItem:
             await pilot.pause()
             label = app.query_one("#cta-label", Static)
             assert "phi-3" in str(label.render())
+
+
+class TestBrowseMoreCtaItem:
+    """Direct-construction tests for BrowseMoreCtaItem (bb-fp1p)."""
+
+    def test_action_select_posts_message(self) -> None:
+        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
+
+        item = BrowseMoreCtaItem()
+        received: list[BrowseMoreCtaItem.Selected] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.action_select()
+        assert len(received) == 1
+        assert received[0].control is item
+        assert received[0].item is item
+
+    def test_on_click_focuses_and_posts(self) -> None:
+        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
+
+        item = BrowseMoreCtaItem()
+        received: list[BrowseMoreCtaItem.Selected] = []
+        focus_calls: list[bool] = []
+        item.post_message = received.append  # type: ignore[method-assign]
+        item.focus = lambda: focus_calls.append(True)  # type: ignore[method-assign]
+        item.on_click(_make_click(item))
+        assert focus_calls == [True]
+        assert received and received[0].item is item
+
+    async def test_compose_renders_browse_label(self) -> None:
+        from textual.app import App
+        from textual.widgets import Static
+
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield BrowseMoreCtaItem()
+
+        app = _App()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            label = app.query_one("#browse-more-label", Static)
+            assert msg.CATALOG_BROWSE_MORE in str(label.render())
 
 
 def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:

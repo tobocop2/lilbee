@@ -20,7 +20,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager.discovery import discover_api_models
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 
 log = logging.getLogger(__name__)
 
@@ -83,9 +83,7 @@ def validate_persisted_model(ref: str) -> ValidationResult:
 
 
 def _first_available_api_chat_ref() -> str | None:
-    """Return the first cloud chat ref backed by a configured API key,
-    or ``None`` if no provider is configured. Probes providers in the
-    order declared on the Config (llm, openai, anthropic, gemini)."""
+    """Return the first cloud chat ref backed by a configured API key, or ``None``."""
     try:
         groups = discover_api_models()
     except Exception:
@@ -93,7 +91,7 @@ def _first_available_api_chat_ref() -> str | None:
         return None
     for _provider, models in groups.items():
         if models:
-            return models[0].name
+            return format_remote_ref(models[0])
     return None
 
 

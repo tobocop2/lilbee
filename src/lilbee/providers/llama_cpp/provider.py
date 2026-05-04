@@ -35,6 +35,7 @@ from lilbee.providers.llama_cpp.gguf_meta import (
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
+    stderr_suppressed,
     suppress_native_stderr,
 )
 from lilbee.providers.model_cache import (
@@ -169,16 +170,20 @@ class LlamaCppProvider(LLMProvider):
                 if not req.future.done():
                     req.future.set_exception(exc)
             return
-        for req in batch:
-            try:
-                vectors: list[list[float]] = []
-                for text in req.texts:
-                    response = embed_one(llm, text)
-                    vectors.append(response)
-                req.future.set_result(vectors)
-            except Exception as exc:
-                if not req.future.done():
-                    req.future.set_exception(exc)
+        # Hold the stderr-suppression lock + fd-2 swap once for the whole batch
+        # rather than once per text; per-text wrapping is what made the TUI
+        # appear frozen during multi-page-PDF ingest.
+        with stderr_suppressed():
+            for req in batch:
+                try:
+                    vectors: list[list[float]] = []
+                    for text in req.texts:
+                        response = embed_one(llm, text)
+                        vectors.append(response)
+                    req.future.set_result(vectors)
+                except Exception as exc:
+                    if not req.future.done():
+                        req.future.set_exception(exc)
 
     def _rerank_worker(self) -> None:
         """Background thread: drain rerank queue, serialize through the model.
@@ -203,7 +208,8 @@ class LlamaCppProvider(LLMProvider):
                 req.future.set_exception(exc)
             return
         try:
-            scores = compute_rerank_scores(llm, req.query, req.candidates)
+            with stderr_suppressed():
+                scores = compute_rerank_scores(llm, req.query, req.candidates)
             req.future.set_result(scores)
         except Exception as exc:
             if not req.future.done():

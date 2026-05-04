@@ -1,12 +1,4 @@
-"""crawl4ai-backed implementation of :class:`lilbee.crawler.fetcher.WebFetcher`.
-
-THIS IS THE ONLY FILE IN THE PROJECT THAT IMPORTS ``crawl4ai``.
-
-Swapping to a different web-fetching SDK is a one-file change:
-delete this module, add a replacement that implements
-:class:`lilbee.crawler.fetcher.WebFetcher`, and update the one
-import in :mod:`lilbee.crawler.runner`.
-"""
+"""crawl4ai-backed implementation of :class:`lilbee.crawler.fetcher.WebFetcher`."""
 
 from __future__ import annotations
 
@@ -59,13 +51,11 @@ def _build_rate_limited_dispatcher(concurrency: ConcurrencySpec) -> Any:
 
 
 class _LilbeeAsyncCrawler:
-    """AsyncWebCrawler wrapper that injects a default dispatcher on arun_many.
+    """AsyncWebCrawler wrapper that injects a default dispatcher on ``arun_many``.
 
-    crawl4ai's BFSDeepCrawlStrategy hard-codes crawler.arun_many(urls, config)
-    without a dispatcher kwarg, so per-domain rate limiting and 429/503 retries
-    can't be wired via CrawlerRunConfig. By giving the crawler a default
-    dispatcher, every strategy-originated arun_many picks it up. An explicit
-    dispatcher= on the call still wins.
+    BFSDeepCrawlStrategy calls ``arun_many`` without a dispatcher kwarg, so the
+    wrapper supplies one to make rate limiting and 429/503 retries reachable.
+    An explicit ``dispatcher=`` on the call still wins.
     """
 
     def __init__(self, *, verbose: bool, dispatcher: Any) -> None:
@@ -97,16 +87,10 @@ class _LilbeeAsyncCrawler:
 
 @contextlib.asynccontextmanager
 async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
-    """Open a crawler.
+    """Open an AsyncWebCrawler, wrapping with the dispatcher when provided.
 
-    Raises :class:`CrawlerBrowserError` early if the Chromium binary
-    hasn't been downloaded. Without this guard Playwright prints a full
-    ASCII install banner that leaks into the TUI.
-
-    When *dispatcher* is provided, wrap AsyncWebCrawler in _LilbeeAsyncCrawler
-    so every strategy-originated arun_many call picks it up. The single-URL
-    path (crawl_single) doesn't need a dispatcher because arun() doesn't accept
-    one, so it passes None and gets a bare AsyncWebCrawler.
+    Raises :class:`CrawlerBrowserError` if the Chromium binary is missing so
+    Playwright's ASCII install banner does not leak into the TUI.
     """
     if not bootstrap.chromium_installed():
         raise CrawlerBrowserError(
@@ -128,15 +112,10 @@ async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> Async
 
 
 def _safe_strategy_cancel(strategy: Any) -> None:
-    """Call ``strategy.cancel()`` if available, swallowing the known shapes.
+    """Call ``strategy.cancel()`` if available; swallow only the known SDK shapes.
 
-    BFSDeepCrawlStrategy has ``.cancel()`` in crawl4ai 0.8.6. Older versions or
-    third-party strategies may not. Belt-and-suspenders: should_cancel already
-    gates between BFS levels, but ``cancel()`` also short-circuits arun_many.
-
-    Narrow catch: ``AttributeError`` covers the rare case where ``cancel``
-    exists but accesses a missing attribute mid-call; ``RuntimeError`` covers
-    cancel-on-closed-strategy. Anything else propagates.
+    Narrow catch: ``AttributeError`` covers a missing nested attribute mid-call;
+    ``RuntimeError`` covers cancel-on-closed-strategy. Anything else propagates.
     """
     cancel_method = getattr(strategy, "cancel", None)
     if callable(cancel_method):
@@ -147,12 +126,7 @@ def _safe_strategy_cancel(strategy: Any) -> None:
 
 
 async def _safe_aclose(stream: Any) -> None:
-    """Close an async generator stream if that is what it is.
-
-    ``_iter_crawl_stream`` normalizes over async-generator / list / single-result
-    shapes; only the generator shape has an ``aclose()`` to call. A list or
-    single object is a no-op.
-    """
+    """Close an async generator stream; no-op for list / single-result shapes."""
     if stream is None:
         return
     if inspect.isasyncgen(stream):
@@ -161,16 +135,7 @@ async def _safe_aclose(stream: Any) -> None:
 
 
 async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:
-    """Normalize crawl4ai's ``arun()`` return to an async iterator.
-
-    With ``stream=True`` on CrawlerRunConfig, crawl4ai 0.8 returns an async
-    generator. Older call sites and some crawl4ai code paths return a list
-    (batch mode) or a single CrawlResult. Accept all three shapes so tests
-    that mock ``arun()`` with a plain list keep working.
-    """
-    # Three possible shapes from crawl4ai's arun(): async generator (stream=True),
-    # plain list (batch), or a single CrawlResult. Tests mock arun() with any of
-    # the three, so normalize here rather than in each caller.
+    """Normalize crawl4ai's ``arun()`` return (async generator, list, or single result)."""
     if inspect.isasyncgen(stream):
         async for item in stream:
             yield item
@@ -215,12 +180,7 @@ def _host_scope_filter(start_url: str, *, include_subdomains: bool) -> Any:
 
 
 class Crawl4aiFetcher:
-    """:class:`WebFetcher` implementation backed by crawl4ai.
-
-    Migrating off crawl4ai means replacing this class with another
-    :class:`WebFetcher` implementor (e.g. a ``KreuzcrawlFetcher``) and
-    updating the one construction site in :mod:`lilbee.crawler.runner`.
-    """
+    """:class:`WebFetcher` implementation backed by crawl4ai."""
 
     def __init__(self, *, quiet: bool = False) -> None:
         self._quiet = quiet

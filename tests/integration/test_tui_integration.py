@@ -70,20 +70,8 @@ def _first_leaf_with_slug(node):
 class TestChatFlow:
     """Real chat with streaming LLM response."""
 
-    @pytest.mark.timeout(360)
     async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
-        """Type a question about indexed docs, get a real streamed answer.
-
-        The pause loop pairs ``pilot.pause`` with a 100 ms ``asyncio.sleep``
-        so wallclock time actually advances. The chat worker subprocess
-        cold-start (model load, mmap, llama-cpp init) is several seconds on
-        CPU CI; without the sleep the 600 iterations spin-yield in
-        milliseconds and the assertion fires before streaming ever begins.
-        Bumped to 360s for the same reason as ``test_ask_includes_citations``:
-        small-model RAG streaming on CPU runners is genuinely slow.
-        """
-        import asyncio
-
+        """Type a question about indexed docs, get a real streamed answer."""
         from lilbee.core.services import reset_services
 
         app = _IntegrationChatApp()
@@ -97,11 +85,8 @@ class TestChatFlow:
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
 
-            # ~60s budget: 600 * 100ms covers chat worker cold-start (3-5s)
-            # plus the small-model token stream on the slowest CPU runners.
             for _ in range(600):
                 await pilot.pause()
-                await asyncio.sleep(0.1)
                 if not app.screen.streaming:
                     break
 
@@ -122,8 +107,7 @@ class TestChatFlow:
             # instead of synthesizing the answer. The integration concern here
             # is that the TUI streams a real RAG response end to end; factual
             # accuracy of the LLM is covered by ``test_ask_answer_references_facts``
-            # in test_rag_integration.py, which is gated on
-            # ``skip_if_small_chat_model``.
+            # in test_rag_integration.py.
             reply_lower = assistant_reply.lower()
             assert any(
                 term in reply_lower
@@ -200,6 +184,8 @@ class TestStatusScreen:
 
     async def test_status_shows_real_stats(self, rag_pipeline) -> None:
         """Status screen displays real document names and chunk counts."""
+        from textual.css.query import NoMatches
+
         from lilbee.cli.tui.screens.status import StatusScreen
 
         class _StatusApp(App[None]):
@@ -211,25 +197,24 @@ class TestStatusScreen:
             def on_mount(self) -> None:
                 self.push_screen(StatusScreen())
 
-        import asyncio
-
         app = _StatusApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            # The Documents table is populated by ``_fetch_sources_worker``
-            # asynchronously. The first row painted is the "Loading..."
-            # placeholder; the worker callback replaces it with the real
-            # rows once ``store.get_sources`` returns. On slow runners
-            # (Windows in particular) the placeholder lands first and the
-            # row count stays at 1 until the worker finishes; pace the
-            # check until the worker has surfaced its results.
-            table = app.screen.query_one("#docs-table", DataTable)
+            # StatusScreen mounts the docs table via call_after_refresh and
+            # then populates it from a thread worker. On Windows the worker
+            # callback can land several pilot ticks after mount, so poll
+            # until the Loading placeholder is replaced by real rows.
+            table = None
+            row_count = 0
             for _ in range(60):
-                if table.row_count >= 9:
-                    break
                 await pilot.pause()
-                await asyncio.sleep(0.1)
-            row_count = table.row_count
+                try:
+                    table = app.screen.query_one("#docs-table", DataTable)
+                except NoMatches:
+                    continue
+                row_count = table.row_count
+                if row_count >= 9:
+                    break
+            assert table is not None, "docs-table never mounted"
             assert row_count >= 9, f"Expected >= 9 document rows, got {row_count}"
 
             rows = [table.get_row_at(i) for i in range(row_count)]
