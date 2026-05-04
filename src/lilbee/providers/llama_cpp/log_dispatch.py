@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from lilbee.providers.base import ProviderError
@@ -124,20 +126,33 @@ def install_llama_log_handler() -> None:
     _llama_log_installed = True
 
 
-def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    """Call *fn* with C-level stderr suppressed.
-    llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
-    that bypass Python logging. This redirects fd 2 to /dev/null for the
-    duration of the call. A lock serializes access to fd 2 so concurrent
-    threads don't corrupt each other's file descriptors.
+@contextmanager
+def stderr_suppressed() -> Iterator[None]:
+    """Redirect fd 2 to /dev/null for the duration of the block.
+
+    Holds ``_STDERR_LOCK`` so concurrent fd-2 manipulation can't corrupt
+    each other's saved-stderr value. Use this around the *full* embed or
+    rerank loop, not per call: per-call wrapping serializes hundreds of
+    syscalls + lock acquires inside the inner loop and starves the TUI
+    threads of CPU.
     """
     with _STDERR_LOCK:
         devnull = os.open(os.devnull, os.O_WRONLY)
         old_stderr = os.dup(2)
         os.dup2(devnull, 2)
         try:
-            return fn(*args, **kwargs)
+            yield
         finally:
             os.dup2(old_stderr, 2)
             os.close(devnull)
             os.close(old_stderr)
+
+
+def suppress_native_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Call *fn* with C-level stderr suppressed.
+
+    Thin wrapper around :func:`stderr_suppressed` for one-shot call sites
+    (Llama() construction, GGUF metadata read).
+    """
+    with stderr_suppressed():
+        return fn(*args, **kwargs)

@@ -29,6 +29,14 @@ class ChatInput(TextArea):
         Binding("shift+enter", "newline", "Newline", show=False, priority=True),
     ]
 
+    # Keys we deliberately let bubble up to the App-level help binding
+    # even though the underlying TextArea is happy to type them. Without
+    # this, Textual's binding-chain filter strips the App's `?` binding
+    # whenever the chat input is focused (because TextArea consumes any
+    # printable). Users who need a literal `?` can paste it.
+    # ``"question_mark"`` is Textual's canonical name for `?`.
+    _UNCONSUMED_KEYS: ClassVar[frozenset[str]] = frozenset({"question_mark"})
+
     # Per-keystroke layout cost is dominated by ``height: auto`` reflow.
     # Pin the visual height to a single row while the content has no
     # newline; flip to auto-grow only once a newline appears (Shift+Enter
@@ -63,6 +71,12 @@ class ChatInput(TextArea):
     def value(self, new_value: str) -> None:
         self.load_text(new_value)
         self.action_end()
+
+    def check_consume_key(self, key: str, character: str | None = None) -> bool:
+        """Pass App-level help/global keys back up to the binding chain."""
+        if key in self._UNCONSUMED_KEYS:
+            return False
+        return super().check_consume_key(key, character)
 
     def action_submit(self) -> None:
         self.post_message(self.Submitted(chat_input=self, value=self.text))

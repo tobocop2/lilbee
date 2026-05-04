@@ -61,9 +61,6 @@ def _swap_config(target: Config) -> Iterator[None]:
 
 class Lilbee:
     """Programmatic access to lilbee's retrieval pipeline.
-    Composes Store, Embedder, Searcher, Reranker, and ConceptGraph. Each holds a reference
-    to config and its dependencies -- no god class, no global mutation in the
-    public API.
 
     Usage::
 

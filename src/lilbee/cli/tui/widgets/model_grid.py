@@ -166,6 +166,11 @@ class ModelGrid(Widget, can_focus=True):
         col = new % self._cards_per_row
         self.scroll_to_region(Region(col * col_width, row * _ROW_HEIGHT, col_width, _CARD_HEIGHT))
 
+    def on_focus(self) -> None:
+        """Auto-highlight first card on focus so Tab navigation has visible feedback."""
+        if self._rows and self.highlighted is None:
+            self.highlighted = 0
+
     def action_cursor_up(self) -> None:
         if self.highlighted is None:
             self.highlighted = 0

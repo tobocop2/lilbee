@@ -25,7 +25,13 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
+from lilbee.catalog import (
+    FEATURED_CHAT,
+    FEATURED_EMBEDDING,
+    CatalogModel,
+    display_label_for_ref,
+    extract_quant,
+)
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
@@ -65,13 +71,15 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
 
 
 def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
-    """Create a minimal LocalCatalogRow for an already-installed model."""
+    """Build a LocalCatalogRow for an installed registry ref with a cleaned label."""
+    label = display_label_for_ref(name)
+    quant = extract_quant(name.rsplit("/", 1)[-1]) or "--"
     return LocalCatalogRow(
-        name=name,
+        name=label,
         task=task,
-        params=parse_param_label(name),
+        params=parse_param_label(label),
         size="--",
-        quant="--",
+        quant=quant,
         downloads="--",
         featured=False,
         installed=True,

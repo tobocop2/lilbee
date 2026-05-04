@@ -8,8 +8,15 @@ from lilbee.modelhub.model_manager import ModelSource
 
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
-_DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECASE)
-_DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
+# One alternation strips every kind of trailing noise from a display name:
+# name suffixes (anywhere they precede ``-`` or end-of-string), trailing GGUF
+# quant tokens (``-Q4_K_M``, ``-F16`` ...), and trailing date stamps (``-2507``).
+_DISPLAY_NAME_NOISE = re.compile(
+    r"-(?:GGUF|Instruct|Chat|Embedding|Embed|qat)(?=-|$)"
+    r"|-(?:Q\d[A-Z0-9_]*|F16|F32)$"
+    r"|-\d{4}$",
+    re.IGNORECASE,
+)
 _DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
 
 # A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
@@ -19,16 +26,19 @@ _NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 def clean_display_name(repo_id: str) -> str:
     """Derive a human-friendly display name from a HuggingFace repo ID.
-    Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
-    and Meta- prefix. Replaces hyphens with spaces.
 
     Examples:
-        "Qwen/Qwen2.5-7B-Instruct-GGUF" -> "Qwen2.5 7B"
-        "meta-llama/Meta-Llama-3-8B"     -> "Llama 3 8B"
+        "Qwen/Qwen2.5-7B-Instruct-GGUF"           -> "Qwen2.5 7B"
+        "meta-llama/Meta-Llama-3-8B"              -> "Llama 3 8B"
+        "unsloth/embeddinggemma-300M-qat-GGUF"    -> "embeddinggemma 300M"
+        "ggml-org/all-MiniLM-L6-v2-Embedding-Q8_0" -> "all MiniLM L6 v2"
     """
     name = repo_id.split("/")[-1]
-    name = _DISPLAY_NAME_SUFFIXES.sub("", name)
-    name = _DISPLAY_NAME_DATE_SUFFIX.sub("", name)
+    while True:
+        stripped = _DISPLAY_NAME_NOISE.sub("", name)
+        if stripped == name:
+            break
+        name = stripped
     name = _DISPLAY_NAME_META_PREFIX.sub("", name)
     name = name.replace("-", " ").strip()
     return re.sub(r"\s+", " ", name)

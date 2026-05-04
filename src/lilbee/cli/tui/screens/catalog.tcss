@@ -38,6 +38,7 @@ ModelGrid {
 
 ModelGrid:focus {
     border: none;
+    background: $surface 30%;
 }
 
 #catalog-list {
@@ -116,15 +117,6 @@ GridSelect {
     margin: 1 2;
     border: tall $surface-lighten-2;
     color: $text;
-}
-
-.browse-more-hf {
-    color: $primary;
-}
-
-.browse-more-hf:hover {
-    background: $surface;
-    border: tall $primary;
 }
 
 .search-hf-cta {

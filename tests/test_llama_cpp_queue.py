@@ -851,6 +851,87 @@ class TestSuppressStderrThreadSafety:
         assert result == 42
         assert lock_was_held == [True]
 
+    def test_stderr_suppressed_context_manager_holds_lock(self) -> None:
+        """The new ``stderr_suppressed`` context manager takes _STDERR_LOCK
+        for the duration of the ``with`` block, not per call inside."""
+        from lilbee.providers.llama_cpp.log_dispatch import _STDERR_LOCK, stderr_suppressed
+
+        lock_observations = []
+
+        with stderr_suppressed():
+            for _ in range(3):
+                locked = not _STDERR_LOCK.acquire(blocking=False)
+                if not locked:
+                    _STDERR_LOCK.release()
+                lock_observations.append(locked)
+
+        assert lock_observations == [True, True, True]
+        # Lock is released after the with-block exits.
+        assert _STDERR_LOCK.acquire(blocking=False)
+        _STDERR_LOCK.release()
+
+    def test_dispatch_batch_holds_lock_once_for_many_texts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: per-chunk wrapping was the visible UI freeze on long PDFs.
+
+        ``_dispatch_batch`` must hoist ``stderr_suppressed`` above the for-loop so
+        we acquire ``_STDERR_LOCK`` once per dispatch, not once per text.
+        """
+        from concurrent.futures import Future
+
+        from lilbee.providers.llama_cpp import log_dispatch
+        from lilbee.providers.llama_cpp.batching import EmbedRequest
+        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+        # _thread.lock has read-only attributes, so swap the entire object for
+        # a counting stand-in that records each acquire.
+        counter = _CountingLock()
+        monkeypatch.setattr(log_dispatch, "_STDERR_LOCK", counter)
+
+        provider = LlamaCppProvider.__new__(LlamaCppProvider)
+        provider._get_embed_llm = lambda: _CountingLlama()  # type: ignore[method-assign]
+
+        future: Future[list[list[float]]] = Future()
+        req = EmbedRequest(texts=["a", "b", "c", "d", "e"], future=future)
+        provider._dispatch_batch([req])
+
+        assert future.result() == [[1.0], [1.0], [1.0], [1.0], [1.0]]
+        # One acquire for the entire 5-text batch, not five.
+        assert counter.acquire_count == 1, (
+            f"expected 1 _STDERR_LOCK acquire for a 5-text batch, got "
+            f"{counter.acquire_count}; per-chunk wrapping reintroduces the UI-freeze regression"
+        )
+
+
+class _CountingLlama:
+    """Stand-in for a llama_cpp.Llama that returns a constant embedding."""
+
+    def create_embedding(self, *, input: list[str]) -> dict:
+        return {"data": [{"embedding": [1.0]}]}
+
+
+class _CountingLock:
+    """Re-entrant-free lock stand-in that records acquire calls for assertions."""
+
+    def __init__(self) -> None:
+        self._real = threading.Lock()
+        self.acquire_count = 0
+
+    def acquire(self, *args: Any, **kwargs: Any) -> bool:
+        self.acquire_count += 1
+        return self._real.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        self._real.release()
+
+    def __enter__(self) -> _CountingLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.release()
+
 
 class TestImportLlamaCpp:
     """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError. (bb-387n)"""
