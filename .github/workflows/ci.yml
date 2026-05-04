@@ -109,17 +109,17 @@ jobs:
             ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Run unit tests
-        # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
-        # the run, so they run with pytest-forked (one subprocess per
-        # test, distributed across -n auto xdist workers) to sidestep the
-        # thread-accumulation wedge. That path loses coverage because
-        # forks exit via os._exit, skipping coverage.py's atexit save —
-        # accepted tradeoff: 3.11 lanes prove the code runs, 3.12 and
-        # 3.13 own the coverage story. Windows 3.11 stays on the normal
-        # parallel path.
+        # 3.11's asyncio releases transports differently from 3.12+, which
+        # destabilizes Textual reactive-timing tests under pytest-xdist.
+        # ubuntu and macOS work around it with pytest-forked (one subprocess
+        # per test, no coverage save because forks exit via os._exit); Windows
+        # can't fork, so it runs serially via test-ci-serial (no xdist, full
+        # coverage save). 3.12 and 3.13 own the parallel coverage story.
         run: |
           if [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" != "windows-latest" ]; then
             make test-ci-forked
+          elif [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" = "windows-latest" ]; then
+            make test-ci-serial
           else
             make test-ci
           fi
