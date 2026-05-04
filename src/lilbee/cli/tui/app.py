@@ -96,10 +96,18 @@ _MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model", "r
 
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
-    from lilbee.providers.llama_cpp.provider import LOAD_AFFECTING_KEYS
+    from lilbee.providers.llama_cpp.provider import (
+        LOAD_AFFECTING_KEYS,
+        PER_CALL_RELOADABLE_KEYS,
+    )
 
     key, _value = payload
-    if key in LOAD_AFFECTING_KEYS:
+    if key in LOAD_AFFECTING_KEYS and key not in PER_CALL_RELOADABLE_KEYS:
+        # Roles that do NOT honor per-call request.model (embed, rerank, plus
+        # any role-agnostic key like num_ctx) need the pool to drop the worker
+        # so the next call respawns under the new cfg. Chat and vision workers
+        # observe the new path on the next request via _ensure_loaded and
+        # reload in place, saving the 1-3 s spawn cost.
         get_services().provider.invalidate_load_cache()
     if key in _MODEL_REF_KEYS:
         from lilbee.modelhub.model_info import invalidate_cache
