@@ -155,7 +155,7 @@ flowchart LR
     Pool <-- PipeChannel --> CW
     Pool <-- PipeChannel --> VW
 
-    Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -. flip mp.Value abort flag .-> EW & RW & CW & VW
+    Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -->|flip shared abort flag| EW & RW & CW & VW
 ```
 
 Every byte across a pipe is a `(kind, payload)` tuple. Three patterns cover all traffic:
