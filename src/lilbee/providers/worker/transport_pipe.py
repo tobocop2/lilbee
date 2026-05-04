@@ -159,6 +159,7 @@ class PipeChannel:
         )
         self._send_lock = asyncio.Lock()
         self._recv_lock = asyncio.Lock()
+        self._recv_thread_lock = threading.Lock()
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
         self._closed = False
@@ -208,12 +209,25 @@ class PipeChannel:
             except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
                 raise WorkerCrashError(self._role) from exc
 
+    def _conn_recv_serialized(self) -> Any:
+        """Serialize ``conn.recv`` across executor threads with a threading lock.
+
+        Asyncio's ``_recv_lock`` releases when a wait_for cancels the
+        awaiting coroutine, but the underlying executor thread keeps
+        running ``conn.recv``. Without this threading lock a second
+        ``_recv`` after a cancellation could submit a new ``conn.recv``
+        thread that races the orphan on the same pipe fd, decoding
+        partial pickles and raising ``UnpicklingError``.
+        """
+        with self._recv_thread_lock:
+            return self._conn.recv()
+
     async def _recv(self) -> tuple[str, Any]:
         """Thread-bounded ``conn.recv`` under the recv lock; raises on EOF/crash."""
         loop = asyncio.get_running_loop()
         async with self._recv_lock:
             try:
-                return await loop.run_in_executor(self._executor, self._conn.recv)
+                return await loop.run_in_executor(self._executor, self._conn_recv_serialized)
             except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
                 raise WorkerCrashError(self._role) from exc
 
