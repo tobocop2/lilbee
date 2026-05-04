@@ -214,7 +214,7 @@ class TestRowDeleteId:
         )
         assert row_delete_id(row) == "anthropic/claude"
 
-    def test_ollama_remote_row_strips_provider_prefix(self) -> None:
+    def test_ollama_remote_row_returns_bare_backend_name(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import remote_to_row, row_delete_id
         from lilbee.modelhub.model_manager import RemoteModel
 
