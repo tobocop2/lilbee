@@ -124,7 +124,7 @@ flowchart TD
 
 ## Inference Worker Pool
 
-When `cfg.worker_pool_enabled` is true (the default), `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another.
+By default `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool can be disabled with `LILBEE_DISABLE_WORKER_POOL=1` (debugging escape hatch only; not surfaced in the settings UI).
 
 ```mermaid
 flowchart LR
@@ -245,7 +245,7 @@ The `WorkerChannel` and `WorkerSpawner` Protocols make the IPC primitive swappab
 
 ### Fallback path
 
-When `cfg.worker_pool_enabled` is false, embed and rerank fall through to the in-process batching threads (`_embed_thread`/`_rerank_thread`/`_dispatch_batch`/`_dispatch_rerank`) and vision OCR uses the per-call `WorkerManager` subprocess (`providers/worker/manager.py`). The flag is the escape valve for debugging, environments where subprocess spawn is unavailable, or unit tests that drive `LlamaCppProvider.embed` against in-memory mocks.
+When `LILBEE_DISABLE_WORKER_POOL=1` is set, embed and rerank fall through to lazy in-process batching threads (`_embed_thread`/`_rerank_thread`/`_dispatch_batch`/`_dispatch_rerank`) and vision OCR uses the per-call `WorkerManager` subprocess (`providers/worker/manager.py`). The escape hatch exists for debugging, environments where subprocess spawn is unavailable, and unit tests that drive `LlamaCppProvider.embed` against in-memory mocks.
 
 ---
 

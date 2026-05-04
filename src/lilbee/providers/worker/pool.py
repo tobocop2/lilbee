@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -46,6 +47,12 @@ _HEALTH_TIMEOUT_S = 5.0
 _RESTART_BUDGET = 3
 _RESTART_WINDOW_S = 60.0
 _RUNTIME_THREAD_NAME = "lilbee-worker-pool-loop"
+_DISABLE_ENV_VAR = "LILBEE_DISABLE_WORKER_POOL"
+
+
+def worker_pool_enabled() -> bool:
+    """Whether the worker pool is on. Disable via ``LILBEE_DISABLE_WORKER_POOL=1``."""
+    return os.environ.get(_DISABLE_ENV_VAR, "").strip().lower() not in ("1", "true", "yes", "on")
 
 
 class PoolShutdownError(WorkerError):

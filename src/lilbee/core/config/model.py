@@ -237,11 +237,6 @@ class Config(BaseSettings):
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Persistent per-role worker processes for llama-cpp inference. Default
-    # True takes embed (and later chat/rerank/vision) off the TUI process so
-    # the asyncio event loop stays responsive under load.
-    worker_pool_enabled: bool = ConfigField(default=True, writable=True)
-
     # Per-call deadline for one pool round-trip (send + recv). Embed batches
     # larger than this on slow machines surface as TimeoutError; raise for
     # heavy ingest jobs.

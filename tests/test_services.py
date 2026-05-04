@@ -49,7 +49,7 @@ class TestCancelInference:
 
     def test_pool_mode_flips_per_role_abort_flag(self, monkeypatch):
         """Pool mode (default): cancel reaches every registered role."""
-        cfg.worker_pool_enabled = True
+        monkeypatch.delenv("LILBEE_DISABLE_WORKER_POOL", raising=False)
         from lilbee.providers.llama_cpp import abort_signal
 
         called: list[str] = []
@@ -78,9 +78,9 @@ class TestCancelInference:
         assert abort_signal.is_abort_set()
         abort_signal.clear_abort()
 
-    def test_fallback_mode_only_sets_inprocess_event(self):
+    def test_fallback_mode_only_sets_inprocess_event(self, monkeypatch):
         """Fallback mode: pool roles untouched, in-process Event set."""
-        cfg.worker_pool_enabled = False
+        monkeypatch.setenv("LILBEE_DISABLE_WORKER_POOL", "1")
         from lilbee.providers.llama_cpp import abort_signal
 
         called: list[str] = []
@@ -107,11 +107,11 @@ class TestCancelInference:
 
 class TestEagerStartBranch:
     """``get_services`` triggers ``pool_runtime.start`` + ``start_eager`` only when
-    both ``worker_pool_eager_start`` and ``worker_pool_enabled`` are True."""
+    eager start is on and the worker pool is enabled."""
 
     def test_eager_start_runs_when_both_flags_set(self, monkeypatch):
         """Both flags set: pool_runtime.start + start_eager run; suppress catches errors."""
-        cfg.worker_pool_enabled = True
+        monkeypatch.delenv("LILBEE_DISABLE_WORKER_POOL", raising=False)
         cfg.worker_pool_eager_start = True
 
         from lilbee.core import services as services_mod
@@ -174,7 +174,7 @@ class TestEagerStartBranch:
 
     def test_eager_start_swallows_runtime_failure(self, monkeypatch):
         """Suppress(Exception) keeps get_services() resilient if eager start raises."""
-        cfg.worker_pool_enabled = True
+        monkeypatch.delenv("LILBEE_DISABLE_WORKER_POOL", raising=False)
         cfg.worker_pool_eager_start = True
 
         from lilbee.core import services as services_mod

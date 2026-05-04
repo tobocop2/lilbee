@@ -68,7 +68,6 @@ def _patched_embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConf
 
 @pytest.fixture()
 def pool_provider(monkeypatch, tmp_path):
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.models_dir = tmp_path / "models"

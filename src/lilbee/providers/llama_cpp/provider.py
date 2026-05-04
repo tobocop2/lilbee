@@ -1,14 +1,4 @@
-"""Llama.cpp provider: class, model loader, and path resolution.
-
-Includes a thread-safe batching queue for embeddings so that concurrent
-ingest threads don't hit the non-thread-safe Llama object simultaneously.
-With ``cfg.worker_pool_enabled = True`` (the default) embed routes through
-a persistent worker subprocess so the asyncio loop stays responsive under
-load. Worker crashes surface to the caller as :class:`ProviderError`; the
-pool respawns the role lazily on the next call. With the pool disabled,
-embed and rerank fall through to the in-process batching threads, and
-vision OCR uses the per-call :class:`WorkerManager` subprocess.
-"""
+"""Llama.cpp provider: class, model loader, and path resolution."""
 
 from __future__ import annotations
 
@@ -60,7 +50,7 @@ from lilbee.providers.model_cache import (
 from lilbee.providers.worker import WorkerManager
 from lilbee.providers.worker.chat_worker import chat_worker_main
 from lilbee.providers.worker.embed_worker import embed_worker_main
-from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
+from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, worker_pool_enabled
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
@@ -284,7 +274,7 @@ class LlamaCppProvider(LLMProvider):
         to in-process here would re-introduce the GIL contention the
         pool exists to avoid, with no signal to the user.
         """
-        if cfg.worker_pool_enabled:
+        if worker_pool_enabled():
             try:
                 return self._embed_via_pool(texts)
             except WorkerError as exc:
@@ -323,14 +313,13 @@ class LlamaCppProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Score *candidates* by relevance to *query*.
 
-        Routes through the persistent worker pool when
-        ``cfg.worker_pool_enabled`` (default True). Worker crashes
-        propagate as :class:`ProviderError`; the pool respawns the
-        rerank role lazily on the next call.
+        Routes through the persistent worker pool by default. Worker
+        crashes propagate as :class:`ProviderError`; the pool respawns
+        the rerank role lazily on the next call.
         """
         if not candidates:
             return []
-        if cfg.worker_pool_enabled:
+        if worker_pool_enabled():
             try:
                 return self._rerank_via_pool(query, candidates)
             except WorkerError as exc:
@@ -379,7 +368,7 @@ class LlamaCppProvider(LLMProvider):
         Worker crashes propagate as :class:`ProviderError`; the pool
         respawns the vision role lazily on the next call.
         """
-        if cfg.worker_pool_enabled:
+        if worker_pool_enabled():
             try:
                 return self._vision_ocr_via_pool(
                     png_bytes=png_bytes, model=model, prompt=prompt, timeout=timeout
@@ -453,7 +442,7 @@ class LlamaCppProvider(LLMProvider):
         message text. Worker crashes propagate as :class:`ProviderError`;
         the pool respawns the chat role lazily on the next call.
         """
-        if cfg.worker_pool_enabled:
+        if worker_pool_enabled():
             try:
                 return self._chat_via_pool(
                     messages=messages, stream=stream, options=options, model=model

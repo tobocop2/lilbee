@@ -503,15 +503,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Ingest",
         help_text="Concurrent vision-OCR pages per document (1 keeps memory predictable)",
     ),
-    "worker_pool_enabled": SettingDef(
-        bool,
-        nullable=False,
-        group="Ingest",
-        help_text=(
-            "Run llama-cpp inference (embed, chat, rerank, vision) in persistent worker "
-            "subprocesses. Keeps the TUI responsive under load"
-        ),
-    ),
     "worker_pool_call_timeout_s": SettingDef(
         float,
         nullable=False,

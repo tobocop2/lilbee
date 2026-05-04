@@ -1,12 +1,9 @@
 """Tests for LlamaCppProvider.embed routing through the persistent pool.
 
-When ``cfg.worker_pool_enabled = True`` (the default in production),
-``embed`` must reach a real subprocess via the pool. When disabled, the
-in-process / legacy paths must continue to work unchanged.
-
-These tests stand in their own file because the project-wide conftest
-defaults ``worker_pool_enabled = False`` for unit tests; this file opts
-back into the production default with ``@pytest.mark.worker_pool``.
+The project-wide conftest disables the pool for unit tests via
+``LILBEE_DISABLE_WORKER_POOL=1``. This file opts back into the
+production default with ``@pytest.mark.worker_pool`` so ``embed`` and
+friends reach a real subprocess via the pool.
 """
 
 from __future__ import annotations
@@ -83,7 +80,6 @@ def _install_mock_services_with_provider(provider):
 
 @pytest.fixture()
 def pool_provider(monkeypatch, tmp_path):
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.models_dir = tmp_path / "models"
@@ -170,7 +166,6 @@ def test_shutdown_idempotent_after_pool_use(pool_provider) -> None:
 
 def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.models_dir = tmp_path / "models"
@@ -202,7 +197,6 @@ def test_embed_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) 
     """Pool ``TimeoutError`` (from ``accessor.call`` or ``runtime.run_sync``)
     must surface as ProviderError instead of leaking the raw OSError-shaped
     ``TimeoutError`` to the caller."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.models_dir = tmp_path / "models"
@@ -231,7 +225,6 @@ def test_embed_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp
     """A worker returning a non-list payload trips a protocol-shaped WorkerError,
     which surfaces to the caller as ProviderError instead of being silently
     swapped for the in-process path."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.models_dir = tmp_path / "models"
@@ -341,7 +334,6 @@ def _patched_rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleCon
 
 @pytest.fixture()
 def rerank_pool_provider(monkeypatch, tmp_path):
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.reranker_model = "stub/reranker"
@@ -396,7 +388,6 @@ def test_rerank_with_empty_candidates_short_circuits(rerank_pool_provider) -> No
 
 def test_rerank_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.reranker_model = "stub/reranker"
@@ -425,7 +416,6 @@ def test_rerank_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_
 
 def test_rerank_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool TimeoutError must surface as ProviderError, not raw OSError-shaped TimeoutError."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.reranker_model = "stub/reranker"
@@ -473,7 +463,6 @@ def test_rerank_pool_protocol_error_propagates_as_provider_error(monkeypatch, tm
     """A worker returning a non-list payload trips a protocol-shaped WorkerError,
     which surfaces to the caller as ProviderError instead of being silently
     swapped for the in-process path."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.reranker_model = "stub/reranker"
@@ -520,7 +509,6 @@ def _patched_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfi
 
 @pytest.fixture()
 def chat_pool_provider(monkeypatch, tmp_path):
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.chat_model = "stub/chat"
@@ -679,7 +667,6 @@ def test_chat_streaming_mid_stream_timeout_raises_provider_error(
 
 def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.chat_model = "stub/chat"
@@ -708,7 +695,6 @@ def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_pa
 
 def test_chat_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool TimeoutError must surface as ProviderError, not raw OSError-shaped TimeoutError."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.chat_model = "stub/chat"
@@ -756,7 +742,6 @@ def test_chat_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_
     """A worker returning a non-string payload trips a protocol-shaped WorkerError,
     which surfaces to the caller as ProviderError instead of being silently
     swapped for the in-process path."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.chat_model = "stub/chat"
@@ -820,7 +805,6 @@ def _patched_vision_worker_main(conn: Any, abort_flag: Any, role_config: RoleCon
 
 @pytest.fixture()
 def vision_pool_provider(monkeypatch, tmp_path):
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.vision_model = "stub/vision"
@@ -862,7 +846,6 @@ def test_vision_ocr_repeated_calls_reuse_one_accessor(vision_pool_provider) -> N
 
 def test_vision_ocr_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.vision_model = "stub/vision"
@@ -892,7 +875,6 @@ def test_vision_ocr_pool_worker_error_propagates_as_provider_error(monkeypatch, 
 
 def test_vision_ocr_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool TimeoutError must surface as ProviderError, not raw OSError-shaped TimeoutError."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.vision_model = "stub/vision"
@@ -940,7 +922,6 @@ def test_vision_ocr_pool_protocol_error_propagates_as_provider_error(monkeypatch
     """A worker returning a non-string payload trips a protocol-shaped WorkerError,
     which surfaces to the caller as ProviderError instead of being silently
     swapped for the legacy subprocess path."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/embed"
     cfg.vision_model = "stub/vision"
@@ -989,7 +970,6 @@ def test_vision_call_budget_uses_no_cap_when_zero() -> None:
 
 def test_shutdown_handles_pool_release_failure(monkeypatch, tmp_path) -> None:
     """A pool that raises during release still tears down the provider cleanly."""
-    cfg.worker_pool_enabled = True
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
     cfg.models_dir = tmp_path / "models"
