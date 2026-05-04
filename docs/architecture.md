@@ -126,6 +126,61 @@ flowchart TD
 
 When `cfg.worker_pool_enabled` is true (the default), `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another.
 
+```mermaid
+flowchart LR
+    subgraph TUIProc["TUI process (asyncio + Textual)"]
+        UI[Chat / Search / Ingest screens]
+        Provider[LlamaCppProvider]
+        Pool[WorkerPool<br/>per-role accessors]
+        Health[health_ticker<br/>30 s ping + idle reap]
+        UI --> Provider --> Pool
+        Health --> Pool
+    end
+
+    subgraph EmbedProc["embed subprocess"]
+        EW[embed_worker]
+    end
+    subgraph RerankProc["rerank subprocess"]
+        RW[rerank_worker]
+    end
+    subgraph ChatProc["chat subprocess"]
+        CW[chat_worker]
+    end
+    subgraph VisionProc["vision subprocess"]
+        VW[vision_worker]
+    end
+
+    Pool <-- PipeChannel --> EW
+    Pool <-- PipeChannel --> RW
+    Pool <-- PipeChannel --> CW
+    Pool <-- PipeChannel --> VW
+
+    Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -. flip mp.Value abort flag .-> EW & RW & CW & VW
+```
+
+Every byte across a pipe is a `(kind, payload)` tuple. Three patterns cover all traffic:
+
+```mermaid
+sequenceDiagram
+    participant Parent as TUI (PipeChannel)
+    participant Worker as worker subprocess
+
+    Note over Parent,Worker: Call / response (embed, rerank, vision)
+    Parent->>Worker: (embed, texts)
+    Worker-->>Parent: (result, vectors)
+
+    Note over Parent,Worker: Streaming (chat)
+    Parent->>Worker: (chat, prompt)
+    loop one frame per token
+        Worker-->>Parent: (stream_chunk, token)
+    end
+    Worker-->>Parent: (stream_end, None)
+
+    Note over Parent,Worker: Liveness (background)
+    Parent->>Worker: (ping, None)
+    Worker-->>Parent: (pong, None)
+```
+
 `WorkerPool` (in `providers/worker/pool.py`) owns lifecycle. `Services` constructs it once at startup with a `default_spawner()` from `providers/worker/transport.py`. The pool talks to workers exclusively through the `WorkerChannel` and `WorkerSpawner` Protocols; the only concrete impl today is `transport_pipe.PipeChannel` / `PipeSpawner`, backed by `multiprocessing.Pipe`.
 
 ### Lifecycle contract
