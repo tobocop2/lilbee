@@ -324,10 +324,9 @@ jobs:
       - name: Pre-download GGUF models
         shell: bash
         run: |
-          CHAT_REPO="${{ runner.os == 'macOS' && 'bartowski/SmolLM2-135M-Instruct-GGUF' || 'Qwen/Qwen3-0.6B-GGUF' }}"
           for i in 1 2 3; do
             uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF && \
-            uv run lilbee model pull "$CHAT_REPO" && break
+            uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF && break
             echo "Attempt $i failed, retrying in 10s..."
             sleep 10
           done
@@ -337,6 +336,5 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
-          LILBEE_TEST_CHAT_MODEL: ${{ runner.os == 'macOS' && 'bartowski/SmolLM2-135M-Instruct-GGUF' || 'Qwen/Qwen3-0.6B-GGUF' }}
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers

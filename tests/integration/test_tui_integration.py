@@ -107,8 +107,7 @@ class TestChatFlow:
             # instead of synthesizing the answer. The integration concern here
             # is that the TUI streams a real RAG response end to end; factual
             # accuracy of the LLM is covered by ``test_ask_answer_references_facts``
-            # in test_rag_integration.py, which is gated on
-            # ``skip_if_small_chat_model``.
+            # in test_rag_integration.py.
             reply_lower = assistant_reply.lower()
             assert any(
                 term in reply_lower
