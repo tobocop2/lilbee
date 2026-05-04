@@ -108,12 +108,7 @@ LOAD_AFFECTING_KEYS = frozenset(
 
 
 class LlamaCppProvider(LLMProvider):
-    """Provider backed by llama-cpp-python for local GGUF model inference.
-    Embedding calls are funnelled through a single background worker thread
-    that batches concurrent requests into one ``create_embedding`` call.
-    Chat calls are serialized via a lock (no batching possible).
-    Vision models are loaded with a CLIP chat handler for image understanding.
-    """
+    """Provider backed by llama-cpp-python for local GGUF model inference."""
 
     def __init__(self) -> None:
         self._cache = MemoryAwareModelCache(
@@ -124,13 +119,24 @@ class LlamaCppProvider(LLMProvider):
         self._embed_queue: queue.Queue[EmbedRequest | None] = queue.Queue()
         self._rerank_queue: queue.Queue[RerankRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
-        self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
-        self._embed_thread.start()
-        self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
-        self._rerank_thread.start()
+        self._embed_thread: threading.Thread | None = None
+        self._rerank_thread: threading.Thread | None = None
+        self._inproc_thread_lock = threading.Lock()
         self._subprocess_worker: WorkerManager | None = None
         self._pool_lock = threading.Lock()
         self._registered_roles: set[str] = set()
+
+    def _ensure_inproc_embed_thread(self) -> None:
+        with self._inproc_thread_lock:
+            if self._embed_thread is None:
+                self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
+                self._embed_thread.start()
+
+    def _ensure_inproc_rerank_thread(self) -> None:
+        with self._inproc_thread_lock:
+            if self._rerank_thread is None:
+                self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
+                self._rerank_thread.start()
 
     def _embed_worker(self) -> None:
         """Background thread: drain queue, batch, inference, dispatch results."""
@@ -291,6 +297,7 @@ class LlamaCppProvider(LLMProvider):
                     "Embedding worker timed out. Please try again.",
                     provider="llama-cpp",
                 ) from exc
+        self._ensure_inproc_embed_thread()
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(EmbedRequest(texts=texts, future=fut))
         return fut.result(timeout=EMBED_FUTURE_TIMEOUT_S)
@@ -336,6 +343,7 @@ class LlamaCppProvider(LLMProvider):
                     "Rerank worker timed out. Please try again.",
                     provider="llama-cpp",
                 ) from exc
+        self._ensure_inproc_rerank_thread()
         fut: Future[list[float]] = Future()
         self._rerank_queue.put(RerankRequest(query=query, candidates=candidates, future=fut))
         return fut.result(timeout=RERANK_FUTURE_TIMEOUT_S)
@@ -599,14 +607,16 @@ class LlamaCppProvider(LLMProvider):
         in an aborted state.
         """
         request_abort()
-        self._embed_queue.put(None)
-        self._rerank_queue.put(None)
-        self._embed_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
-        self._rerank_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
-        if self._embed_thread.is_alive():
-            log.warning("embed worker did not exit within shutdown timeout")
-        if self._rerank_thread.is_alive():
-            log.warning("rerank worker did not exit within shutdown timeout")
+        if self._embed_thread is not None:
+            self._embed_queue.put(None)
+            self._embed_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
+            if self._embed_thread.is_alive():
+                log.warning("embed worker did not exit within shutdown timeout")
+        if self._rerank_thread is not None:
+            self._rerank_queue.put(None)
+            self._rerank_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
+            if self._rerank_thread.is_alive():
+                log.warning("rerank worker did not exit within shutdown timeout")
         clear_abort()
         if self._subprocess_worker is not None:
             self._subprocess_worker.stop()

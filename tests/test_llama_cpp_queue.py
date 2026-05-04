@@ -399,9 +399,15 @@ class TestShutdown:
         """Shutdown sentinel stops the background worker thread."""
         from lilbee.providers.llama_cpp import LlamaCppProvider
 
-        mock_llama_cpp.Llama.return_value = mock.MagicMock()
+        instance = mock.MagicMock()
+        instance.create_embedding.return_value = _make_embed_response([[1.0]])
+        mock_llama_cpp.Llama.return_value = instance
 
         provider = LlamaCppProvider()
+        assert provider._embed_thread is None
+
+        provider.embed(["hello"])
+        assert provider._embed_thread is not None
         assert provider._embed_thread.is_alive()
 
         provider.shutdown()
