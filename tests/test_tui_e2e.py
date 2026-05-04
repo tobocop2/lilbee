@@ -2613,6 +2613,135 @@ class TestCatalogLazyLoad:
                 cards = app.screen.query(".browse-more-hf")
                 assert len(cards) >= 1
 
+    async def test_browse_more_button_focusable_and_keyboard_activates(self, _mock_resolve):
+        """The 'Browse more models' button must be reachable via Tab and Enter (bb-fp1p)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                for _ in range(20):
+                    await pilot.pause()
+                    if app.screen.query(BrowseMoreCtaItem):
+                        break
+                button = app.screen.query_one(BrowseMoreCtaItem)
+                assert button.can_focus, "Browse more must be focusable"
+                button.focus()
+                await pilot.pause()
+                assert app.focused is button
+                # Activate via Enter to trigger the bulk HF fetch.
+                await pilot.press("enter")
+                await pilot.pause()
+                assert app.screen._hf_fetched is True
+
+
+class TestCatalogGridFocus:
+    """Catalog grid Tab/G key behavior (bb-zp4o, bb-8kxf)."""
+
+    async def test_grid_tab_focus_auto_highlights_first_card(self, _mock_resolve):
+        """Focusing a ModelGrid via Tab must highlight a card so the user sees feedback."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                for _ in range(20):
+                    await pilot.pause()
+                    if app.screen.query(ModelGrid):
+                        break
+                grid = app.screen.query(ModelGrid).first()
+                # Simulate the state after Tab moves focus away then back: clear
+                # highlight, blur, then focus and assert the on_focus auto-highlight.
+                grid.highlighted = None
+                app.set_focus(None)
+                await pilot.pause()
+                assert grid.highlighted is None
+                grid.focus()
+                await pilot.pause()
+                assert grid.highlighted == 0, (
+                    "Tab focus on a ModelGrid must auto-highlight the first card"
+                )
+
+    async def test_g_key_does_not_trigger_install(self, _mock_resolve):
+        """Pressing G in the catalog grid jumps to the bottom, never installs (bb-8kxf)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                for _ in range(20):
+                    await pilot.pause()
+                    if app.screen.query(ModelGrid):
+                        break
+                grid = app.screen.query(ModelGrid).first()
+                grid.focus()
+                grid.highlighted = 0
+                await pilot.pause()
+                notifications: list[str] = []
+                original_notify = app.notify
+                app.notify = lambda message, **kw: notifications.append(str(message))
+                try:
+                    await pilot.press("G")
+                    await pilot.pause()
+                finally:
+                    app.notify = original_notify
+                assert grid.highlighted == len(grid.rows) - 1
+                assert not any("Queued download" in m for m in notifications), (
+                    f"G must not trigger an install; saw {notifications!r}"
+                )
+
+
+class TestGlobalSlashRoutesToChat:
+    """Slash typed on a non-Chat screen routes back to the chat prompt (bb-oy22)."""
+
+    async def test_slash_on_settings_lands_in_chat_prompt(self, _mock_resolve):
+        """Typing /setup on Settings switches to Chat with the slash prefix in the input."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+            assert app.active_view == "Settings"
+            await pilot.press("slash")
+            await pilot.pause()
+            assert app.active_view == "Chat"
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            assert inp.value == "/"
+            for ch in "setup":
+                await pilot.press(ch)
+                await pilot.pause()
+            assert inp.value == "/setup", f"global slash route should compose, got {inp.value!r}"
+
+
+class TestQuestionMarkOpensHelp:
+    """The ? key opens the help panel even when chat input is focused (bb-qbfy)."""
+
+    async def test_question_mark_opens_help_with_chat_input_focused(self, _mock_resolve):
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.focus()
+            await pilot.pause()
+            assert app.focused is inp
+            await pilot.press("?")
+            await pilot.pause()
+            assert inp.value == "", "? must not be typed into chat input"
+            assert app.screen.query("HelpPanel"), "? must open the help panel"
+
 
 class TestSetupWizardGrid:
     """Test setup wizard uses GridSelect + ModelCard."""

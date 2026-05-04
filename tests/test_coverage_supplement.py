@@ -139,6 +139,26 @@ class TestChatInputNewline:
             assert "\n" in inp.value
 
 
+class TestChatInputCheckConsumeKey:
+    """`ChatInput.check_consume_key` releases keys that App-level help binds."""
+
+    async def test_question_mark_passes_through(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.chat_input import ChatInput
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput(id="probe-input")
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            inp = pilot.app.query_one("#probe-input", ChatInput)
+            assert inp.check_consume_key("question_mark", "?") is False
+            # Other printable keys still consumed so typing works.
+            assert inp.check_consume_key("a", "a") is True
+
+
 class TestStatusBarSwitch:
     """`ViewTab.action_activate` calls `_switch`; under a non-LilbeeApp
     test parent the isinstance gate skips ``switch_view`` but still

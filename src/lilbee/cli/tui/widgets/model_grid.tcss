@@ -4,5 +4,5 @@ ModelGrid {
 }
 
 ModelGrid:focus {
-    background: $surface;
+    background: $surface 30%;
 }

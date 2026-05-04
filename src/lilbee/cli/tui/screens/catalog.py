@@ -44,6 +44,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -125,8 +126,10 @@ class CatalogScreen(Screen[None]):
         Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
-        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP),
-        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP),
+        # priority=True so vim jump-to-top/bottom always wins over the
+        # focused ModelGrid's enter/select binding when keys collide.
+        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP, priority=True),
+        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP, priority=True),
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
@@ -819,9 +822,9 @@ class CatalogScreen(Screen[None]):
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
-        ctas: list[Static] = []
+        ctas: list[Static | BrowseMoreCtaItem] = []
         if not self._hf_fetched and not self._loading_more:
-            ctas.append(Static(msg.CATALOG_BROWSE_MORE, classes="grid-cta browse-more-hf"))
+            ctas.append(BrowseMoreCtaItem(classes="browse-more-hf"))
         else:
             ctas.append(
                 Static(
@@ -868,9 +871,9 @@ class CatalogScreen(Screen[None]):
         """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
 
-    @on(Click, ".browse-more-hf")
+    @on(BrowseMoreCtaItem.Selected)
     def _on_browse_more_clicked(self) -> None:
-        """Fetch all models when the browse-more card is clicked."""
+        """Fetch all models when the browse-more card is activated (click or Enter)."""
         if not self._hf_fetched:
             self._hf_fetched = True
             self._loading_more = True
