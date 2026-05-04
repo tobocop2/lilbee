@@ -208,6 +208,27 @@ def _stream_with_pong_interleaved_main(
             conn.send(("stream_end", None))
 
 
+def _call_with_pong_prefix_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
+    """Worker that prefixes a result with an orphan pong frame.
+
+    Models the bb-ubnm scenario where ``call()`` reads a stale pong
+    (left in the pipe by a prior health-ping whose ``wait_for`` had
+    already timed out) and would otherwise raise ``ProtocolError``.
+    """
+    while True:
+        if not conn.poll(timeout=_POLL_TIMEOUT_S):
+            continue
+        try:
+            kind, value = conn.recv()
+        except EOFError:
+            return
+        if kind == "shutdown":
+            conn.send(("ack", None))
+            return
+        conn.send(("pong", None))
+        conn.send(("result", value))
+
+
 # =====================================================================
 # Fixtures: spawn one worker per test, always close in teardown so a
 # failing assertion never leaves a real subprocess behind.
@@ -525,6 +546,28 @@ async def test_stream_silently_consumes_orphan_pong_frames(
     try:
         chunks = [chunk async for chunk in channel.stream("stream", None)]
         assert chunks == ["first", "second"]
+    finally:
+        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+
+
+@pytest.mark.asyncio
+async def test_call_silently_consumes_orphan_pong_frames(
+    spawner: PipeSpawner,
+    role_config: RoleConfig,
+) -> None:
+    """Regression for bb-ubnm: call consumer also ignores orphan pong frames.
+
+    The same orphan-pong scenario the ``stream`` filter handles can land
+    in front of a non-streaming reply (e.g. ``chat(stream=False)`` after
+    a long stream). ``call()`` must also skip ``pong`` frames so the
+    real result is read on the next iteration; otherwise the next
+    non-stream chat / vision describe / query expansion crashes with
+    ``ProtocolError``.
+    """
+    channel, _ = spawner.spawn(_call_with_pong_prefix_main, role_config)
+    try:
+        result = await channel.call("echo", "payload", timeout=_TEST_CALL_TIMEOUT_S)
+        assert result == "payload"
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 

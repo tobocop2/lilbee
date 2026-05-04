@@ -223,22 +223,34 @@ class PipeChannel:
         Raises :class:`WorkerError` if the worker reported an exception,
         :class:`WorkerCrashError` if the worker died, or
         :class:`asyncio.TimeoutError` if the reply did not arrive in
-        *timeout* seconds.
+        *timeout* seconds. Orphan ``pong`` frames left in the pipe by a
+        prior health ping (parent's ``wait_for`` timed out before the
+        worker drained the buffered ping) are silently consumed before
+        the real reply, mirroring the same defense in :meth:`stream`.
+        The timeout applies to the whole reply window, not to each recv,
+        so absorbing pongs cannot extend the budget.
         """
         self._ensure_open()
         self._bump_in_flight(1)
         try:
             await self._send(kind, payload)
-            msg_kind, value = await asyncio.wait_for(self._recv(), timeout=timeout)
-            if msg_kind == ERROR_KIND:
-                raise _deserialize_exception(value)
-            if msg_kind != RESULT_KIND:
-                raise WorkerError(
-                    "ProtocolError",
-                    f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
-                    "",
-                )
-            return value
+            deadline = asyncio.get_running_loop().time() + timeout
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError()
+                msg_kind, value = await asyncio.wait_for(self._recv(), timeout=remaining)
+                if msg_kind == PONG_KIND:
+                    continue
+                if msg_kind == ERROR_KIND:
+                    raise _deserialize_exception(value)
+                if msg_kind != RESULT_KIND:
+                    raise WorkerError(
+                        "ProtocolError",
+                        f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
+                        "",
+                    )
+                return value
         finally:
             self._bump_in_flight(-1)
 
