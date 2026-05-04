@@ -107,7 +107,7 @@ def get_services() -> Services:
     from lilbee.providers.factory import create_provider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle, start_health_ticker
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
-    from lilbee.providers.worker.transport import make_spawner
+    from lilbee.providers.worker.transport import default_spawner
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -117,11 +117,8 @@ def get_services() -> Services:
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     worker_pool = WorkerPool(
-        spawner=make_spawner(cfg.worker_pool_backend),
+        spawner=default_spawner(),
         max_idle_s=cfg.worker_pool_max_idle_s,
-        restart_attempts=cfg.worker_pool_restart_attempts,
-        restart_window_s=cfg.worker_pool_restart_window_s,
-        health_timeout_s=cfg.worker_pool_health_timeout_s,
     )
     pool_runtime = PoolRuntime()
     provider = create_provider(cfg)

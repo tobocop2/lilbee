@@ -675,14 +675,12 @@ async def test_reap_idle_skips_in_flight_role(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_role_marks_degraded_after_restart_budget(tmp_path) -> None:
-    """A role exceeding restart_attempts within the window is marked degraded."""
+async def test_role_marks_degraded_after_restart_budget(tmp_path, monkeypatch) -> None:
+    """A role exceeding _RESTART_BUDGET within the window is marked degraded."""
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 2)
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_WINDOW_S", 10.0)
     spawner = FakeSpawner()
-    pool = WorkerPool(
-        spawner=spawner,
-        restart_attempts=2,
-        restart_window_s=10.0,
-    )
+    pool = WorkerPool(spawner=spawner)
     pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
     try:
         # Three crashes in the window: degraded after the third.
@@ -701,14 +699,12 @@ async def test_role_marks_degraded_after_restart_budget(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_role_failures_clears_degraded_state(tmp_path) -> None:
+async def test_reset_role_failures_clears_degraded_state(tmp_path, monkeypatch) -> None:
     """Manual reset re-enables a degraded role."""
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 1)
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_WINDOW_S", 10.0)
     spawner = FakeSpawner()
-    pool = WorkerPool(
-        spawner=spawner,
-        restart_attempts=1,
-        restart_window_s=10.0,
-    )
+    pool = WorkerPool(spawner=spawner)
     pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
     try:
         await pool._on_crash("embed")
@@ -735,16 +731,14 @@ async def test_reset_role_failures_silent_for_unregistered_role(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_crash_history_evicts_stale_entries(tmp_path) -> None:
+async def test_crash_history_evicts_stale_entries(tmp_path, monkeypatch) -> None:
     """Crashes outside the window do not count toward the budget."""
     import time as _time
 
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 2)
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_WINDOW_S", 0.05)
     spawner = FakeSpawner()
-    pool = WorkerPool(
-        spawner=spawner,
-        restart_attempts=2,
-        restart_window_s=0.05,
-    )
+    pool = WorkerPool(spawner=spawner)
     pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
     try:
         await pool._on_crash("embed")
@@ -943,13 +937,17 @@ async def test_release_drops_registration_and_closes_live_channel(tmp_path) -> N
 
 
 @pytest.mark.asyncio
-async def test_ensure_channel_raises_when_role_degraded_after_outer_check(tmp_path) -> None:
+async def test_ensure_channel_raises_when_role_degraded_after_outer_check(
+    tmp_path, monkeypatch
+) -> None:
     """The inner ``degraded`` check inside spawn_lock catches the race where the role
     was marked degraded between the pre-lock check and the lock acquisition."""
     from lilbee.providers.worker.pool import RoleDegradedError
 
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 1)
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_WINDOW_S", 10.0)
     spawner = FakeSpawner()
-    pool = WorkerPool(spawner=spawner, restart_attempts=1, restart_window_s=10.0)
+    pool = WorkerPool(spawner=spawner)
     pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
     try:
         registration = pool._roles["embed"]

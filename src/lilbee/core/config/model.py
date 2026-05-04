@@ -258,24 +258,6 @@ class Config(BaseSettings):
     # ``0`` disables reaping (workers stay up until TUI exit).
     worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
-    # Restart-on-crash budget. The pool will respawn a crashed worker up
-    # to ``worker_pool_restart_attempts`` times within
-    # ``worker_pool_restart_window_s`` seconds. Past the budget the role
-    # is marked degraded and consumers raise ProviderError.
-    worker_pool_restart_attempts: int = ConfigField(default=3, ge=1, writable=True)
-    worker_pool_restart_window_s: float = ConfigField(default=60.0, gt=0.0, writable=True)
-
-    # Health-check round-trip cap. ``WorkerPool.ping_role()`` raises if the
-    # worker does not pong within this many seconds; callers (typically a
-    # background monitor) treat that as a crash.
-    worker_pool_health_timeout_s: float = ConfigField(default=5.0, gt=0.0, writable=True)
-
-    # Transport backend. ``pipe`` (default) routes through
-    # ``multiprocessing.Pipe`` via :class:`PipeSpawner`; future ``zmq`` will
-    # add :class:`ZmqSpawner` without touching consumer code. Hot-swap is
-    # not supported; the choice is made at Services construction.
-    worker_pool_backend: str = ConfigField(default="pipe", writable=True)
-
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
     # largest 256-multiple ctx that fits in available memory and the
     # model's training window; this caps it at a sane ceiling.

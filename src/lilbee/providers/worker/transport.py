@@ -208,32 +208,14 @@ class WorkerSpawner(Protocol):
         ...
 
 
-def _pipe_spawner_factory() -> WorkerSpawner:
+def default_spawner() -> WorkerSpawner:
     """Return a fresh :class:`PipeSpawner`. Lazy import to avoid a transport_pipe cycle."""
     from lilbee.providers.worker.transport_pipe import PipeSpawner
 
     return PipeSpawner()
 
 
-SPAWNERS: dict[str, Callable[[], WorkerSpawner]] = {
-    "pipe": _pipe_spawner_factory,
-}
-"""Backend-name to spawner-factory registry. Add a new transport here and in cfg."""
-
-
-def make_spawner(backend: str) -> WorkerSpawner:
-    """Return the spawner registered for *backend*; raise on unknown name."""
-    factory = SPAWNERS.get(backend)
-    if factory is None:
-        supported = ", ".join(repr(name) for name in sorted(SPAWNERS))
-        raise ValueError(
-            f"Unknown worker_pool_backend {backend!r}. Supported backends: {supported}."
-        )
-    return factory()
-
-
 __all__ = [
-    "SPAWNERS",
     "ChatRequest",
     "RerankPayload",
     "RoleConfig",
@@ -242,5 +224,5 @@ __all__ = [
     "WorkerEntrypoint",
     "WorkerHandle",
     "WorkerSpawner",
-    "make_spawner",
+    "default_spawner",
 ]

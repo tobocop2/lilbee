@@ -3,15 +3,14 @@
 
 The pool itself does not own a recurring timer (the host loop is the
 authoritative scheduler). Services wires this ticker so the user-visible
-``worker_pool_max_idle_s`` and ``worker_pool_health_timeout_s`` settings
-have observable effect: idle workers actually get reaped and dead
-channels actually get noticed without a request driving the discovery.
+``worker_pool_max_idle_s`` setting has observable effect: idle workers
+actually get reaped and dead channels actually get noticed without a
+request driving the discovery.
 
 Cadence is fixed at :data:`_TICK_INTERVAL_S` because the per-role
-``max_idle_s`` and ``health_timeout_s`` already give the user the two
-knobs they need; a separate cadence knob would just multiply the
-configuration surface without giving them a meaningfully different
-behavior.
+``max_idle_s`` already gives the user the knob they need; a separate
+cadence knob would just multiply the configuration surface without
+giving them a meaningfully different behavior.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ log = logging.getLogger(__name__)
 # accumulation without burning bg-loop wakeups when nothing is live (the
 # tick is a cheap no-op when no role channels are alive). Tunable via
 # monkeypatch in tests; not exposed as a user setting because the per-role
-# max_idle_s / health_timeout_s knobs already cover the meaningful axis.
+# max_idle_s knob already covers the meaningful axis.
 _TICK_INTERVAL_S = 30.0
 
 

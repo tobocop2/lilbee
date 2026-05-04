@@ -10,10 +10,9 @@ change in the transport layer.
 Lifecycle contract
 ==================
 
-1. ``WorkerPool(spawner=..., max_idle_s=..., restart_attempts=...,
-   restart_window_s=...)``: builds the pool object. **No subprocesses
-   spawned yet.** Roles are registered with their entrypoint + role config
-   factory but not started.
+1. ``WorkerPool(spawner=..., max_idle_s=...)``: builds the pool object.
+   **No subprocesses spawned yet.** Roles are registered with their
+   entrypoint + role config factory but not started.
 2. ``await pool.start_eager()``: spawns one process per registered role
    concurrently. Returns when all are up. Optional, gated on the caller's
    own config (``cfg.worker_pool_eager_start``).
@@ -93,10 +92,10 @@ _T = TypeVar("_T")
 
 _DEFAULT_SHUTDOWN_TIMEOUT_S = 5.0
 _DEFAULT_CALL_TIMEOUT_S = 300.0
-_DEFAULT_HEALTH_TIMEOUT_S = 5.0
 _DEFAULT_MAX_IDLE_S = 0.0  # 0 = no idle reaping by default
-_DEFAULT_RESTART_ATTEMPTS = 3
-_DEFAULT_RESTART_WINDOW_S = 60.0
+_HEALTH_TIMEOUT_S = 5.0
+_RESTART_BUDGET = 3
+_RESTART_WINDOW_S = 60.0
 _RUNTIME_THREAD_NAME = "lilbee-worker-pool-loop"
 
 
@@ -245,18 +244,12 @@ class WorkerPool:
         *,
         spawner: WorkerSpawner | None = None,
         max_idle_s: float = _DEFAULT_MAX_IDLE_S,
-        restart_attempts: int = _DEFAULT_RESTART_ATTEMPTS,
-        restart_window_s: float = _DEFAULT_RESTART_WINDOW_S,
-        health_timeout_s: float = _DEFAULT_HEALTH_TIMEOUT_S,
     ) -> None:
         self._spawner: WorkerSpawner = spawner if spawner is not None else PipeSpawner()
         self._roles: dict[str, _Role] = {}
         self._shutdown = False
         self._shutdown_lock = asyncio.Lock()
         self._max_idle_s = max_idle_s
-        self._restart_attempts = restart_attempts
-        self._restart_window_s = restart_window_s
-        self._health_timeout_s = health_timeout_s
 
     def register(
         self,
@@ -328,14 +321,14 @@ class WorkerPool:
         if registration is None:
             raise KeyError(f"Role {role!r} is not registered on this pool.")
         if registration.degraded:
-            raise RoleDegradedError(role, self._restart_attempts, self._restart_window_s)
+            raise RoleDegradedError(role, _RESTART_BUDGET, _RESTART_WINDOW_S)
         if registration.channel is not None and registration.channel.is_alive:
             return registration.channel
         async with registration.spawn_lock:
             if registration.channel is not None and registration.channel.is_alive:
                 return registration.channel
             if registration.degraded:
-                raise RoleDegradedError(role, self._restart_attempts, self._restart_window_s)
+                raise RoleDegradedError(role, _RESTART_BUDGET, _RESTART_WINDOW_S)
             self._raise_if_shutdown()
             channel, _handle = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -380,17 +373,17 @@ class WorkerPool:
             channel = registration.channel
             registration.channel = None
             now = time.monotonic()
-            cutoff = now - self._restart_window_s
+            cutoff = now - _RESTART_WINDOW_S
             while registration.crash_history and registration.crash_history[0] < cutoff:
                 registration.crash_history.popleft()
             registration.crash_history.append(now)
-            if len(registration.crash_history) > self._restart_attempts:
+            if len(registration.crash_history) > _RESTART_BUDGET:
                 registration.degraded = True
                 log.error(
                     "Worker pool marking role=%s degraded after %d crashes in %.0fs",
                     role,
                     len(registration.crash_history),
-                    self._restart_window_s,
+                    _RESTART_WINDOW_S,
                 )
         if channel is not None:
             with contextlib.suppress(WorkerError):
@@ -463,15 +456,14 @@ class WorkerPool:
     ) -> None:
         """Round-trip a ping/pong against *role*; raise on timeout / crash.
 
-        ``timeout`` defaults to the pool's ``health_timeout_s`` (sourced
-        from ``cfg.worker_pool_health_timeout_s`` at Services construction
-        time). Spawns the worker on first use, same as a real call. Caller
+        ``timeout`` defaults to the module-level ``_HEALTH_TIMEOUT_S``.
+        Spawns the worker on first use, same as a real call. Caller
         (typically a background health monitor) decides cadence and
         whether to respond by reaping/restarting; this method only
         propagates the round-trip outcome.
         """
         accessor = self.accessor(role)
-        budget = timeout if timeout is not None else self._health_timeout_s
+        budget = timeout if timeout is not None else _HEALTH_TIMEOUT_S
         await accessor.ping(timeout=budget)
 
     async def release(self, role: str) -> None:

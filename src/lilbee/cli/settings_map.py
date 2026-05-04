@@ -539,36 +539,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "0 disables idle reaping"
         ),
     ),
-    "worker_pool_restart_attempts": SettingDef(
-        int,
-        nullable=False,
-        group="Ingest",
-        help_text=(
-            "How many times a crashed worker may restart inside the restart window "
-            "before the role is marked degraded"
-        ),
-    ),
-    "worker_pool_restart_window_s": SettingDef(
-        float,
-        nullable=False,
-        group="Ingest",
-        help_text=("Sliding window in seconds over which the restart-attempts budget applies"),
-    ),
-    "worker_pool_health_timeout_s": SettingDef(
-        float,
-        nullable=False,
-        group="Ingest",
-        help_text=("How long to wait for a worker's pong reply before treating it as dead"),
-    ),
-    "worker_pool_backend": SettingDef(
-        str,
-        nullable=False,
-        group="Ingest",
-        help_text=(
-            "Worker IPC backend. 'pipe' uses multiprocessing.Pipe (default and only "
-            "supported value today)"
-        ),
-    ),
     "max_tokens": SettingDef(
         int,
         nullable=True,

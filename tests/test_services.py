@@ -122,7 +122,7 @@ class TestEagerStartBranch:
         # source paths so the lazy bindings inside the function pick up the stubs.
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
         monkeypatch.setattr(
-            "lilbee.providers.worker.transport.make_spawner", lambda _backend: MagicMock()
+            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
         )
 
         called: list[str] = []
@@ -182,7 +182,7 @@ class TestEagerStartBranch:
         services_mod.set_services(None)
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
         monkeypatch.setattr(
-            "lilbee.providers.worker.transport.make_spawner", lambda _backend: MagicMock()
+            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
         )
 
         class _BoomRuntime:
