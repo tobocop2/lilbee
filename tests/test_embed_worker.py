@@ -247,7 +247,7 @@ def test_session_close_is_idempotent() -> None:
 
 
 def test_session_close_swallows_llm_close_errors() -> None:
-    """Discipline rule: shutdown must never crash on a misbehaving model close()."""
+    """Shutdown must never crash on a misbehaving model close()."""
     role_config = RoleConfig(
         role="embed", model_path=__import__("pathlib").Path("/nope"), mode="embed"
     )

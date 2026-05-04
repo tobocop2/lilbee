@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from lilbee.core.config import cfg
-from lilbee.providers.worker.legacy_protocol import (
+from lilbee.providers.worker.wm_protocol import (
     ConfigSnapshot,
     EmbedRequest,
     EmbedResponse,

@@ -1,21 +1,4 @@
-"""Persistent embedding worker subprocess entrypoint.
-
-Runs in a child process spawned by :class:`PipeSpawner`. Loads the
-embedding GGUF once at startup (or lazily on first ``embed`` request)
-and serves embed requests for the TUI's lifetime. The pipe transport's
-in-flight counter keeps the idle reaper from racing a long batch.
-
-Wire protocol (each message is a tuple ``(kind, payload)``):
-
-* ``("ping", None)`` -> ``("pong", None)``
-* ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("embed", list[str])`` -> ``("result", list[list[float]])`` or
-  ``("error", _SerializedException)``
-
-The worker uses :func:`Connection.poll` with a small timeout instead of
-bare :meth:`recv` so SIGTERM and shutdown checks fire promptly
-(transport_pipe discipline rule 3).
-"""
+"""Long-lived embed worker subprocess body."""
 
 from __future__ import annotations
 

@@ -1,11 +1,8 @@
 """Tests for the multiprocessing.Pipe-backed worker transport.
 
-Covers the eight IPC discipline rules from
-``transport_pipe.py``'s module docstring with real spawn-context
-subprocesses (stdlib only, no mocks): protocol round-trips, streaming
-(chunk + end terminator), error replies, ping/pong, abort flag, payload
+Spawns real subprocesses (stdlib only, no mocks) to exercise protocol
+round-trips, streaming, error replies, ping/pong, abort flag, payload
 size cap, in-flight counter, crash detection, and idempotent close.
-
 Each test that spawns a worker is annotated for pytest-xdist isolation.
 """
 
@@ -110,11 +107,7 @@ _ECHO_DISPATCH = {
 
 
 def _echo_worker_main(conn: Any, abort_flag: Any, _role_config: RoleConfig) -> None:
-    """Worker that dispatches kinds via _ECHO_DISPATCH.
-
-    Honors ('shutdown', None) and ('ping', None). Polls so SIGTERM
-    propagates (discipline rule 3 from transport_pipe.py).
-    """
+    """Worker that dispatches kinds via _ECHO_DISPATCH; polls so SIGTERM propagates."""
     try:
         while True:
             if not conn.poll(timeout=_POLL_TIMEOUT_S):
@@ -311,7 +304,7 @@ async def test_cancel_sets_abort_flag_and_worker_observes_it(
 
 
 # =====================================================================
-# Pickle size cap: discipline rule 2.
+# Pickle size cap.
 # =====================================================================
 
 
@@ -426,7 +419,7 @@ def test_serialize_exception_returns_triple_for_picklable_type() -> None:
 
 
 def test_serialize_exception_extracts_metadata_even_from_unpicklable_exception() -> None:
-    """Discipline rule 4: exceptions whose __reduce__ raises still surface info."""
+    """Exceptions whose __reduce__ raises still surface (type, message, traceback)."""
 
     class _Unpicklable(RuntimeError):
         def __reduce__(self):  # type: ignore[override]
@@ -451,7 +444,7 @@ def test_worker_crash_error_carries_role_name() -> None:
 
 
 def test_pipe_spawner_uses_spawn_context() -> None:
-    """Discipline rule: never rely on the per-OS default mp context."""
+    """The pipe spawner pins the multiprocessing context to spawn."""
     spawner = PipeSpawner()
     assert spawner._ctx.get_start_method() == "spawn"
 
@@ -505,7 +498,7 @@ async def test_ping_raises_on_non_pong_reply(
 
 
 def test_check_pickle_size_wraps_pickle_failure() -> None:
-    """Discipline rule 2 helper: unpicklable payload surfaces as PickleError."""
+    """Unpicklable payload surfaces as PickleError before the send."""
     from lilbee.providers.worker.transport_pipe import _check_pickle_size
 
     # Lambda is famously unpicklable; pickle.dumps raises immediately.

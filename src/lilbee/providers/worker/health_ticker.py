@@ -1,17 +1,4 @@
-"""Background ticker that drives :meth:`WorkerPool.reap_idle` and
-:meth:`WorkerPool.ping_role` on a fixed cadence.
-
-The pool itself does not own a recurring timer (the host loop is the
-authoritative scheduler). Services wires this ticker so the user-visible
-``worker_pool_max_idle_s`` setting has observable effect: idle workers
-actually get reaped and dead channels actually get noticed without a
-request driving the discovery.
-
-Cadence is fixed at :data:`_TICK_INTERVAL_S` because the per-role
-``max_idle_s`` already gives the user the knob they need; a separate
-cadence knob would just multiply the configuration surface without
-giving them a meaningfully different behavior.
-"""
+"""Background ticker that drives WorkerPool.reap_idle and ping_role on a fixed cadence."""
 
 from __future__ import annotations
 
@@ -35,7 +22,7 @@ _TICK_INTERVAL_S = 30.0
 
 @dataclass
 class HealthTickerHandle:
-    """Mutable holder so the frozen Services container can still cancel the ticker."""
+    """Holds the ticker's background future for later cancellation."""
 
     future: Future[None] | None = None
 

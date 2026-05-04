@@ -1,59 +1,8 @@
-"""Persistent worker-pool manager.
+"""Lifecycle for per-role inference subprocess workers.
 
-Owns the lifecycle of all per-role workers (embed, chat, rerank, vision)
-in the TUI process. Talks to workers exclusively through the
-:class:`lilbee.providers.worker.transport.WorkerSpawner` /
-:class:`lilbee.providers.worker.transport.WorkerChannel` Protocols, so
-swapping the IPC primitive (mp.Pipe today, pyzmq tomorrow) is a one-file
-change in the transport layer.
-
-Lifecycle contract
-==================
-
-1. ``WorkerPool(spawner=..., max_idle_s=...)``: builds the pool object.
-   **No subprocesses spawned yet.** Roles are registered with their
-   entrypoint + role config factory but not started.
-2. ``await pool.start_eager()``: spawns one process per registered role
-   concurrently. Returns when all are up. Optional, gated on the caller's
-   own config (``cfg.worker_pool_eager_start``).
-3. ``await pool.<role>.call(...)``: lazy-spawn the role's worker on first
-   call. Subsequent calls reuse the live channel.
-4. ``await pool.shutdown(timeout=5.0)``: send shutdown to every live
-   worker, await graceful exit, terminate stragglers. Idempotent.
-5. Per-role accessors raise :class:`PoolShutdownError` after ``shutdown``.
-
-The pool itself is async-safe: per-role accessor lookups and lazy spawn
-serialize on a per-role asyncio.Lock so two concurrent first-callers do
-not race to spawn two workers.
-
-Restart-on-crash policy
------------------------
-
-A channel that raises :class:`WorkerCrashError` (or reports
-``is_alive == False``) is dropped via :meth:`_on_crash`; the next call
-spawns a fresh worker. The pool tracks each role's crash timestamps in a
-deque and refuses to spawn past ``restart_attempts`` crashes within
-``restart_window_s`` seconds; consumers see :class:`RoleDegradedError`
-until the user explicitly invokes :meth:`reset_role_failures` (typically
-from a TUI "retry" affordance) or restarts the process.
-
-Idle reaping
-------------
-
-If ``max_idle_s > 0``, every successful ``call()`` / ``stream()`` /
-``ping()`` round-trip stamps the role's ``last_used`` timestamp.
-:meth:`reap_idle` (called periodically by an external monitor; the pool
-itself does not own the ticker) closes any role whose ``last_used`` is
-older than the budget and whose ``in_flight`` counter is zero. The next
-request respawns the role transparently.
-
-Health pings
-------------
-
-:meth:`ping_role` issues one ping/pong round-trip against a live channel
-and propagates timeout / crash as :class:`WorkerCrashError`. External
-monitors call this at their own cadence; the pool does not own a
-recurring health timer.
+Owns the embed, chat, rerank, and vision worker processes. Lifecycle
+contract, restart-budget policy, idle reaping, and health pings are
+documented in ``docs/architecture.md`` under "Inference worker pool".
 """
 
 from __future__ import annotations
@@ -357,15 +306,7 @@ class WorkerPool:
         return registration.channel
 
     async def _on_crash(self, role: str) -> None:
-        """Drop a crashed channel; mark degraded if the restart budget is exhausted.
-
-        Bookkeeping rule: every entry in ``crash_history`` older than
-        ``restart_window_s`` is evicted before counting; if the surviving
-        count plus this crash exceeds ``restart_attempts``, the role is
-        marked degraded and the next ``_ensure_channel`` raises
-        :class:`RoleDegradedError` until the user calls
-        :meth:`reset_role_failures`. Safe to call repeatedly.
-        """
+        """Drop a crashed channel; mark degraded if the restart budget is exhausted."""
         registration = self._roles.get(role)
         if registration is None:
             return

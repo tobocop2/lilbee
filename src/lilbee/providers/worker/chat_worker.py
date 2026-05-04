@@ -1,25 +1,4 @@
-"""Persistent chat worker subprocess entrypoint with token streaming.
-
-Runs in a child process spawned by :class:`PipeSpawner`. Loads the chat
-GGUF on first request and serves chat completions, including streaming,
-for the TUI's lifetime. The shared ``mp.Value`` abort flag from the spawn
-is read by llama-cpp's ``abort_callback`` so the parent's pool-side
-cancel takes effect mid-generation.
-
-Wire protocol (each message is a tuple ``(kind, payload)``):
-
-* ``("ping", None)`` -> ``("pong", None)``
-* ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("chat", ChatRequest)`` -> ``("result", str)`` (non-streaming) or
-  a sequence of ``("stream_chunk", str)`` followed by
-  ``("stream_end", None)`` (streaming). Errors at any point yield
-  ``("error", _SerializedException)``.
-
-``ChatRequest`` (see :mod:`transport`) carries the messages list,
-streaming flag, llama-cpp kwargs, and an optional ``model`` override
-that triggers a transparent in-worker reload (one extra cold-load)
-rather than respawning the whole worker process.
-"""
+"""Long-lived chat worker subprocess body, with token streaming."""
 
 from __future__ import annotations
 
@@ -39,12 +18,7 @@ from lilbee.providers.worker.worker_runtime import run_worker
 
 
 def _make_abort_callback(abort_flag: Any) -> Any:
-    """Return a llama-cpp abort_callback bound to the shared mp.Value flag.
-
-    Discipline rule: the flag uses ``lock=True`` so reads are atomic on
-    every supported architecture (x86 + ARM). The cost of one acquire
-    per token-generation tick is negligible vs llama-cpp inference.
-    """
+    """Return a llama-cpp abort_callback bound to the shared mp.Value flag."""
 
     def _callback(_user_data: Any = None) -> bool:
         return bool(abort_flag.value)

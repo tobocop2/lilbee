@@ -1,8 +1,4 @@
-"""Per-call worker subprocess protocol used by ``WorkerManager``.
-
-Reached for vision OCR when ``cfg.worker_pool_enabled = False``.
-The pool path uses :mod:`lilbee.providers.worker.transport_pipe`.
-"""
+"""Wire types for the per-call ``WorkerManager`` vision-OCR subprocess."""
 
 from __future__ import annotations
 

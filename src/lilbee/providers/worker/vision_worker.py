@@ -1,20 +1,4 @@
-"""Persistent vision-OCR worker subprocess entrypoint.
-
-Runs in a child process spawned by :class:`PipeSpawner`. Loads the
-vision GGUF (chat handler with embedded mtmd template) on first
-request and serves single-image OCR for the TUI's lifetime.
-
-Wire protocol:
-
-* ``("ping", None)`` -> ``("pong", None)``
-* ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("vision_ocr", VisionRequest)`` -> ``("result", str)`` or
-  ``("error", _SerializedException)``
-
-``VisionRequest`` (see :mod:`transport`) carries the PNG bytes, prompt,
-and an optional ``model`` override that triggers a transparent in-worker
-reload when it differs from the role-config model.
-"""
+"""Long-lived vision-OCR worker subprocess body."""
 
 from __future__ import annotations
 
@@ -32,12 +16,7 @@ log = logging.getLogger(__name__)
 
 
 def _make_abort_callback(abort_flag: Any) -> Any:
-    """Return a llama-cpp abort_callback bound to the shared mp.Value flag.
-
-    The flag uses ``lock=True`` so reads are atomic on every supported
-    architecture (x86 + ARM). The cost of one acquire per ggml tick is
-    negligible vs vision inference cost.
-    """
+    """Return a llama-cpp abort_callback bound to the shared mp.Value flag."""
 
     def _callback(_user_data: Any = None) -> bool:
         return bool(abort_flag.value)

@@ -1,16 +1,6 @@
-"""IPC abstraction for the persistent worker pool.
+"""Bidirectional channel and spawner protocols for worker IPC.
 
-Defines the two thin Protocols that :class:`lilbee.providers.worker.pool.WorkerPool`,
-the per-role worker entrypoints, and all consumer code (LlamaCppProvider,
-mtmd_backend, ingest, services, app) talk to. The current concrete impl lives
-in :mod:`lilbee.providers.worker.transport_pipe` and is backed by
-:class:`multiprocessing.Pipe`. A future ``transport_zmq.py`` (pyzmq) can drop
-in without touching consumer code: only the spawner selection in
-``WorkerPool.__init__`` changes.
-
-Nothing in this module imports ``multiprocessing`` directly. The Protocols
-describe the contract a transport must satisfy; the concrete file owns the
-mp.Pipe / mp.Process / mp.Value details.
+Concrete impl lives in :mod:`lilbee.providers.worker.transport_pipe`.
 """
 
 from __future__ import annotations

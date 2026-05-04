@@ -1,43 +1,8 @@
-"""``multiprocessing.Pipe`` backed implementation of the worker transport.
+"""``multiprocessing.Pipe``-backed worker channel and spawner.
 
-Concrete impls of the ``WorkerChannel`` and ``WorkerSpawner`` Protocols from
-:mod:`lilbee.providers.worker.transport`. Owns every detail that depends on
-the stdlib ``multiprocessing`` module: spawn context, pipe ends, abort flag,
-per-channel thread executor, in-flight counter, crash detection.
-
-The eight IPC discipline rules from the design plan live here because they
-are pipe-specific:
-
-1. Pipe buffer is ~64 KiB on Linux; ``conn.send()`` blocks once full. The
-   :meth:`PipeChannel.stream` consumer is the only awaiter on ``recv`` for
-   that channel and yields chunks directly off the pipe (pull-based
-   backpressure). Slow consumers cannot starve the recv loop because the
-   recv loop only fires when the consumer awaits the next chunk.
-2. ``Connection.send()`` raises ``ValueError`` on pickles larger than about
-   32 MiB (OS-dependent). Token streaming is fine, but vision OCR and rerank
-   payloads can hit it. ``call`` / ``stream`` enforce the cap with a clear
-   error before the pickle round-trip; very large payloads must use
-   ``send_bytes`` (added on demand by the caller; not needed yet).
-3. Worker main loop uses ``conn.poll(timeout=…)`` not bare ``recv`` so
-   SIGTERM and shutdown timeouts fire (bare ``recv`` ignores signals). That
-   rule lives in each per-role worker entrypoint, not here.
-4. Exceptions are pickle-serialized through :func:`_serialize_exception`,
-   which falls back to ``(type_name, str(exc), tb_str)`` if the exception
-   itself is not picklable.
-5. Idle reaping checks :attr:`PipeChannel.in_flight` is zero, not "no
-   recent message". A pending ``recv`` in the middle of a request is in-
-   flight until the terminator arrives.
-6. ``pytest-xdist`` parallelism nests with our spawn; integration tests
-   that exercise the pool mark the file ``no_xdist``. That rule lives in
-   the test files, not here.
-7. ``daemon=True`` workers cannot spawn children. The pipe spawner sets
-   ``daemon=True`` by default; vision/mtmd workers that ever shell out
-   to ffmpeg etc. must override via :class:`PipeSpawner` ``daemon=False``
-   and rely on the pool's ``atexit`` shutdown.
-8. Abort is best-effort. Once the parent flips the abort flag, in-flight
-   ``stream_chunk`` messages already in the pipe still drain (a few extra
-   tokens). The user-facing toast should say "Cancelling..." until the
-   worker emits its terminator.
+Concrete impl of the ``WorkerChannel`` / ``WorkerSpawner`` Protocols
+from :mod:`lilbee.providers.worker.transport`. Pipe-specific discipline
+rules are documented in ``docs/architecture.md``.
 """
 
 from __future__ import annotations
@@ -125,16 +90,12 @@ class WorkerCrashError(WorkerError):
 
 
 def _serialize_exception(exc: BaseException) -> _SerializedException:
-    """Reduce an exception to a pickle-safe triple.
+    """Reduce an exception to a pickle-safe ``(type_name, message, traceback)`` triple.
 
-    Always returns a plain triple of (type_name, str(exc), tb_str). We do
-    not ship the live exception across the pipe because some commonly
-    raised types are not picklable (``_thread.RLock`` references in the
-    traceback frames, several ``OSError`` subclasses, structlog wrappers,
-    `cpython#101159`_). The triple format guarantees the parent always
-    sees an error rather than a silent worker crash.
-
-    See discipline rule 4 in the module docstring.
+    The live exception itself is not picklable for several common types
+    (``_thread.RLock`` references in tracebacks, several ``OSError``
+    subclasses, structlog wrappers, `cpython#101159`_), so the triple is
+    what crosses the pipe.
 
     .. _cpython#101159: https://github.com/python/cpython/issues/101159
     """

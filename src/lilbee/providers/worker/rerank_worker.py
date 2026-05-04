@@ -1,17 +1,4 @@
-"""Persistent reranker worker subprocess entrypoint.
-
-Runs in a child process spawned by :class:`PipeSpawner`. Loads the
-reranker GGUF on first request and serves rerank requests for the TUI's
-lifetime. Wire protocol mirrors the embed worker:
-
-* ``("ping", None)`` -> ``("pong", None)``
-* ``("shutdown", None)`` -> ``("ack", None)`` then exit
-* ``("rerank", RerankPayload)`` -> ``("result", list[float])`` or
-  ``("error", _SerializedException)``
-
-``RerankPayload`` (see :mod:`transport`) carries the query and the
-candidate list as named attributes.
-"""
+"""Long-lived rerank worker subprocess body."""
 
 from __future__ import annotations
 
