@@ -38,11 +38,14 @@ class RerankRequest:
 
 
 def embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text. Caller must already hold ``stderr_suppressed()``.
+    """Embed a single text. Caller must run with fd 2 already redirected.
 
-    Hoisting the suppression to the caller is deliberate: per-text wrapping
-    serializes ``_STDERR_LOCK`` + four syscalls inside the embed loop, which
-    starves the TUI threads of CPU during long ingests (the visible UI freeze).
+    Either ``stderr_suppressed()`` must be held in-process or the caller
+    must run inside a subprocess where ``_redirect_stdio()`` ran at start
+    (see ``lilbee.providers.worker.worker``). Hoisting the suppression to
+    the caller is deliberate: per-text wrapping serializes ``_STDERR_LOCK``
+    plus four syscalls inside the embed loop, which starves the TUI threads
+    of CPU during long ingests (the visible UI freeze).
     """
     response = llm.create_embedding(input=[text])
     result: list[float] = response["data"][0]["embedding"]
@@ -56,7 +59,7 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
     as ``query</s></s>candidate``; passing them as two inputs makes
     ``llama_decode`` fail with ``-1``.
 
-    Caller must already hold ``stderr_suppressed()`` (see :func:`embed_one`).
+    Caller must run with fd 2 already redirected (see :func:`embed_one`).
     """
     scores: list[float] = []
     for candidate in candidates:

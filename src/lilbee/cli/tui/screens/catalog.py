@@ -39,6 +39,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     frontier_row_from_remote,
     matches_search,
     remote_to_row,
+    row_delete_id,
     variant_to_row,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -54,8 +55,6 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
-from lilbee.providers.model_ref import OLLAMA_PREFIX
-from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
 log = logging.getLogger(__name__)
 
@@ -1048,12 +1047,7 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            ref = (
-                f"{OLLAMA_PREFIX}{row.remote_model.name}"
-                if row.remote_model.provider == OLLAMA_BACKEND_NAME
-                else row.remote_model.name
-            )
-            apply_active_model(self.app, "chat_model", ref)
+            apply_active_model(self.app, "chat_model", row.ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
@@ -1179,7 +1173,7 @@ class CatalogScreen(Screen[None]):
         """Return the registry-compatible model ref for the focused/highlighted row."""
         if not self._grid_view and self._list_widget.has_focus:
             row = self._list_widget.highlighted_row()
-            return row.ref or None if row else None
+            return row_delete_id(row) if row else None
         focused_grid = self._focused_grid()
         if focused_grid is None or focused_grid.highlighted is None:
             return None
@@ -1187,12 +1181,12 @@ class CatalogScreen(Screen[None]):
             rows = focused_grid.rows
             index = focused_grid.highlighted
             if 0 <= index < len(rows):
-                return rows[index].ref or None
+                return row_delete_id(rows[index])
             return None
         # GridSelect path: cards are direct children indexed positionally.
         child = focused_grid.children[focused_grid.highlighted]
         if isinstance(child, ModelCard):
-            return child.row.ref or None
+            return row_delete_id(child.row)
         return None
 
     @work(thread=True)
