@@ -1769,8 +1769,8 @@ class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
         from lilbee.catalog import display_label_for_ref
 
-        ref = "bartowski/SmolLM2-135M-Instruct-GGUF/SmolLM2-135M-Instruct-Q3_K_S.gguf"
-        assert display_label_for_ref(ref) == "SmolLM2 135M"
+        ref = "Qwen/Qwen2.5-7B-Instruct-GGUF/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+        assert display_label_for_ref(ref) == "Qwen2.5 7B"
 
     def test_ollama_prefix_drops_only_the_prefix(self) -> None:
         from lilbee.catalog import display_label_for_ref

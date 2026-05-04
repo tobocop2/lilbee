@@ -23,8 +23,8 @@ from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
-_SELF_CHECK_CHAT_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
-_SELF_CHECK_CHAT_FILE = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+_SELF_CHECK_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
+_SELF_CHECK_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
 _SELF_CHECK_EMBED_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _SELF_CHECK_EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
@@ -114,7 +114,7 @@ def self_check_cmd(
 
     Two legs:
 
-    1. **Chat**: downloads ``SmolLM2-135M-Instruct-Q3_K_S.gguf`` (~90MB),
+    1. **Chat**: downloads ``Qwen3-0.6B-Q8_0.gguf`` (~500MB),
        runs ``load_llama(..., mode=MODE_CHAT)`` so the dynamic-ctx picker /
        flash-attention default / KV cache mapping fire, then issues a tiny
        ``create_completion``.
