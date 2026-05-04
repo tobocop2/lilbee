@@ -316,7 +316,7 @@ class PipeChannel:
             self._bump_in_flight(-1)
 
     def cancel(self) -> None:
-        """Flip the abort flag to 1; in-flight tokens may still drain (rule 8)."""
+        """Flip the abort flag to 1; in-flight tokens may still drain."""
         self._abort.value = 1
 
     def clear_abort(self) -> None:

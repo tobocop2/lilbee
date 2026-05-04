@@ -10,13 +10,8 @@ _RERANK_PAIR_SEPARATOR = "</s></s>"
 
 
 def embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text. Caller must run with fd 2 already redirected.
-
-    Either ``stderr_suppressed()`` must be held in-process or the caller
-    must run inside a subprocess where ``_redirect_stdio()`` ran at start.
-    Per-text wrapping is what made the TUI appear frozen during multi-page
-    PDF ingest.
-    """
+    """Embed a single text. Caller must run inside a worker subprocess where
+    ``redirect_stdio_to_devnull()`` ran at startup so fd 2 is already redirected."""
     response = llm.create_embedding(input=[text])
     result: list[float] = response["data"][0]["embedding"]
     return result

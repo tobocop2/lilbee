@@ -92,12 +92,7 @@ class _ChatSession:
 
 
 def _extract_stream_content(chunk: Any) -> str | None:
-    """Pull the text content out of one llama-cpp streaming chunk.
-
-    Mirrors the existing in-process ``_LockedStreamIterator`` shape so
-    the parent's pool-backed iterator yields the same per-chunk strings
-    consumers already expect.
-    """
+    """Pull the text content out of one llama-cpp streaming chunk."""
     choices = chunk.get("choices") if isinstance(chunk, dict) else None
     if not choices:
         return None

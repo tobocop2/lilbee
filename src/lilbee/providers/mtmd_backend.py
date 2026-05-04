@@ -109,8 +109,7 @@ def load_vision_llama(
     """Load a vision-capable ``Llama`` using the GGUF-templated chat handler.
 
     ``abort_callback_override`` lets pool workers bind a callback that
-    reads the cross-process ``mp.Value`` flag instead of the in-process
-    threading.Event used by the fallback path.
+    reads the worker's shared ``mp.Value`` abort flag.
     """
     Llama = import_llama_cpp().Llama  # noqa: N806 # heavy native lib; keep import lazy
 

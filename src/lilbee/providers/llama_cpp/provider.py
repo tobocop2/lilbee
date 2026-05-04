@@ -382,7 +382,7 @@ class _PoolChatStreamIterator:
     Each ``__next__`` submits one ``__anext__`` to the pool's runtime
     loop and blocks for the result. ``close()`` flips the worker's abort
     flag so any in-flight generation stops at the next token-tick;
-    in-flight chunks already in the pipe still drain (transport rule 8).
+    in-flight chunks already in the pipe still drain.
     """
 
     def __init__(
@@ -549,8 +549,7 @@ def load_llama(
     """Load a llama_cpp.Llama in chat, embed, or rerank mode.
 
     ``abort_callback_override`` lets pool workers bind a callback that
-    reads the cross-process ``mp.Value`` flag instead of the in-process
-    threading.Event used by the fallback path.
+    reads the worker's shared ``mp.Value`` abort flag.
     """
     Llama = import_llama_cpp().Llama  # noqa: N806
 
