@@ -1,10 +1,4 @@
-"""Tests for LlamaCppProvider.embed routing through the persistent pool.
-
-The project-wide conftest disables the pool for unit tests via
-``LILBEE_DISABLE_WORKER_POOL=1``. This file opts back into the
-production default with ``@pytest.mark.worker_pool`` so ``embed`` and
-friends reach a real subprocess via the pool.
-"""
+"""End-to-end tests for LlamaCppProvider.embed routing through the persistent pool."""
 
 from __future__ import annotations
 
@@ -16,10 +10,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.worker.embed_worker import _EmbedSession
 from lilbee.providers.worker.transport import RoleConfig
 
-pytestmark = [
-    pytest.mark.worker_pool,
-    pytest.mark.xdist_group("worker_pool_routing"),
-]
+pytestmark = [pytest.mark.xdist_group("worker_pool_routing")]
 
 
 # =====================================================================
@@ -164,28 +155,46 @@ def test_shutdown_idempotent_after_pool_use(pool_provider) -> None:
     assert pool_provider._registered_roles == set()
 
 
-def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool worker errors must propagate as ProviderError, not silently fall back."""
+def _patch_runtime_run_sync_to_raise(monkeypatch, exc: Exception) -> None:
+    """Patch PoolRuntime.run_sync to raise *exc* without leaving coroutines hanging."""
+    from lilbee.providers.worker.pool import PoolRuntime
+
+    def _run_sync(self, coro, *, timeout):
+        if hasattr(coro, "close"):
+            coro.close()
+        raise exc
+
+    monkeypatch.setattr(PoolRuntime, "run_sync", _run_sync)
+
+
+def _setup_provider_for_error_test(monkeypatch, tmp_path):
     cfg.worker_pool_call_timeout_s = 30.0
     cfg.embedding_model = "stub/model"
+    cfg.chat_model = "stub/chat"
+    cfg.reranker_model = "stub/rerank"
+    cfg.vision_model = "stub/vision"
     cfg.models_dir = tmp_path / "models"
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
-
     monkeypatch.setattr(
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         lambda _name: tmp_path / "models" / "stub.gguf",
     )
-
-    from lilbee.providers.base import ProviderError
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
-    from lilbee.providers.worker.transport_pipe import WorkerError
 
     provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
+    return provider
 
-    def _boom(_texts):
-        raise WorkerError("RuntimeError", "simulated pool failure", "")
 
-    monkeypatch.setattr(provider, "_embed_via_pool", _boom)
+def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
+    """Pool worker errors must propagate as ProviderError, not silently fall back."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
+    )
     try:
         with pytest.raises(ProviderError, match="Embedding worker crashed"):
             provider.embed(["hello"])
@@ -194,26 +203,11 @@ def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_p
 
 
 def test_embed_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool ``TimeoutError`` (from ``accessor.call`` or ``runtime.run_sync``)
-    must surface as ProviderError instead of leaking the raw OSError-shaped
-    ``TimeoutError`` to the caller."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/model"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
+    """Pool ``TimeoutError`` must surface as ProviderError instead of leaking raw."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
-    provider = LlamaCppProvider()
-
-    def _hang(_texts):
-        raise TimeoutError("simulated pool timeout")
-
-    monkeypatch.setattr(provider, "_embed_via_pool", _hang)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(monkeypatch, TimeoutError("simulated pool timeout"))
     try:
         with pytest.raises(ProviderError, match="Embedding worker timed out"):
             provider.embed(["hello"])
@@ -387,26 +381,14 @@ def test_rerank_with_empty_candidates_short_circuits(rerank_pool_provider) -> No
 
 
 def test_rerank_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/model"
-    cfg.reranker_model = "stub/reranker"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
+    """Pool worker errors must propagate as ProviderError."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
     from lilbee.providers.worker.transport_pipe import WorkerError
 
-    provider = LlamaCppProvider()
-
-    def _boom(_query, _candidates):
-        raise WorkerError("RuntimeError", "simulated pool failure", "")
-
-    monkeypatch.setattr(provider, "_rerank_via_pool", _boom)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
+    )
     try:
         with pytest.raises(ProviderError, match="Rerank worker crashed"):
             provider.rerank("q", ["abc", "de"])
@@ -415,25 +397,11 @@ def test_rerank_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_
 
 
 def test_rerank_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool TimeoutError must surface as ProviderError, not raw OSError-shaped TimeoutError."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/model"
-    cfg.reranker_model = "stub/reranker"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
+    """Pool TimeoutError must surface as ProviderError."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
-    provider = LlamaCppProvider()
-
-    def _hang(_query, _candidates):
-        raise TimeoutError("simulated pool timeout")
-
-    monkeypatch.setattr(provider, "_rerank_via_pool", _hang)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(monkeypatch, TimeoutError("simulated pool timeout"))
     try:
         with pytest.raises(ProviderError, match="Rerank worker timed out"):
             provider.rerank("q", ["abc", "de"])
@@ -666,26 +634,14 @@ def test_chat_streaming_mid_stream_timeout_raises_provider_error(
 
 
 def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/embed"
-    cfg.chat_model = "stub/chat"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
+    """Pool worker errors must propagate as ProviderError."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
     from lilbee.providers.worker.transport_pipe import WorkerError
 
-    provider = LlamaCppProvider()
-
-    def _boom(*, messages, stream, options, model):
-        raise WorkerError("RuntimeError", "simulated pool failure", "")
-
-    monkeypatch.setattr(provider, "_chat_via_pool", _boom)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
+    )
     try:
         with pytest.raises(ProviderError, match="Chat worker crashed"):
             provider.chat([{"role": "user", "content": "hi"}])
@@ -694,25 +650,11 @@ def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_pa
 
 
 def test_chat_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool TimeoutError must surface as ProviderError, not raw OSError-shaped TimeoutError."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/embed"
-    cfg.chat_model = "stub/chat"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
+    """Pool TimeoutError must surface as ProviderError."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
-    provider = LlamaCppProvider()
-
-    def _hang(*, messages, stream, options, model):
-        raise TimeoutError("simulated pool timeout")
-
-    monkeypatch.setattr(provider, "_chat_via_pool", _hang)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(monkeypatch, TimeoutError("simulated pool timeout"))
     try:
         with pytest.raises(ProviderError, match="Chat worker timed out"):
             provider.chat([{"role": "user", "content": "hi"}])
@@ -845,27 +787,14 @@ def test_vision_ocr_repeated_calls_reuse_one_accessor(vision_pool_provider) -> N
 
 
 def test_vision_ocr_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool worker errors must propagate as ProviderError, not silently fall back."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/embed"
-    cfg.vision_model = "stub/vision"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
-
+    """Pool worker errors must propagate as ProviderError."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
     from lilbee.providers.worker.transport_pipe import WorkerError
 
-    provider = LlamaCppProvider()
-
-    def _boom(**_kwargs):
-        raise WorkerError("RuntimeError", "simulated pool failure", "")
-
-    monkeypatch.setattr(provider, "_vision_ocr_via_pool", _boom)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
+    )
     try:
         with pytest.raises(ProviderError, match="Vision worker crashed"):
             provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
@@ -874,25 +803,11 @@ def test_vision_ocr_pool_worker_error_propagates_as_provider_error(monkeypatch, 
 
 
 def test_vision_ocr_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
-    """Pool TimeoutError must surface as ProviderError, not raw OSError-shaped TimeoutError."""
-    cfg.worker_pool_call_timeout_s = 30.0
-    cfg.embedding_model = "stub/embed"
-    cfg.vision_model = "stub/vision"
-    cfg.models_dir = tmp_path / "models"
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-        lambda _name: tmp_path / "models" / "stub.gguf",
-    )
+    """Pool TimeoutError must surface as ProviderError."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
-    provider = LlamaCppProvider()
-
-    def _hang(**_kwargs):
-        raise TimeoutError("simulated pool timeout")
-
-    monkeypatch.setattr(provider, "_vision_ocr_via_pool", _hang)
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(monkeypatch, TimeoutError("simulated pool timeout"))
     try:
         with pytest.raises(ProviderError, match="Vision worker timed out"):
             provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
@@ -962,10 +877,9 @@ def test_vision_call_budget_falls_back_to_cfg_ocr_timeout(monkeypatch) -> None:
 
 
 def test_vision_call_budget_uses_no_cap_when_zero() -> None:
-    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
-    from lilbee.providers.worker.manager import _NO_CAP_TIMEOUT_S
+    from lilbee.providers.llama_cpp.provider import _VISION_NO_CAP_TIMEOUT_S, LlamaCppProvider
 
-    assert LlamaCppProvider._vision_call_budget(0) == _NO_CAP_TIMEOUT_S
+    assert LlamaCppProvider._vision_call_budget(0) == _VISION_NO_CAP_TIMEOUT_S
 
 
 def test_shutdown_handles_pool_release_failure(monkeypatch, tmp_path) -> None:

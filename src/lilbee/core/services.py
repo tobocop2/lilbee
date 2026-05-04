@@ -67,19 +67,9 @@ class Services:
     pool_health_ticker: HealthTickerHandle
 
     def cancel_inference(self) -> None:
-        """Interrupt any in-flight inference call.
-
-        Always sets the in-process abort flag, plus the pool's per-role
-        abort flag when pool mode is enabled, so any in-flight inference
-        is interrupted regardless of which path produced it. Idempotent.
-        """
-        from lilbee.providers.llama_cpp.abort_signal import request_abort
-        from lilbee.providers.worker.pool import worker_pool_enabled
-
-        if worker_pool_enabled():
-            for role_name in self.worker_pool.registered_roles:
-                self.worker_pool.accessor(role_name).cancel()
-        request_abort()
+        """Flip the abort flag on every registered worker pool role. Idempotent."""
+        for role_name in self.worker_pool.registered_roles:
+            self.worker_pool.accessor(role_name).cancel()
 
 
 _svc: Services | None = None
@@ -105,8 +95,8 @@ def get_services() -> Services:
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
-    from lilbee.providers.worker.health_ticker import HealthTickerHandle, start_health_ticker
-    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool, worker_pool_enabled
+    from lilbee.providers.worker.health_ticker import start_health_ticker
+    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.providers.worker.transport import default_spawner
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -136,10 +126,8 @@ def get_services() -> Services:
         asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
     )
     crawler_sync_state = CrawlerSyncState()
-    pool_health_ticker: HealthTickerHandle = (
-        start_health_ticker(worker_pool, pool_runtime, get_loop())
-        if worker_pool_enabled()
-        else HealthTickerHandle()
+    pool_health_ticker: HealthTickerHandle = start_health_ticker(
+        worker_pool, pool_runtime, get_loop()
     )
     _svc = Services(
         provider=provider,
@@ -162,7 +150,7 @@ def get_services() -> Services:
     # Eager start is opt-in: pays the per-worker cold-start (1-3s each)
     # at TUI mount instead of on first request. Most users keep it off
     # so `lilbee --help` and the splash screen stay snappy.
-    if cfg.worker_pool_eager_start and worker_pool_enabled():
+    if cfg.worker_pool_eager_start:
         from contextlib import suppress
 
         with suppress(Exception):

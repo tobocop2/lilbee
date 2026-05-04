@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -121,95 +120,6 @@ class TestLlamaCppProvider:
         self._providers.append(p)
         return p
 
-    def test_embed(self, mock_llama_cpp: mock.MagicMock) -> None:
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_embedding.side_effect = [
-            {"data": [{"embedding": [0.1, 0.2, 0.3]}]},
-            {"data": [{"embedding": [0.4, 0.5, 0.6]}]},
-        ]
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        provider = self._make_provider()
-        result = provider.embed(["hello", "world"])
-
-        assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        assert mock_llama_instance.create_embedding.call_count == 2
-
-    def test_chat_non_stream(self, mock_llama_cpp: mock.MagicMock) -> None:
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "Hello there"}}]
-        }
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        provider = self._make_provider()
-        result = provider.chat([{"role": "user", "content": "hi"}])
-
-        assert result == "Hello there"
-
-    def test_chat_stream(self, mock_llama_cpp: mock.MagicMock) -> None:
-        stream_chunks = [
-            {"choices": [{"delta": {"content": "Hello"}}]},
-            {"choices": [{"delta": {"content": " world"}}]},
-            {"choices": [{"delta": {}}]},
-        ]
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_chat_completion.return_value = iter(stream_chunks)
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        provider = self._make_provider()
-        result = provider.chat([{"role": "user", "content": "hi"}], stream=True)
-
-        tokens = list(result)
-        assert tokens == ["Hello", " world"]
-
-    def test_chat_empty_content(self, mock_llama_cpp: mock.MagicMock) -> None:
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": None}}]
-        }
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        provider = self._make_provider()
-        result = provider.chat([{"role": "user", "content": "hi"}])
-
-        assert result == ""
-
-    def test_chat_with_options(self, mock_llama_cpp: mock.MagicMock) -> None:
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        provider = self._make_provider()
-        provider.chat(
-            [{"role": "user", "content": "hi"}],
-            options={"temperature": 0.5, "seed": 42},
-        )
-
-        mock_llama_instance.create_chat_completion.assert_called_once()
-        call_kwargs = mock_llama_instance.create_chat_completion.call_args[1]
-        assert call_kwargs["temperature"] == 0.5
-        assert call_kwargs["seed"] == 42
-
-    def test_chat_model_override(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        (models_dir / "other-model.gguf").write_bytes(b"fake")
-
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        provider = self._make_provider()
-        other_ref = "org/Other-Model-GGUF/other-model.gguf"
-        provider.chat([{"role": "user", "content": "hi"}], model=other_ref)
-
-        # Llama should have been called with a path for other-model
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert "other-model" in call_kwargs["model_path"]
-
     def test_list_models(self, models_dir: Path) -> None:
         provider = self._make_provider()
         result = provider.list_models()
@@ -249,6 +159,74 @@ class TestLlamaCppProvider:
             side_effect=ProviderError("not found"),
         ):
             assert provider.show_model("some-model") is None
+
+    def test_show_model_returns_metadata_for_resolved_path(self, models_dir: Path) -> None:
+        """Success path: resolve + read_gguf_metadata returns a dict."""
+        provider = self._make_provider()
+        meta = {"architecture": "qwen3", "context_length": "8192"}
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value=meta,
+        ):
+            assert provider.show_model("test-model") == meta
+
+    def test_get_capabilities_rerank_short_circuits(self) -> None:
+        """Rerank refs return only ``["rerank"]`` without touching the loader."""
+        provider = self._make_provider()
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider._is_rerank_model",
+            return_value=True,
+        ):
+            assert provider.get_capabilities("any/rerank-model") == ["rerank"]
+
+    def test_get_capabilities_completion_only_when_no_mmproj(self, models_dir: Path) -> None:
+        """No mmproj sidecar -> ``["completion"]`` only."""
+        from lilbee.providers.base import ProviderError
+
+        provider = self._make_provider()
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider._is_rerank_model",
+                return_value=False,
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+        ):
+            assert provider.get_capabilities("test-model") == ["completion"]
+
+    def test_get_capabilities_appends_vision_when_mmproj_present(self) -> None:
+        """An mmproj sidecar adds ``"vision"`` to the capability list."""
+        provider = self._make_provider()
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider._is_rerank_model",
+                return_value=False,
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
+                return_value=Path("/fake/mmproj.gguf"),
+            ),
+        ):
+            assert provider.get_capabilities("test-model") == ["completion", "vision"]
+
+    def test_get_capabilities_returns_completion_when_resolve_fails(self) -> None:
+        """resolve_model_path failure short-circuits to ``["completion"]``."""
+        from lilbee.providers.base import ProviderError
+
+        provider = self._make_provider()
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider._is_rerank_model",
+                return_value=False,
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
+                side_effect=ProviderError("not found"),
+            ),
+        ):
+            assert provider.get_capabilities("missing") == ["completion"]
 
     def testread_gguf_metadata(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
@@ -325,6 +303,51 @@ class TestLlamaCppProvider:
 
             call_kwargs = llama_cpp.Llama.call_args[1]
             assert "n_batch" not in call_kwargs
+
+    def testload_llama_rerank_sets_pooling_type_rank(self, models_dir: Path) -> None:
+        """mode='rerank' wires ``LLAMA_POOLING_TYPE_RANK`` into the Llama kwargs."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        fake_llama = mock.MagicMock()
+        fake_module = mock.MagicMock()
+        fake_module.Llama = fake_llama
+        fake_module.LLAMA_POOLING_TYPE_RANK = 4
+        with (
+            patch(
+                "lilbee.providers.llama_cpp.provider.import_llama_cpp",
+                return_value=fake_module,
+            ),
+            patch.dict("sys.modules", {"llama_cpp": fake_module}),
+            patch(
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            load_llama(models_dir / "test-model.gguf", mode="rerank")
+            assert fake_llama.call_args[1]["pooling_type"] == 4
+
+    def testload_llama_abort_callback_override_replaces_default(self, models_dir: Path) -> None:
+        """abort_callback_override threads a worker-side callback into Llama kwargs."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        fake_llama = mock.MagicMock()
+        fake_module = mock.MagicMock()
+        fake_module.Llama = fake_llama
+        sentinel = lambda _u=None: False  # noqa: E731 -- intentional one-liner sentinel
+        with patch(
+            "lilbee.providers.llama_cpp.provider.import_llama_cpp",
+            return_value=fake_module,
+        ):
+            load_llama(
+                models_dir / "test-model.gguf",
+                mode="chat",
+                abort_callback_override=sentinel,
+            )
+            assert fake_llama.call_args[1]["abort_callback"] is sentinel
 
     def testload_llama_wraps_context_failure_with_diagnostic(
         self, models_dir: Path, tmp_path: Path
@@ -881,24 +904,6 @@ class TestLlamaCppProvider:
         finally:
             self._resolve_patcher.start()
 
-    def test_embed_caches_llm(self, mock_llama_cpp: mock.MagicMock) -> None:
-        mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_embedding.return_value = {"data": [{"embedding": [0.1] * 3}]}
-        mock_llama_instance.metadata = {
-            "general.architecture": "nomic-bert",
-            "nomic-bert.context_length": "8192",
-        }
-        mock_llama_cpp.Llama.return_value = mock_llama_instance
-
-        cfg.num_ctx = 4096
-        provider = self._make_provider()
-        provider.embed(["a"])
-        provider.embed(["b"])
-
-        # Embedding load reads metadata once (vocab_only) plus the actual
-        # load. Second embed reuses the cached instance, so we expect 2.
-        assert mock_llama_cpp.Llama.call_count == 2
-
 
 # ---------------------------------------------------------------------------
 # Factory
@@ -1429,173 +1434,12 @@ class TestLiteLLMShowModelCapabilities:
         assert caps == []
 
 
-# ---------------------------------------------------------------------------
-# Phase 2: _dispatch_batch, embed fallback, vision_ocr, chat stream,
-# show_model None, shutdown, _LockedStreamIterator, GGUF helpers,
-# vision handler resolution, WorkerManager None-response paths
-# ---------------------------------------------------------------------------
-
-
-class TestDispatchBatch:
-    def testembed_one_at_a_time(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_dispatch_batch embeds one text at a time and resolves the future."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_embedding.side_effect = [
-            {"data": [{"embedding": [0.1]}]},
-            {"data": [{"embedding": [0.2]}]},
-        ]
-
-        provider = LlamaCppProvider()
-        fut: Future[list[list[float]]] = Future()
-        with mock.patch.object(provider, "_get_embed_llm", return_value=mock_llm):
-            provider._dispatch_batch([EmbedRequest(texts=["a", "b"], future=fut)])
-        assert fut.result() == [[0.1], [0.2]]
-
-    def test_exception_sets_future_exception(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """When embedding fails, the future receives the exception."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_embedding.side_effect = RuntimeError("GPU OOM")
-
-        provider = LlamaCppProvider()
-        fut: Future[list[list[float]]] = Future()
-        with mock.patch.object(provider, "_get_embed_llm", return_value=mock_llm):
-            provider._dispatch_batch([EmbedRequest(texts=["a"], future=fut)])
-        with pytest.raises(RuntimeError, match="GPU OOM"):
-            fut.result()
-
-
-class TestVisionOcr:
-    def test_delegates_to_subprocess(
-        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        provider = LlamaCppProvider()
-        mock_worker = mock.MagicMock()
-        mock_worker.vision_ocr.return_value = "extracted text"
-        provider._subprocess_worker = mock_worker
-
-        result = provider.vision_ocr(b"\x89PNG", "vision-model", "describe")
-        assert result == "extracted text"
-        mock_worker.vision_ocr.assert_called_once_with(
-            b"\x89PNG", "vision-model", "describe", timeout=None
-        )
-
-
-class TestChatStreamReturnsLockedIterator:
-    def test_stream_returns_locked_iterator(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_chat_completion.return_value = iter([])
-
-        provider = LlamaCppProvider()
-        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
-            result = provider.chat([{"role": "user", "content": "hi"}], stream=True)
-        assert isinstance(result, _LockedStreamIterator)
-        # Exhaust the iterator to release the lock
-        list(result)
-
-
 class TestShowModelNotFound:
     def test_returns_none_for_missing_model(self) -> None:
         from lilbee.providers.llama_cpp import LlamaCppProvider
 
         provider = LlamaCppProvider()
         assert provider.show_model("nonexistent-model-xyz") is None
-
-
-class TestShutdown:
-    def test_stops_subprocess_worker(self) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        provider = LlamaCppProvider()
-        mock_worker = mock.MagicMock()
-        provider._subprocess_worker = mock_worker
-
-        provider.shutdown()
-        mock_worker.stop.assert_called_once()
-        assert provider._subprocess_worker is None
-
-
-class TestLockedStreamIterator:
-    def test_next_and_close(self) -> None:
-        """__next__ yields content, close() releases the lock."""
-        import threading
-
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        lock = threading.Lock()
-        lock.acquire()
-        chunks = iter(
-            [
-                {"choices": [{"delta": {"content": "hi"}}]},
-            ]
-        )
-        it = _LockedStreamIterator(chunks, lock)
-        assert next(it) == "hi"
-        it.close()
-        assert lock.acquire(blocking=False)  # lock was released
-        lock.release()
-
-    def test_close_releases_lock_early(self) -> None:
-        import threading
-
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        lock = threading.Lock()
-        lock.acquire()
-        it = _LockedStreamIterator(iter([]), lock)
-        it.close()
-        # lock should be released
-        assert lock.acquire(blocking=False)
-        lock.release()
-
-    def test_close_drains_remaining_tokens(self) -> None:
-        """close() exhausts the underlying iterator before releasing the lock."""
-        import threading
-
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        lock = threading.Lock()
-        lock.acquire()
-        chunks = [
-            {"choices": [{"delta": {"content": "a"}}]},
-            {"choices": [{"delta": {"content": "b"}}]},
-        ]
-        it = _LockedStreamIterator(iter(chunks), lock)
-        # Don't consume any tokens, just close
-        it.close()
-        assert lock.acquire(blocking=False)
-        lock.release()
-
-    def test_close_handles_drain_exception(self) -> None:
-        """close() releases lock even if draining the iterator raises."""
-        import threading
-
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        def _exploding():
-            yield {"choices": [{"delta": {"content": "a"}}]}
-            raise RuntimeError("boom")
-
-        lock = threading.Lock()
-        lock.acquire()
-        it = _LockedStreamIterator(_exploding(), lock)
-        it.close()  # should not raise
-        assert lock.acquire(blocking=False)
-        lock.release()
 
 
 class TestReadMmprojProjectorType:
@@ -1730,6 +1574,114 @@ class TestMtmdLoadVisionLlama:
         assert mock_llama_cpp.Llama.called
         mock_handler.assert_called_once()
 
+    def test_abort_callback_override_replaces_default(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """Passing ``abort_callback_override`` threads a worker-side callback into Llama kwargs."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        cfg.num_ctx = None
+        sentinel = lambda _u=None: False  # noqa: E731
+        with mock.patch(
+            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+            return_value=mock.MagicMock(),
+        ):
+            load_vision_llama(
+                Path("model.gguf"),
+                mmproj_path=Path("mmproj.gguf"),
+                abort_callback_override=sentinel,
+            )
+        assert mock_llama_cpp.Llama.call_args[1]["abort_callback"] is sentinel
+
+    def test_resolve_vision_n_ctx_clamps_to_training_ctx(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """When cfg.num_ctx > training context, vision load clamps to the training value."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        cfg.num_ctx = 8192
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                return_value={"context_length": "4096"},
+            ),
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+        ):
+            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 4096
+
+    def test_resolve_vision_n_ctx_falls_back_when_metadata_unreadable(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """``read_gguf_metadata`` raising falls back to cfg.num_ctx (no clamp)."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        cfg.num_ctx = 4096
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                side_effect=RuntimeError("boom"),
+            ),
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
+        ):
+            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 4096
+
+
+class TestImportLlamaCpp:
+    """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError."""
+
+    def test_returns_module_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Happy path: hands back the imported module."""
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+
+        sentinel = mock.MagicMock(name="llama_cpp_module")
+        monkeypatch.setitem(sys.modules, "llama_cpp", sentinel)
+        assert import_llama_cpp() is sentinel
+
+    def test_libvulkan_oserror_raises_provider_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bare Linux installs without libvulkan get install instructions, not a raw OSError."""
+        import builtins
+
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "llama_cpp":
+                raise OSError("libvulkan.so.1: cannot open shared object file")
+            return real_import(name, *args, **kwargs)  # type: ignore[no-any-return]
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
+
+        with pytest.raises(ProviderError) as ei:
+            import_llama_cpp()
+        assert "libvulkan1" in str(ei.value)
+
+    def test_unrelated_oserror_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-vulkan OSErrors are not swallowed."""
+        import builtins
+
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "llama_cpp":
+                raise OSError("libsomethingelse.so: not found")
+            return real_import(name, *args, **kwargs)  # type: ignore[no-any-return]
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
+        with pytest.raises(OSError, match="libsomethingelse"):
+            import_llama_cpp()
+
 
 class TestReadChatTemplate:
     def test_reads_chat_template(self, tmp_path: Path) -> None:
@@ -1845,115 +1797,6 @@ class TestAdaptGgufTemplate:
 
 
 # ---------------------------------------------------------------------------
-# WorkerManager None-response paths
-# ---------------------------------------------------------------------------
-
-
-class TestWorkerManagerNoneResponses:
-    def test_embed_round_trip_none_retries(self) -> None:
-        from lilbee.providers.worker import EmbedResponse, WorkerManager
-
-        wp = WorkerManager()
-        wp._request_queue = mock.MagicMock()
-        wp._response_queue = mock.MagicMock()
-        wp._process = mock.MagicMock()
-        wp._started = True
-        wp._next_id = 0
-
-        # First put_and_get returns None (worker died), retry returns valid response.
-        with (
-            mock.patch.object(
-                wp,
-                "_put_and_get",
-                side_effect=[None, EmbedResponse(vectors=[[0.1]], request_id=1)],
-            ),
-            mock.patch.object(wp, "restart"),
-        ):
-            result = wp.embed(["hello"], model="test")
-        assert result == [[0.1]]
-
-    def test_embed_round_trip_retry_still_none_raises(self) -> None:
-        from lilbee.providers.worker import WorkerManager
-
-        wp = WorkerManager()
-        wp._request_queue = mock.MagicMock()
-        wp._response_queue = mock.MagicMock()
-        wp._process = mock.MagicMock()
-        wp._started = True
-
-        with (
-            mock.patch.object(wp, "_put_and_get", return_value=None),
-            mock.patch.object(wp, "restart"),
-            pytest.raises(RuntimeError, match="crashed again"),
-        ):
-            wp.embed(["hello"], model="test")
-
-    def test_vision_round_trip_none_retries(self) -> None:
-        from lilbee.providers.worker import VisionResponse, WorkerManager
-
-        wp = WorkerManager()
-        wp._request_queue = mock.MagicMock()
-        wp._response_queue = mock.MagicMock()
-        wp._process = mock.MagicMock()
-        wp._started = True
-        wp._next_id = 0
-
-        with (
-            mock.patch.object(
-                wp,
-                "_put_and_get",
-                side_effect=[None, VisionResponse(text="ocr result", request_id=1)],
-            ),
-            mock.patch.object(wp, "restart"),
-        ):
-            result = wp.vision_ocr(b"\x89PNG", model="vis")
-        assert result == "ocr result"
-
-    def test_vision_round_trip_retry_still_none_raises(self) -> None:
-        from lilbee.providers.worker import WorkerManager
-
-        wp = WorkerManager()
-        wp._request_queue = mock.MagicMock()
-        wp._response_queue = mock.MagicMock()
-        wp._process = mock.MagicMock()
-        wp._started = True
-
-        with (
-            mock.patch.object(wp, "_put_and_get", return_value=None),
-            mock.patch.object(wp, "restart"),
-            pytest.raises(RuntimeError, match="crashed again"),
-        ):
-            wp.vision_ocr(b"\x89PNG", model="vis")
-
-    def test_get_response_dead_worker_returns_none(self) -> None:
-        from lilbee.providers.worker import WorkerManager
-
-        wp = WorkerManager()
-        wp._response_queue = mock.MagicMock()
-        wp._response_queue.get.side_effect = Exception("empty")
-        wp._process = mock.MagicMock()
-        wp._process.is_alive.return_value = False
-
-        result = wp._get_response(timeout=0.5)
-        assert result is None
-
-    def test_load_model_sends_request(self) -> None:
-        from lilbee.providers.worker import LoadModelRequest, WorkerManager
-
-        wp = WorkerManager()
-        wp._request_queue = mock.MagicMock()
-        wp._started = True
-        wp._process = mock.MagicMock()
-        wp._process.is_alive.return_value = True
-
-        with mock.patch.object(wp, "_ensure_started"):
-            wp.load_model("test-model", "embed")
-        args = wp._request_queue.put.call_args[0][0]
-        assert isinstance(args, LoadModelRequest)
-        assert args.model == "test-model"
-
-
-# ---------------------------------------------------------------------------
 # LLMOptions / filter_options
 # ---------------------------------------------------------------------------
 
@@ -1988,490 +1831,6 @@ class TestFilterOptions:
 
         result = filter_options({"temperature": 0.5})
         assert "top_p" not in result
-
-
-# ---------------------------------------------------------------------------
-# LlamaCppProvider methods (bypassing __init__ daemon thread)
-# ---------------------------------------------------------------------------
-
-
-def _make_provider_no_thread() -> object:
-    """Create a LlamaCppProvider without starting the embed/rerank thread."""
-    from lilbee.providers.llama_cpp import LlamaCppProvider
-
-    with mock.patch("threading.Thread.start"):
-        provider = LlamaCppProvider()
-    provider._cache = mock.MagicMock()
-    provider._embed_thread = mock.MagicMock()
-    provider._rerank_thread = mock.MagicMock()
-    return provider
-
-
-class TestLlamaCppProviderMethods:
-    def test_get_chat_llm_non_vision(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_get_chat_llm loads via cache for non-vision models."""
-        provider = _make_provider_no_thread()
-        cfg.chat_model = "org/Test-GGUF/test.gguf"
-
-        mock_cache_model = mock.MagicMock()
-        provider._cache.load_model.return_value = mock_cache_model
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            return_value=Path("/models/test.gguf"),
-        ):
-            result = provider._get_chat_llm()
-
-        assert result == mock_cache_model
-        provider._cache.load_model.assert_called_once_with(Path("/models/test.gguf"), mode="chat")
-
-    def test_get_chat_llm_does_not_route_vision_models(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """_get_chat_llm loads the chat model directly; vision path is separate."""
-        provider = _make_provider_no_thread()
-        cfg.chat_model = "org/Vision-GGUF/vision.gguf"
-
-        mock_cache_model = mock.MagicMock()
-        provider._cache.load_model.return_value = mock_cache_model
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            return_value=Path("/models/vision.gguf"),
-        ):
-            result = provider._get_chat_llm()
-
-        assert result == mock_cache_model
-        provider._cache.load_model.assert_called_once_with(Path("/models/vision.gguf"), mode="chat")
-
-    def test_get_chat_llm_with_override_model(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_get_chat_llm uses the override model when provided."""
-        provider = _make_provider_no_thread()
-        cfg.chat_model = "org/Default-GGUF/default.gguf"
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            return_value=Path("/models/override.gguf"),
-        ):
-            provider._get_chat_llm(model="org/Override-GGUF/override.gguf")
-
-        provider._cache.load_model.assert_called_once_with(
-            Path("/models/override.gguf"), mode="chat"
-        )
-
-    def test_get_embed_llm(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_get_embed_llm loads embedding model via cache."""
-        provider = _make_provider_no_thread()
-        cfg.embedding_model = "org/Embed-GGUF/embed.gguf"
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            return_value=Path("/models/embed.gguf"),
-        ):
-            provider._get_embed_llm()
-
-        provider._cache.load_model.assert_called_once_with(Path("/models/embed.gguf"), mode="embed")
-
-    def test_get_subprocess_worker(self) -> None:
-        """_get_subprocess_worker lazy-creates a WorkerManager."""
-        provider = _make_provider_no_thread()
-
-        with mock.patch("lilbee.providers.llama_cpp.provider.WorkerManager") as mock_wp_cls:
-            result = provider._get_subprocess_worker()
-
-        assert result == mock_wp_cls.return_value
-        assert provider._subprocess_worker == mock_wp_cls.return_value
-
-    def test_chat_non_stream_with_options(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """chat() with options filters and renames num_predict to max_tokens."""
-        provider = _make_provider_no_thread()
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "response"}}]
-        }
-
-        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
-            result = provider.chat(
-                [{"role": "user", "content": "hi"}],
-                stream=False,
-                options={"temperature": 0.5, "num_predict": 100},
-            )
-
-        assert result == "response"
-        call_kwargs = mock_llm.create_chat_completion.call_args[1]
-        assert call_kwargs["temperature"] == 0.5
-        assert call_kwargs["max_tokens"] == 100
-        assert "num_predict" not in call_kwargs
-
-    def test_chat_strips_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """chat() strips num_ctx since it is a model-load param, not per-call."""
-        provider = _make_provider_no_thread()
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
-
-        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
-            result = provider.chat(
-                [{"role": "user", "content": "hi"}],
-                stream=False,
-                options={"temperature": 0.7, "num_ctx": 2048},
-            )
-
-        assert result == "ok"
-        call_kwargs = mock_llm.create_chat_completion.call_args[1]
-        assert call_kwargs["temperature"] == 0.7
-        assert "num_ctx" not in call_kwargs
-
-    def test_chat_non_stream_no_options(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """chat() without options passes no extra kwargs."""
-        provider = _make_provider_no_thread()
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
-
-        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
-            result = provider.chat(
-                [{"role": "user", "content": "hi"}],
-                stream=False,
-            )
-
-        assert result == "ok"
-
-    def test_chat_stream(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """chat() with stream=True returns a _LockedStreamIterator."""
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        provider = _make_provider_no_thread()
-
-        mock_llm = mock.MagicMock()
-        mock_response = iter([])
-        mock_llm.create_chat_completion.return_value = mock_response
-
-        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
-            result = provider.chat(
-                [{"role": "user", "content": "hi"}],
-                stream=True,
-            )
-
-        assert isinstance(result, _LockedStreamIterator)
-        # Lock should still be held (released by iterator)
-        result.close()
-
-    def test_pull_model_raises(self) -> None:
-        """pull_model always raises NotImplementedError."""
-        provider = _make_provider_no_thread()
-        with pytest.raises(NotImplementedError, match="cannot pull model"):
-            provider.pull_model("some-model")
-
-    def test_show_model_returns_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """show_model returns metadata from read_gguf_metadata."""
-        provider = _make_provider_no_thread()
-
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
-                return_value=Path("/models/test.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"architecture": "llama"},
-            ),
-        ):
-            result = provider.show_model("test-model")
-
-        assert result == {"architecture": "llama"}
-
-    def test_show_model_returns_none_on_error(self) -> None:
-        """show_model returns None when model not found."""
-        from lilbee.providers.base import ProviderError
-
-        provider = _make_provider_no_thread()
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            side_effect=ProviderError("not found"),
-        ):
-            result = provider.show_model("missing-model")
-
-        assert result is None
-
-    def test_get_capabilities_with_mmproj(self) -> None:
-        """get_capabilities returns ['completion', 'vision'] when mmproj found."""
-        provider = _make_provider_no_thread()
-
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
-                return_value=Path("/models/llava.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
-                return_value=Path("/models/llava-mmproj.gguf"),
-            ),
-        ):
-            caps = provider.get_capabilities("llava:7b")
-
-        assert "completion" in caps
-        assert "vision" in caps
-
-    def test_get_capabilities_rerank_model_short_circuits(self) -> None:
-        """A rerank catalog ref returns ``["rerank"]`` without reaching resolve_model_path."""
-        from lilbee.catalog import FEATURED_RERANK
-
-        provider = _make_provider_no_thread()
-        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
-        ref = FEATURED_RERANK[0].hf_repo
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            side_effect=AssertionError("resolve_model_path must not be called for a rerank ref"),
-        ):
-            caps = provider.get_capabilities(ref)
-
-        assert caps == ["rerank"]
-
-    def test_get_capabilities_no_mmproj(self) -> None:
-        """get_capabilities returns ['completion'] when no mmproj found."""
-        from lilbee.providers.base import ProviderError
-
-        provider = _make_provider_no_thread()
-
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
-                return_value=Path("/models/qwen.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
-                side_effect=ProviderError("no mmproj"),
-            ),
-        ):
-            caps = provider.get_capabilities("qwen:8b")
-
-        assert caps == ["completion"]
-
-    def test_get_capabilities_resolve_error(self) -> None:
-        """get_capabilities returns ['completion'] when model path not found."""
-        from lilbee.providers.base import ProviderError
-
-        provider = _make_provider_no_thread()
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            side_effect=ProviderError("not found"),
-        ):
-            caps = provider.get_capabilities("missing-model")
-
-        assert caps == ["completion"]
-
-    def test_list_models(self) -> None:
-        """list_models returns sorted registry refs."""
-        provider = _make_provider_no_thread()
-
-        mock_manifest1 = mock.MagicMock()
-        mock_manifest1.ref = "org/Beta-GGUF/beta.gguf"
-        mock_manifest2 = mock.MagicMock()
-        mock_manifest2.ref = "org/Alpha-GGUF/alpha.gguf"
-
-        mock_registry = mock.MagicMock()
-        mock_registry.list_installed.return_value = [mock_manifest1, mock_manifest2]
-        mock_services = mock.MagicMock()
-        mock_services.registry = mock_registry
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.get_services", return_value=mock_services
-        ):
-            result = provider.list_models()
-
-        assert result == ["org/Alpha-GGUF/alpha.gguf", "org/Beta-GGUF/beta.gguf"]
-
-    def test_shutdown(self) -> None:
-        """shutdown stops embed thread, subprocess worker, and cache."""
-        provider = _make_provider_no_thread()
-        mock_subprocess = mock.MagicMock()
-        provider._subprocess_worker = mock_subprocess
-
-        provider.shutdown()
-
-        provider._embed_thread.join.assert_called_once_with(
-            timeout=provider._SHUTDOWN_JOIN_TIMEOUT_S
-        )
-        mock_subprocess.stop.assert_called_once()
-        assert provider._subprocess_worker is None
-        provider._cache.unload_all.assert_called_once()
-
-    def test_vision_ocr(self) -> None:
-        """vision_ocr delegates to subprocess worker."""
-        provider = _make_provider_no_thread()
-
-        mock_worker = mock.MagicMock()
-        mock_worker.vision_ocr.return_value = "OCR result"
-
-        with mock.patch.object(provider, "_get_subprocess_worker", return_value=mock_worker):
-            result = provider.vision_ocr(b"\x89PNG", "vis-model", "extract text")
-
-        mock_worker.vision_ocr.assert_called_once_with(
-            b"\x89PNG", "vis-model", "extract text", timeout=None
-        )
-        assert result == "OCR result"
-
-
-class TestEmbedWorker:
-    def test_embed_worker_dispatches_batch(self) -> None:
-        """_embed_worker processes items and dispatches them."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        with mock.patch("threading.Thread.start"):
-            provider = LlamaCppProvider()
-        provider._cache = mock.MagicMock()
-
-        # Clear the queue and put a request + shutdown sentinel
-        while not provider._embed_queue.empty():
-            provider._embed_queue.get_nowait()
-
-        fut: Future[list[list[float]]] = Future()
-        provider._embed_queue.put(EmbedRequest(texts=["hello"], future=fut))
-        provider._embed_queue.put(None)  # shutdown signal
-
-        with mock.patch.object(provider, "_dispatch_batch") as mock_dispatch:
-            provider._embed_worker()
-
-        assert mock_dispatch.called
-        batch = mock_dispatch.call_args[0][0]
-        assert len(batch) == 1
-        assert batch[0].texts == ["hello"]
-
-    def test_embed_worker_shutdown_during_batch(self) -> None:
-        """_embed_worker exits when None received during batching."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        with mock.patch("threading.Thread.start"):
-            provider = LlamaCppProvider()
-        provider._cache = mock.MagicMock()
-
-        # Clear the queue and put a request + shutdown
-        while not provider._embed_queue.empty():
-            provider._embed_queue.get_nowait()
-
-        fut: Future[list[list[float]]] = Future()
-        provider._embed_queue.put(EmbedRequest(texts=["a"], future=fut))
-        # After first item, put shutdown while batching
-        provider._embed_queue.put(None)
-
-        with mock.patch.object(provider, "_dispatch_batch") as mock_dispatch:
-            provider._embed_worker()
-        mock_dispatch.assert_called_once()
-
-    def test_dispatch_batch_success(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_dispatch_batch resolves futures with embedding vectors."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        provider = _make_provider_no_thread()
-        mock_llm = mock.MagicMock()
-        mock_llm.create_embedding.return_value = {"data": [{"embedding": [0.1]}]}
-        provider._cache.load_model.return_value = mock_llm
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            return_value=Path("/test.gguf"),
-        ):
-            cfg.embedding_model = "org/Test-GGUF/test.gguf"
-            fut: Future[list[list[float]]] = Future()
-            batch = [EmbedRequest(texts=["hello"], future=fut)]
-            provider._dispatch_batch(batch)
-
-        assert fut.result() == [[0.1]]
-
-    def test_dispatch_batch_error(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_dispatch_batch sets exception on future when embed fails."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        provider = _make_provider_no_thread()
-        mock_llm = mock.MagicMock()
-        provider._cache.load_model.return_value = mock_llm
-
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
-                return_value=Path("/test.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.embed_one",
-                side_effect=RuntimeError("embed broken"),
-            ),
-        ):
-            cfg.embedding_model = "org/Test-GGUF/test.gguf"
-            fut: Future[list[list[float]]] = Future()
-            batch = [EmbedRequest(texts=["hello"], future=fut)]
-            provider._dispatch_batch(batch)
-
-        with pytest.raises(RuntimeError, match="embed broken"):
-            fut.result()
-
-
-class TestDispatchBatchGetEmbedLlmError:
-    def test_get_embed_llm_failure_sets_exception_on_all_futures(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """When _get_embed_llm raises, all futures in the batch get the exception."""
-        from concurrent.futures import Future
-
-        from lilbee.providers.llama_cpp.batching import EmbedRequest
-
-        provider = _make_provider_no_thread()
-
-        with mock.patch.object(
-            provider, "_get_embed_llm", side_effect=RuntimeError("model not found")
-        ):
-            fut1: Future[list[list[float]]] = Future()
-            fut2: Future[list[list[float]]] = Future()
-            batch = [
-                EmbedRequest(texts=["a"], future=fut1),
-                EmbedRequest(texts=["b"], future=fut2),
-            ]
-            provider._dispatch_batch(batch)
-
-        with pytest.raises(RuntimeError, match="model not found"):
-            fut1.result()
-        with pytest.raises(RuntimeError, match="model not found"):
-            fut2.result()
-
-
-class TestLockedStreamIteratorException:
-    def test_next_releases_lock_on_exception(self) -> None:
-        """_LockedStreamIterator releases lock when inner stream raises."""
-        import threading
-
-        from lilbee.providers.llama_cpp.provider import _LockedStreamIterator
-
-        lock = threading.Lock()
-        lock.acquire()
-
-        def bad_stream() -> Iterator[str]:
-            """Generator that raises immediately."""
-            yield ""  # make it a generator
-            raise RuntimeError("stream error")
-
-        gen = bad_stream()
-        next(gen)  # advance past the yield to prime the generator
-        it = _LockedStreamIterator(gen, lock)
-        with pytest.raises(RuntimeError, match="stream error"):
-            next(it)
-
-        # Lock should be released
-        assert lock.acquire(timeout=0.1)
-        lock.release()
 
 
 class TestReadGgufMetadata:
@@ -3367,26 +2726,6 @@ class TestRoutingProviderRerank:
         cfg.reranker_model = ""
         with pytest.raises(ProviderError, match="No reranker configured"):
             rp.rerank("q", ["a", "b"])
-
-
-class TestLlamaCppRerankDispatchError:
-    def test_scoring_error_is_propagated_to_future(
-        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """A failure inside ``compute_rerank_scores`` resolves the future with the error."""
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        cfg.reranker_model = TEST_MODEL_REF
-        instance = mock.MagicMock()
-        instance.create_embedding.side_effect = RuntimeError("boom")
-        mock_llama_cpp.Llama.return_value = instance
-
-        provider = LlamaCppProvider()
-        try:
-            with pytest.raises(RuntimeError, match="boom"):
-                provider.rerank("q", ["candidate"])
-        finally:
-            provider.shutdown()
 
 
 class TestLlamaCppHasRankPooling:

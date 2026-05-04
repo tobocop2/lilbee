@@ -124,7 +124,7 @@ flowchart TD
 
 ## Inference Worker Pool
 
-By default `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool can be disabled with `LILBEE_DISABLE_WORKER_POOL=1` (debugging escape hatch only; not surfaced in the settings UI).
+`LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.
 
 ```mermaid
 flowchart LR
@@ -215,7 +215,7 @@ A health ping that fires while a chat stream is in flight can leave a stray pong
 
 ### Cross-boundary cancel
 
-`Services.cancel_inference()` is the canonical entry point used by Ctrl+C and the chat-stream cancel action. It flips the in-process abort flag (consumed by the in-process embed/rerank threads when the pool is off) AND calls `accessor.cancel()` on every registered role, which sets the worker's shared `mp.Value` abort flag. The chat worker's llama-cpp `abort_callback` reads that flag at every token tick and unwinds inference.
+`Services.cancel_inference()` is the canonical entry point used by Ctrl+C and the chat-stream cancel action. It calls `accessor.cancel()` on every registered role, which sets the worker's shared `mp.Value` abort flag. The chat worker's llama-cpp `abort_callback` reads that flag at every token tick and unwinds inference.
 
 ### IPC discipline rules (pipe transport)
 
@@ -242,10 +242,6 @@ The cost is that spawn re-imports Python in the child, adding ~1-3s cold start p
 ### Future zmq transport
 
 The `WorkerChannel` and `WorkerSpawner` Protocols make the IPC primitive swappable. A future `transport_zmq.py` (pyzmq) would only need to add a new factory call site; consumer code never imports `multiprocessing` directly.
-
-### Fallback path
-
-When `LILBEE_DISABLE_WORKER_POOL=1` is set, embed and rerank fall through to lazy in-process batching threads (`_embed_thread`/`_rerank_thread`/`_dispatch_batch`/`_dispatch_rerank`) and vision OCR uses the per-call `WorkerManager` subprocess (`providers/worker/manager.py`). The escape hatch exists for debugging, environments where subprocess spawn is unavailable, and unit tests that drive `LlamaCppProvider.embed` against in-memory mocks.
 
 ---
 

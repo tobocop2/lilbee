@@ -24,10 +24,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.worker.transport import RoleConfig
 
-pytestmark = [
-    pytest.mark.worker_pool,
-    pytest.mark.xdist_group("worker_pool_responsiveness"),
-]
+pytestmark = [pytest.mark.xdist_group("worker_pool_responsiveness")]
 
 
 # 200ms p95 budget for one asyncio.sleep(0.05) tick under concurrent

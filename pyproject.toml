@@ -98,7 +98,6 @@ markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
     "real_litellm_probe: opt out of the global litellm_available True override",
-    "worker_pool: keep cfg.worker_pool_enabled at its production default for this test",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
 ]
 

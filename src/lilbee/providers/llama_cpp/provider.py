@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import queue
 import threading
-import time
 from collections.abc import Callable
-from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,16 +15,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort, request_abort
-from lilbee.providers.llama_cpp.batching import (
-    BATCH_WINDOW_S,
-    EMBED_FUTURE_TIMEOUT_S,
-    RERANK_FUTURE_TIMEOUT_S,
-    EmbedRequest,
-    RerankRequest,
-    compute_rerank_scores,
-    embed_one,
-)
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.gguf_meta import (
     find_mmproj_for_model,
     read_gguf_metadata,
@@ -35,7 +23,6 @@ from lilbee.providers.llama_cpp.gguf_meta import (
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
-    stderr_suppressed,
     suppress_native_stderr,
 )
 from lilbee.providers.model_cache import (
@@ -43,15 +30,13 @@ from lilbee.providers.model_cache import (
     MODE_EMBED,
     MODE_RERANK,
     LoaderMode,
-    MemoryAwareModelCache,
     compute_dynamic_ctx,
     get_available_memory,
     kv_bytes_per_token,
 )
-from lilbee.providers.worker import WorkerManager
 from lilbee.providers.worker.chat_worker import chat_worker_main
 from lilbee.providers.worker.embed_worker import embed_worker_main
-from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor, worker_pool_enabled
+from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
@@ -69,10 +54,14 @@ _VISION_ROLE = "vision"
 
 log = logging.getLogger(__name__)
 
-# Cap on tokens consumed during ``_LockedStreamIterator.close()``'s drain. A
-# runaway model (e.g. Qwen3-0.6B stuck in a never-closing ``<think>`` loop)
-# would otherwise block ``close()`` indefinitely.
-_LOCKED_STREAM_DRAIN_CAP = 1024
+# Vision OCR sentinel used when no per-call timeout and no ``cfg.ocr_timeout``
+# is set. 24h is effectively "no cap" for the round-trip wait loop.
+_VISION_NO_CAP_TIMEOUT_S = 86_400.0
+
+# Cap on tokens drained during ``_PoolChatStreamIterator.close()`` after a
+# mid-stream cancel. A runaway model (Qwen3-0.6B stuck in a never-closing
+# ``<think>`` loop) would otherwise block close() indefinitely.
+_CHAT_STREAM_DRAIN_CAP = 1024
 
 # Chat-load OOM retry knobs. The OOM wrapper halves ``n_ctx`` (rounded down to
 # the next ``_CTX_QUANTUM`` multiple) up to ``_MAX_OOM_RETRIES`` times before
@@ -102,150 +91,8 @@ class LlamaCppProvider(LLMProvider):
     """Provider backed by llama-cpp-python for local GGUF model inference."""
 
     def __init__(self) -> None:
-        self._cache = MemoryAwareModelCache(
-            max_memory_fraction=cfg.gpu_memory_fraction,
-            keep_alive_seconds=cfg.model_keep_alive,
-            loader=load_llama,
-        )
-        self._embed_queue: queue.Queue[EmbedRequest | None] = queue.Queue()
-        self._rerank_queue: queue.Queue[RerankRequest | None] = queue.Queue()
-        self._chat_lock = threading.Lock()
-        self._embed_thread: threading.Thread | None = None
-        self._rerank_thread: threading.Thread | None = None
-        self._inproc_thread_lock = threading.Lock()
-        self._subprocess_worker: WorkerManager | None = None
         self._pool_lock = threading.Lock()
         self._registered_roles: set[str] = set()
-
-    def _ensure_inproc_embed_thread(self) -> None:
-        with self._inproc_thread_lock:
-            if self._embed_thread is None:
-                self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
-                self._embed_thread.start()
-
-    def _ensure_inproc_rerank_thread(self) -> None:
-        with self._inproc_thread_lock:
-            if self._rerank_thread is None:
-                self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
-                self._rerank_thread.start()
-
-    def _embed_worker(self) -> None:
-        """Background thread: drain queue, batch, inference, dispatch results."""
-        while True:
-            first = self._embed_queue.get()
-            if first is None:
-                break
-
-            batch: list[EmbedRequest] = [first]
-            shutting_down = False
-            deadline = time.monotonic() + BATCH_WINDOW_S
-            while time.monotonic() < deadline:
-                try:
-                    req = self._embed_queue.get_nowait()
-                    if req is None:
-                        shutting_down = True
-                        break
-                    batch.append(req)
-                except queue.Empty:
-                    time.sleep(0.001)
-                    continue
-
-            self._dispatch_batch(batch)
-            if shutting_down:
-                break
-
-    def _dispatch_batch(self, batch: list[EmbedRequest]) -> None:
-        """Serialize embedding requests and resolve all futures.
-        Embeds one text at a time because some model architectures (e.g.
-        nomic-bert) fail with llama_decode -1 on multi-text batches.
-        """
-        # Each new dispatch starts with a fresh abort flag: a previous
-        # request_abort() unblocks the prior in-flight call but must not
-        # latch and break this one.
-        clear_abort()
-        try:
-            llm = self._get_embed_llm()
-        except Exception as exc:
-            for req in batch:
-                if not req.future.done():
-                    req.future.set_exception(exc)
-            return
-        # Hold the stderr-suppression lock + fd-2 swap once for the whole batch
-        # rather than once per text; per-text wrapping is what made the TUI
-        # appear frozen during multi-page-PDF ingest.
-        with stderr_suppressed():
-            for req in batch:
-                try:
-                    vectors: list[list[float]] = []
-                    for text in req.texts:
-                        response = embed_one(llm, text)
-                        vectors.append(response)
-                    req.future.set_result(vectors)
-                except Exception as exc:
-                    if not req.future.done():
-                        req.future.set_exception(exc)
-
-    def _rerank_worker(self) -> None:
-        """Background thread: drain rerank queue, serialize through the model.
-
-        The queue is unbounded; back-pressure comes from callers awaiting
-        their futures synchronously.
-        """
-        while True:
-            req = self._rerank_queue.get()
-            if req is None:
-                break
-            self._dispatch_rerank(req)
-
-    def _dispatch_rerank(self, req: RerankRequest) -> None:
-        """Run a single rerank request and resolve its future."""
-        # See ``_dispatch_batch`` for why we clear at the start of each dispatch.
-        clear_abort()
-        try:
-            llm = self._get_rerank_llm()
-        except Exception as exc:
-            if not req.future.done():
-                req.future.set_exception(exc)
-            return
-        try:
-            with stderr_suppressed():
-                scores = compute_rerank_scores(llm, req.query, req.candidates)
-            req.future.set_result(scores)
-        except Exception as exc:
-            if not req.future.done():
-                req.future.set_exception(exc)
-
-    def _get_chat_llm(self, model: str | None = None) -> Any:
-        """Load or return a cached Llama instance for chat.
-
-        Vision OCR has its own entry point (``vision_ocr``); the chat path
-        never substitutes a vision model, even if the chat pick is multimodal.
-        """
-        resolved_model = model or cfg.chat_model
-        model_path = resolve_model_path(resolved_model)
-        return self._cache.load_model(model_path, mode=MODE_CHAT)
-
-    def _get_embed_llm(self) -> Any:
-        """Load or return a cached Llama instance for embeddings."""
-        model_path = resolve_model_path(cfg.embedding_model)
-        return self._cache.load_model(model_path, mode=MODE_EMBED)
-
-    def _get_rerank_llm(self) -> Any:
-        """Load or return a cached Llama instance for reranking."""
-        model_name = cfg.reranker_model
-        if not model_name:
-            raise ProviderError(
-                "No reranker model configured. Set cfg.reranker_model first.",
-                provider="llama-cpp",
-            )
-        model_path = resolve_model_path(model_name)
-        return self._cache.load_model(model_path, mode=MODE_RERANK)
-
-    def _get_subprocess_worker(self) -> WorkerManager:
-        """Lazy-create and return the subprocess worker."""
-        if self._subprocess_worker is None:
-            self._subprocess_worker = WorkerManager()
-        return self._subprocess_worker
 
     def _pool_runtime(self) -> PoolRuntime:
         """Return the Services-owned :class:`PoolRuntime`, starting it lazily."""
@@ -273,93 +120,71 @@ class LlamaCppProvider(LLMProvider):
         return pool.accessor(role)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts via the persistent pool, or the in-process thread when off.
+        """Embed texts via the persistent pool worker.
 
-        Worker crashes propagate as :class:`ProviderError`; the pool
-        respawns the embed role lazily on the next call. Falling back
-        to in-process here would re-introduce the GIL contention the
-        pool exists to avoid, with no signal to the user.
+        Worker crashes and timeouts surface as :class:`ProviderError`;
+        the pool respawns the embed role lazily on the next call.
         """
-        if worker_pool_enabled():
-            try:
-                return self._embed_via_pool(texts)
-            except WorkerError as exc:
-                raise ProviderError(
-                    f"Embedding worker crashed during request: {exc}. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-            except TimeoutError as exc:
-                raise ProviderError(
-                    "Embedding worker timed out. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-        self._ensure_inproc_embed_thread()
-        fut: Future[list[list[float]]] = Future()
-        self._embed_queue.put(EmbedRequest(texts=texts, future=fut))
-        return fut.result(timeout=EMBED_FUTURE_TIMEOUT_S)
-
-    def _embed_via_pool(self, texts: list[str]) -> list[list[float]]:
-        """Run one embed batch through the persistent pool worker."""
         accessor = self._get_pool_accessor(
             _EMBED_ROLE, embed_worker_main, _make_role_config_factory(_EMBED_ROLE)
         )
         runtime = self._pool_runtime()
-        result = runtime.run_sync(
-            accessor.call("embed", texts, timeout=cfg.worker_pool_call_timeout_s),
-            timeout=cfg.worker_pool_call_timeout_s,
-        )
-        if not isinstance(result, list):
-            raise WorkerError(
-                "ProtocolError",
-                f"Pool embed returned {type(result).__name__}, expected list[list[float]].",
-                "",
+        try:
+            result = runtime.run_sync(
+                accessor.call("embed", texts, timeout=cfg.worker_pool_call_timeout_s),
+                timeout=cfg.worker_pool_call_timeout_s,
             )
+            if not isinstance(result, list):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool embed returned {type(result).__name__}, expected list[list[float]].",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                f"Embedding worker crashed during request: {exc}. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Embedding worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
         return result
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Score *candidates* by relevance to *query*.
-
-        Routes through the persistent worker pool by default. Worker
-        crashes propagate as :class:`ProviderError`; the pool respawns
-        the rerank role lazily on the next call.
-        """
+        """Score *candidates* by relevance to *query* via the pool worker."""
         if not candidates:
             return []
-        if worker_pool_enabled():
-            try:
-                return self._rerank_via_pool(query, candidates)
-            except WorkerError as exc:
-                raise ProviderError(
-                    f"Rerank worker crashed during request: {exc}. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-            except TimeoutError as exc:
-                raise ProviderError(
-                    "Rerank worker timed out. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-        self._ensure_inproc_rerank_thread()
-        fut: Future[list[float]] = Future()
-        self._rerank_queue.put(RerankRequest(query=query, candidates=candidates, future=fut))
-        return fut.result(timeout=RERANK_FUTURE_TIMEOUT_S)
-
-    def _rerank_via_pool(self, query: str, candidates: list[str]) -> list[float]:
-        """Run one rerank batch through the persistent pool worker."""
         accessor = self._get_pool_accessor(
             _RERANK_ROLE, rerank_worker_main, _make_role_config_factory(_RERANK_ROLE)
         )
         runtime = self._pool_runtime()
-        request = RerankPayload(query=query, candidates=candidates)
-        result = runtime.run_sync(
-            accessor.call("rerank", request, timeout=cfg.worker_pool_call_timeout_s),
-            timeout=cfg.worker_pool_call_timeout_s,
-        )
-        if not isinstance(result, list):
-            raise WorkerError(
-                "ProtocolError",
-                f"Pool rerank returned {type(result).__name__}, expected list[float].",
-                "",
+        try:
+            result = runtime.run_sync(
+                accessor.call(
+                    "rerank",
+                    RerankPayload(query=query, candidates=candidates),
+                    timeout=cfg.worker_pool_call_timeout_s,
+                ),
+                timeout=cfg.worker_pool_call_timeout_s,
             )
+            if not isinstance(result, list):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool rerank returned {type(result).__name__}, expected list[float].",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                f"Rerank worker crashed during request: {exc}. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Rerank worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
         return result
 
     def supports_rerank(self) -> bool:
@@ -369,68 +194,41 @@ class LlamaCppProvider(LLMProvider):
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
-        """Run vision OCR via the persistent pool, or per-call WorkerManager when off.
-
-        Worker crashes propagate as :class:`ProviderError`; the pool
-        respawns the vision role lazily on the next call.
-        """
-        if worker_pool_enabled():
-            try:
-                return self._vision_ocr_via_pool(
-                    png_bytes=png_bytes, model=model, prompt=prompt, timeout=timeout
-                )
-            except WorkerError as exc:
-                raise ProviderError(
-                    f"Vision worker crashed during request: {exc}. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-            except TimeoutError as exc:
-                raise ProviderError(
-                    "Vision worker timed out. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
-
-    def _vision_ocr_via_pool(
-        self,
-        *,
-        png_bytes: bytes,
-        model: str,
-        prompt: str,
-        timeout: float | None,
-    ) -> str:
-        """Run one vision OCR call through the persistent pool worker."""
+        """Run vision OCR via the persistent pool worker."""
         accessor = self._get_pool_accessor(
             _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
         )
         runtime = self._pool_runtime()
         budget = self._vision_call_budget(timeout)
         request = VisionRequest(png_bytes=png_bytes, prompt=prompt, model=model or None)
-        result = runtime.run_sync(
-            accessor.call("vision_ocr", request, timeout=budget),
-            timeout=budget,
-        )
-        if not isinstance(result, str):
-            raise WorkerError(
-                "ProtocolError",
-                f"Pool vision_ocr returned {type(result).__name__}, expected str.",
-                "",
+        try:
+            result = runtime.run_sync(
+                accessor.call("vision_ocr", request, timeout=budget),
+                timeout=budget,
             )
+            if not isinstance(result, str):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool vision_ocr returned {type(result).__name__}, expected str.",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                f"Vision worker crashed during request: {exc}. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Vision worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
         return result
 
     @staticmethod
     def _vision_call_budget(timeout: float | None) -> float:
-        """Pick the wall-clock budget for one pool vision_ocr call.
-
-        Mirrors ``WorkerManager.vision_ocr`` semantics: per-call ``timeout``
-        wins when set, otherwise falls back to ``cfg.ocr_timeout``;
-        ``0`` or ``None`` means no cap (substituted with ``_NO_CAP_TIMEOUT_S``
-        for the round-trip wait loop).
-        """
-        from lilbee.providers.worker.manager import _NO_CAP_TIMEOUT_S
-
+        """Wall-clock budget for one vision_ocr call (per-call > cfg.ocr_timeout > no cap)."""
         effective = timeout if timeout is not None else cfg.ocr_timeout
-        return float(effective) if effective and effective > 0 else _NO_CAP_TIMEOUT_S
+        return float(effective) if effective and effective > 0 else _VISION_NO_CAP_TIMEOUT_S
 
     def chat(
         self,
@@ -440,66 +238,12 @@ class LlamaCppProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
-        """Chat completion. Routes through the pool when enabled.
+        """Chat completion via the persistent pool worker.
 
         Streaming returns a :class:`ClosableIterator[str]` whose
-        ``close()`` flips the worker's abort flag and lets the in-flight
-        generation drain. Non-streaming returns the joined assistant
-        message text. Worker crashes propagate as :class:`ProviderError`;
-        the pool respawns the chat role lazily on the next call.
+        ``close()`` flips the worker's abort flag so in-flight generation
+        drains cleanly. Non-streaming returns the assembled assistant text.
         """
-        if worker_pool_enabled():
-            try:
-                return self._chat_via_pool(
-                    messages=messages, stream=stream, options=options, model=model
-                )
-            except WorkerError as exc:
-                raise ProviderError(
-                    f"Chat worker crashed during request: {exc}. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-            except TimeoutError as exc:
-                raise ProviderError(
-                    "Chat worker timed out. Please try again.",
-                    provider="llama-cpp",
-                ) from exc
-        return self._chat_in_process(messages=messages, stream=stream, options=options, model=model)
-
-    def _chat_in_process(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        stream: bool,
-        options: dict[str, Any] | None,
-        model: str | None,
-    ) -> str | ClosableIterator[str]:
-        """Original in-process chat path; reached when the pool is off or fails."""
-        from lilbee.providers.worker.chat_worker import _extract_non_streaming_content
-
-        self._chat_lock.acquire()
-        # Clear AFTER the lock acquires so a concurrent chat can't clobber a
-        # mid-stream cancel still being honored by the prior holder.
-        clear_abort()
-        try:
-            llm = self._get_chat_llm(model)
-            kwargs = self._chat_kwargs_from_options(options)
-            response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
-            if stream:
-                return _LockedStreamIterator(response, self._chat_lock)
-            return _extract_non_streaming_content(response)
-        finally:
-            if not stream:
-                self._chat_lock.release()
-
-    def _chat_via_pool(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        stream: bool,
-        options: dict[str, Any] | None,
-        model: str | None,
-    ) -> str | ClosableIterator[str]:
-        """Run one chat via the persistent pool worker."""
         accessor = self._get_pool_accessor(
             _CHAT_ROLE, chat_worker_main, _make_role_config_factory(_CHAT_ROLE)
         )
@@ -512,20 +256,32 @@ class LlamaCppProvider(LLMProvider):
             model=model,
         )
         if stream:
-            async_iter = accessor.stream("chat", request)
             return _PoolChatStreamIterator(
-                runtime=runtime, accessor=accessor, async_iter=async_iter
+                runtime=runtime,
+                accessor=accessor,
+                async_iter=accessor.stream("chat", request),
             )
-        result = runtime.run_sync(
-            accessor.call("chat", request, timeout=cfg.worker_pool_call_timeout_s),
-            timeout=cfg.worker_pool_call_timeout_s,
-        )
-        if not isinstance(result, str):
-            raise WorkerError(
-                "ProtocolError",
-                f"Pool chat returned {type(result).__name__}, expected str.",
-                "",
+        try:
+            result = runtime.run_sync(
+                accessor.call("chat", request, timeout=cfg.worker_pool_call_timeout_s),
+                timeout=cfg.worker_pool_call_timeout_s,
             )
+            if not isinstance(result, str):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool chat returned {type(result).__name__}, expected str.",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                f"Chat worker crashed during request: {exc}. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Chat worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
         return result
 
     @staticmethod
@@ -585,39 +341,9 @@ class LlamaCppProvider(LLMProvider):
             log.debug("no mmproj for %s", model, exc_info=True)
         return caps
 
-    _SHUTDOWN_JOIN_TIMEOUT_S = 30.0
-
     def shutdown(self) -> None:
-        """Stop workers and unload all cached models.
-
-        The Services-owned worker pool is drained by ``reset_services()``;
-        the provider only forgets its registration handles so a follow-up
-        ``LlamaCppProvider`` instance can re-register cleanly on the same
-        pool. The per-call ``WorkerManager`` and the in-process embed/
-        rerank threads are still owned here. The process-wide abort flag
-        is tripped first so any inference inside ggml returns at the next
-        token-poll, letting the workers see the ``None`` sentinel within
-        seconds instead of blocking on a full completion. The flag is
-        cleared once the workers exit so the next provider does not start
-        in an aborted state.
-        """
-        request_abort()
-        if self._embed_thread is not None:
-            self._embed_queue.put(None)
-            self._embed_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
-            if self._embed_thread.is_alive():
-                log.warning("embed worker did not exit within shutdown timeout")
-        if self._rerank_thread is not None:
-            self._rerank_queue.put(None)
-            self._rerank_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
-            if self._rerank_thread.is_alive():
-                log.warning("rerank worker did not exit within shutdown timeout")
-        clear_abort()
-        if self._subprocess_worker is not None:
-            self._subprocess_worker.stop()
-            self._subprocess_worker = None
+        """Drop pool registrations so a follow-up provider can re-register cleanly."""
         self._release_pool_roles()
-        self._cache.unload_all()
 
     def _release_pool_roles(self) -> None:
         """Drop our registrations on the Services pool so the next call respawns.
@@ -640,78 +366,14 @@ class LlamaCppProvider(LLMProvider):
                 log.warning("Pool release of role=%s raised %s", role, exc)
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Evict cached models so the next call reloads with current settings.
+        """Drop the pool's per-role workers so the next call respawns with current settings.
 
-        Also drops the pool's per-role workers; the next call will
-        respawn them with the new ``cfg.embedding_model``. In-place
-        model swap inside a worker is a follow-up; lazy respawn on the
-        next call is the simpler correctness story.
+        The ``model_path`` argument is accepted for protocol parity with
+        other providers but does not narrow the scope: workers reload all
+        their roles on respawn anyway.
         """
-        if model_path is None:
-            self._cache.unload_all()
-        else:
-            self._cache.unload_path(model_path)
+        del model_path
         self._release_pool_roles()
-
-
-class _LockedStreamIterator:
-    """Wraps a streaming response so the chat lock is held until iteration ends.
-    The lock must already be acquired by the caller; this iterator releases it
-    when the underlying stream is exhausted (or on explicit close).
-    """
-
-    def __init__(self, response: Any, lock: threading.Lock) -> None:
-        self._response = response
-        self._lock = lock
-        self._released = False
-
-    def __iter__(self) -> _LockedStreamIterator:
-        return self
-
-    def __next__(self) -> str:
-        try:
-            while True:
-                try:
-                    chunk = next(self._response)
-                except StopIteration:
-                    self._release()
-                    raise
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                content: str | None = delta.get("content")
-                if content:
-                    return content
-        except StopIteration:
-            raise
-        except Exception:
-            self._release()
-            raise
-
-    def _release(self) -> None:
-        if not self._released:
-            self._released = True
-            self._lock.release()
-
-    def close(self) -> None:
-        """Drain (capped) the underlying C iterator, then release the lock.
-
-        Simply releasing the lock without finishing inference leaves the
-        llama-cpp model in an inconsistent state. Draining lets inference
-        complete cleanly. The cap (``_LOCKED_STREAM_DRAIN_CAP``) keeps a
-        runaway think loop from blocking close() indefinitely; once the
-        cap fires we accept the inconsistent state in exchange for not
-        hanging the UI.
-        """
-        if not self._released:
-            try:
-                for i, _ in enumerate(self._response):
-                    if i >= _LOCKED_STREAM_DRAIN_CAP:
-                        break
-            except Exception:  # noqa: S110 -- best-effort drain during release; ignore partial-read errors
-                pass
-            self._release()
-
-    def __del__(self) -> None:  # pragma: no cover
-        self._release()
 
 
 class _PoolChatStreamIterator:
@@ -770,7 +432,7 @@ class _PoolChatStreamIterator:
     def close(self) -> None:
         """Cancel mid-stream and drain remaining tokens from the pipe.
 
-        Drain is bounded by ``_LOCKED_STREAM_DRAIN_CAP`` so a stuck
+        Drain is bounded by ``_CHAT_STREAM_DRAIN_CAP`` so a stuck
         worker cannot block close() indefinitely; once the cap fires we
         accept the partial-state for not hanging the UI.
         """
@@ -778,7 +440,7 @@ class _PoolChatStreamIterator:
             return
         self._accessor.cancel()
         drained = 0
-        while drained < _LOCKED_STREAM_DRAIN_CAP:
+        while drained < _CHAT_STREAM_DRAIN_CAP:
             try:
                 next(self)
             except StopIteration:

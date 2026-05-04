@@ -241,22 +241,6 @@ def _isolate_cfg(tmp_path, request):
     cfg.clear_model_defaults()
 
 
-@pytest.fixture(autouse=True)
-def _disable_worker_pool_by_default(monkeypatch, request):
-    """Disable the worker pool for unit tests via ``LILBEE_DISABLE_WORKER_POOL``.
-
-    The persistent worker pool spawns real llama-cpp subprocesses that
-    would crash on the in-memory test models. Tests that need the pool
-    opt in with ``@pytest.mark.worker_pool`` to inherit the production
-    default. Integration tests honor the production default too.
-    """
-    if "integration" in request.node.nodeid.split("/"):
-        return
-    if "worker_pool" in {m.name for m in request.node.iter_markers()}:
-        return
-    monkeypatch.setenv("LILBEE_DISABLE_WORKER_POOL", "1")
-
-
 def _default_store_mock():
     store = MagicMock()
     store.search.return_value = []
