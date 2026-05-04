@@ -9,6 +9,7 @@ Run with:
 
 from __future__ import annotations
 
+import sys
 from collections import Counter
 
 import pytest
@@ -166,6 +167,11 @@ class TestAnswerGeneration:
         assert result.answer
         assert len(result.answer) > 0
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="llama-cpp CPU detokenize exceeds 360s on macOS GitHub runners "
+        "(no Metal); covered on Linux + Windows.",
+    )
     @pytest.mark.timeout(360)
     def test_ask_includes_citations(self, rag_pipeline):
         """ask_raw() returns source references from real search.
@@ -434,6 +440,11 @@ class TestAskStream:
         assert len(tokens) > 0
         assert all(isinstance(t, StreamToken) for t in tokens)
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="llama-cpp CPU detokenize exceeds 360s on macOS GitHub runners "
+        "(no Metal); covered on Linux + Windows.",
+    )
     @pytest.mark.timeout(360)
     def test_stream_ends_with_citations(self, rag_pipeline):
         """The last token from ask_stream() contains source citations.
