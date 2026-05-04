@@ -160,6 +160,15 @@ class RoutingProvider(LLMProvider):
         if self._llama_cpp is not None:
             self._llama_cpp.invalidate_load_cache(model_path)
 
+    def warm_up_pool(self) -> None:
+        """Forward to the native side; the SDK side has no worker pool.
+
+        Lazily constructs the llama-cpp provider if it isn't already up so
+        eager-start during ``Services`` boot still warms the configured
+        native roles, even when the user hasn't issued a chat call yet.
+        """
+        self._get_llama_cpp().warm_up_pool()
+
 
 def _is_native_rerank_ref(model: str) -> bool:
     """Return True if *model* resolves to a featured rerank catalog entry."""

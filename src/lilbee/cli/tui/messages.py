@@ -260,3 +260,13 @@ MODEL_PICKER_EMBED_TOOLTIP = (
 )
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
+
+
+def worker_starting(role: str) -> str:
+    """User-facing notification text fired immediately before a worker spawn."""
+    return f"Starting {role.replace('_', ' ').title()} worker..."
+
+
+def worker_ready(role: str) -> str:
+    """User-facing notification text fired once the spawned worker is live."""
+    return f"{role.replace('_', ' ').title()} worker ready"

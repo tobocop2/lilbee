@@ -139,3 +139,13 @@ class LLMProvider(Protocol):
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
         return
+
+    def warm_up_pool(self) -> None:
+        """Eagerly register configured roles so :meth:`WorkerPool.start_eager` has work to do.
+
+        Default no-op so providers without a worker pool (SDK / routing
+        wrappers) can be passed to ``Services`` unchanged. Implemented by
+        :class:`LlamaCppProvider` to register chat / embed / rerank / vision
+        roles whose model is configured.
+        """
+        return

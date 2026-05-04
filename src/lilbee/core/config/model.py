@@ -242,11 +242,13 @@ class Config(BaseSettings):
     # heavy ingest jobs.
     worker_pool_call_timeout_s: float = ConfigField(default=300.0, gt=0.0, writable=True)
 
-    # Spawn every registered role at startup instead of on first use. Trades
-    # cold-start latency on first call (~1-3s per worker) for a slower TUI
-    # mount. Default off; opt in for benchmark / production deployments
-    # where the first request must land fast.
-    worker_pool_eager_start: bool = ConfigField(default=False, writable=True)
+    # Spawn every configured role at startup instead of on first use. Trades
+    # a slower TUI mount (~1-3s per worker, cold-started in parallel) for a
+    # responsive first interaction. Roles whose model is unset are skipped,
+    # so a setup with only chat + embed never spawns rerank or vision.
+    # Set to false for headless / scripted use where the first call doesn't
+    # need to be fast.
+    worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
     # Idle worker reap. A worker that has been quiet for this many seconds
     # is shut down to free RAM/VRAM; the next request respawns it.

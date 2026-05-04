@@ -1023,3 +1023,81 @@ def test_shutdown_pool_runtime_warns_and_forces_stop_when_drain_raises(caplog) -
         shutdown_pool_runtime(_FakePool(), _FailingRuntime(), HealthTickerHandle())
     assert runtime_calls == ["run_sync", "shutdown"]
     assert any("forcing runtime stop" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Spawn lifecycle listeners (cold-start UX hook).
+
+
+@pytest.mark.asyncio
+async def test_spawn_listeners_fire_around_first_call(tmp_path) -> None:
+    """``add_listener`` callbacks fire spawning-then-spawned around the spawn."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+
+    events: list[tuple[str, str]] = []
+    pool.add_listener(
+        on_spawning=lambda role: events.append(("spawning", role)),
+        on_spawned=lambda role: events.append(("spawned", role)),
+    )
+    try:
+        accessor = pool.accessor("embed")
+        await accessor.call("embed", ["hi"], timeout=5.0)
+        assert events == [("spawning", "embed"), ("spawned", "embed")]
+    finally:
+        await pool.shutdown(timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_spawn_listeners_fire_only_on_actual_spawn(tmp_path) -> None:
+    """The second call to a live worker must not re-fire either listener."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+
+    events: list[tuple[str, str]] = []
+    pool.add_listener(
+        on_spawning=lambda role: events.append(("spawning", role)),
+        on_spawned=lambda role: events.append(("spawned", role)),
+    )
+    try:
+        accessor = pool.accessor("embed")
+        await accessor.call("embed", ["hi"], timeout=5.0)
+        await accessor.call("embed", ["bye"], timeout=5.0)
+        # One spawn, one pair of events.
+        assert events == [("spawning", "embed"), ("spawned", "embed")]
+    finally:
+        await pool.shutdown(timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_spawn_listener_exception_does_not_break_pool(tmp_path, caplog) -> None:
+    """A misbehaving listener logs and the spawn still completes."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+
+    def _boom(role: str) -> None:
+        raise RuntimeError(f"listener exploded for {role}")
+
+    pool.add_listener(on_spawning=_boom, on_spawned=_boom)
+    try:
+        with caplog.at_level("ERROR", logger="lilbee.providers.worker.pool"):
+            accessor = pool.accessor("embed")
+            await accessor.call("embed", ["hi"], timeout=5.0)
+        # Pool kept the channel alive even though both listeners raised.
+        assert spawner.spawned, "spawn must have completed"
+        assert any("listener for role=embed raised" in rec.message for rec in caplog.records)
+    finally:
+        await pool.shutdown(timeout=2.0)
+
+
+def test_add_listener_accepts_either_kwarg_independently() -> None:
+    """``add_listener`` allows one or both callbacks; defaults are empty lists."""
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.add_listener(on_spawning=lambda r: None)
+    pool.add_listener(on_spawned=lambda r: None)
+    assert len(pool._on_role_spawning) == 1
+    assert len(pool._on_role_spawned) == 1

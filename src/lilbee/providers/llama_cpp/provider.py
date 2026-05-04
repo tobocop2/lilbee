@@ -348,6 +348,21 @@ class LlamaCppProvider(LLMProvider):
             log.debug("no mmproj for %s", model, exc_info=True)
         return caps
 
+    def warm_up_pool(self) -> None:
+        """Register roles for every configured model. Idempotent.
+
+        Called by ``Services`` when ``cfg.worker_pool_eager_start`` is on so
+        ``WorkerPool.start_eager()`` has roles to spawn. Roles whose model is
+        unset are skipped; this lets a setup with only ``chat_model`` +
+        ``embedding_model`` configured eager-start exactly those two and not
+        pay rerank or vision spawn cost.
+        """
+        for role, _spec in _ROLE_SPECS.items():
+            if not _is_role_configured(role):
+                continue
+            entrypoint = _ROLE_ENTRYPOINTS[role]
+            self._get_pool_accessor(role, entrypoint, _make_role_config_factory(role))
+
     def shutdown(self) -> None:
         """Drop pool registrations so a follow-up provider can re-register cleanly."""
         self._release_pool_roles()
@@ -479,6 +494,19 @@ _ROLE_SPECS: dict[str, _RoleSpec] = {
     # documentation only, the vision worker calls load_vision_llama directly.
     _VISION_ROLE: _RoleSpec(cfg_attr="vision_model", mode="vision"),
 }
+
+
+_ROLE_ENTRYPOINTS = {
+    _EMBED_ROLE: embed_worker_main,
+    _RERANK_ROLE: rerank_worker_main,
+    _CHAT_ROLE: chat_worker_main,
+    _VISION_ROLE: vision_worker_main,
+}
+
+
+def _is_role_configured(role: str) -> bool:
+    """True iff the cfg attribute for *role* holds a non-empty model name."""
+    return bool(getattr(cfg, _ROLE_SPECS[role].cfg_attr))
 
 
 def _make_role_config_factory(role: str) -> Callable[[], RoleConfig]:

@@ -207,6 +207,28 @@ class WorkerPool:
         self._shutdown = False
         self._shutdown_lock = asyncio.Lock()
         self._max_idle_s = max_idle_s
+        # Listeners fire around every spawn, including respawns after a
+        # crash. Both default to empty so headless callers (CLI, server,
+        # tests) pay nothing.
+        self._on_role_spawning: list[Callable[[str], None]] = []
+        self._on_role_spawned: list[Callable[[str], None]] = []
+
+    def add_listener(
+        self,
+        *,
+        on_spawning: Callable[[str], None] | None = None,
+        on_spawned: Callable[[str], None] | None = None,
+    ) -> None:
+        """Register callbacks fired immediately before / after a role spawn.
+
+        Both arguments are optional; pass either or both. The callbacks are
+        invoked from the pool runtime thread, so consumers wanting to touch a
+        UI must marshal to their own loop (e.g. ``app.call_from_thread``).
+        """
+        if on_spawning is not None:
+            self._on_role_spawning.append(on_spawning)
+        if on_spawned is not None:
+            self._on_role_spawned.append(on_spawned)
 
     def register(
         self,
@@ -287,6 +309,7 @@ class WorkerPool:
             if registration.degraded:
                 raise RoleDegradedError(role, _RESTART_BUDGET, _RESTART_WINDOW_S)
             self._raise_if_shutdown()
+            self._fire_listeners(self._on_role_spawning, role)
             channel, _handle = await asyncio.get_running_loop().run_in_executor(
                 None,
                 self._spawner.spawn,
@@ -295,8 +318,17 @@ class WorkerPool:
             )
             registration.channel = channel
             registration.last_used = time.monotonic()
+            self._fire_listeners(self._on_role_spawned, role)
             log.info("Worker pool spawned role=%s pid=%s", role, channel.pid)
             return channel
+
+    def _fire_listeners(self, listeners: list[Callable[[str], None]], role: str) -> None:
+        """Invoke every registered listener; one bad listener does not break the pool."""
+        for listener in listeners:
+            try:
+                listener(role)
+            except Exception:
+                log.exception("Worker pool listener for role=%s raised", role)
 
     def _stamp_used(self, role: str) -> None:
         """Update *role*'s ``last_used`` timestamp; called by the accessor."""

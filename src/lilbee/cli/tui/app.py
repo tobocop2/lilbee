@@ -192,6 +192,7 @@ class LilbeeApp(App[None]):
 
         self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
+        self._wire_worker_pool_notifications()
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -200,6 +201,33 @@ class LilbeeApp(App[None]):
         self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
+
+    def _wire_worker_pool_notifications(self) -> None:
+        """Surface worker spawn lifecycle as Textual notifications.
+
+        Worker spawns happen on the pool runtime thread, not the TUI's main
+        loop, so the listeners marshal back via :meth:`call_from_thread`
+        before touching ``self.notify``. The notifications give the user
+        feedback during the 1-3 s cold-start window per role.
+        """
+
+        def _on_spawning(role: str) -> None:
+            self.call_from_thread(
+                self.notify,
+                msg.worker_starting(role),
+                severity="information",
+                timeout=2,
+            )
+
+        def _on_spawned(role: str) -> None:
+            self.call_from_thread(
+                self.notify,
+                msg.worker_ready(role),
+                severity="information",
+                timeout=1,
+            )
+
+        get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
     def _canonicalize_persisted_models(self) -> None:
         """Swap stale persisted refs to a working fallback for this session."""

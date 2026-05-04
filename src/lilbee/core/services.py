@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -70,6 +71,20 @@ class Services:
         """Flip the abort flag on every registered worker pool role. Idempotent."""
         for role_name in self.worker_pool.registered_roles:
             self.worker_pool.accessor(role_name).cancel()
+
+    def add_pool_listener(
+        self,
+        *,
+        on_spawning: Callable[[str], None] | None = None,
+        on_spawned: Callable[[str], None] | None = None,
+    ) -> None:
+        """Subscribe to worker spawn lifecycle events.
+
+        Forwards directly to :meth:`WorkerPool.add_listener`. The TUI uses this
+        to surface "Starting <role> worker..." / "<role> worker ready"
+        notifications during the cold-start window.
+        """
+        self.worker_pool.add_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
 _svc: Services | None = None
@@ -147,13 +162,16 @@ def get_services() -> Services:
         pool_runtime=pool_runtime,
         pool_health_ticker=pool_health_ticker,
     )
-    # Eager start is opt-in: pays the per-worker cold-start (1-3s each)
-    # at TUI mount instead of on first request. Most users keep it off
-    # so `lilbee --help` and the splash screen stay snappy.
+    # Eager start is the default: pay 1-3 s per worker at TUI mount so the
+    # first user action lands on a warm pool. Roles whose model is unset are
+    # skipped, so a setup with only chat + embed never spawns rerank or
+    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless
+    # scripts where mount time matters more than first-call latency.
     if cfg.worker_pool_eager_start:
         from contextlib import suppress
 
         with suppress(Exception):
+            provider.warm_up_pool()
             pool_runtime.start()
             pool_runtime.run_sync(worker_pool.start_eager(), timeout=30.0)
     return _svc

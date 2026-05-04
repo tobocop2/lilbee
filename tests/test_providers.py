@@ -1283,6 +1283,23 @@ class TestRoutingProvider:
         assert caps == ["completion", "vision"]
         mock_litellm.get_capabilities.assert_called_once_with("ollama/llava:7b")
 
+    def test_invalidate_load_cache_forwards_to_native(self) -> None:
+        """``invalidate_load_cache`` releases the native side; SDK has no cache."""
+        rp = self._make_provider()
+        mock_native = mock.MagicMock()
+        rp._llama_cpp = mock_native
+
+        rp.invalidate_load_cache()
+        mock_native.invalidate_load_cache.assert_called_once_with(None)
+
+    def test_warm_up_pool_forwards_to_native(self) -> None:
+        """``warm_up_pool`` lazily constructs the native provider and warms it."""
+        rp = self._make_provider()
+        mock_native = mock.MagicMock()
+        with mock.patch.object(rp, "_get_llama_cpp", return_value=mock_native):
+            rp.warm_up_pool()
+        mock_native.warm_up_pool.assert_called_once_with()
+
 
 # ---------------------------------------------------------------------------
 # litellm_available guard

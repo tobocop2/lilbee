@@ -206,33 +206,13 @@ Standalone mode runs entirely on your machine. No cloud required.
 
 ### Resources
 
-| Resource              | Minimum                                  | Recommended                                                                                                                                                 |
-| --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **RAM**               | 8 GB                                     | 16 to 32 GB                                                                                                                                                 |
-| **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
-| **Disk**              | 2 GB (models + data)                     | 10+ GB if you load multiple models                                                                                                                          |
+| Resource              | Minimum                                                  | Recommended                                                                                                                                                 |
+| --------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **RAM**               | 8 GB                                                     | 16 to 32 GB if you load several local models at once (chat + embed + rerank + vision); the actual footprint scales with the size and quantization you pick |
+| **GPU / Accelerator** | none required (CPU-only inference works)                 | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
+| **Disk**              | 2 GB (models + data)                                     | 10+ GB if you load multiple models                                                                                                                          |
 
-Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
-
-### Memory layout
-
-lilbee runs each inference role (chat, embed, rerank, vision) in a separate subprocess so that native llama-cpp work cannot stall the TUI. That responsiveness has a memory cost worth knowing about when you pick hardware:
-
-- **TUI process baseline:** ~150 MB (Python interpreter, Textual, LanceDB, dependencies).
-- **Per active role subprocess:** ~50 MB Python overhead plus the resident memory of the loaded model. Typical model sizes:
-  - Embed model: 100–500 MB
-  - Rerank model: 100–300 MB
-  - Chat model: 1–8 GB depending on quantization
-  - Vision model: 2–4 GB
-- **Typical total when all four roles are warm:** 4–8 GB resident, dominated by the chat and vision models. Models load lazily (on first call to that role) and unload after `worker_pool_max_idle_s` seconds of inactivity, so the actual working set follows usage.
-
-If you only chat with frontier APIs and never load a local chat model, only the embed and rerank workers spawn and the resident footprint stays under 2 GB.
-
-### First-call latency
-
-The first inference call to each role spawns its worker process and loads the model. Cold-start is typically 1–3 seconds on Apple Silicon, longer on cold disk or constrained CPUs. Subsequent calls reuse the warm worker. The TUI surfaces a "Starting <role> worker…" notification while a worker is coming up, then a "<role> worker ready" notification once it has finished loading.
-
-For benchmark or production deployments where the first request must land fast, set `worker_pool_eager_start = true` in `config.toml` to spawn all registered roles at TUI launch instead of on first use. The trade is a slower TUI splash in exchange for warm workers from the first interaction.
+Each active inference role (chat, embed, rerank, vision) runs in its own subprocess to keep the TUI responsive; the resident memory you'll need follows the size of the models you keep warm. Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
 ## Install
 

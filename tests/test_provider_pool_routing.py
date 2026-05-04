@@ -913,3 +913,56 @@ def test_shutdown_handles_pool_release_failure(monkeypatch, tmp_path) -> None:
     provider.shutdown()
     # Release failure does not leave registrations behind.
     assert provider._registered_roles == set()
+
+
+def test_warm_up_pool_registers_only_configured_roles(monkeypatch, tmp_path) -> None:
+    """``warm_up_pool`` registers roles whose model is set; skips empty roles.
+
+    Verifies the eager-start path lazily picks up a partial setup (chat +
+    embed) without forcing the user to also configure rerank or vision.
+    """
+    cfg.embedding_model = "stub/embed"
+    cfg.chat_model = "stub/chat"
+    cfg.reranker_model = ""
+    cfg.vision_model = ""
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
+    try:
+        provider.warm_up_pool()
+        assert provider._registered_roles == {"chat", "embed"}
+    finally:
+        provider.shutdown()
+
+
+def test_warm_up_pool_is_idempotent(monkeypatch, tmp_path) -> None:
+    """Calling warm_up_pool twice does not re-register roles or raise."""
+    cfg.embedding_model = "stub/embed"
+    cfg.chat_model = "stub/chat"
+    cfg.reranker_model = ""
+    cfg.vision_model = ""
+    cfg.models_dir = tmp_path / "models"
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda _name: tmp_path / "models" / "stub.gguf",
+    )
+
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    _install_mock_services_with_provider(provider)
+    try:
+        provider.warm_up_pool()
+        provider.warm_up_pool()
+        assert provider._registered_roles == {"chat", "embed"}
+    finally:
+        provider.shutdown()
