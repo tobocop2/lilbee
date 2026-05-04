@@ -159,6 +159,24 @@ class TestAssistantMessageAsync:
             await pilot.pause()
             assert am._thinking_header is not None
 
+    async def test_reasoning_after_content_mounts_collapsible_before_content(self) -> None:
+        """Late reasoning (after content already dismissed the header) mounts the
+        Collapsible relative to the existing content widget, not the missing header.
+        """
+        from textual.widgets import Collapsible
+
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("answer first")
+            await pilot.pause()
+            assert am._thinking_header is None, "content should have dismissed the header"
+            am.append_reasoning("late thought")
+            await pilot.pause()
+            assert isinstance(am._reasoning_widget, Collapsible)
+            assert am._reasoning_widget.is_mounted
+
     async def test_finish_with_sources_shows_citations(self) -> None:
         app = _MsgApp()
         async with app.run_test() as pilot:
