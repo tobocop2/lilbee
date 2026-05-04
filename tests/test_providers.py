@@ -2323,7 +2323,9 @@ class TestLlamaCppProviderMethods:
 
         provider.shutdown()
 
-        provider._embed_thread.join.assert_called_once_with(timeout=2)
+        provider._embed_thread.join.assert_called_once_with(
+            timeout=provider._SHUTDOWN_JOIN_TIMEOUT_S
+        )
         mock_subprocess.stop.assert_called_once()
         assert provider._subprocess_worker is None
         provider._cache.unload_all.assert_called_once()

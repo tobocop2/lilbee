@@ -22,7 +22,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort, request_abort
 from lilbee.providers.llama_cpp.batching import (
     BATCH_WINDOW_S,
     EMBED_FUTURE_TIMEOUT_S,
@@ -334,12 +334,27 @@ class LlamaCppProvider(LLMProvider):
             log.debug("no mmproj for %s", model, exc_info=True)
         return caps
 
+    _SHUTDOWN_JOIN_TIMEOUT_S = 30.0
+
     def shutdown(self) -> None:
-        """Stop workers and unload all cached models."""
+        """Stop workers and unload all cached models.
+
+        Trips the process-wide abort flag so any inference inside ggml
+        returns at the next token-poll, which lets the workers see the
+        ``None`` sentinel within seconds instead of blocking on a full
+        completion. The flag is cleared once the workers exit so the next
+        provider does not start in an aborted state.
+        """
+        request_abort()
         self._embed_queue.put(None)
-        self._embed_thread.join(timeout=2)
         self._rerank_queue.put(None)
-        self._rerank_thread.join(timeout=2)
+        self._embed_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
+        self._rerank_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
+        if self._embed_thread.is_alive():
+            log.warning("embed worker did not exit within shutdown timeout")
+        if self._rerank_thread.is_alive():
+            log.warning("rerank worker did not exit within shutdown timeout")
+        clear_abort()
         if self._subprocess_worker is not None:
             self._subprocess_worker.stop()
             self._subprocess_worker = None
