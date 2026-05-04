@@ -104,8 +104,9 @@ def run_worker(
             if not _dispatch_kind(conn, kind, payload, session, kind_handlers, role_config.role):
                 return
     finally:
-        with contextlib.suppress(Exception):
-            session.close()
+        # session.close() swallows its own teardown errors per role-specific
+        # contract. conn.close() can raise if the parent already tore down.
+        session.close()
         with contextlib.suppress(Exception):
             conn.close()
 
