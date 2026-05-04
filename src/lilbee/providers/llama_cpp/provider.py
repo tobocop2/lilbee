@@ -366,12 +366,10 @@ class LlamaCppProvider(LLMProvider):
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
-        """Run vision OCR. Routes through the persistent worker pool by default.
+        """Run vision OCR via the persistent pool, or per-call WorkerManager when off.
 
         Worker crashes propagate as :class:`ProviderError`; the pool
-        respawns the vision role lazily on the next call. The legacy
-        per-call ``WorkerManager`` path remains for users who keep the
-        pool disabled.
+        respawns the vision role lazily on the next call.
         """
         if cfg.worker_pool_enabled:
             try:
