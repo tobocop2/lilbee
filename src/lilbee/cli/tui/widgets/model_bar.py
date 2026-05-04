@@ -23,12 +23,8 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.services import get_services, reset_services
 from lilbee.modelhub.models import ModelTask
-from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
-from lilbee.providers.sdk_backend import (
-    OLLAMA_BACKEND_NAME,
-    PROVIDER_KEYS,
-    detect_backend_name,
-)
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
+from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.retrieval.embedder import is_model_available
 
 log = logging.getLogger(__name__)
@@ -157,14 +153,12 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
     try:
         from lilbee.modelhub.model_manager import classify_remote_models
 
-        base_url = cfg.remote_base_url
-        is_ollama = detect_backend_name(base_url) == OLLAMA_BACKEND_NAME
-        for model in classify_remote_models(base_url):
+        for model in classify_remote_models(cfg.remote_base_url):
             # Skip backend rows with a blank model name so the picker
             # doesn't render an empty " (Ollama)" row.
             if not model.name.strip():
                 continue
-            ref = f"{OLLAMA_PREFIX}{model.name}" if is_ollama else model.name
+            ref = format_remote_ref(model)
             if ref in seen or _is_mmproj(model.name):
                 continue
             bucket = _lookup_bucket(buckets, model.task, ref)
@@ -190,10 +184,7 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         # expose embedding/vision/rerank.
         for display_name, models in discover_api_models().items():
             for model in models:
-                # model.provider is the display name ("Anthropic"), but the ref
-                # needs the backend-qualified prefix ("anthropic/model-name") for routing.
-                prefix = display_name.lower()
-                qualified = f"{prefix}/{model.name}"
+                qualified = format_remote_ref(model)
                 if qualified in seen:
                     continue
                 seen.add(qualified)
