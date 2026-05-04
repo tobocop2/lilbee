@@ -10,16 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import logging
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
-
-log = logging.getLogger(__name__)
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.core.config import Config
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
@@ -111,6 +107,7 @@ def get_services() -> Services:
     from lilbee.providers.factory import create_provider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle, start_health_ticker
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
+    from lilbee.providers.worker.transport import make_spawner
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -120,7 +117,7 @@ def get_services() -> Services:
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     worker_pool = WorkerPool(
-        spawner=_make_pool_spawner(cfg),
+        spawner=make_spawner(cfg.worker_pool_backend),
         max_idle_s=cfg.worker_pool_max_idle_s,
         restart_attempts=cfg.worker_pool_restart_attempts,
         restart_window_s=cfg.worker_pool_restart_window_s,
@@ -185,50 +182,14 @@ def set_services(services: Services | None) -> None:
 
 def reset_services() -> None:
     """Shut down and discard all cached instances."""
+    from lilbee.providers.worker.pool import shutdown_pool_runtime
+
     global _svc
     if _svc is not None:
-        _shutdown_pool(_svc)
+        shutdown_pool_runtime(_svc.worker_pool, _svc.pool_runtime, _svc.pool_health_ticker)
         _svc.provider.shutdown()
         _svc.store.close()
     _svc = None
-
-
-def _shutdown_pool(services: Services) -> None:
-    """Drain the worker pool, stop the health ticker, then stop the runtime loop.
-
-    Order matters: cancel the ticker first so it cannot schedule a fresh
-    pool op against a draining runtime; then drain the pool; then stop
-    the runtime thread. Idempotent.
-    """
-    from lilbee.providers.worker.health_ticker import stop_health_ticker
-
-    stop_health_ticker(services.pool_health_ticker)
-    pool = services.worker_pool
-    runtime = services.pool_runtime
-    try:
-        runtime.run_sync(pool.shutdown(), timeout=10.0)
-    except (TimeoutError, RuntimeError, OSError) as exc:
-        log.warning("Pool shutdown raised %s; forcing runtime stop", exc)
-    runtime.shutdown(timeout=5.0)
-
-
-def _make_pool_spawner(cfg_obj: Config) -> Any:
-    """Pick the worker-pool spawner implementation based on cfg.
-
-    Default ``"pipe"`` returns the stdlib :class:`PipeSpawner`. Future
-    backends (``"zmq"``) plug in here without touching the pool or any
-    consumer. Hot-swap is not supported; the choice is made at Services
-    construction.
-    """
-    from lilbee.providers.worker.transport_pipe import PipeSpawner
-
-    backend = cfg_obj.worker_pool_backend
-    if backend == "pipe":
-        return PipeSpawner()
-    raise ValueError(
-        f"Unknown worker_pool_backend {backend!r}. "
-        f"Supported backends: 'pipe' (additional backends land in future PRs)."
-    )
 
 
 atexit.register(reset_services)

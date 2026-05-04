@@ -68,7 +68,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Coroutine
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from lilbee.providers.worker.transport import (
     RoleConfig,
@@ -81,6 +81,10 @@ from lilbee.providers.worker.transport_pipe import (
     WorkerCrashError,
     WorkerError,
 )
+
+if TYPE_CHECKING:
+    # circular: health_ticker -> pool via WorkerPool/PoolRuntime
+    from lilbee.providers.worker.health_ticker import HealthTickerHandle
 
 log = logging.getLogger(__name__)
 
@@ -590,9 +594,34 @@ class PoolRuntime:
             thread.join(timeout=timeout)
 
 
+def shutdown_pool_runtime(
+    pool: WorkerPool,
+    runtime: PoolRuntime,
+    ticker: HealthTickerHandle,
+    *,
+    drain_timeout_s: float = 10.0,
+    runtime_timeout_s: float = 5.0,
+) -> None:
+    """Stop the health ticker, drain the pool through the runtime, then stop the runtime.
+
+    Order matters: cancel the ticker first so it cannot schedule a fresh
+    pool op against a draining runtime; then drain the pool via the
+    runtime; then stop the runtime thread. Idempotent.
+    """
+    from lilbee.providers.worker.health_ticker import stop_health_ticker
+
+    stop_health_ticker(ticker)
+    try:
+        runtime.run_sync(pool.shutdown(), timeout=drain_timeout_s)
+    except (TimeoutError, RuntimeError, OSError) as exc:
+        log.warning("Pool shutdown raised %s; forcing runtime stop", exc)
+    runtime.shutdown(timeout=runtime_timeout_s)
+
+
 __all__ = [
     "PoolRuntime",
     "PoolShutdownError",
     "RoleAccessor",
     "WorkerPool",
+    "shutdown_pool_runtime",
 ]

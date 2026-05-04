@@ -969,3 +969,33 @@ async def test_ensure_channel_raises_when_role_degraded_after_outer_check(tmp_pa
             await ensure_task
     finally:
         await pool.shutdown()
+
+
+# Lifecycle: shutdown_pool_runtime helper.
+
+
+def test_shutdown_pool_runtime_warns_and_forces_stop_when_drain_raises(caplog) -> None:
+    """``shutdown_pool_runtime`` warns and force-stops when the pool drain raises."""
+    from lilbee.providers.worker.health_ticker import HealthTickerHandle
+    from lilbee.providers.worker.pool import shutdown_pool_runtime
+
+    runtime_calls: list[str] = []
+
+    class _FailingRuntime:
+        def run_sync(self, coro, *, timeout):
+            runtime_calls.append("run_sync")
+            # Close the coro so pytest does not warn about "never awaited".
+            coro.close()
+            raise RuntimeError("simulated drain failure")
+
+        def shutdown(self, *, timeout=5.0):
+            runtime_calls.append("shutdown")
+
+    class _FakePool:
+        async def shutdown(self):
+            return None
+
+    with caplog.at_level("WARNING", logger="lilbee.providers.worker.pool"):
+        shutdown_pool_runtime(_FakePool(), _FailingRuntime(), HealthTickerHandle())
+    assert runtime_calls == ["run_sync", "shutdown"]
+    assert any("forcing runtime stop" in r.message for r in caplog.records)

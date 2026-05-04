@@ -44,22 +44,6 @@ class TestServicesDataclass:
             services.clusterer = MagicMock()  # type: ignore[misc]
 
 
-class TestPoolSpawnerSelection:
-    def test_pipe_backend_returns_pipe_spawner(self):
-        from lilbee.core.services import _make_pool_spawner
-        from lilbee.providers.worker.transport_pipe import PipeSpawner
-
-        cfg.worker_pool_backend = "pipe"
-        assert isinstance(_make_pool_spawner(cfg), PipeSpawner)
-
-    def test_unknown_backend_raises(self):
-        from lilbee.core.services import _make_pool_spawner
-
-        cfg.worker_pool_backend = "imaginary"
-        with pytest.raises(ValueError, match="worker_pool_backend"):
-            _make_pool_spawner(cfg)
-
-
 class TestCancelInference:
     """Services.cancel_inference must reach pool-mode AND fallback Event."""
 
@@ -137,7 +121,9 @@ class TestEagerStartBranch:
         # Imports inside get_services() resolve to the source modules; patch at those
         # source paths so the lazy bindings inside the function pick up the stubs.
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
-        monkeypatch.setattr(services_mod, "_make_pool_spawner", lambda _cfg: MagicMock())
+        monkeypatch.setattr(
+            "lilbee.providers.worker.transport.make_spawner", lambda _backend: MagicMock()
+        )
 
         called: list[str] = []
 
@@ -195,7 +181,9 @@ class TestEagerStartBranch:
 
         services_mod.set_services(None)
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
-        monkeypatch.setattr(services_mod, "_make_pool_spawner", lambda _cfg: MagicMock())
+        monkeypatch.setattr(
+            "lilbee.providers.worker.transport.make_spawner", lambda _backend: MagicMock()
+        )
 
         class _BoomRuntime:
             def start(self):
@@ -218,50 +206,3 @@ class TestEagerStartBranch:
             assert svc is not None
         finally:
             services_mod.set_services(None)
-
-
-class TestShutdownPoolErrorHandling:
-    """``_shutdown_pool`` warns and force-stops when the pool drain raises."""
-
-    def test_warns_and_forces_stop_when_run_sync_raises(self, caplog):
-        from lilbee.core.services import CrawlerSyncState, Services, _shutdown_pool
-        from lilbee.providers.worker.health_ticker import HealthTickerHandle
-
-        runtime_calls: list[str] = []
-
-        class _FailingRuntime:
-            def run_sync(self, coro, *, timeout):
-                runtime_calls.append("run_sync")
-                # Close the coro so pytest does not warn about "never awaited".
-                coro.close()
-                raise RuntimeError("simulated drain failure")
-
-            def shutdown(self, *, timeout=5.0):
-                runtime_calls.append("shutdown")
-
-        class _FakePool:
-            async def shutdown(self):
-                return None
-
-        services = Services(
-            provider=MagicMock(),
-            store=MagicMock(),
-            embedder=MagicMock(),
-            reranker=MagicMock(),
-            concepts=MagicMock(),
-            clusterer=MagicMock(),
-            searcher=MagicMock(),
-            registry=MagicMock(),
-            hf_client=MagicMock(),
-            ingest_lock_registry=MagicMock(),
-            model_manager=MagicMock(),
-            crawler_semaphore=None,
-            crawler_sync_state=CrawlerSyncState(),
-            worker_pool=_FakePool(),
-            pool_runtime=_FailingRuntime(),
-            pool_health_ticker=HealthTickerHandle(),
-        )
-        with caplog.at_level("WARNING", logger="lilbee.core.services"):
-            _shutdown_pool(services)
-        assert runtime_calls == ["run_sync", "shutdown"]
-        assert any("forcing runtime stop" in r.message for r in caplog.records)
