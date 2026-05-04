@@ -234,8 +234,9 @@ class PipeChannel:
             deadline = asyncio.get_running_loop().time() + timeout
             while True:
                 remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    raise TimeoutError()
+                # wait_for raises asyncio.TimeoutError immediately when
+                # remaining <= 0, so the deadline is enforced naturally
+                # whether we consumed it via real recv or absorbed pongs.
                 msg_kind, value = await asyncio.wait_for(self._recv(), timeout=remaining)
                 if msg_kind == PONG_KIND:
                     continue

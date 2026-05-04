@@ -229,6 +229,28 @@ def _call_with_pong_prefix_main(conn: Any, _abort_flag: Any, _role_config: RoleC
         conn.send(("result", value))
 
 
+def _call_pong_then_silent_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
+    """Worker that emits one pong then never sends RESULT.
+
+    Used to exercise the call's timeout-via-wait_for path under the pong
+    filter: the parent absorbs the pong, re-enters the loop, and the
+    next ``wait_for(_recv, remaining)`` raises TimeoutError when no real
+    reply arrives. Confirms the pong filter does not let the worker
+    indefinitely defer the reply with ignorable frames.
+    """
+    while True:
+        if not conn.poll(timeout=_POLL_TIMEOUT_S):
+            continue
+        try:
+            kind, _ = conn.recv()
+        except EOFError:
+            return
+        if kind == "shutdown":
+            conn.send(("ack", None))
+            return
+        conn.send(("pong", None))
+
+
 # =====================================================================
 # Fixtures: spawn one worker per test, always close in teardown so a
 # failing assertion never leaves a real subprocess behind.
@@ -568,6 +590,27 @@ async def test_call_silently_consumes_orphan_pong_frames(
     try:
         result = await channel.call("echo", "payload", timeout=_TEST_CALL_TIMEOUT_S)
         assert result == "payload"
+    finally:
+        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+
+
+@pytest.mark.asyncio
+async def test_call_times_out_when_only_pongs_arrive(
+    spawner: PipeSpawner,
+    role_config: RoleConfig,
+) -> None:
+    """The pong filter must not let an absorbed pong defer the timeout.
+
+    Worker emits one pong then never sends RESULT. The parent absorbs
+    the pong, re-enters the recv loop, and the next ``wait_for`` raises
+    TimeoutError once the per-call budget is exhausted by the deadline-
+    bounded recv. Confirms the filter does not let the worker indefinitely
+    defer the reply with ignorable frames.
+    """
+    channel, _ = spawner.spawn(_call_pong_then_silent_main, role_config)
+    try:
+        with pytest.raises(TimeoutError):
+            await channel.call("echo", "payload", timeout=0.3)
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 
