@@ -136,10 +136,13 @@ def _handle_vision(conn: Any, payload: Any, state: WorkerLoopState) -> None:
     conn.send((RESULT_KIND, text))
 
 
-def vision_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def vision_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Vision-OCR worker entrypoint: load llama-cpp lazily, serve until shutdown."""
     run_worker(
-        conn,
+        data_conn,
+        health_conn,
         abort_flag,
         role_config,
         session_factory=_VisionSession,

@@ -147,19 +147,27 @@ class PipeChannel:
         role: str,
         process: multiprocessing.process.BaseProcess,
         parent_conn: Any,
+        health_conn: Any,
         abort_flag: Any,
     ) -> None:
         self._role = role
         self._process = process
         self._conn = parent_conn
+        self._health_conn = health_conn
         self._abort = abort_flag
+        # max_workers=4: data send + data recv + health send + health recv.
+        # Per-channel executor so multiplexing four roles plus streaming
+        # chat plus UI calls does not starve the asyncio default thread
+        # pool, which is shared and capped at min(32, cpu_count + 4).
         self._executor = ThreadPoolExecutor(
-            max_workers=2,
+            max_workers=4,
             thread_name_prefix=f"pipechan-{role}",
         )
         self._send_lock = asyncio.Lock()
         self._recv_lock = asyncio.Lock()
         self._recv_thread_lock = threading.Lock()
+        self._health_send_lock = asyncio.Lock()
+        self._health_recv_lock = asyncio.Lock()
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
         self._closed = False
@@ -232,49 +240,37 @@ class PipeChannel:
                 raise WorkerCrashError(self._role) from exc
 
     async def call(self, kind: str, payload: Any, *, timeout: float) -> Any:
-        """Send one request, await one reply, return the unpacked result.
+        """Send one request, await one reply on the data pipe.
 
         Raises :class:`WorkerError` if the worker reported an exception,
         :class:`WorkerCrashError` if the worker died, or
         :class:`TimeoutError` if the reply did not arrive in *timeout*
-        seconds. Orphan ``pong`` frames are silently consumed (see
-        ``docs/architecture.md`` "Orphan-pong defenses"); the timeout
-        is tracked as a deadline so swallowing pongs cannot extend it.
+        seconds.
         """
         self._ensure_open()
         self._bump_in_flight(1)
         try:
             await self._send(kind, payload)
-            deadline = asyncio.get_running_loop().time() + timeout
-            while True:
-                remaining = deadline - asyncio.get_running_loop().time()
-                # wait_for raises asyncio.TimeoutError immediately when
-                # remaining <= 0, so the deadline is enforced naturally
-                # whether we consumed it via real recv or absorbed pongs.
-                msg_kind, value = await asyncio.wait_for(self._recv(), timeout=remaining)
-                if msg_kind == PONG_KIND:
-                    continue
-                if msg_kind == ERROR_KIND:
-                    raise _deserialize_exception(value)
-                if msg_kind != RESULT_KIND:
-                    raise WorkerError(
-                        "ProtocolError",
-                        f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
-                        "",
-                    )
-                return value
+            msg_kind, value = await asyncio.wait_for(self._recv(), timeout=timeout)
+            if msg_kind == ERROR_KIND:
+                raise _deserialize_exception(value)
+            if msg_kind != RESULT_KIND:
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
+                    "",
+                )
+            return value
         finally:
             self._bump_in_flight(-1)
 
     async def stream(self, kind: str, payload: Any) -> AsyncIterator[Any]:
-        """Send one request, yield streamed chunks until the worker terminates.
+        """Send one request, yield streamed chunks on the data pipe.
 
         The terminator is one of ``stream_end`` (clean), ``error`` (worker
         exception), or pipe EOF (worker crash). The in-flight counter
         stays positive for the entire streaming window so the idle reaper
-        does not race with a long generation. Orphan ``pong`` frames are
-        silently consumed (see ``docs/architecture.md`` "Orphan-pong
-        defenses").
+        does not race with a long generation.
         """
         self._ensure_open()
         self._bump_in_flight(1)
@@ -288,8 +284,6 @@ class PipeChannel:
                     return
                 elif msg_kind == ERROR_KIND:
                     raise _deserialize_exception(value)
-                elif msg_kind == PONG_KIND:
-                    continue
                 else:
                     raise WorkerError(
                         "ProtocolError",
@@ -300,20 +294,37 @@ class PipeChannel:
             self._bump_in_flight(-1)
 
     async def ping(self, *, timeout: float) -> None:
-        """Round-trip a ping and verify the pong; raise on timeout."""
+        """Round-trip a ping over the dedicated health pipe; raise on timeout.
+
+        Pings travel on a separate pipe from data so they cannot interleave
+        with stream chunks. Does not increment the in-flight counter (the
+        data pipe is the source of truth for "real work in flight"; the
+        idle reaper checks ``in_flight`` and a recent successful ping
+        does not extend a worker's idle deadline).
+        """
         self._ensure_open()
-        self._bump_in_flight(1)
+        loop = asyncio.get_running_loop()
         try:
-            await self._send(PING_KIND, None)
-            msg_kind, _ = await asyncio.wait_for(self._recv(), timeout=timeout)
-            if msg_kind != PONG_KIND:
-                raise WorkerError(
-                    "ProtocolError",
-                    f"Worker '{self._role}' ping reply was {msg_kind!r}, want 'pong'.",
-                    "",
+            async with self._health_send_lock:
+                await loop.run_in_executor(
+                    self._executor, self._health_conn.send, (PING_KIND, None)
                 )
-        finally:
-            self._bump_in_flight(-1)
+        except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
+            raise WorkerCrashError(self._role) from exc
+        async with self._health_recv_lock:
+            try:
+                msg_kind, _ = await asyncio.wait_for(
+                    loop.run_in_executor(self._executor, self._health_conn.recv),
+                    timeout=timeout,
+                )
+            except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
+                raise WorkerCrashError(self._role) from exc
+        if msg_kind != PONG_KIND:
+            raise WorkerError(
+                "ProtocolError",
+                f"Worker '{self._role}' ping reply was {msg_kind!r}, want 'pong'.",
+                "",
+            )
 
     def cancel(self) -> None:
         """Flip the abort flag to 1; in-flight tokens may still drain."""
@@ -345,6 +356,8 @@ class PipeChannel:
         finally:
             with contextlib.suppress(Exception):
                 self._conn.close()
+            with contextlib.suppress(Exception):
+                self._health_conn.close()
             self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _join_process(self, timeout: float) -> None:
@@ -381,26 +394,35 @@ class PipeSpawner:
     ) -> tuple[WorkerChannel, WorkerHandle]:
         """Start a worker subprocess and return its channel + handle.
 
+        Two pipes per worker: ``data_pipe`` carries call/stream/shutdown
+        traffic, ``health_pipe`` carries ping/pong only. Splitting the
+        channels by-construction prevents pings from interleaving with
+        chat-stream chunks (see ``docs/architecture.md`` "Inference
+        Worker Pool").
+
         Always builds the abort flag with the default ``lock=True``: the
         per-token-tick acquire cost is negligible vs llama-cpp inference,
         and lockless ``Value`` access is not documented atomic on ARM
         (M-series Macs, Snapdragon Windows). The cost of a missed abort
         on those platforms is too high.
         """
-        parent_conn, child_conn = self._ctx.Pipe(duplex=True)
+        parent_data, child_data = self._ctx.Pipe(duplex=True)
+        parent_health, child_health = self._ctx.Pipe(duplex=True)
         abort_flag = self._ctx.Value("b", 0, lock=True)
         process = self._ctx.Process(
             target=worker_main,
-            args=(child_conn, abort_flag, role_config),
+            args=(child_data, child_health, abort_flag, role_config),
             daemon=self._daemon,
             name=f"lilbee-worker-{role_config.role}",
         )
         process.start()
-        child_conn.close()
+        child_data.close()
+        child_health.close()
         channel = PipeChannel(
             role=role_config.role,
             process=process,
-            parent_conn=parent_conn,
+            parent_conn=parent_data,
+            health_conn=parent_health,
             abort_flag=abort_flag,
         )
         handle = WorkerHandle(pid=process.pid, role=role_config.role)

@@ -42,11 +42,13 @@ def _stub_load(_self: _RerankSession) -> Any:
     return _StubLlama()
 
 
-def _patched_rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_rerank_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import rerank_worker
 
     rerank_worker._RerankSession._load = _stub_load  # type: ignore[method-assign]
-    rerank_worker_main(conn, abort_flag, role_config)
+    rerank_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()
@@ -231,109 +233,51 @@ def test_session_close_idempotent_and_swallows_close_errors() -> None:
     assert session._llm is None
 
 
-# In-process loop coverage.
+def test_session_score_loads_and_runs_compute_rerank_scores(monkeypatch, tmp_path) -> None:
+    """``_RerankSession.score`` loads on first call and feeds compute_rerank_scores."""
+    received_inputs: list[str] = []
 
-
-class _FakeConn:
-    def __init__(self, inbound: list[tuple[str, Any]]) -> None:
-        from collections import deque
-
-        self._inbound = deque(inbound)
-        self.sent: list[tuple[str, Any]] = []
-        self.closed = False
-
-    def poll(self, timeout: float) -> bool:
-        return bool(self._inbound)
-
-    def recv(self) -> tuple[str, Any]:
-        return self._inbound.popleft()
-
-    def send(self, message: tuple[str, Any]) -> None:
-        self.sent.append(message)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _stub_load_for_in_process(_self: _RerankSession) -> Any:
-    class _Stub:
+    class _StubLlama:
         def create_embedding(self, *, input: str) -> dict[str, Any]:
-            return {"data": [{"embedding": [float(len(input))]}]}
+            received_inputs.append(input)
+            sep = "</s></s>"
+            candidate = input.split(sep, 1)[-1] if sep in input else input
+            return {"data": [{"embedding": [float(len(candidate))]}]}
 
-    return _Stub()
-
-
-def test_rerank_worker_main_serves_then_shuts_down(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
+        "lilbee.providers.llama_cpp.provider.load_llama",
+        lambda path, *, mode: _StubLlama(),
     )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
+    role_config = RoleConfig(role="rerank", model_path=tmp_path / "stub.gguf", mode="rerank")
+    session = _RerankSession(role_config)
+    scores = session.score("query", ["aaaa", "bb"])
+    assert scores == [4.0, 2.0]
+    # Pair-formatted inputs reached compute_rerank_scores.
+    assert received_inputs == ["query</s></s>aaaa", "query</s></s>bb"]
+
+
+def test_rerank_worker_main_routes_through_run_worker(monkeypatch) -> None:
+    """``rerank_worker_main`` passes both pipes + the rerank handler to run_worker."""
+    from lilbee.providers.worker import rerank_worker
+
+    captured: dict[str, Any] = {}
+
+    def _fake_run_worker(data_conn, health_conn, abort_flag, role_config, **kwargs):
+        captured["data"] = data_conn
+        captured["health"] = health_conn
+        captured["abort"] = abort_flag
+        captured["role"] = role_config
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(rerank_worker, "run_worker", _fake_run_worker)
+    role_config = RoleConfig(
+        role="rerank",
+        model_path=__import__("pathlib").Path("/nope"),
+        mode="rerank",
     )
-    monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
-
-    role_config = RoleConfig(role="rerank", model_path=tmp_path / "x.gguf", mode="rerank")
-    conn = _FakeConn(
-        inbound=[
-            ("ping", None),
-            ("rerank", RerankPayload(query="q", candidates=["aa"])),
-            ("shutdown", None),
-        ]
-    )
-    rerank_worker_main(conn, abort_flag=None, role_config=role_config)
-    assert conn.sent[0] == ("pong", None)
-    assert conn.sent[-1] == ("ack", None)
-    assert conn.closed is True
-
-
-def test_rerank_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
-
-    class _EofConn(_FakeConn):
-        def recv(self) -> tuple[str, Any]:
-            raise EOFError
-
-    role_config = RoleConfig(role="rerank", model_path=tmp_path / "x.gguf", mode="rerank")
-    conn = _EofConn(inbound=[("ignored", None)])
-    rerank_worker_main(conn, abort_flag=None, role_config=role_config)
-    assert conn.sent == []
-    assert conn.closed is True
-
-
-def test_rerank_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(_RerankSession, "_load", _stub_load_for_in_process)
-
-    class _IdleThenWorkConn(_FakeConn):
-        def __init__(self) -> None:
-            super().__init__(inbound=[("shutdown", None)])
-            self._poll_calls = 0
-
-        def poll(self, timeout: float) -> bool:
-            self._poll_calls += 1
-            if self._poll_calls == 1:
-                return False
-            return super().poll(timeout)
-
-    role_config = RoleConfig(role="rerank", model_path=tmp_path / "x.gguf", mode="rerank")
-    conn = _IdleThenWorkConn()
-    rerank_worker_main(conn, abort_flag=None, role_config=role_config)
-    assert conn._poll_calls >= 2
-    assert conn.sent == [("ack", None)]
+    rerank_worker.rerank_worker_main("DATA", "HEALTH", "ABORT", role_config)
+    assert captured["data"] == "DATA"
+    assert captured["health"] == "HEALTH"
+    assert captured["abort"] == "ABORT"
+    assert captured["role"] is role_config
+    assert "rerank" in captured["kwargs"]["kind_handlers"]

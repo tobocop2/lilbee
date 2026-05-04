@@ -55,12 +55,14 @@ def _slow_stub_load(_self) -> Any:
     return _SlowLlama()
 
 
-def _patched_embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_embed_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Real embed worker entrypoint with the load step swapped for the slow stub."""
     from lilbee.providers.worker import embed_worker
 
     embed_worker._EmbedSession._load = _slow_stub_load  # type: ignore[method-assign]
-    embed_worker.embed_worker_main(conn, abort_flag, role_config)
+    embed_worker.embed_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()

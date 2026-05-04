@@ -27,15 +27,19 @@ def _stub_load(_self: _EmbedSession) -> Any:
     return _StubLlama()
 
 
-def _patched_embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_embed_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Real embed worker entrypoint with the load step swapped for a stub."""
     from lilbee.providers.worker import embed_worker
 
     embed_worker._EmbedSession._load = _stub_load  # type: ignore[method-assign]
-    embed_worker.embed_worker_main(conn, abort_flag, role_config)
+    embed_worker.embed_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
-def _bad_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+def _bad_protocol_worker_main(
+    conn: Any, _health_conn: Any, _abort: Any, _role_config: RoleConfig
+) -> None:
     """Worker that always replies to embed with a non-list payload (protocol violation)."""
     while True:
         if not conn.poll(timeout=0.1):
@@ -308,7 +312,9 @@ def test_role_specs_cover_every_pool_role() -> None:
     assert set(_ROLE_SPECS) == {_EMBED_ROLE, _RERANK_ROLE, _CHAT_ROLE, _VISION_ROLE}
 
 
-def _patched_rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_rerank_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Real rerank worker entrypoint with the load step swapped for a stub."""
     from lilbee.providers.worker import rerank_worker
 
@@ -323,7 +329,7 @@ def _patched_rerank_worker_main(conn: Any, abort_flag: Any, role_config: RoleCon
         return _StubLlama()
 
     rerank_worker._RerankSession._load = _load  # type: ignore[method-assign]
-    rerank_worker.rerank_worker_main(conn, abort_flag, role_config)
+    rerank_worker.rerank_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()
@@ -409,7 +415,9 @@ def test_rerank_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path)
         provider.shutdown()
 
 
-def _bad_rerank_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+def _bad_rerank_protocol_worker_main(
+    conn: Any, _health_conn: Any, _abort: Any, _role_config: RoleConfig
+) -> None:
     """Worker that always replies to rerank with a non-list payload."""
     while True:
         if not conn.poll(timeout=0.1):
@@ -468,11 +476,13 @@ def _stub_chat_load(_self) -> Any:
     return _StubLlama()
 
 
-def _patched_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_chat_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import chat_worker
 
     chat_worker._ChatSession._ensure_loaded = lambda self, _o: _stub_chat_load(self)  # type: ignore[method-assign]
-    chat_worker.chat_worker_main(conn, abort_flag, role_config)
+    chat_worker.chat_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()
@@ -662,7 +672,9 @@ def test_chat_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -
         provider.shutdown()
 
 
-def _bad_chat_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+def _bad_chat_protocol_worker_main(
+    conn: Any, _health_conn: Any, _abort: Any, _role_config: RoleConfig
+) -> None:
     """Worker that always replies to non-streaming chat with a non-str payload."""
     while True:
         if not conn.poll(timeout=0.1):
@@ -738,11 +750,13 @@ def _stub_vision_load(_self) -> Any:
     return _StubLlama()
 
 
-def _patched_vision_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_vision_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import vision_worker
 
     vision_worker._VisionSession._ensure_loaded = lambda self, _o: _stub_vision_load(self)  # type: ignore[method-assign]
-    vision_worker.vision_worker_main(conn, abort_flag, role_config)
+    vision_worker.vision_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()
@@ -815,7 +829,9 @@ def test_vision_ocr_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_p
         provider.shutdown()
 
 
-def _bad_vision_protocol_worker_main(conn: Any, _abort: Any, _role_config: RoleConfig) -> None:
+def _bad_vision_protocol_worker_main(
+    conn: Any, _health_conn: Any, _abort: Any, _role_config: RoleConfig
+) -> None:
     """Worker that always replies to vision_ocr with a non-str payload."""
     while True:
         if not conn.poll(timeout=0.1):

@@ -87,20 +87,24 @@ def _stub_load_aborts_mid_stream(_self: _ChatSession) -> Any:
     return _StubLlama(_self._abort_flag)
 
 
-def _patched_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_chat_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import chat_worker
 
     chat_worker._ChatSession._ensure_loaded = lambda self, _override: _stub_load_streaming(self)  # type: ignore[method-assign]
-    chat_worker_main(conn, abort_flag, role_config)
+    chat_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
-def _aborting_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _aborting_chat_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import chat_worker
 
     chat_worker._ChatSession._ensure_loaded = lambda self, _override: _stub_load_aborts_mid_stream(
         self
     )  # type: ignore[method-assign]
-    chat_worker_main(conn, abort_flag, role_config)
+    chat_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 def _stub_load_paced_stream(_self: _ChatSession) -> Any:
@@ -124,11 +128,13 @@ def _stub_load_paced_stream(_self: _ChatSession) -> Any:
     return _StubLlama()
 
 
-def _paced_chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _paced_chat_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import chat_worker
 
     chat_worker._ChatSession._ensure_loaded = lambda self, _override: _stub_load_paced_stream(self)  # type: ignore[method-assign]
-    chat_worker_main(conn, abort_flag, role_config)
+    chat_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()
@@ -247,19 +253,16 @@ async def test_chat_worker_honors_abort_flag_mid_stream(
 
 
 @pytest.mark.asyncio
-async def test_chat_worker_back_to_back_streams_after_buffered_ping(
+async def test_chat_worker_back_to_back_streams_with_concurrent_pings(
     spawner: PipeSpawner,
     role_config: RoleConfig,
 ) -> None:
-    """Regression for bb-ubnm: buffered mid-stream pings do not break the next stream.
+    """Concurrent health pings during a stream do not break the next stream.
 
-    Repros the production race end-to-end via real spawn: a ping is sent
-    into the worker pipe mid-stream (the worker buffers it because its
-    main loop is busy emitting chunks), the worker drains the buffered
-    ping after ``stream_end``, the worker's pong then sits in the pipe
-    as an orphan (the parent never issued an ``await`` for it). The next
-    chat stream's first ``_recv`` would see the pong and raise the bug's
-    ``ProtocolError`` without the parent-side stream filter.
+    Pings ride a separate pipe from chat traffic, so a stream and a ping
+    can interleave in time without sharing wire frames. The next stream
+    after the first completes cleanly with no orphan-pong recovery
+    needed in PipeChannel.
     """
     import asyncio as _asyncio
 
@@ -268,29 +271,25 @@ async def test_chat_worker_back_to_back_streams_after_buffered_ping(
         chunks: list[str] = []
         payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
 
-        async def _send_ping_after_first_chunk() -> None:
-            # Send a raw ping into the pipe but do NOT await its pong; the
-            # pong will be orphaned by the time the next stream reads.
+        async def _ping_during_stream() -> None:
             for _ in range(500):
                 if chunks:
-                    await channel._send("ping", None)
+                    await channel.ping(timeout=_TEST_CALL_TIMEOUT_S)
                     return
                 await _asyncio.sleep(0.01)
 
-        ping_task = _asyncio.create_task(_send_ping_after_first_chunk())
+        ping_task = _asyncio.create_task(_ping_during_stream())
         async for chunk in channel.stream("chat", payload):
             chunks.append(chunk)
         await ping_task
-        assert chunks == ["alpha", "beta", "gamma", "delta"], chunks
+        assert chunks == ["alpha", "beta", "gamma", "delta"]
 
-        # Give the worker time to process the buffered ping and emit pong.
-        await _asyncio.sleep(0.2)
-
-        # The next stream must complete cleanly despite the orphan pong.
+        # Second stream must succeed; with separate pipes, no orphan pongs
+        # can have leaked into the data pipe from the previous ping.
         chunks_two: list[str] = []
         async for chunk in channel.stream("chat", payload):
             chunks_two.append(chunk)
-        assert chunks_two == ["alpha", "beta", "gamma", "delta"], chunks_two
+        assert chunks_two == ["alpha", "beta", "gamma", "delta"]
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 
@@ -378,7 +377,6 @@ def test_handle_chat_streaming() -> None:
         ("stream_chunk", "b"),
         ("stream_end", None),
     ]
-    assert state.stream_in_flight is False
 
 
 def test_handle_chat_non_streaming() -> None:
@@ -421,8 +419,6 @@ def test_handle_chat_emits_error_on_stream_failure() -> None:
     # First chunk arrived, then error.
     kinds = [m[0] for m in conn.sent]
     assert kinds == ["stream_chunk", "error"]
-    # Stream window must clear even when emission throws.
-    assert state.stream_in_flight is False
 
 
 def test_handle_chat_rejects_non_chatrequest_payload() -> None:
@@ -583,120 +579,22 @@ def test_chat_session_ensure_loaded_swaps_on_per_call_model(monkeypatch, tmp_pat
     assert load_calls == [tmp_path / "default.gguf", tmp_path / "override.gguf"]
 
 
-# In-process loop coverage.
+def test_chat_worker_main_routes_through_run_worker(monkeypatch) -> None:
+    """``chat_worker_main`` passes both pipes + the chat handler to run_worker."""
+    from lilbee.providers.worker import chat_worker
 
+    captured: dict[str, Any] = {}
 
-class _FakeConn:
-    def __init__(self, inbound: list[tuple[str, Any]]) -> None:
-        from collections import deque
+    def _fake_run_worker(data_conn, health_conn, abort_flag, role_config, **kwargs):
+        captured["data"] = data_conn
+        captured["health"] = health_conn
+        captured["kwargs"] = kwargs
 
-        self._inbound = deque(inbound)
-        self.sent: list[tuple[str, Any]] = []
-        self.closed = False
-
-    def poll(self, timeout: float) -> bool:
-        return bool(self._inbound)
-
-    def recv(self) -> tuple[str, Any]:
-        return self._inbound.popleft()
-
-    def send(self, message: tuple[str, Any]) -> None:
-        self.sent.append(message)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _stub_load_for_in_process(_self: _ChatSession) -> Any:
-    class _Stub:
-        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
-            return {"choices": [{"message": {"content": "fixed"}}]}
-
-    return _Stub()
-
-
-def test_chat_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
+    monkeypatch.setattr(chat_worker, "run_worker", _fake_run_worker)
+    role_config = RoleConfig(
+        role="chat", model_path=__import__("pathlib").Path("/nope"), mode="chat"
     )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(
-        _ChatSession,
-        "_ensure_loaded",
-        lambda self, _o: _stub_load_for_in_process(self),
-    )
-
-    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
-    conn = _FakeConn(
-        inbound=[
-            ("ping", None),
-            ("chat", ChatRequest(messages=[], stream=False)),
-            ("shutdown", None),
-        ]
-    )
-    chat_worker_main(conn, multiprocessing.Value("b", 0), role_config)
-    assert conn.sent == [("pong", None), ("result", "fixed"), ("ack", None)]
-    assert conn.closed is True
-
-
-def test_chat_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(
-        _ChatSession,
-        "_ensure_loaded",
-        lambda self, _o: _stub_load_for_in_process(self),
-    )
-
-    class _EofConn(_FakeConn):
-        def recv(self) -> tuple[str, Any]:
-            raise EOFError
-
-    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
-    conn = _EofConn(inbound=[("ignored", None)])
-    chat_worker_main(conn, multiprocessing.Value("b", 0), role_config)
-    assert conn.sent == []
-    assert conn.closed is True
-
-
-def test_chat_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(
-        _ChatSession,
-        "_ensure_loaded",
-        lambda self, _o: _stub_load_for_in_process(self),
-    )
-
-    class _IdleThenWorkConn(_FakeConn):
-        def __init__(self) -> None:
-            super().__init__(inbound=[("shutdown", None)])
-            self._poll_calls = 0
-
-        def poll(self, timeout: float) -> bool:
-            self._poll_calls += 1
-            if self._poll_calls == 1:
-                return False
-            return super().poll(timeout)
-
-    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
-    conn = _IdleThenWorkConn()
-    chat_worker_main(conn, multiprocessing.Value("b", 0), role_config)
-    assert conn._poll_calls >= 2
-    assert conn.sent == [("ack", None)]
+    chat_worker.chat_worker_main("DATA", "HEALTH", "ABORT", role_config)
+    assert captured["data"] == "DATA"
+    assert captured["health"] == "HEALTH"
+    assert "chat" in captured["kwargs"]["kind_handlers"]

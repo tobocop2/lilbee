@@ -36,7 +36,9 @@ _TEST_SHUTDOWN_TIMEOUT_S = 2.0
 # =====================================================================
 
 
-def _stub_embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _stub_embed_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Run the embed worker with the Llama load swapped for a deterministic stub.
 
     Each input text becomes a 4-element float vector built from its
@@ -55,10 +57,12 @@ def _stub_embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig)
             }
 
     embed_worker._EmbedSession._load = lambda self: _StubLlama()  # type: ignore[method-assign]
-    embed_worker_main(conn, abort_flag, role_config)
+    embed_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
-def _crash_on_load_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _crash_on_load_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Worker that raises in _load so the parent observes a clean error reply."""
     from lilbee.providers.worker import embed_worker
 
@@ -66,7 +70,7 @@ def _crash_on_load_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> 
         raise RuntimeError("simulated load failure")
 
     embed_worker._EmbedSession._load = _raise  # type: ignore[method-assign]
-    embed_worker_main(conn, abort_flag, role_config)
+    embed_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 # =====================================================================
@@ -340,124 +344,22 @@ def test_handle_embed_rejects_non_list_payload_in_process() -> None:
     assert "list[str]" in payload.message
 
 
-# =====================================================================
-# embed_worker_main loop: drive it in-process with a fake duplex conn so
-# coverage measures the loop body. The real subprocess tests above
-# verify the spawn-context end-to-end behavior.
-# =====================================================================
+def test_embed_worker_main_routes_through_run_worker(monkeypatch) -> None:
+    """``embed_worker_main`` passes both pipes + the embed handler to run_worker."""
+    from lilbee.providers.worker import embed_worker
 
+    captured: dict[str, Any] = {}
 
-class _FakeConn:
-    """Duplex stand-in for multiprocessing.Connection used by embed_worker_main."""
+    def _fake_run_worker(data_conn, health_conn, abort_flag, role_config, **kwargs):
+        captured["data"] = data_conn
+        captured["health"] = health_conn
+        captured["kwargs"] = kwargs
 
-    def __init__(self, inbound: list[tuple[str, Any]]) -> None:
-        from collections import deque
-
-        self._inbound = deque(inbound)
-        self.sent: list[tuple[str, Any]] = []
-        self.closed = False
-
-    def poll(self, timeout: float) -> bool:
-        return bool(self._inbound)
-
-    def recv(self) -> tuple[str, Any]:
-        return self._inbound.popleft()
-
-    def send(self, message: tuple[str, Any]) -> None:
-        self.sent.append(message)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _stub_load_for_in_process(_self: _EmbedSession) -> Any:
-    class _Stub:
-        def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
-            return {"data": [{"embedding": [float(len(t))]} for t in input]}
-
-    return _Stub()
-
-
-def test_embed_worker_main_serves_requests_then_exits_on_shutdown(monkeypatch, tmp_path) -> None:
-    """In-process drive of the worker loop with the load step stubbed."""
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
+    monkeypatch.setattr(embed_worker, "run_worker", _fake_run_worker)
+    role_config = RoleConfig(
+        role="embed", model_path=__import__("pathlib").Path("/nope"), mode="embed"
     )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
-
-    role_config = RoleConfig(role="embed", model_path=tmp_path / "x.gguf", mode="embed")
-    conn = _FakeConn(
-        inbound=[
-            ("ping", None),
-            ("embed", ["abc"]),
-            ("shutdown", None),
-        ]
-    )
-    embed_worker_main(conn, abort_flag=None, role_config=role_config)
-    assert conn.sent == [
-        ("pong", None),
-        ("result", [[3.0]]),
-        ("ack", None),
-    ]
-    assert conn.closed is True
-
-
-def test_embed_worker_main_skips_idle_polls_then_serves(monkeypatch, tmp_path) -> None:
-    """poll() returning False loops back without recv'ing, then serves the next message."""
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
-
-    class _IdleThenWorkConn(_FakeConn):
-        def __init__(self) -> None:
-            super().__init__(inbound=[("ping", None), ("shutdown", None)])
-            self._poll_calls = 0
-
-        def poll(self, timeout: float) -> bool:
-            self._poll_calls += 1
-            # First poll returns False (idle); subsequent polls follow the
-            # default behavior (True iff inbound queue is non-empty).
-            if self._poll_calls == 1:
-                return False
-            return super().poll(timeout)
-
-    role_config = RoleConfig(role="embed", model_path=tmp_path / "x.gguf", mode="embed")
-    conn = _IdleThenWorkConn()
-    embed_worker_main(conn, abort_flag=None, role_config=role_config)
-    assert conn.sent == [("pong", None), ("ack", None)]
-    # Poll was called at least twice: once idle, once for ping, once for shutdown.
-    assert conn._poll_calls >= 3
-
-
-def test_embed_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
-    """Loop exits cleanly when the parent closes the pipe (EOFError on recv)."""
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(_EmbedSession, "_load", _stub_load_for_in_process)
-
-    class _EofConn(_FakeConn):
-        def recv(self) -> tuple[str, Any]:
-            raise EOFError
-
-    role_config = RoleConfig(role="embed", model_path=tmp_path / "x.gguf", mode="embed")
-    conn = _EofConn(inbound=[("ignored", None)])
-    embed_worker_main(conn, abort_flag=None, role_config=role_config)
-    assert conn.sent == []
-    assert conn.closed is True
+    embed_worker.embed_worker_main("DATA", "HEALTH", "ABORT", role_config)
+    assert captured["data"] == "DATA"
+    assert captured["health"] == "HEALTH"
+    assert "embed" in captured["kwargs"]["kind_handlers"]

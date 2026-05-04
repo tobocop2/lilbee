@@ -13,6 +13,7 @@ import contextlib
 import os
 import pickle
 import time
+from multiprocessing.connection import wait
 from typing import Any
 
 import pytest
@@ -34,9 +35,9 @@ pytestmark = pytest.mark.xdist_group("worker_pool_transport")
 # Worker entrypoints used by the tests below.
 #
 # Module-level functions so pickling at spawn time succeeds (closures /
-# locals are not picklable across mp.Process). Each entrypoint mirrors
-# the discipline-rule contract: poll the pipe, dispatch by kind, never
-# block on bare recv.
+# locals are not picklable across mp.Process). Each entrypoint takes
+# (data_conn, health_conn, abort_flag, role_config) and multiplexes via
+# multiprocessing.connection.wait.
 # =====================================================================
 
 
@@ -44,6 +45,43 @@ _POLL_TIMEOUT_S = 0.2
 _TEST_PING_TIMEOUT_S = 5.0
 _TEST_CALL_TIMEOUT_S = 5.0
 _TEST_SHUTDOWN_TIMEOUT_S = 2.0
+
+
+def _drive_test_worker(
+    data_conn: Any,
+    health_conn: Any,
+    abort_flag: Any,
+    on_data: Any,
+) -> None:
+    """Test-worker multiplexer: routes data frames through *on_data* and ping/pong
+    on the health pipe. Built-in shutdown reply lives here so each test worker
+    can focus on its data-side behavior. *on_data* signature is
+    ``(conn, kind, payload, abort_flag) -> None``.
+    """
+    try:
+        while True:
+            ready = wait([data_conn, health_conn], timeout=_POLL_TIMEOUT_S)
+            if data_conn in ready:
+                try:
+                    kind, payload = data_conn.recv()
+                except EOFError:
+                    return
+                if kind == "shutdown":
+                    data_conn.send(("ack", None))
+                    return
+                on_data(data_conn, kind, payload, abort_flag)
+            if health_conn in ready:
+                try:
+                    hkind, _ = health_conn.recv()
+                except EOFError:
+                    continue
+                if hkind == "ping":
+                    health_conn.send(("pong", None))
+    finally:  # pragma: no cover - cleanup runs in subprocess
+        with contextlib.suppress(Exception):
+            data_conn.close()
+        with contextlib.suppress(Exception):
+            health_conn.close()
 
 
 def _handle_echo(conn: Any, payload: Any, _abort: Any) -> None:
@@ -106,149 +144,62 @@ _ECHO_DISPATCH = {
 }
 
 
-def _echo_worker_main(conn: Any, abort_flag: Any, _role_config: RoleConfig) -> None:
-    """Worker that dispatches kinds via _ECHO_DISPATCH; polls so SIGTERM propagates."""
-    try:
-        while True:
-            if not conn.poll(timeout=_POLL_TIMEOUT_S):
-                continue
-            try:
-                kind, payload = conn.recv()
-            except EOFError:
-                return
-            if kind == "shutdown":
-                conn.send(("ack", None))
-                return
-            if kind == "ping":
-                conn.send(("pong", None))
-                continue
-            handler = _ECHO_DISPATCH.get(kind)
-            if handler is not None:
-                handler(conn, payload, abort_flag)
-    finally:  # pragma: no cover - cleanup runs in subprocess
-        conn.close()
+def _echo_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, _role_config: RoleConfig
+) -> None:
+    """Worker that dispatches data-pipe kinds via _ECHO_DISPATCH and pings on health."""
+
+    def _on_data(conn: Any, kind: str, payload: Any, abort: Any) -> None:
+        handler = _ECHO_DISPATCH.get(kind)
+        if handler is not None:
+            handler(conn, payload, abort)
+
+    _drive_test_worker(data_conn, health_conn, abort_flag, _on_data)
 
 
-def _crash_worker_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
+def _crash_worker_main(
+    data_conn: Any, _health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
+) -> None:
     """Worker that exits abruptly on the first request, simulating a crash."""
-    if conn.poll(timeout=_POLL_TIMEOUT_S * 50):
+    if data_conn.poll(timeout=_POLL_TIMEOUT_S * 50):
         with contextlib.suppress(EOFError):
-            conn.recv()
+            data_conn.recv()
     os._exit(1)
 
 
-def _hang_worker_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
-    """Worker that polls forever; never replies.
-
-    Used to exercise call-timeout and close-timeout paths without leaving
-    a hung process behind: the parent's close() terminates it.
-    """
+def _hang_worker_main(
+    data_conn: Any, _health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
+) -> None:
+    """Worker that polls the data pipe forever; never replies. Used for timeout paths."""
     while True:
-        if conn.poll(timeout=_POLL_TIMEOUT_S):
+        if data_conn.poll(timeout=_POLL_TIMEOUT_S):
             with contextlib.suppress(EOFError):
-                conn.recv()
-            # Drop the request silently to force a parent timeout.
+                data_conn.recv()
 
 
-def _ping_replies_garbage_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
-    """Worker that replies to ping with a non-pong kind, to test the parent's check."""
+def _ping_replies_garbage_main(
+    _data_conn: Any, health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
+) -> None:
+    """Worker that replies to every health ping with a non-pong kind."""
     while True:
-        if not conn.poll(timeout=_POLL_TIMEOUT_S):
+        if not health_conn.poll(timeout=_POLL_TIMEOUT_S):
             continue
         try:
-            kind, _ = conn.recv()
+            health_conn.recv()
         except EOFError:
             return
-        if kind == "shutdown":
-            conn.send(("ack", None))
-            return
-        # Always reply with garbage regardless of kind so ping/call both
-        # see a protocol error.
-        conn.send(("not_a_known_reply", None))
+        health_conn.send(("not_a_known_reply", None))
 
 
-def _stream_replies_garbage_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
+def _stream_replies_garbage_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, _role_config: RoleConfig
+) -> None:
     """Worker that replies to a streaming kind with a non-stream message."""
-    while True:
-        if not conn.poll(timeout=_POLL_TIMEOUT_S):
-            continue
-        try:
-            kind, _ = conn.recv()
-        except EOFError:
-            return
-        if kind == "shutdown":
-            conn.send(("ack", None))
-            return
-        # Send something the streaming consumer rejects (not chunk/end/error).
+
+    def _on_data(conn: Any, _kind: str, _payload: Any, _abort: Any) -> None:
         conn.send(("totally_bogus_kind", None))
 
-
-def _stream_with_pong_interleaved_main(
-    conn: Any, _abort_flag: Any, _role_config: RoleConfig
-) -> None:
-    """Worker that interleaves a pong frame between stream chunks.
-
-    Models the bb-ubnm scenario where an orphan pong from a prior health
-    ping ends up adjacent to legitimate stream frames in the pipe.
-    """
-    while True:
-        if not conn.poll(timeout=_POLL_TIMEOUT_S):
-            continue
-        try:
-            kind, _ = conn.recv()
-        except EOFError:
-            return
-        if kind == "shutdown":
-            conn.send(("ack", None))
-            return
-        if kind == "stream":
-            conn.send(("stream_chunk", "first"))
-            conn.send(("pong", None))
-            conn.send(("stream_chunk", "second"))
-            conn.send(("stream_end", None))
-
-
-def _call_with_pong_prefix_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
-    """Worker that prefixes a result with an orphan pong frame.
-
-    Models the bb-ubnm scenario where ``call()`` reads a stale pong
-    (left in the pipe by a prior health-ping whose ``wait_for`` had
-    already timed out) and would otherwise raise ``ProtocolError``.
-    """
-    while True:
-        if not conn.poll(timeout=_POLL_TIMEOUT_S):
-            continue
-        try:
-            kind, value = conn.recv()
-        except EOFError:
-            return
-        if kind == "shutdown":
-            conn.send(("ack", None))
-            return
-        conn.send(("pong", None))
-        conn.send(("result", value))
-
-
-def _call_pong_then_silent_main(conn: Any, _abort_flag: Any, _role_config: RoleConfig) -> None:
-    """Worker that emits one pong then never sends RESULT.
-
-    Used to exercise the call's timeout-via-wait_for path under the pong
-    filter: the parent absorbs the pong, re-enters the loop, and the
-    next ``wait_for(_recv, remaining)`` raises TimeoutError when no real
-    reply arrives. Confirms the pong filter does not let the worker
-    indefinitely defer the reply with ignorable frames.
-    """
-    while True:
-        if not conn.poll(timeout=_POLL_TIMEOUT_S):
-            continue
-        try:
-            kind, _ = conn.recv()
-        except EOFError:
-            return
-        if kind == "shutdown":
-            conn.send(("ack", None))
-            return
-        conn.send(("pong", None))
+    _drive_test_worker(data_conn, health_conn, abort_flag, _on_data)
 
 
 # =====================================================================
@@ -551,68 +502,35 @@ async def test_stream_raises_on_unexpected_message_kind(
 
 
 @pytest.mark.asyncio
-async def test_stream_silently_consumes_orphan_pong_frames(
-    spawner: PipeSpawner,
-    role_config: RoleConfig,
+async def test_concurrent_ping_and_stream_do_not_interfere(
+    echo_channel: PipeChannel,
 ) -> None:
-    """Regression for bb-ubnm: stream consumer ignores pong frames.
+    """Pings on the health pipe must not see stream chunks on the data pipe.
 
-    A health ping whose pong arrives after the parent's ping coroutine
-    has already moved on leaves an orphaned pong frame in the pipe FIFO.
-    Without this guard, the next ``stream`` consumer reads the pong as
-    its first frame and raises ``ProtocolError``. The fix silently
-    consumes ``pong`` frames inside ``stream`` so legitimate streams
-    survive any prior orphan pong.
+    Spawn a long-running stream, fire several pings while it's emitting,
+    confirm the stream still produces every chunk in order and every ping
+    completes without raising. This is the architectural fix for bb-ubnm:
+    pings and streams travel on separate pipes by construction, so no
+    orphan-pong defenses are needed in PipeChannel.
     """
-    channel, _ = spawner.spawn(_stream_with_pong_interleaved_main, role_config)
-    try:
-        chunks = [chunk async for chunk in channel.stream("stream", None)]
-        assert chunks == ["first", "second"]
-    finally:
-        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+    chunks: list[str] = []
+    ping_count = 0
 
+    async def _drain() -> None:
+        async for chunk in echo_channel.stream("stream", (5, "tok-")):
+            chunks.append(chunk)
+            await asyncio.sleep(0.01)
 
-@pytest.mark.asyncio
-async def test_call_silently_consumes_orphan_pong_frames(
-    spawner: PipeSpawner,
-    role_config: RoleConfig,
-) -> None:
-    """Regression for bb-ubnm: call consumer also ignores orphan pong frames.
+    async def _ping_loop() -> None:
+        nonlocal ping_count
+        for _ in range(3):
+            await echo_channel.ping(timeout=_TEST_PING_TIMEOUT_S)
+            ping_count += 1
+            await asyncio.sleep(0.01)
 
-    The same orphan-pong scenario the ``stream`` filter handles can land
-    in front of a non-streaming reply (e.g. ``chat(stream=False)`` after
-    a long stream). ``call()`` must also skip ``pong`` frames so the
-    real result is read on the next iteration; otherwise the next
-    non-stream chat / vision describe / query expansion crashes with
-    ``ProtocolError``.
-    """
-    channel, _ = spawner.spawn(_call_with_pong_prefix_main, role_config)
-    try:
-        result = await channel.call("echo", "payload", timeout=_TEST_CALL_TIMEOUT_S)
-        assert result == "payload"
-    finally:
-        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
-
-
-@pytest.mark.asyncio
-async def test_call_times_out_when_only_pongs_arrive(
-    spawner: PipeSpawner,
-    role_config: RoleConfig,
-) -> None:
-    """The pong filter must not let an absorbed pong defer the timeout.
-
-    Worker emits one pong then never sends RESULT. The parent absorbs
-    the pong, re-enters the recv loop, and the next ``wait_for`` raises
-    TimeoutError once the per-call budget is exhausted by the deadline-
-    bounded recv. Confirms the filter does not let the worker indefinitely
-    defer the reply with ignorable frames.
-    """
-    channel, _ = spawner.spawn(_call_pong_then_silent_main, role_config)
-    try:
-        with pytest.raises(TimeoutError):
-            await channel.call("echo", "payload", timeout=0.3)
-    finally:
-        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+    await asyncio.gather(_drain(), _ping_loop())
+    assert chunks == [f"tok-{i}" for i in range(5)]
+    assert ping_count == 3
 
 
 @pytest.mark.asyncio
@@ -638,3 +556,82 @@ def test_check_pickle_size_wraps_pickle_failure() -> None:
     with pytest.raises(WorkerError) as excinfo:
         _check_pickle_size(lambda: None, "echo")
     assert excinfo.value.original_type == "PickleError"
+
+
+def _crashing_health_pipe_main(
+    data_conn: Any, health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
+) -> None:
+    """Worker that closes the health pipe immediately, leaves data alive."""
+    health_conn.close()
+    while True:
+        if data_conn.poll(timeout=_POLL_TIMEOUT_S):
+            try:
+                kind, _ = data_conn.recv()
+            except EOFError:
+                return
+            if kind == "shutdown":
+                data_conn.send(("ack", None))
+                return
+
+
+@pytest.mark.asyncio
+async def test_ping_raises_worker_crash_when_health_pipe_dies(
+    spawner: PipeSpawner, role_config: RoleConfig
+) -> None:
+    """A dead health pipe surfaces as ``WorkerCrashError`` from ``ping``."""
+    channel, _ = spawner.spawn(_crashing_health_pipe_main, role_config)
+    try:
+        with pytest.raises(WorkerCrashError):
+            await channel.ping(timeout=_TEST_PING_TIMEOUT_S)
+    finally:
+        await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
+
+
+@pytest.mark.asyncio
+async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
+    """If the health-pipe send itself raises, ping surfaces WorkerCrashError.
+
+    Closes the health pipe synchronously before issuing ping so the
+    parent's ``_health_conn.send`` hits BrokenPipeError / OSError on
+    its way out.
+    """
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+
+    class _FakeProcess:
+        def is_alive(self) -> bool:
+            return True
+
+        @property
+        def pid(self) -> int:
+            return -1
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+    channel = PipeChannel(
+        role="echo",
+        process=_FakeProcess(),
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    # Close the parent end of the health pipe so `send` on it raises.
+    parent_health.close()
+    try:
+        with pytest.raises(WorkerCrashError):
+            await channel.ping(timeout=1.0)
+    finally:
+        with contextlib.suppress(Exception):
+            parent_data.close()
+        with contextlib.suppress(Exception):
+            child_data.close()
+        with contextlib.suppress(Exception):
+            child_health.close()

@@ -45,11 +45,13 @@ def _stub_load(_self: _VisionSession) -> Any:
     return _StubLlama()
 
 
-def _patched_vision_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def _patched_vision_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     from lilbee.providers.worker import vision_worker
 
     vision_worker._VisionSession._ensure_loaded = lambda self, _o: _stub_load(self)  # type: ignore[method-assign]
-    vision_worker_main(conn, abort_flag, role_config)
+    vision_worker_main(data_conn, health_conn, abort_flag, role_config)
 
 
 @pytest.fixture()
@@ -344,114 +346,22 @@ def test_session_ocr_uses_default_prompt_when_empty(monkeypatch, tmp_path) -> No
     assert text_msg == OCR_PROMPT
 
 
-# In-process loop.
+def test_vision_worker_main_routes_through_run_worker(monkeypatch) -> None:
+    """``vision_worker_main`` passes both pipes + the vision handler to run_worker."""
+    from lilbee.providers.worker import vision_worker
 
+    captured: dict[str, Any] = {}
 
-class _FakeConn:
-    def __init__(self, inbound: list[tuple[str, Any]]) -> None:
-        from collections import deque
+    def _fake_run_worker(data_conn, health_conn, abort_flag, role_config, **kwargs):
+        captured["data"] = data_conn
+        captured["health"] = health_conn
+        captured["kwargs"] = kwargs
 
-        self._inbound = deque(inbound)
-        self.sent: list[tuple[str, Any]] = []
-        self.closed = False
-
-    def poll(self, timeout: float) -> bool:
-        return bool(self._inbound)
-
-    def recv(self) -> tuple[str, Any]:
-        return self._inbound.popleft()
-
-    def send(self, message: tuple[str, Any]) -> None:
-        self.sent.append(message)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _stub_load_for_in_process(_self: _VisionSession) -> Any:
-    class _Stub:
-        def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
-            return {"choices": [{"message": {"content": "ok"}}]}
-
-    return _Stub()
-
-
-def test_vision_worker_main_serves_then_exits(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
+    monkeypatch.setattr(vision_worker, "run_worker", _fake_run_worker)
+    role_config = RoleConfig(
+        role="vision", model_path=__import__("pathlib").Path("/nope"), mode="vision"
     )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(
-        _VisionSession, "_ensure_loaded", lambda self, _o: _stub_load_for_in_process(self)
-    )
-
-    role_config = RoleConfig(role="vision", model_path=tmp_path / "x.gguf", mode="vision")
-    conn = _FakeConn(
-        inbound=[
-            ("ping", None),
-            ("vision_ocr", VisionRequest(png_bytes=b"x", prompt="p", model=None)),
-            ("shutdown", None),
-        ]
-    )
-    vision_worker_main(conn, abort_flag=multiprocessing.Value("b", 0), role_config=role_config)
-    assert conn.sent == [("pong", None), ("result", "ok"), ("ack", None)]
-    assert conn.closed is True
-
-
-def test_vision_worker_main_returns_on_eof(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(
-        _VisionSession, "_ensure_loaded", lambda self, _o: _stub_load_for_in_process(self)
-    )
-
-    class _EofConn(_FakeConn):
-        def recv(self) -> tuple[str, Any]:
-            raise EOFError
-
-    role_config = RoleConfig(role="vision", model_path=tmp_path / "x.gguf", mode="vision")
-    conn = _EofConn(inbound=[("ignored", None)])
-    vision_worker_main(conn, abort_flag=multiprocessing.Value("b", 0), role_config=role_config)
-    assert conn.sent == []
-    assert conn.closed is True
-
-
-def test_vision_worker_main_skips_idle_polls(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.redirect_stdio_to_devnull",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.worker.worker_runtime.configure_worker_logging",
-        lambda _role: None,
-    )
-    monkeypatch.setattr(
-        _VisionSession, "_ensure_loaded", lambda self, _o: _stub_load_for_in_process(self)
-    )
-
-    class _IdleThenWorkConn(_FakeConn):
-        def __init__(self) -> None:
-            super().__init__(inbound=[("shutdown", None)])
-            self._poll_calls = 0
-
-        def poll(self, timeout: float) -> bool:
-            self._poll_calls += 1
-            if self._poll_calls == 1:
-                return False
-            return super().poll(timeout)
-
-    role_config = RoleConfig(role="vision", model_path=tmp_path / "x.gguf", mode="vision")
-    conn = _IdleThenWorkConn()
-    vision_worker_main(conn, abort_flag=multiprocessing.Value("b", 0), role_config=role_config)
-    assert conn._poll_calls >= 2
-    assert conn.sent == [("ack", None)]
+    vision_worker.vision_worker_main("DATA", "HEALTH", "ABORT", role_config)
+    assert captured["data"] == "DATA"
+    assert captured["health"] == "HEALTH"
+    assert "vision_ocr" in captured["kwargs"]["kind_handlers"]

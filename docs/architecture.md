@@ -205,13 +205,9 @@ If `cfg.worker_pool_max_idle_s > 0`, every successful round-trip stamps the role
 
 `ping_role()` issues one ping/pong round-trip against a live channel and propagates timeout/crash as `WorkerCrashError`. The `health_ticker` invokes this on the same 30s cadence as `reap_idle`. Cap is `_HEALTH_TIMEOUT_S` (5s).
 
-### Orphan-pong defenses
+### Health pipe isolation
 
-A health ping that fires while a chat stream is in flight can leave a stray pong frame in the worker pipe (the parent's `wait_for` may time out before the worker processes the buffered ping; the worker then emits a pong with no awaiter). Without protection, the next request on that channel reads the stray pong and raises `ProtocolError`. Three layered defenses prevent this:
-
-1. **Worker dispatcher gate.** `WorkerLoopState.stream_in_flight` is flipped on by `stream_window` for the duration of a streaming response. Pings dispatched in that window drop instead of emitting pong frames. The next health tick re-pings once the stream is over.
-2. **Parent skip on in-flight work.** `RoleAccessor.ping` returns early when `channel.in_flight > 0`. The in-flight work is itself liveness evidence and skipping prevents the parent from seeding a ping that could become orphan-pong material in the first place.
-3. **Parent reader filters.** `PipeChannel.stream` and `PipeChannel.call` silently consume `pong` frames. The `call` filter tracks a deadline so swallowed pongs cannot extend the timeout budget. This is the catch-all for any pong already on the wire from a buffered ping that landed before defenses 1 or 2 could engage.
+Health pings travel on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream/shutdown. Pings cannot interleave with stream chunks by-construction; the parent reader on each pipe never sees frames meant for the other. The worker's main loop multiplexes the two via `multiprocessing.connection.wait`.
 
 ### Cross-boundary cancel
 

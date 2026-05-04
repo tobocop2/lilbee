@@ -14,7 +14,7 @@ from lilbee.providers.worker.wire_kinds import (
     STREAM_CHUNK_KIND,
     STREAM_END_KIND,
 )
-from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker, stream_window
+from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker
 
 
 def _make_abort_callback(abort_flag: Any) -> Any:
@@ -103,18 +103,13 @@ def _extract_stream_content(chunk: Any) -> str | None:
     return content if isinstance(content, str) and content else None
 
 
-def _handle_chat_streaming(conn: Any, response_iter: Any, state: WorkerLoopState) -> None:
-    """Drain *response_iter* and emit per-token stream_chunk frames.
-
-    Wraps emission in :func:`stream_window` so the dispatcher drops
-    pings while the stream is in flight.
-    """
-    with stream_window(state):
-        for raw_chunk in response_iter:
-            content = _extract_stream_content(raw_chunk)
-            if content is not None:
-                conn.send((STREAM_CHUNK_KIND, content))
-        conn.send((STREAM_END_KIND, None))
+def _handle_chat_streaming(conn: Any, response_iter: Any, _state: WorkerLoopState) -> None:
+    """Drain *response_iter* and emit per-token stream_chunk frames on the data pipe."""
+    for raw_chunk in response_iter:
+        content = _extract_stream_content(raw_chunk)
+        if content is not None:
+            conn.send((STREAM_CHUNK_KIND, content))
+    conn.send((STREAM_END_KIND, None))
 
 
 def _extract_non_streaming_content(response: Any) -> str:
@@ -174,10 +169,13 @@ def _handle_chat(conn: Any, payload: Any, state: WorkerLoopState) -> None:
         conn.send((ERROR_KIND, _serialize_exception(exc)))
 
 
-def chat_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def chat_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Chat worker entrypoint: load llama-cpp lazily, serve until shutdown."""
     run_worker(
-        conn,
+        data_conn,
+        health_conn,
         abort_flag,
         role_config,
         session_factory=_ChatSession,

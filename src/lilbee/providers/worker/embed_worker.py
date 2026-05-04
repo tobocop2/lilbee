@@ -68,10 +68,13 @@ def _handle_embed(conn: Any, payload: Any, state: WorkerLoopState) -> None:
     conn.send((RESULT_KIND, vectors))
 
 
-def embed_worker_main(conn: Any, abort_flag: Any, role_config: RoleConfig) -> None:
+def embed_worker_main(
+    data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
+) -> None:
     """Embed worker entrypoint: load llama-cpp lazily, serve requests until shutdown."""
     run_worker(
-        conn,
+        data_conn,
+        health_conn,
         abort_flag,
         role_config,
         session_factory=lambda role_cfg, _abort: _EmbedSession(role_cfg),

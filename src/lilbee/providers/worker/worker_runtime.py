@@ -10,9 +10,9 @@ import contextlib
 import logging
 import os
 import sys
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
+from multiprocessing.connection import wait
 from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
@@ -68,34 +68,23 @@ def configure_worker_logging(role: str) -> None:
 class WorkerLoopState:
     """Per-loop state shared by the dispatcher and the role's handlers.
 
-    ``stream_in_flight`` is set while a streaming response is emitting;
-    the dispatcher drops pings while the flag is set. See
-    ``docs/architecture.md`` "Orphan-pong defenses" for the full layering.
+    Holds the role's lazy-loaded session. Each handler receives a
+    reference and pulls its model via ``state.session``.
     """
 
     session: Any
-    stream_in_flight: bool = False
-
-
-@contextmanager
-def stream_window(state: WorkerLoopState) -> Iterator[None]:
-    """Set ``state.stream_in_flight`` for the block, clearing on exit (incl. errors)."""
-    state.stream_in_flight = True
-    try:
-        yield
-    finally:
-        state.stream_in_flight = False
 
 
 KindHandler = Callable[[Any, Any, WorkerLoopState], None]
-"""Per-role handler signature: ``(conn, payload, state) -> None``.
+"""Per-role handler signature: ``(data_conn, payload, state) -> None``.
 
 Handlers reach their role-specific session via ``state.session``.
 """
 
 
 def run_worker(
-    conn: Any,
+    data_conn: Any,
+    health_conn: Any,
     abort_flag: Any,
     role_config: RoleConfig,
     *,
@@ -104,11 +93,13 @@ def run_worker(
 ) -> None:
     """Bootstrap stdio + logging, then run the recv loop until shutdown.
 
-    Built-in kinds (ping/shutdown) are handled here; *kind_handlers*
-    maps role-specific kinds (e.g. ``"embed"``, ``"chat"``) to the
-    function that processes one such request. Unknown kinds reply with
-    a serialized ``ValueError``. The worker's session is built once via
-    *session_factory* and closed in the ``finally`` clause.
+    Two pipes per worker: ``data_conn`` carries call/stream/shutdown,
+    ``health_conn`` carries ping/pong. The loop multiplexes the two via
+    :func:`multiprocessing.connection.wait` so neither stalls the other.
+    Built-in kinds (ping on health, shutdown on data) are handled here;
+    *kind_handlers* maps role-specific kinds (e.g. ``"embed"``, ``"chat"``)
+    to the function that processes one such request. Unknown kinds reply
+    with a serialized ``ValueError``.
     """
     redirect_stdio_to_devnull()
     configure_worker_logging(role_config.role)
@@ -121,50 +112,60 @@ def run_worker(
     state = WorkerLoopState(session=session_factory(role_config, abort_flag))
     try:
         while True:
-            if not conn.poll(timeout=_POLL_TIMEOUT_S):
+            ready = wait([data_conn, health_conn], timeout=_POLL_TIMEOUT_S)
+            if not ready:
                 continue
-            try:
-                kind, payload = conn.recv()
-            except EOFError:
+            if data_conn in ready and not _handle_data_frame(
+                data_conn, state, kind_handlers, role_config.role
+            ):
                 return
-            if not _dispatch_kind(conn, kind, payload, state, kind_handlers, role_config.role):
-                return
+            if health_conn in ready:
+                _handle_health_frame(health_conn, role_config.role)
     finally:
         # session.close() swallows its own teardown errors per role-specific
         # contract. conn.close() can raise if the parent already tore down.
         state.session.close()
         with contextlib.suppress(Exception):
-            conn.close()
+            data_conn.close()
+        with contextlib.suppress(Exception):
+            health_conn.close()
 
 
-def _dispatch_kind(
-    conn: Any,
-    kind: str,
-    payload: Any,
+def _handle_data_frame(
+    data_conn: Any,
     state: WorkerLoopState,
     kind_handlers: dict[str, KindHandler],
     role: str,
 ) -> bool:
-    """Handle one request. Return False to stop the worker loop."""
-    if kind == SHUTDOWN_KIND:
-        conn.send((ACK_KIND, None))
+    """Read and dispatch one data-pipe frame. Return False to stop the loop."""
+    try:
+        kind, payload = data_conn.recv()
+    except EOFError:
         return False
-    if kind == PING_KIND:
-        if state.stream_in_flight:
-            # Drop the ping rather than emit a pong frame the parent's
-            # stream consumer would read out of band. The next tick re-pings.
-            return True
-        conn.send((PONG_KIND, None))
-        return True
+    if kind == SHUTDOWN_KIND:
+        data_conn.send((ACK_KIND, None))
+        return False
     handler = kind_handlers.get(kind)
     if handler is not None:
-        handler(conn, payload, state)
+        handler(data_conn, payload, state)
         return True
     try:
         raise ValueError(f"{role} worker received unknown kind {kind!r}")
     except ValueError as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
+        data_conn.send((ERROR_KIND, _serialize_exception(exc)))
     return True
+
+
+def _handle_health_frame(health_conn: Any, role: str) -> None:
+    """Read one health-pipe frame; reply pong on ping, log + drop on anything else."""
+    try:
+        kind, _ = health_conn.recv()
+    except EOFError:
+        return
+    if kind == PING_KIND:
+        health_conn.send((PONG_KIND, None))
+        return
+    log.warning("%s worker dropped unexpected health-pipe kind %r", role, kind)
 
 
 __all__ = [
@@ -173,5 +174,4 @@ __all__ = [
     "configure_worker_logging",
     "redirect_stdio_to_devnull",
     "run_worker",
-    "stream_window",
 ]
