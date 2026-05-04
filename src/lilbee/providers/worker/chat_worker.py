@@ -111,13 +111,8 @@ def _extract_stream_content(chunk: Any) -> str | None:
 def _handle_chat_streaming(conn: Any, response_iter: Any, state: WorkerLoopState) -> None:
     """Drain *response_iter* and emit per-token stream_chunk frames.
 
-    Marks *state* as actively streaming for the emission window. Any
-    handler dispatch that happens to land while the flag is set drops
-    health pings rather than emitting pong frames the parent's stream
-    consumer would read out of band. The defense is paired with the
-    parent-side ``stream`` reader's silent consumption of pong frames
-    (which absorbs orphan pongs from pings buffered into the pipe before
-    the worker entered this window).
+    Wraps emission in :func:`stream_window` so the dispatcher drops
+    pings while the stream is in flight.
     """
     with stream_window(state):
         for raw_chunk in response_iter:

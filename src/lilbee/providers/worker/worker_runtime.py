@@ -68,13 +68,9 @@ def configure_worker_logging(role: str) -> None:
 class WorkerLoopState:
     """Per-loop state shared by the dispatcher and the role's handlers.
 
-    ``stream_in_flight`` is flipped on for the emission window of a
-    streaming response (via :func:`stream_window`); the dispatcher
-    silently drops pings dispatched during that window so no pong frame
-    interleaves with the stream output. Combined with the parent-side
-    ``stream`` reader filter that consumes orphan pongs and the parent
-    accessor's ``ping`` skip when the channel reports in-flight work,
-    this completes the worker-pool defence against bb-ubnm.
+    ``stream_in_flight`` is set while a streaming response is emitting;
+    the dispatcher drops pings while the flag is set. See
+    ``docs/architecture.md`` "Orphan-pong defenses" for the full layering.
     """
 
     session: Any
@@ -83,11 +79,7 @@ class WorkerLoopState:
 
 @contextmanager
 def stream_window(state: WorkerLoopState) -> Iterator[None]:
-    """Mark *state* as actively streaming for the duration of the block.
-
-    The flag is always cleared on exit so a streaming error does not
-    leave the worker permanently ping-deaf.
-    """
+    """Set ``state.stream_in_flight`` for the block, clearing on exit (incl. errors)."""
     state.stream_in_flight = True
     try:
         yield

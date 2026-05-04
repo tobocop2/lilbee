@@ -222,13 +222,10 @@ class PipeChannel:
 
         Raises :class:`WorkerError` if the worker reported an exception,
         :class:`WorkerCrashError` if the worker died, or
-        :class:`asyncio.TimeoutError` if the reply did not arrive in
-        *timeout* seconds. Orphan ``pong`` frames left in the pipe by a
-        prior health ping (parent's ``wait_for`` timed out before the
-        worker drained the buffered ping) are silently consumed before
-        the real reply, mirroring the same defense in :meth:`stream`.
-        The timeout applies to the whole reply window, not to each recv,
-        so absorbing pongs cannot extend the budget.
+        :class:`TimeoutError` if the reply did not arrive in *timeout*
+        seconds. Orphan ``pong`` frames are silently consumed (see
+        ``docs/architecture.md`` "Orphan-pong defenses"); the timeout
+        is tracked as a deadline so swallowing pongs cannot extend it.
         """
         self._ensure_open()
         self._bump_in_flight(1)
@@ -260,12 +257,9 @@ class PipeChannel:
         The terminator is one of ``stream_end`` (clean), ``error`` (worker
         exception), or pipe EOF (worker crash). The in-flight counter
         stays positive for the entire streaming window so the idle reaper
-        does not race with a long generation.
-
-        Pong frames received here are silently consumed: an orphaned pong
-        from a prior health ping (parent ping coroutine cancelled / timed
-        out before its pong arrived) sits in the pipe FIFO and would
-        otherwise corrupt the next stream's first frame.
+        does not race with a long generation. Orphan ``pong`` frames are
+        silently consumed (see ``docs/architecture.md`` "Orphan-pong
+        defenses").
         """
         self._ensure_open()
         self._bump_in_flight(1)
