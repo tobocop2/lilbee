@@ -1,8 +1,8 @@
 """ModelGrid: single-render-surface grid of catalog cards.
 
 Single render surface via ``render_line(y)``; one strip painted per
-visible row keeps fast scrolls cheap. Decoration lives in CSS via the
-``model-grid--cursor`` component class so themes own their own contrast.
+visible row keeps fast scrolls cheap. Decoration uses theme-token
+strings (``"on $panel"`` / ``"$primary"``) so themes own their contrast.
 """
 
 from __future__ import annotations
@@ -53,6 +53,18 @@ _BORDER_BOTTOM_RIGHT = "╯"
 _BORDER_HORIZONTAL = "─"
 _BORDER_VERTICAL = "│"
 
+# Theme-token style strings; resolved at render time on the active theme.
+_CARD_BODY_STYLE = "on $panel"
+# Every card draws a border at all times so the grid reads as discrete tiles.
+# The default tone is dim; the selected card gets a brighter color depending
+# on whether the grid has focus.
+_DEFAULT_BORDER_STYLE = "$border-blurred on $panel"
+_FOCUSED_BORDER_STYLE = "$primary on $panel"
+_BLURRED_BORDER_STYLE = "$border-blurred on $panel"
+# Inter-card gutter and empty slot fill: match the screen's surface so gaps
+# read as theme background, not raw terminal black.
+_GAP_STYLE = "on $background"
+
 
 @dataclass
 class _CardLines:
@@ -65,8 +77,6 @@ class ModelGrid(Widget, can_focus=True):
     """Single-render-surface grid of ``CatalogRow`` cards."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
-
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"model-grid--cursor"}
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "cursor_up", "Up", show=False),
@@ -155,17 +165,31 @@ class ModelGrid(Widget, can_focus=True):
     def watch_highlighted(self, _old: int | None, new: int | None) -> None:
         """Repaint and scroll the highlighted cell into view.
 
-        The scroll-into-view side effect lets the outer ``VerticalScroll``
-        update ``scroll_y`` on every cursor move, which is what wakes the
-        catalog screen's pagination watcher.
+        ModelGrid itself has ``height: auto`` so it isn't scrollable; the
+        outer ``#catalog-grid`` VerticalScroll is. We translate the cell's
+        local offset to the parent's doc coords (using ``virtual_region``)
+        and ask the parent to scroll. That side effect also wakes the
+        catalog screen's pagination watcher on ``scroll_y``.
         """
         self.refresh()
         if new is None or self._cards_per_row <= 0 or self.size.width <= 0:
             return
+        parent = self.parent
+        if not isinstance(parent, Widget):
+            return
         col_width = max(1, self.size.width // self._cards_per_row)
         row = new // self._cards_per_row
         col = new % self._cards_per_row
-        self.scroll_to_region(Region(col * col_width, row * _ROW_HEIGHT, col_width, _CARD_HEIGHT))
+        grid_doc = self.virtual_region
+        parent.scroll_to_region(
+            Region(
+                grid_doc.x + col * col_width,
+                grid_doc.y + row * _ROW_HEIGHT,
+                col_width,
+                _CARD_HEIGHT,
+            ),
+            animate=False,
+        )
 
     def on_focus(self) -> None:
         """Auto-highlight first card on focus so Tab navigation has visible feedback."""
@@ -263,17 +287,18 @@ class ModelGrid(Widget, can_focus=True):
         if grid_row >= self._total_rows() or line_within >= _CARD_HEIGHT:
             return Strip.blank(self.size.width)
         col_width = max(1, self.size.width // max(1, self._cards_per_row))
-        cursor_style = self.get_visual_style("model-grid--cursor")
+        border_style = _FOCUSED_BORDER_STYLE if self.has_focus else _BLURRED_BORDER_STYLE
         segments: list[Content] = []
         for col in range(self._cards_per_row):
             index = grid_row * self._cards_per_row + col
             if index >= len(self._rows):
-                segments.append(Content(" " * col_width))
+                # Empty slot in a partial last row -> match screen surface.
+                segments.append(Content.styled(" " * col_width, _GAP_STYLE))
                 continue
             row = self._rows[index]
             selected = index == self.highlighted
             card = _render_card_strip(
-                row, selected=selected, width=col_width, cursor_style=cursor_style
+                row, selected=selected, width=col_width, border_style=border_style
             )
             segments.append(card.lines[line_within])
         joined = Content("").join(segments)
@@ -293,15 +318,15 @@ def _truncate_name(name: str) -> str:
 
 
 def _render_card_strip(
-    row: CatalogRow, *, selected: bool, width: int, cursor_style: Style
+    row: CatalogRow, *, selected: bool, width: int, border_style: str
 ) -> _CardLines:
     """Return the ``_CARD_HEIGHT`` content lines that make up one card slot.
 
-    Always emits ``_BORDER_RESERVED_LINES + _CARD_BODY_HEIGHT`` lines so the
-    layout stays identical regardless of focus. The focused card draws a round
-    border using ``cursor_style`` (resolved by CSS via the
-    ``model-grid--cursor`` component class). Unfocused cards render the same
-    slots as transparent spaces.
+    Every card paints a ``$panel`` body fill plus a round box border in
+    ``_DEFAULT_BORDER_STYLE``; the selected card swaps the border color for
+    ``border_style`` (the focused / blurred token picked by ``render_line``).
+    The body is always panel-tinted so cards read as discrete tiles even on
+    dark themes.
     """
     if isinstance(row, FrontierCatalogRow):
         body = _frontier_lines(row)
@@ -310,31 +335,33 @@ def _render_card_strip(
 
     inner_width = max(3, width - _CARD_GUTTER)
     body_width = inner_width - 2  # subtract the two side-border columns
-    gap = Content(" " * _CARD_GUTTER) if _CARD_GUTTER else Content("")
+    # Gap between cards on the same row; theme-tinted so it reads as a card
+    # separator, not as raw black.
+    gap = Content.styled(" " * _CARD_GUTTER, _GAP_STYLE) if _CARD_GUTTER else Content("")
 
     body_padded = [_pad_line(line, body_width) for line in body[:_CARD_BODY_HEIGHT]]
     while len(body_padded) < _CARD_BODY_HEIGHT:
         body_padded.append(Content(" " * body_width))
 
-    if selected:
-        top = Content.styled(
-            _BORDER_TOP_LEFT + _BORDER_HORIZONTAL * body_width + _BORDER_TOP_RIGHT,
-            cursor_style,
-        )
-        bottom = Content.styled(
-            _BORDER_BOTTOM_LEFT + _BORDER_HORIZONTAL * body_width + _BORDER_BOTTOM_RIGHT,
-            cursor_style,
-        )
-        side = Content.styled(_BORDER_VERTICAL, cursor_style)
-        framed = [top]
-        framed.extend(Content.assemble(side, line, side) for line in body_padded)
-        framed.append(bottom)
-    else:
-        blank_full = Content(" " * inner_width)
-        blank_side = Content(" ")
-        framed = [blank_full]
-        framed.extend(Content.assemble(blank_side, line, blank_side) for line in body_padded)
-        framed.append(blank_full)
+    border_color = border_style if selected else _DEFAULT_BORDER_STYLE
+    top = Content.styled(
+        _BORDER_TOP_LEFT + _BORDER_HORIZONTAL * body_width + _BORDER_TOP_RIGHT,
+        border_color,
+    )
+    bottom = Content.styled(
+        _BORDER_BOTTOM_LEFT + _BORDER_HORIZONTAL * body_width + _BORDER_BOTTOM_RIGHT,
+        border_color,
+    )
+    side = Content.styled(_BORDER_VERTICAL, border_color)
+
+    framed = [top]
+    for line in body_padded:
+        # Wrap each padded body line in side bars, then layer the panel
+        # background across the whole inner_width so the body reads as a
+        # single tile (the bg covers any unstyled padding inside `_pad_line`).
+        wrapped = Content.assemble(side, line, side)
+        framed.append(wrapped.stylize_before(_CARD_BODY_STYLE))
+    framed.append(bottom)
 
     return _CardLines(lines=[Content.assemble(line, gap) for line in framed])
 

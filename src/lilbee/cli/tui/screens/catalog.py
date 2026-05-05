@@ -907,18 +907,32 @@ class CatalogScreen(Screen[None]):
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
-        """Move focus to the next grid widget, or fetch more if at the end."""
+        """Move focus to the next grid widget, or fetch more if at the end.
+
+        On the bottom-most grid with no more HF results to load, return
+        without moving focus so the cursor stays parked instead of leaking
+        focus to the toolbar / dock.
+        """
         if isinstance(event, ModelGrid.LeaveDown):
             grids = list(self._grid_container.query(ModelGrid))
-            if grids and event.grid is grids[-1] and self._hf_has_more and not self._loading_more:
-                self._load_more()
+            if grids and event.grid is grids[-1]:
+                if self._hf_has_more and not self._loading_more:
+                    self._load_more()
                 return
         self.focus_next()
 
     @on(GridSelect.LeaveUp)
     @on(ModelGrid.LeaveUp)
     def _on_grid_leave_up(self, event: Message) -> None:
-        """Move focus to the previous grid widget."""
+        """Move focus to the previous grid widget.
+
+        On the topmost grid, return without moving focus so the cursor
+        stays parked at the top row instead of leaking focus upward.
+        """
+        if isinstance(event, ModelGrid.LeaveUp):
+            grids = list(self._grid_container.query(ModelGrid))
+            if grids and event.grid is grids[0]:
+                return
         self.focus_previous()
 
     @on(GridSelect.Selected)

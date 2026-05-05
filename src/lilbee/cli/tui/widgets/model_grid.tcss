@@ -2,14 +2,4 @@ ModelGrid {
     height: auto;
     background: transparent;
     color: $foreground;
-
-    .model-grid--cursor {
-        color: $border-blurred;
-    }
-
-    &:focus {
-        .model-grid--cursor {
-            color: $primary;
-        }
-    }
 }
