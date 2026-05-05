@@ -2606,33 +2606,12 @@ class TestCatalogPickBadge:
                 assert "pick" in joined
 
 
-class TestCatalogLazyLoad:
-    """Test browse-more card for lazy HF loading."""
+class TestCatalogAutoLoad:
+    """The catalog auto-fetches HF models on mount; no Browse-more gate."""
 
-    async def test_browse_more_card_exists(self, _mock_resolve):
-        """The Browse-more CTA card appears before HF fetch."""
+    async def test_hf_fetched_on_open(self, _mock_resolve):
+        """Opening the catalog kicks off the HF bulk fetch automatically."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                # The streaming-section mount chain in _refresh_grid yields
-                # several refresh ticks before _mount_grid_ctas mounts the
-                # browse-more card; pause until it lands or timeout.
-                for _ in range(20):
-                    await pilot.pause()
-                    if app.screen.query(BrowseMoreCtaItem):
-                        break
-                cards = app.screen.query(BrowseMoreCtaItem)
-                assert len(cards) >= 1
-
-    async def test_browse_more_button_focusable_and_keyboard_activates(self, _mock_resolve):
-        """The 'Browse more models' button must be reachable via Tab and Enter (bb-fp1p)."""
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -2641,16 +2620,8 @@ class TestCatalogLazyLoad:
                 app.switch_view("Catalog")
                 for _ in range(20):
                     await pilot.pause()
-                    if app.screen.query(BrowseMoreCtaItem):
+                    if getattr(app.screen, "_hf_fetched", False):
                         break
-                button = app.screen.query_one(BrowseMoreCtaItem)
-                assert button.can_focus, "Browse more must be focusable"
-                button.focus()
-                await pilot.pause()
-                assert app.focused is button
-                # Activate via Enter to trigger the bulk HF fetch.
-                await pilot.press("enter")
-                await pilot.pause()
                 assert app.screen._hf_fetched is True
 
 

@@ -44,7 +44,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -144,9 +143,6 @@ class CatalogScreen(Screen[None]):
         # to the user instead.
         Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
-        # ``b`` triggers the bulk-HF cold fetch from anywhere on the screen,
-        # so the BrowseMore CTA does not have to be tab-focused first.
-        Binding("b", "browse_more", "Browse all", show=True, group=_ACTION_GROUP),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -227,6 +223,12 @@ class CatalogScreen(Screen[None]):
         self.call_after_refresh(self._initial_focus_first_grid)
         self._fetch_remote_models()
         self._fetch_frontier_models()
+        # Eagerly load the HF catalog so the user lands on a populated
+        # browse view; no more "Browse more" CTA gating discovery behind
+        # an extra keypress. Featured + Installed paint immediately, HF
+        # task sections stream in as the worker completes.
+        self._hf_fetched = True
+        self._fetch_all_hf_models()
         if isinstance(self.app, LilbeeApp):
             self.app.provider_availability_changed_signal.subscribe(
                 self, self._on_provider_availability_changed
@@ -804,16 +806,64 @@ class CatalogScreen(Screen[None]):
             self._refresh_grid_ctas(hf_count=len(hf_rows))
             self._update_sort_label()
             return
-        # First paint (or section count changed): teardown + remount.
+        # Section count changed: teardown + remount. Capture the user's
+        # current cursor + scroll position so we can restore both after
+        # remount; otherwise the _focus_first_grid fallback snaps the
+        # cursor back to "Our picks" mid-keypress, and the layout shift
+        # from extra sections drifts the visible window away from where
+        # the user was looking.
+        focus_anchor = self._capture_focused_section()
         container = self._grid_container
+        prior_scroll_y = container.scroll_y
         container.remove_children()
         self._mount_grid_section(sections[0])
         rest = sections[1:]
-        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_count=len(hf_rows))
+        self.call_after_refresh(
+            self._mount_remaining_grid_sections,
+            rest,
+            hf_count=len(hf_rows),
+            focus_anchor=focus_anchor,
+            prior_scroll_y=prior_scroll_y,
+        )
         self._update_sort_label()
 
+    def _capture_focused_section(self) -> tuple[str, int | None] | None:
+        """Return ``(heading, highlighted_index)`` for the focused grid.
+
+        Heading is read from ``ModelGrid.name`` (set by
+        ``_mount_grid_section``). Used to restore the cursor across a
+        teardown+remount in ``_refresh_grid`` so paginated loads don't
+        yank the user back to the top of the catalog.
+        """
+        focused = self._focused_grid()
+        if not isinstance(focused, ModelGrid) or focused.name is None:
+            return None
+        return (focused.name, focused.highlighted)
+
+    def _restore_focused_section(self, anchor: tuple[str, int | None] | None) -> bool:
+        """Refocus the grid whose ``name`` matches the captured anchor.
+
+        Returns True when the previous focus position was successfully
+        restored; False when no anchor was given or the matching section
+        no longer exists (caller falls back to ``_focus_first_grid``).
+        """
+        if anchor is None:
+            return False
+        target_heading, target_highlighted = anchor
+        for grid in self._grid_container.query(ModelGrid):
+            if grid.name != target_heading:
+                continue
+            grid.focus()
+            if target_highlighted is not None and grid.rows:
+                grid.highlighted = min(target_highlighted, len(grid.rows) - 1)
+            return True
+        return False
+
     def _mount_grid_section(self, section: GridSection) -> None:
-        grid = ModelGrid(section.rows, classes="catalog-section")
+        # ``name=section.heading`` doubles as the section identity used by
+        # ``_capture_focused_section`` / ``_restore_focused_section`` to
+        # preserve the cursor across teardown + remount.
+        grid = ModelGrid(section.rows, name=section.heading, classes="catalog-section")
         self._grid_container.mount_all(
             [
                 Static(section.heading, classes="section-heading"),
@@ -821,16 +871,31 @@ class CatalogScreen(Screen[None]):
             ]
         )
 
-    def _mount_remaining_grid_sections(self, remaining: list[GridSection], hf_count: int) -> None:
+    def _mount_remaining_grid_sections(
+        self,
+        remaining: list[GridSection],
+        hf_count: int,
+        focus_anchor: tuple[str, int | None] | None = None,
+        prior_scroll_y: float = 0.0,
+    ) -> None:
         for section in remaining:
             self._mount_grid_section(section)
         self._mount_grid_ctas(hf_count=hf_count)
-        # Lock focus onto the first grid once mount completes so j / k /
-        # PgDn / PgUp dispatch correctly. Without this, on first paint
-        # the focus race can leave nothing focused and the catalog feels
-        # frozen until the user toggles to list view and back.
-        if self._grid_view and self._focused_grid() is None:
-            self._focus_first_grid()
+        # Restore the prior viewport position; mounting fresh sections shifts
+        # the layout and ``focus()`` below would otherwise overshoot.
+        if prior_scroll_y:
+            self._grid_container.scroll_to(y=prior_scroll_y, animate=False)
+        # Lock focus onto a grid once mount completes so j / k / PgDn /
+        # PgUp dispatch correctly. Without this, on first paint the focus
+        # race can leave nothing focused and the catalog feels frozen
+        # until the user toggles to list view and back. When the previous
+        # paint had a focused grid, restore the cursor to the same
+        # section + highlighted index instead of jumping to the top.
+        if not self._grid_view or self._focused_grid() is not None:
+            return
+        if self._restore_focused_section(focus_anchor):
+            return
+        self._focus_first_grid()
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""
@@ -841,16 +906,12 @@ class CatalogScreen(Screen[None]):
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
-        ctas: list[Static | BrowseMoreCtaItem] = []
-        if not self._hf_fetched and not self._loading_more:
-            ctas.append(BrowseMoreCtaItem())
-        else:
-            ctas.append(
-                Static(
-                    self._grid_scroll_hint_text(hf_count),
-                    classes="grid-cta scroll-hint",
-                )
+        ctas: list[Static] = [
+            Static(
+                self._grid_scroll_hint_text(hf_count),
+                classes="grid-cta scroll-hint",
             )
+        ]
         search = self._get_search_text()
         if search:
             ctas.append(
@@ -889,20 +950,6 @@ class CatalogScreen(Screen[None]):
     def _filter_grid(self) -> None:
         """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
-
-    @on(BrowseMoreCtaItem.Selected)
-    def _on_browse_more_clicked(self) -> None:
-        """Fetch all models when the browse-more card is activated (click or Enter)."""
-        self.action_browse_more()
-
-    def action_browse_more(self) -> None:
-        """Fire the bulk-HF cold fetch; safe to call repeatedly (idempotent)."""
-        if self._hf_fetched or self._loading_more:
-            return
-        self._hf_fetched = True
-        self._loading_more = True
-        self._sync_loading_spinner()
-        self._fetch_all_hf_models()
 
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)

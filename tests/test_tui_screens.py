@@ -3437,6 +3437,10 @@ async def test_catalog_load_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            # Auto-fetch on mount may have flipped these; reset to the
+            # exhausted-not state this test exercises.
+            screen._hf_has_more = True
+            screen._loading_more = False
             old_offset = screen._hf_offset
             with patch.object(screen, "_fetch_more_hf"):
                 screen._load_more()
@@ -3929,6 +3933,8 @@ async def test_catalog_load_more_deduplicated_while_in_flight():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._hf_has_more = True
+            screen._loading_more = False
             old_offset = screen._hf_offset
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen._load_more()
@@ -8022,8 +8028,7 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 
 
 async def test_catalog_grid_leave_down_focuses_next():
-    """GridSelect.LeaveDown moves focus to the next focusable widget when
-    there is no more remote data to fetch."""
+    """LeaveDown on a NON-last grid moves focus to the next grid."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -8033,18 +8038,42 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen._hf_has_more = False  # exhausts the load-more branch
+            screen._hf_has_more = False
             grids = list(screen.query(ModelGrid))
-            if grids:
-                grids[0].focus()
-                await pilot.pause()
-                grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
-                await pilot.pause()
-                assert screen.focused is not grids[0]
+            if len(grids) < 2:
+                pytest.skip("test requires at least two grids mounted")
+            grids[0].focus()
+            await pilot.pause()
+            grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
+            await pilot.pause()
+            assert screen.focused is not grids[0]
+
+
+async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
+    """LeaveDown on the LAST grid with no more HF data parks the cursor."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._hf_has_more = False
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one grid mounted")
+            last = grids[-1]
+            last.focus()
+            await pilot.pause()
+            last.post_message(ModelGrid.LeaveDown(last))
+            await pilot.pause()
+            assert screen.focused is last
 
 
 async def test_catalog_grid_leave_up_focuses_previous():
-    """GridSelect.LeaveUp moves focus to the previous focusable widget."""
+    """LeaveUp on a NON-first grid moves focus to the previous grid."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -8055,12 +8084,34 @@ async def test_catalog_grid_leave_up_focuses_previous():
             app.push_screen(screen)
             await pilot.pause()
             grids = list(screen.query(ModelGrid))
-            assert grids, "Expected at least one GridSelect"
+            if len(grids) < 2:
+                pytest.skip("test requires at least two grids mounted")
+            grids[1].focus()
+            await pilot.pause()
+            grids[1].post_message(ModelGrid.LeaveUp(grids[1]))
+            await pilot.pause()
+            assert screen.focused is not grids[1]
+
+
+async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
+    """LeaveUp on the topmost grid parks the cursor (no leak to toolbar)."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one grid mounted")
             grids[0].focus()
             await pilot.pause()
             grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
             await pilot.pause()
-            assert screen.focused is not grids[0]
+            assert screen.focused is grids[0]
 
 
 async def test_catalog_select_variant_row():
@@ -9789,21 +9840,19 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             assert result is None
 
 
-async def test_catalog_browse_more_clicked():
-    """Browse more button triggers HF model fetch."""
+async def test_catalog_auto_fetches_hf_on_mount():
+    """Opening the catalog kicks off the HF bulk fetch automatically (no CTA gate)."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            assert screen._hf_fetched is False
-            with patch.object(screen, "_fetch_all_hf_models") as mock_fetch:
-                screen._on_browse_more_clicked()
+            with patch.object(CatalogScreen, "_fetch_all_hf_models") as mock_fetch:
+                app.push_screen(screen)
+                await _pilot.pause()
                 assert screen._hf_fetched is True
-                mock_fetch.assert_called_once()
+                mock_fetch.assert_called()
 
 
 async def test_catalog_grid_selected_delegates_to_select_row():

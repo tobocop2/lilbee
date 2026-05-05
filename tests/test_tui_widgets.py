@@ -4973,50 +4973,6 @@ class TestSearchHFCtaItem:
             assert "phi-3" in str(label.render())
 
 
-class TestBrowseMoreCtaItem:
-    """Direct-construction tests for BrowseMoreCtaItem (bb-fp1p)."""
-
-    def test_action_select_posts_message(self) -> None:
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        item = BrowseMoreCtaItem()
-        received: list[BrowseMoreCtaItem.Selected] = []
-        item.post_message = received.append  # type: ignore[method-assign]
-        item.action_select()
-        assert len(received) == 1
-        assert received[0].control is item
-        assert received[0].item is item
-
-    def test_on_click_focuses_and_posts(self) -> None:
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        item = BrowseMoreCtaItem()
-        received: list[BrowseMoreCtaItem.Selected] = []
-        focus_calls: list[bool] = []
-        item.post_message = received.append  # type: ignore[method-assign]
-        item.focus = lambda: focus_calls.append(True)  # type: ignore[method-assign]
-        item.on_click(_make_click(item))
-        assert focus_calls == [True]
-        assert received and received[0].item is item
-
-    async def test_compose_renders_browse_label(self) -> None:
-        from textual.app import App
-        from textual.widgets import Static
-
-        from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        class _App(App):
-            def compose(self) -> ComposeResult:
-                yield BrowseMoreCtaItem()
-
-        app = _App()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            label = app.query_one("#browse-more-label", Static)
-            assert msg.CATALOG_BROWSE_MORE in str(label.render())
-
-
 def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
     return LocalCatalogRow(
         name=name,
