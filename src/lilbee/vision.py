@@ -114,14 +114,16 @@ def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = N
     If the provider exposes a ``vision_ocr`` method (subprocess-isolated),
     that path is preferred. Otherwise falls back to ``provider.chat``.
     The *timeout* parameter (seconds) caps wall-clock time for the provider
-    call using ``concurrent.futures``.  ``None`` or ``0`` means no limit.
+    call: routed natively into ``vision_ocr`` when supported, otherwise via
+    ``concurrent.futures`` around the ``chat`` fallback. ``None`` or ``0``
+    means no limit.
     """
     try:
         provider = get_services().provider
 
         # vision_ocr is optional; only the llama-cpp provider implements it.
         if hasattr(provider, "vision_ocr"):
-            result: str = provider.vision_ocr(png_bytes, model, OCR_PROMPT)  # type: ignore[attr-defined]
+            result: str = provider.vision_ocr(png_bytes, model, OCR_PROMPT, timeout=timeout)  # type: ignore[attr-defined]
             return result
 
         messages = build_vision_messages(OCR_PROMPT, png_bytes)

@@ -12,42 +12,7 @@ ModelCard {
         border: tall $primary;
     }
 
-    #card-name {
+    .card-body {
         width: 1fr;
-        text-style: bold;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-        overflow: hidden;
-    }
-
-    #card-pills {
-        height: auto;
-        width: 1fr;
-    }
-
-    #card-pills > Label {
-        width: auto;
-        margin: 0 1 0 0;
-    }
-
-    #card-info {
-        color: $text-muted;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-        overflow: hidden;
-    }
-
-    #card-status {
-        color: $text-muted;
-    }
-
-    #card-hint {
-        color: $text-muted 40%;
-        text-style: italic;
-        display: none;
-    }
-
-    &.-highlight #card-hint {
-        display: block;
     }
 }

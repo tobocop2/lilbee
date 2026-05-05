@@ -59,7 +59,10 @@ jobs:
         run: make imports-check
 
   test:
-    timeout-minutes: 60
+    # Bumped from 60 to 120: Windows 3.11 runs the suite serially (no
+    # xdist) to dodge reactive-timing flakes, which exceeds 60 min. All
+    # other matrix entries finish well under the original budget.
+    timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -109,17 +112,17 @@ jobs:
             ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Run unit tests
-        # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
-        # the run, so they run with pytest-forked (one subprocess per
-        # test, distributed across -n auto xdist workers) to sidestep the
-        # thread-accumulation wedge. That path loses coverage because
-        # forks exit via os._exit, skipping coverage.py's atexit save —
-        # accepted tradeoff: 3.11 lanes prove the code runs, 3.12 and
-        # 3.13 own the coverage story. Windows 3.11 stays on the normal
-        # parallel path.
+        # 3.11's asyncio releases transports differently from 3.12+, which
+        # destabilizes Textual reactive-timing tests under pytest-xdist.
+        # ubuntu and macOS work around it with pytest-forked (one subprocess
+        # per test, no coverage save because forks exit via os._exit); Windows
+        # can't fork, so it runs serially via test-ci-serial (no xdist, full
+        # coverage save). 3.12 and 3.13 own the parallel coverage story.
         run: |
           if [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" != "windows-latest" ]; then
             make test-ci-forked
+          elif [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" = "windows-latest" ]; then
+            make test-ci-serial
           else
             make test-ci
           fi
@@ -324,10 +327,9 @@ jobs:
       - name: Pre-download GGUF models
         shell: bash
         run: |
-          CHAT_REPO="${{ runner.os == 'macOS' && 'bartowski/SmolLM2-135M-Instruct-GGUF' || 'Qwen/Qwen3-0.6B-GGUF' }}"
           for i in 1 2 3; do
             uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF && \
-            uv run lilbee model pull "$CHAT_REPO" && break
+            uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF && break
             echo "Attempt $i failed, retrying in 10s..."
             sleep 10
           done
@@ -337,6 +339,5 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
-          LILBEE_TEST_CHAT_MODEL: ${{ runner.os == 'macOS' && 'bartowski/SmolLM2-135M-Instruct-GGUF' || 'Qwen/Qwen3-0.6B-GGUF' }}
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers

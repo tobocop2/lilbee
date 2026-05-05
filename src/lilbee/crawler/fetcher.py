@@ -1,22 +1,4 @@
-"""Protocol for web-fetcher backends.
-
-The orchestration layer (``runner.py``) calls into a ``WebFetcher``
-instance; the adapter (``crawl4ai_fetcher.py``) implements this
-Protocol. Migrating to a different SDK is a one-file swap: delete
-the adapter, add a new one, change the import in ``runner.py``.
-
-Lifecycle:
-
-    async with fetcher:
-        page = await fetcher.fetch_single(url, timeout=...)
-        async for page in fetcher.fetch_recursive(...):
-            ...
-
-``__aenter__`` must be called before any fetch method; ``__aexit__``
-tears the backend down (browser close, session cleanup, etc.).
-``fetch_recursive`` is the streaming entry point: it yields
-``FetchedPage`` objects as they arrive so callers can flush per-page.
-"""
+"""Protocol contract for web-fetcher backends consumed by the crawl runner."""
 
 from __future__ import annotations
 

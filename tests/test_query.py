@@ -39,6 +39,17 @@ def _reset_chat_mode():
 
 
 @pytest.fixture(autouse=True)
+def _reset_show_reasoning():
+    """Pin show_reasoning to False (model.py default) so think-tag-strip tests
+    are not flipped by a writable config.toml that persisted True from a
+    previous session."""
+    old = cfg.show_reasoning
+    cfg.show_reasoning = False
+    yield
+    cfg.show_reasoning = old
+
+
+@pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so tests never hit real backends."""
     from tests.conftest import make_mock_services

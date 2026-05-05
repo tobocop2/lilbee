@@ -159,12 +159,12 @@ async def test_settings_tab_chain_visits_tabs_widget_and_reset_button() -> None:
 
 
 async def test_catalog_tab_chain_visits_search() -> None:
-    """Tab walk on CatalogScreen visits the search input.
+    """Pressing / on CatalogScreen reveals + focuses the search input.
 
-    The catalog auto-focus is the first GridSelect, but data fetches
-    are async so on the first frame nothing may be focused yet. The
-    test pins the start to a known-stable view tab so the chain has
-    a deterministic origin.
+    The search input is hidden by default; the catalog footer surfaces
+    the / binding so the user can opt in. Once revealed, the Tab walk
+    must visit it so screen-reader and keyboard-only users can route
+    out of the search box without touching the mouse.
     """
     from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
@@ -176,5 +176,11 @@ async def test_catalog_tab_chain_visits_search() -> None:
         view_tabs = app.screen.query_one(ViewTabs)
         view_tabs.query_one("#view-tab-catalog").focus()
         await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        focused_id = app.focused.id if app.focused else None
+        assert focused_id == "catalog-search", (
+            f"slash should focus catalog-search, focused={focused_id!r}"
+        )
         chain = await _walk_tab_chain(app, pilot, max_presses=40)
         assert "catalog-search" in chain, f"catalog-search missing from {chain}"

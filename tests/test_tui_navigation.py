@@ -250,8 +250,15 @@ async def test_footer_present_on_screens():
         views = ["Chat", "Catalog", "Status", "Settings", "Tasks"]
         for view in views:
             app.switch_view(view)
-            await pilot.pause()
-            footers = app.screen.query(Footer)
+            # Some screens defer mounting via call_after_refresh, so a
+            # single pilot.pause() can race the compose tick on slower
+            # Windows runners. Poll until the Footer lands.
+            footers = ()
+            for _ in range(20):
+                await pilot.pause()
+                footers = app.screen.query(Footer)
+                if len(footers) > 0:
+                    break
             assert len(footers) > 0, f"{view} screen has no Footer"
 
 

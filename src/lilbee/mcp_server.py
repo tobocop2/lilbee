@@ -23,7 +23,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services
+from lilbee.core.services import get_services, reset_services, reset_store
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.data.store import SearchScope, scope_to_chunk_type
@@ -292,7 +292,10 @@ def reset(confirm: bool = False) -> dict[str, Any]:
         return {"error": "pass confirm=true to confirm deletion"}
     from lilbee.app.reset import perform_reset
 
-    return perform_reset().model_dump()
+    result = perform_reset().model_dump()
+    # Reopen LanceDB against the empty data dir; keep providers loaded.
+    reset_store()
+    return result
 
 
 @mcp.tool()

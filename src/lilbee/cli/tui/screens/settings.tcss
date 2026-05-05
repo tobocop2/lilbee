@@ -11,7 +11,25 @@ SettingsScreen {
     }
 
     #settings-scroll {
+        height: 1fr;
+        min-height: 0;
         padding: 0 1;
+    }
+
+    #settings-tabs {
+        height: 1fr;
+        min-height: 0;
+    }
+
+    /* TabbedContent's inner ContentSwitcher and TabPane default to
+     * height: auto. With a tall settings group (Ingest, Generation) that
+     * pushes the docked BottomBars off-screen. Force flex so the
+     * dock-bottom reservation always wins.
+     */
+    #settings-tabs ContentSwitcher,
+    #settings-tabs TabPane {
+        height: 1fr;
+        min-height: 0;
     }
 
     /* Settings sub-tabs adopt the same airline-pill aesthetic as the
@@ -80,6 +98,19 @@ SettingsScreen {
         color: $text-muted;
     }
 
+    .setting-model-picker-button {
+        width: 1fr;
+        height: 3;
+        background: $boost;
+        color: $text;
+        border: tall $surface-lighten-2;
+        text-style: bold;
+
+        &:focus {
+            border: tall $primary;
+        }
+    }
+
     Input, Select SelectCurrent, Checkbox {
         border: tall $surface-lighten-2;
 
@@ -100,6 +131,16 @@ SettingsScreen {
         height: 16;
         border: solid $surface;
         margin-bottom: 1;
+    }
+
+    .setting-multiline-editor {
+        height: 12;
+        border: solid $surface-lighten-2;
+        margin-bottom: 1;
+
+        &:focus-within {
+            border: tall $primary;
+        }
     }
 
     .setting-list-error {

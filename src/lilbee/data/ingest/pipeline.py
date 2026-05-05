@@ -39,8 +39,11 @@ from lilbee.runtime.progress import (
 log = logging.getLogger(__name__)
 
 
-# Limit concurrent ingestion to avoid overwhelming I/O
-_MAX_CONCURRENT = os.cpu_count() or 4
+# Limit concurrent ingestion. Sourced from cpu_quota() so worker storms
+# can't starve the TUI's asyncio main thread on macOS.
+from lilbee.runtime.cpu import cpu_quota
+
+_MAX_CONCURRENT = cpu_quota()
 
 # Concurrent.futures raises this exact RuntimeError message when submitting to
 # a shutdown executor (Python 3.11+). There is no dedicated exception class to
@@ -223,6 +226,7 @@ async def sync(
     removed: list[str] = []
     unchanged = 0
     failed: list[str] = []
+    skipped: list[str] = []
 
     # Find files to remove (in DB but not on disk)
     for name in existing_sources:
@@ -268,6 +272,7 @@ async def sync(
             added,
             updated,
             failed,
+            skipped,
             quiet=quiet,
             on_progress=on_progress,
             cancel=cancel,
@@ -284,6 +289,7 @@ async def sync(
         removed=removed,
         unchanged=unchanged,
         failed=failed,
+        skipped=skipped,
     )
     on_progress(
         EventType.DONE,
@@ -292,6 +298,7 @@ async def sync(
             updated=len(result.updated),
             removed=len(result.removed),
             failed=len(result.failed),
+            skipped=len(result.skipped),
         ),
     )
     return result
@@ -302,6 +309,7 @@ async def ingest_batch(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    skipped: list[str],
     *,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
@@ -367,7 +375,7 @@ async def ingest_batch(
             asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
             for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
         ]
-        await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
+        await _collect_results(tasks, added, updated, failed, skipped, on_progress=on_progress)
     else:
         with Progress(
             SpinnerColumn(),
@@ -389,6 +397,7 @@ async def ingest_batch(
                     added,
                     updated,
                     failed,
+                    skipped,
                     on_progress=on_progress,
                     progress=progress,
                     ptask=ptask,
@@ -402,6 +411,7 @@ async def _collect_results(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    skipped: list[str],
     *,
     on_progress: DetailedProgressCallback = noop_callback,
     progress: Progress | None = None,
@@ -410,12 +420,17 @@ async def _collect_results(
     """Collect task results, optionally updating a Rich progress bar."""
     for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
-        _apply_result(result, added, updated, failed)
+        _apply_result(result, added, updated, failed, skipped)
         if progress is not None and ptask is not None:
             desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
             progress.update(ptask, description=desc)
             progress.advance(ptask)
-        progress_status = "failed" if result.error is not None else "ingested"
+        if result.error is not None:
+            progress_status = "failed"
+        elif result.chunk_count == 0:
+            progress_status = "skipped"
+        else:
+            progress_status = "ingested"
         on_progress(
             EventType.BATCH_PROGRESS,
             BatchProgressEvent(
@@ -438,6 +453,7 @@ def _apply_result(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    skipped: list[str],
 ) -> None:
     """Record an ingestion result: update store on success, track failure."""
     if result.error is not None:
@@ -453,10 +469,13 @@ def _apply_result(
         failed.append(result.name)
         return
     if result.chunk_count == 0:
-        # No chunks produced (e.g. scanned PDF without vision model).
-        # Don't record as a source so it gets retried on next sync.
+        # No chunks produced (e.g. scanned PDF without vision model, or
+        # vision OCR returned no text). Don't record as a source so it
+        # gets retried on next sync, and surface as skipped so the user
+        # knows the file did not actually land in the store.
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
+        skipped.append(result.name)
         return
 
     fhash = result.file_hash or file_hash(result.path)

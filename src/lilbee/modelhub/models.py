@@ -290,12 +290,13 @@ def list_installed_models() -> list[str]:
     """
     # circular: modelhub.model_manager.discovery imports modelhub.models at top
     from lilbee.modelhub.model_manager import classify_remote_models
+    from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
     try:
         names: list[str] = []
         registry = ModelRegistry(cfg.models_dir)
         for manifest in registry.list_installed():
-            if manifest.task == ModelTask.CHAT:
+            if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT:
                 names.append(manifest.ref)
         for remote in classify_remote_models(cfg.remote_base_url):
             if remote.task == ModelTask.CHAT:

@@ -1,11 +1,8 @@
-"""Thin orchestration layer: builds specs from ``cfg``, drives a :class:`WebFetcher`.
+"""Crawl orchestration: build specs from ``cfg``, drive a :class:`WebFetcher`.
 
-No crawl4ai imports. All backend-specific knowledge lives in
-:mod:`lilbee.crawler.crawl4ai_fetcher`; this module only decides
-*what* to crawl (depth/pages/filters/concurrency) and *where* to
-put the bytes (per-page flush + metadata). Callers (CLI, MCP,
-HTTP, TUI) import these functions via the package façade in
-``lilbee.crawler.__init__``.
+By default a recursive crawl is scoped to the exact starting host so a
+Wikipedia article does not wander into other language editions. Callers
+opt into subdomain scope via ``include_subdomains=True``.
 """
 
 from __future__ import annotations
@@ -107,15 +104,10 @@ async def crawl_recursive(
     each page completes; total is ``CRAWL_TOTAL_UNKNOWN`` by default and
     promoted to the sitemap count when available.
 
-    By default the crawl is scoped to the exact starting host so a Wikipedia
-    article doesn't wander into other language editions. Pass
-    ``include_subdomains=True`` to broaden scope to the starting host plus any
-    subdomains (e.g. ``en.wikipedia.org`` plus ``af.wikipedia.org``).
-
-    If ``on_result`` is provided, it's called for each streamed ``CrawlResult``
-    the moment it arrives (before the next page yields). Callers use this to
-    flush pages to disk incrementally so a cancelled crawl keeps its partial
-    output.
+    Pass ``include_subdomains=True`` to broaden scope from the exact host to the
+    host plus any subdomains. If ``on_result`` is provided, it's called for each
+    streamed ``CrawlResult`` the moment it arrives so callers can flush pages to
+    disk incrementally and keep partial output across cancellation.
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
@@ -223,14 +215,7 @@ def _make_flush_page(
     written_paths: list[Path],
     counter: dict[str, int],
 ) -> Callable[[CrawlResult], Any]:
-    """Build a per-result flush closure that batches metadata writes.
-
-    Filesystem work runs through ``asyncio.to_thread`` so the streaming
-    event loop isn't blocked by per-page writes on slow filesystems.
-
-    ``counter`` is a single-entry dict used as a mutable int so the closure
-    can share counter state with the caller without nonlocal gymnastics.
-    """
+    """Build a per-result flush closure that batches metadata writes via ``to_thread``."""
 
     def _sync_flush(result: CrawlResult) -> Path | None:
         outcome = save._save_single_result(result, meta)
@@ -320,19 +305,13 @@ async def crawl_and_save(
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
     ``depth``: ``None`` = whole-site unbounded recursion (default). ``0`` =
-    single URL, no recursion. ``N > 0`` = max link-follow depth.
-    ``max_pages``: ``None`` = no limit. Positive int = cap.
-    ``cfg.crawl_max_{depth,pages}`` act as user-opted-in ceilings applied only
-    when ``depth``/``max_pages`` are ``None``.
+    single URL, no recursion. ``N > 0`` = max link-follow depth. ``max_pages``:
+    ``None`` = no limit, positive int = cap. ``cfg.crawl_max_{depth,pages}`` act
+    as ceilings applied only when ``depth``/``max_pages`` are ``None``.
 
-    When recursing, the crawl is scoped to the exact starting host by default.
-    Set ``include_subdomains=True`` to also follow links into sibling
-    subdomains of the starting host.
-
-    Uses hash-based change detection: always fetches, but only saves files
-    whose content has changed (or is new). Pages are flushed to disk as they
-    stream so a cancelled crawl preserves the pages already fetched instead
-    of discarding them.
+    Hash-based change detection: always fetches but only saves changed or new
+    files. Pages flush to disk as they stream so a cancelled crawl preserves
+    the pages already fetched.
     """
     await _ensure_crawler_ready(on_progress)
 
