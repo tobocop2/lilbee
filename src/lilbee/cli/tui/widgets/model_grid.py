@@ -44,23 +44,15 @@ _CSS_FILE = Path(__file__).parent / "model_grid.tcss"
 # hint slot painted only when a local card is highlighted-but-not-installed.
 # We always pre-allocate the slot so highlight transitions don't reflow
 # neighbours.
-_CARD_BODY_HEIGHT = 5
+_CARD_HEIGHT = 5
 """Visual lines of card content: name / pills / specs / status / hint."""
 
-_CARD_HEIGHT = _CARD_BODY_HEIGHT + 2
-"""Total card height including the top and bottom border rows."""
-
-_ROW_GUTTER = 0
+_ROW_GUTTER = 1
 _ROW_HEIGHT = _CARD_HEIGHT + _ROW_GUTTER
 _DEFAULT_COLUMNS = 4
 # Card body needs ~32 cells before pills wrap awkwardly.
 _CARD_MIN_WIDTH = 32
 _CARD_GUTTER = 1
-
-# Box-drawing characters for the card frame. Drawn explicitly so the
-# tile is visible regardless of theme background color (Solarized, etc.).
-_BORDER_TL, _BORDER_TR, _BORDER_BL, _BORDER_BR = "╭", "╮", "╰", "╯"
-_BORDER_H, _BORDER_V = "─", "│"
 
 
 @dataclass
@@ -298,54 +290,33 @@ def _truncate_name(name: str) -> str:
 def _render_card_strip(row: CatalogRow, *, selected: bool, width: int) -> _CardLines:
     """Return the ``_CARD_HEIGHT`` content lines that make up one card slot.
 
-    Borrows the styling decisions from ``model_card.py`` so the grid view
-    looks identical to the wizard cards even though the grid never mounts
-    a ``ModelCard`` widget. Each card draws an explicit box-drawing
-    border so the tile separates clearly from the screen background even
-    on themes whose surface color resolves to near-black.
+    Borderless: only the focused card gets a tinted background; every
+    other card and the gaps between them stay transparent so the
+    catalog reads as a uniform grid of content without theme-clashing
+    borders or panel fills. Empty slots in partially-filled rows blend
+    into the screen background by construction.
     """
     if isinstance(row, FrontierCatalogRow):
         body = _frontier_lines(row)
     else:
         body = _local_lines(row, selected=selected)
-    border_style = "$accent" if selected else "$surface-lighten-2"
-    # Use the theme's $surface tone for unselected cards so tiles read
-    # as theme-matching panels rather than transparent black rectangles.
-    # Selected card layers $accent on top for unmistakable focus.
-    fill_style = "on $accent 30%" if selected else "on $surface"
-    outer_width = max(3, width - _CARD_GUTTER)
-    inner_width = outer_width - 2  # subtract the two vertical border cells
-    top = Content.styled(f"{_BORDER_TL}{_BORDER_H * inner_width}{_BORDER_TR}", border_style)
-    bottom = Content.styled(f"{_BORDER_BL}{_BORDER_H * inner_width}{_BORDER_BR}", border_style)
-    framed_body = [
-        _frame_line(line, inner_width, border_style, fill_style)
-        for line in body[:_CARD_BODY_HEIGHT]
-    ]
+    fill_style = "on $accent 30%" if selected else ""
+    inner_width = max(1, width - _CARD_GUTTER)
+    framed = [_pad_line(line, inner_width, fill_style) for line in body[:_CARD_HEIGHT]]
     gap = Content(" " * _CARD_GUTTER) if _CARD_GUTTER else Content("")
-    framed: list[Content] = [top, *framed_body, bottom]
     return _CardLines(lines=[Content.assemble(line, gap) for line in framed])
 
 
-def _frame_line(content: Content, inner_width: int, border_style: str, fill_style: str) -> Content:
-    """Wrap *content* with vertical border bars and pad to *inner_width*.
-
-    *fill_style* may be empty (transparent interior; the screen bg shows
-    through) or a Textual style string. When non-empty, the pad cells
-    and the body inherit it as a base style so coloured pills + bold
-    names keep their fg but pick up the tile background.
-    """
-    left = Content.styled(_BORDER_V, border_style)
-    right = Content.styled(_BORDER_V, border_style)
+def _pad_line(content: Content, width: int, fill_style: str) -> Content:
+    """Right-pad *content* to *width* columns; tint the whole strip when filled."""
     rendered_width = content.cell_length
-    if rendered_width >= inner_width:
-        body = content
-    else:
-        pad_text = " " * (inner_width - rendered_width)
+    if rendered_width < width:
+        pad_text = " " * (width - rendered_width)
         pad = Content.styled(pad_text, fill_style) if fill_style else Content(pad_text)
-        body = Content.assemble(content, pad)
+        content = Content.assemble(content, pad)
     if fill_style:
-        body = body.stylize_before(fill_style)
-    return Content.assemble(left, body, right)
+        content = content.stylize_before(fill_style)
+    return content
 
 
 def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:

@@ -5587,14 +5587,22 @@ class TestModelGridCardRendering:
         # All-default-row specs produce the placeholder.
         assert str(_build_specs("--", "--", "--")) == "--"
 
-    def test_frame_line_truncation_keeps_content_when_already_full(self) -> None:
-        """Inner content at or above the available width keeps its body unchanged."""
+    def test_pad_line_keeps_content_when_already_full(self) -> None:
+        """Content at or above the available width returns unmodified body."""
         from textual.content import Content
 
-        from lilbee.cli.tui.widgets.model_grid import _BORDER_V, _frame_line
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
 
         content = Content("0123456789")
-        framed = _frame_line(content, 5, "$primary", "on $boost")
-        # Frame still wraps the body in vertical bars even when overflowed.
-        assert _BORDER_V in str(framed)
-        assert "0123456789" in str(framed)
+        # No fill, content >= width: return as-is.
+        assert _pad_line(content, 5, "") is content
+
+    def test_pad_line_pads_with_fill_when_short(self) -> None:
+        """Short content gets right-padded; the whole strip carries fill_style."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        out = _pad_line(Content("hi"), 6, "on $accent 30%")
+        # Padded to width 6.
+        assert "hi    " in str(out)
