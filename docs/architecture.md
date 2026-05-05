@@ -158,7 +158,9 @@ flowchart LR
     Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -->|flip shared abort flag| EW & RW & CW & VW
 ```
 
-Every byte across a pipe is a `(kind, payload)` tuple. Three patterns cover all traffic:
+Every byte across a pipe is a `(call_id, kind, payload)` tuple. The parent assigns a monotonic `call_id` per request; the worker echoes it on every response frame. The parent's reader silently discards any frame whose `call_id` does not match the current expected id, so leftover stream_chunk / result frames from a cancelled prior call cannot poison the next request. Control frames (`shutdown`, `ack`, `ping`, `pong`) use `call_id = 0`.
+
+Three patterns cover all traffic:
 
 ```mermaid
 sequenceDiagram
@@ -166,19 +168,20 @@ sequenceDiagram
     participant Worker as worker subprocess
 
     Note over Parent,Worker: Call / response (embed, rerank, vision)
-    Parent->>Worker: (embed, texts)
-    Worker-->>Parent: (result, vectors)
+    Parent->>Worker: (42, embed, texts)
+    Worker-->>Parent: (42, result, vectors)
 
-    Note over Parent,Worker: Streaming (chat)
-    Parent->>Worker: (chat, prompt)
-    loop one frame per token
-        Worker-->>Parent: (stream_chunk, token)
+    Note over Parent,Worker: Streaming (chat) — token batching
+    Parent->>Worker: (43, chat, prompt)
+    Worker-->>Parent: (43, stream_chunk, "first token")
+    loop batched: 16 tokens or 50ms whichever comes first
+        Worker-->>Parent: (43, stream_chunk, "batched tokens")
     end
-    Worker-->>Parent: (stream_end, None)
+    Worker-->>Parent: (43, stream_end, None)
 
-    Note over Parent,Worker: Liveness (background)
-    Parent->>Worker: (ping, None)
-    Worker-->>Parent: (pong, None)
+    Note over Parent,Worker: Liveness (dedicated thread)
+    Parent->>Worker: (0, ping, None)
+    Worker-->>Parent: (0, pong, None)
 ```
 
 `WorkerPool` (in `providers/worker/pool.py`) owns lifecycle. `Services` constructs it once at startup with a `default_spawner()` from `providers/worker/transport.py`. The pool talks to workers exclusively through the `WorkerChannel` and `WorkerSpawner` Protocols; the only concrete impl today is `transport_pipe.PipeChannel` / `PipeSpawner`, backed by `multiprocessing.Pipe`.
@@ -207,11 +210,17 @@ If `cfg.worker_pool_max_idle_s > 0`, every successful round-trip stamps the role
 
 ### Health pipe isolation
 
-Health pings travel on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream/shutdown. Pings cannot interleave with stream chunks by-construction; the parent reader on each pipe never sees frames meant for the other. The worker's main loop multiplexes the two via `multiprocessing.connection.wait`.
+Health pings travel on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream/shutdown. Pings cannot interleave with stream chunks by-construction; the parent reader on each pipe never sees frames meant for the other.
+
+The worker dedicates a daemon thread to the health pipe. The thread blocks in `health_conn.recv()`, answers `ping` with `pong`, and exits on `EOFError` when the parent closes the pipe at shutdown. This means a long-running data-frame handler (a chat stream that spends seconds inside `_handle_chat_streaming`, an embed batch chewing through a multi-thousand-vector payload) cannot starve the heartbeat, so the supervisor never declares a busy worker dead and force-terminates it.
 
 ### Cross-boundary cancel
 
 `Services.cancel_inference()` is the canonical entry point used by Ctrl+C and the chat-stream cancel action. It calls `accessor.cancel()` on every registered role, which sets the worker's shared `mp.Value` abort flag. The chat worker's llama-cpp `abort_callback` reads that flag at every token tick and unwinds inference.
+
+### Token batching
+
+Per-token `conn.send()` was the largest non-inference cost in the chat worker (9.14% of py-spy samples on a 10-minute streaming session, vs. ~1.5% spent in actual ggml decode + sample). `_handle_chat_streaming` now batches: the very first token flushes immediately so the user sees output without delay, and subsequent tokens accumulate in a buffer that flushes when it hits 16 chunks or 50 ms since the last flush, whichever comes first. The pipe sees roughly one syscall per batch instead of one per token. A `try/finally` flushes any buffered tail before the outer error handler emits an error frame, so the user still sees partial output before a mid-stream LLM exception.
 
 ### IPC discipline rules (pipe transport)
 
