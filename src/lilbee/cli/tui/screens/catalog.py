@@ -11,7 +11,7 @@ from typing import ClassVar
 from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.events import Click, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
@@ -200,7 +200,12 @@ class CatalogScreen(Screen[None]):
             yield GridListToggle()
             yield Static("", id="sort-label", shrink=True)
             yield Static("", id="catalog-loading-spinner")
+        # Wrap TabbedContent in a Container with strict 1fr / overflow:hidden
+        # so its inner TabPane / VerticalScroll cascade respects the screen
+        # height bound. Without this the catalog-tabs grew to its full
+        # content height and pushed the dock-bottom Footer off-screen.
         with (
+            Container(id="catalog-tabs-wrap"),
             TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
             TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
         ):

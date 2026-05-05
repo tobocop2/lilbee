@@ -1,5 +1,11 @@
 /* Catalog screen — grid and list views */
 
+#catalog-tabs-wrap {
+    height: 1fr;
+    min-height: 0;
+    overflow: hidden;
+}
+
 #catalog-tabs {
     height: 1fr;
     min-height: 0;
