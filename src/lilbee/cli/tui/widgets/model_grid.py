@@ -1,16 +1,8 @@
 """ModelGrid: single-render-surface grid of catalog cards.
 
-The widget owns a single rendering surface: ``render_line(y)`` paints
-one strip at a time so a fast scroll repaints visible cells rather than
-cycling the compositor through mount + reflow + repaint frames.
-
-Each card slot is composed by ``_render_card_strip(row, *, selected, width)``
-on demand; ``ModelCard`` stays in the codebase because the setup wizard
-still mounts it inside a ``GridSelect``.
-
-Each ``ModelGrid`` section sizes itself to its full content height (via
-``get_content_height``); the outer ``#catalog-grid`` ``VerticalScroll``
-handles scrolling across sections.
+Single render surface via ``render_line(y)``; one strip painted per
+visible row keeps fast scrolls cheap. Decoration lives in CSS via the
+``model-grid--cursor`` component class so themes own their own contrast.
 """
 
 from __future__ import annotations
@@ -40,19 +32,26 @@ from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 
 _CSS_FILE = Path(__file__).parent / "model_grid.tcss"
 
-# Card body is 4 visual lines (name / pills / specs / status) plus a 1-line
-# hint slot painted only when a local card is highlighted-but-not-installed.
-# We always pre-allocate the slot so highlight transitions don't reflow
-# neighbours.
-_CARD_HEIGHT = 5
-"""Visual lines of card content: name / pills / specs / status / hint."""
+_CARD_BODY_HEIGHT = 5
+"""Body lines emitted per card: name / pills / specs / status / hint."""
 
-_ROW_GUTTER = 1
+_BORDER_RESERVED_LINES = 2
+"""Top + bottom border slots; reserved on every card so layout stays stable."""
+
+_CARD_HEIGHT = _CARD_BODY_HEIGHT + _BORDER_RESERVED_LINES
+
+_ROW_GUTTER = 0
 _ROW_HEIGHT = _CARD_HEIGHT + _ROW_GUTTER
 _DEFAULT_COLUMNS = 4
-# Card body needs ~32 cells before pills wrap awkwardly.
 _CARD_MIN_WIDTH = 32
 _CARD_GUTTER = 1
+
+_BORDER_TOP_LEFT = "╭"
+_BORDER_TOP_RIGHT = "╮"
+_BORDER_BOTTOM_LEFT = "╰"
+_BORDER_BOTTOM_RIGHT = "╯"
+_BORDER_HORIZONTAL = "─"
+_BORDER_VERTICAL = "│"
 
 
 @dataclass
@@ -66,6 +65,8 @@ class ModelGrid(Widget, can_focus=True):
     """Single-render-surface grid of ``CatalogRow`` cards."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"model-grid--cursor"}
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "cursor_up", "Up", show=False),
@@ -145,11 +146,6 @@ class ModelGrid(Widget, can_focus=True):
         return container.width
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
-        # Recompute columns from the available width so the height stays
-        # consistent with what ``render_line`` will draw. With no row
-        # gutter, every row contributes exactly _ROW_HEIGHT lines, so
-        # the section needs the full N * _ROW_HEIGHT to keep the last
-        # row's bottom border visible.
         if not self._rows:
             return 0
         cols = self._columns_for_width(width)
@@ -175,6 +171,13 @@ class ModelGrid(Widget, can_focus=True):
         """Auto-highlight first card on focus so Tab navigation has visible feedback."""
         if self._rows and self.highlighted is None:
             self.highlighted = 0
+
+    def on_blur(self) -> None:
+        # Mirrors toad's GridSelect: when the user crosses into a sibling grid,
+        # this grid's cursor goes away entirely instead of lingering as a
+        # blurred ghost. Otherwise stacked catalog sections show two cursors
+        # simultaneously and the user can't tell which grid owns focus.
+        self.highlighted = None
 
     def action_cursor_up(self) -> None:
         if self.highlighted is None:
@@ -233,7 +236,6 @@ class ModelGrid(Widget, can_focus=True):
         row = y // _ROW_HEIGHT
         within_row = y - row * _ROW_HEIGHT
         if within_row >= _CARD_HEIGHT:
-            # Click landed in the gutter between rows.
             return None
         col_width = max(1, self.size.width // self._cards_per_row)
         col = min(self._cards_per_row - 1, x // col_width)
@@ -261,6 +263,7 @@ class ModelGrid(Widget, can_focus=True):
         if grid_row >= self._total_rows() or line_within >= _CARD_HEIGHT:
             return Strip.blank(self.size.width)
         col_width = max(1, self.size.width // max(1, self._cards_per_row))
+        cursor_style = self.get_visual_style("model-grid--cursor")
         segments: list[Content] = []
         for col in range(self._cards_per_row):
             index = grid_row * self._cards_per_row + col
@@ -269,7 +272,9 @@ class ModelGrid(Widget, can_focus=True):
                 continue
             row = self._rows[index]
             selected = index == self.highlighted
-            card = _render_card_strip(row, selected=selected, width=col_width)
+            card = _render_card_strip(
+                row, selected=selected, width=col_width, cursor_style=cursor_style
+            )
             segments.append(card.lines[line_within])
         joined = Content("").join(segments)
         return Strip(joined.render_segments(Style.null())).simplify()
@@ -287,36 +292,59 @@ def _truncate_name(name: str) -> str:
     return name[: _NAME_MAX_CHARS - 1].rstrip() + _ELLIPSIS
 
 
-def _render_card_strip(row: CatalogRow, *, selected: bool, width: int) -> _CardLines:
+def _render_card_strip(
+    row: CatalogRow, *, selected: bool, width: int, cursor_style: Style
+) -> _CardLines:
     """Return the ``_CARD_HEIGHT`` content lines that make up one card slot.
 
-    Borderless: only the focused card gets a tinted background; every
-    other card and the gaps between them stay transparent so the
-    catalog reads as a uniform grid of content without theme-clashing
-    borders or panel fills. Empty slots in partially-filled rows blend
-    into the screen background by construction.
+    Always emits ``_BORDER_RESERVED_LINES + _CARD_BODY_HEIGHT`` lines so the
+    layout stays identical regardless of focus. The focused card draws a round
+    border using ``cursor_style`` (resolved by CSS via the
+    ``model-grid--cursor`` component class). Unfocused cards render the same
+    slots as transparent spaces.
     """
     if isinstance(row, FrontierCatalogRow):
         body = _frontier_lines(row)
     else:
         body = _local_lines(row, selected=selected)
-    fill_style = "on $accent 30%" if selected else ""
-    inner_width = max(1, width - _CARD_GUTTER)
-    framed = [_pad_line(line, inner_width, fill_style) for line in body[:_CARD_HEIGHT]]
+
+    inner_width = max(3, width - _CARD_GUTTER)
+    body_width = inner_width - 2  # subtract the two side-border columns
     gap = Content(" " * _CARD_GUTTER) if _CARD_GUTTER else Content("")
+
+    body_padded = [_pad_line(line, body_width) for line in body[:_CARD_BODY_HEIGHT]]
+    while len(body_padded) < _CARD_BODY_HEIGHT:
+        body_padded.append(Content(" " * body_width))
+
+    if selected:
+        top = Content.styled(
+            _BORDER_TOP_LEFT + _BORDER_HORIZONTAL * body_width + _BORDER_TOP_RIGHT,
+            cursor_style,
+        )
+        bottom = Content.styled(
+            _BORDER_BOTTOM_LEFT + _BORDER_HORIZONTAL * body_width + _BORDER_BOTTOM_RIGHT,
+            cursor_style,
+        )
+        side = Content.styled(_BORDER_VERTICAL, cursor_style)
+        framed = [top]
+        framed.extend(Content.assemble(side, line, side) for line in body_padded)
+        framed.append(bottom)
+    else:
+        blank_full = Content(" " * inner_width)
+        blank_side = Content(" ")
+        framed = [blank_full]
+        framed.extend(Content.assemble(blank_side, line, blank_side) for line in body_padded)
+        framed.append(blank_full)
+
     return _CardLines(lines=[Content.assemble(line, gap) for line in framed])
 
 
-def _pad_line(content: Content, width: int, fill_style: str) -> Content:
-    """Right-pad *content* to *width* columns; tint the whole strip when filled."""
+def _pad_line(content: Content, width: int) -> Content:
+    """Right-pad *content* to *width* columns with plain spaces."""
     rendered_width = content.cell_length
-    if rendered_width < width:
-        pad_text = " " * (width - rendered_width)
-        pad = Content.styled(pad_text, fill_style) if fill_style else Content(pad_text)
-        content = Content.assemble(content, pad)
-    if fill_style:
-        content = content.stylize_before(fill_style)
-    return content
+    if rendered_width >= width:
+        return content
+    return Content.assemble(content, Content(" " * (width - rendered_width)))
 
 
 def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:

@@ -2579,6 +2579,8 @@ class TestCatalogPickBadge:
 
     async def test_featured_card_has_pick_label(self, _mock_resolve):
         """Featured catalog rows surface the 'pick' pill via _render_card_strip."""
+        from textual.style import Style as VisualStyle
+
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.model_grid import ModelGrid, _render_card_strip
 
@@ -2596,7 +2598,12 @@ class TestCatalogPickBadge:
                     if getattr(row, "featured", False)
                 ]
                 assert featured_rows, "expected at least one featured row in the catalog"
-                rendered = _render_card_strip(featured_rows[0], selected=False, width=40)
+                rendered = _render_card_strip(
+                    featured_rows[0],
+                    selected=False,
+                    width=40,
+                    cursor_style=VisualStyle(),
+                )
                 joined = "\n".join(str(line) for line in rendered.lines)
                 assert "pick" in joined
 

@@ -35,7 +35,7 @@
 
 ModelGrid {
     height: auto;
-    min-height: 6;
+    min-height: 7;
     border: none;
     background: transparent;
     padding: 0;
@@ -44,7 +44,7 @@ ModelGrid {
 
 ModelGrid:focus {
     border: none;
-    background: $surface 30%;
+    background: transparent;
 }
 
 #catalog-list {

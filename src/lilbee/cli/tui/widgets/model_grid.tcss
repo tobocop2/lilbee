@@ -1,8 +1,15 @@
 ModelGrid {
-    height: 1fr;
-    background: $background;
-}
+    height: auto;
+    background: transparent;
+    color: $foreground;
 
-ModelGrid:focus {
-    background: $surface 30%;
+    .model-grid--cursor {
+        color: $border-blurred;
+    }
+
+    &:focus {
+        .model-grid--cursor {
+            color: $primary;
+        }
+    }
 }

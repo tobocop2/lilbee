@@ -5502,19 +5502,29 @@ def _row_height_offset(grid_row: int) -> int:
     return grid_row * _ROW_HEIGHT
 
 
+def _null_cursor_style():
+    from textual.style import Style as VisualStyle
+
+    return VisualStyle()
+
+
 class TestModelGridCardRendering:
     """``_render_card_strip`` covers both row dataclasses and selection state."""
 
     def test_local_row_unselected_renders_full_height(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _render_card_strip
 
-        out = _render_card_strip(_vgrid_row("phi-3"), selected=False, width=40)
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=False, width=40, cursor_style=_null_cursor_style()
+        )
         assert len(out.lines) == _CARD_HEIGHT
 
     def test_local_row_selected_paints_install_hint(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _render_card_strip
 
-        out = _render_card_strip(_vgrid_row("phi-3"), selected=True, width=40)
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=True, width=40, cursor_style=_null_cursor_style()
+        )
         # The hint slot is the last line; rendered text contains the
         # SETUP_CARD_HINT copy when the local card is highlighted-but-not-installed.
         rendered = "\n".join(str(line) for line in out.lines)
@@ -5525,7 +5535,7 @@ class TestModelGridCardRendering:
 
         row = _vgrid_row("phi-3")
         row.installed = True
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, cursor_style=_null_cursor_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "installed" in rendered
 
@@ -5540,7 +5550,7 @@ class TestModelGridCardRendering:
             provider_id="openai",
             key_status=KeyStatus.READY,
         )
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, cursor_style=_null_cursor_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "OpenAI" in rendered
         assert "ready" in rendered
@@ -5556,7 +5566,7 @@ class TestModelGridCardRendering:
             provider_id="anthropic",
             key_status=KeyStatus.MISSING_KEY,
         )
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, cursor_style=_null_cursor_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "needs key" in rendered
 
@@ -5566,7 +5576,7 @@ class TestModelGridCardRendering:
 
         row = _vgrid_row("noisy")
         # _vgrid_row defaults sort_downloads=0, so this branch is hit by default.
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, cursor_style=_null_cursor_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "↓" not in rendered
 
@@ -5577,7 +5587,7 @@ class TestModelGridCardRendering:
         row = _vgrid_row("popular")
         row.sort_downloads = 12345
         row.downloads = "12K"
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, cursor_style=_null_cursor_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "↓ 12K" in rendered
 
@@ -5588,21 +5598,138 @@ class TestModelGridCardRendering:
         assert str(_build_specs("--", "--", "--")) == "--"
 
     def test_pad_line_keeps_content_when_already_full(self) -> None:
-        """Content at or above the available width returns unmodified body."""
+        """Content at the available width returns unmodified body."""
         from textual.content import Content
 
         from lilbee.cli.tui.widgets.model_grid import _pad_line
 
         content = Content("0123456789")
-        # No fill, content >= width: return as-is.
-        assert _pad_line(content, 5, "") is content
+        assert _pad_line(content, 5) is content
 
-    def test_pad_line_pads_with_fill_when_short(self) -> None:
-        """Short content gets right-padded; the whole strip carries fill_style."""
+    def test_pad_line_pads_with_spaces_when_short(self) -> None:
+        """Short content gets right-padded with plain spaces to the requested width."""
         from textual.content import Content
 
         from lilbee.cli.tui.widgets.model_grid import _pad_line
 
-        out = _pad_line(Content("hi"), 6, "on $accent 30%")
-        # Padded to width 6.
+        out = _pad_line(Content("hi"), 6)
         assert "hi    " in str(out)
+        assert out.cell_length == 6
+
+    def test_card_height_matches_body_line_count(self) -> None:
+        """``_CARD_HEIGHT`` must equal body line count + reserved border rows.
+
+        Locks the layout invariant: if someone adds a body line in
+        ``_local_lines`` without bumping ``_CARD_HEIGHT``, this test fails fast.
+        """
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_RESERVED_LINES,
+            _CARD_HEIGHT,
+            _local_lines,
+        )
+
+        body = _local_lines(_vgrid_row("phi-3"), selected=True)
+        assert len(body) + _BORDER_RESERVED_LINES == _CARD_HEIGHT
+
+    def test_unselected_card_emits_transparent_border_slots(self) -> None:
+        """Unfocused cards reserve the border rows but render them as plain spaces."""
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_HORIZONTAL,
+            _BORDER_TOP_LEFT,
+            _CARD_HEIGHT,
+            _render_card_strip,
+        )
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=False, width=40, cursor_style=_null_cursor_style()
+        )
+        assert len(out.lines) == _CARD_HEIGHT
+        rendered = [str(line) for line in out.lines]
+        assert _BORDER_TOP_LEFT not in rendered[0]
+        assert _BORDER_HORIZONTAL not in rendered[0]
+
+    def test_selected_card_emits_round_border_chars(self) -> None:
+        """Focused cards draw the round border with box-drawing characters."""
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_BOTTOM_LEFT,
+            _BORDER_BOTTOM_RIGHT,
+            _BORDER_HORIZONTAL,
+            _BORDER_TOP_LEFT,
+            _BORDER_TOP_RIGHT,
+            _BORDER_VERTICAL,
+            _render_card_strip,
+        )
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=True, width=40, cursor_style=_null_cursor_style()
+        )
+        rendered = [str(line) for line in out.lines]
+        assert _BORDER_TOP_LEFT in rendered[0]
+        assert _BORDER_TOP_RIGHT in rendered[0]
+        assert _BORDER_HORIZONTAL in rendered[0]
+        assert _BORDER_BOTTOM_LEFT in rendered[-1]
+        assert _BORDER_BOTTOM_RIGHT in rendered[-1]
+        # Body lines have side bars on both edges.
+        for body_line in rendered[1:-1]:
+            assert _BORDER_VERTICAL in body_line
+
+
+class TestModelGridCursorComponentStyle:
+    """The ``model-grid--cursor`` component class drives the focused-border tone."""
+
+    async def test_focused_and_blurred_cursor_styles_differ(self) -> None:
+        """Two grids on one screen: only the focused grid uses the bright cursor.
+
+        With border-only styling the focused grid resolves the cursor class to
+        ``$primary`` while the blurred grid resolves to ``$border-blurred``;
+        these tones must differ so the user can tell which grid owns focus.
+        """
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+
+        class _DualGridApp(App):
+            def compose(self) -> ComposeResult:
+                with VerticalScroll():
+                    yield grid_a
+                    yield grid_b
+
+        app = _DualGridApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            grid_a.focus()
+            await pilot.pause()
+            focused = grid_a.get_visual_style("model-grid--cursor")
+            blurred = grid_b.get_visual_style("model-grid--cursor")
+            assert focused.foreground != blurred.foreground
+
+
+class TestModelGridBlurClearsHighlight:
+    """Cross-grid focus discipline: blurred grid drops its highlight."""
+
+    def test_on_blur_clears_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.on_blur()
+        assert grid.highlighted is None
+
+
+class TestModelGridGetContentHeight:
+    """Catalog screen relies on the height formula to lay out stacked sections."""
+
+    def test_height_uses_row_height_per_grid_row(self) -> None:
+        """Content height = grid_rows * _ROW_HEIGHT (no trailing-gutter math)."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(6)]
+        grid = ModelGrid(rows)
+        size = mock.Mock(width=80, height=24)
+        # 6 items / 2 cols = 3 grid rows.
+        height = grid.get_content_height(size, size, 80)
+        assert height == 3 * _ROW_HEIGHT
