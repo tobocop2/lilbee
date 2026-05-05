@@ -44,7 +44,7 @@ from lilbee.providers.worker.transport import (
     RoleConfig,
     VisionRequest,
 )
-from lilbee.providers.worker.transport_pipe import WorkerError
+from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
 
 _EMBED_ROLE = "embed"
@@ -101,6 +101,19 @@ class LlamaCppProvider(LLMProvider):
         self._pool_lock = threading.Lock()
         self._registered_roles: set[str] = set()
 
+    @staticmethod
+    def _worker_error_message(role_label: str, exc: WorkerError) -> str:
+        """Render a user-facing message that names the role and points at the log.
+
+        ``WorkerCrashError`` already embeds the log path in its message; for
+        plain ``WorkerError`` (the worker reported an exception or returned
+        a malformed reply) the surfaced text is the worker's exception
+        repr so the user sees enough to file a bug report.
+        """
+        if isinstance(exc, WorkerCrashError):
+            return f"{role_label} worker exited unexpectedly. {exc}. Please try again."
+        return f"{role_label} worker reported an error: {exc}. Please try again."
+
     def _pool_runtime(self) -> PoolRuntime:
         """Return the Services-owned :class:`PoolRuntime`, starting it lazily."""
         runtime = get_services().pool_runtime
@@ -149,7 +162,7 @@ class LlamaCppProvider(LLMProvider):
                 )
         except WorkerError as exc:
             raise ProviderError(
-                f"Embedding worker crashed during request: {exc}. Please try again.",
+                self._worker_error_message("Embedding", exc),
                 provider="llama-cpp",
             ) from exc
         except TimeoutError as exc:
@@ -184,7 +197,7 @@ class LlamaCppProvider(LLMProvider):
                 )
         except WorkerError as exc:
             raise ProviderError(
-                f"Rerank worker crashed during request: {exc}. Please try again.",
+                self._worker_error_message("Rerank", exc),
                 provider="llama-cpp",
             ) from exc
         except TimeoutError as exc:
@@ -221,7 +234,7 @@ class LlamaCppProvider(LLMProvider):
                 )
         except WorkerError as exc:
             raise ProviderError(
-                f"Vision worker crashed during request: {exc}. Please try again.",
+                self._worker_error_message("Vision", exc),
                 provider="llama-cpp",
             ) from exc
         except TimeoutError as exc:
@@ -281,7 +294,7 @@ class LlamaCppProvider(LLMProvider):
                 )
         except WorkerError as exc:
             raise ProviderError(
-                f"Chat worker crashed during request: {exc}. Please try again.",
+                self._worker_error_message("Chat", exc),
                 provider="llama-cpp",
             ) from exc
         except TimeoutError as exc:
@@ -436,12 +449,10 @@ class _PoolChatStreamIterator:
             raise StopIteration from None
         except WorkerError as exc:
             # Mid-stream worker crashes propagate as ProviderError so the
-            # streaming path matches the non-streaming contract. Without
-            # this, callers see the raw RuntimeError-shaped WorkerError
-            # bypassing the "Chat worker crashed during request" wrapper.
+            # streaming path matches the non-streaming contract.
             self._exhausted = True
             raise ProviderError(
-                f"Chat worker crashed during request: {exc}. Please try again.",
+                LlamaCppProvider._worker_error_message("Chat", exc),
                 provider="llama-cpp",
             ) from exc
         except TimeoutError as exc:

@@ -2735,6 +2735,29 @@ class TestRoutingProviderRerank:
 
         assert _is_native_rerank_ref("") is False
 
+    def test_native_gguf_ref_routes_native_even_when_not_featured(self) -> None:
+        """Any 3+ slash, .gguf-ending ref is recognised as a native reranker.
+
+        Users install community GGUF rerankers that are not in FEATURED_ALL.
+        Without this fall-back, the route silently falls through to the SDK
+        provider and surfaces a misleading 'hosted rerank backend not
+        available' error to the user (bb-4zvk).
+        """
+        from lilbee.providers.routing_provider import _is_native_rerank_ref
+
+        assert (
+            _is_native_rerank_ref(
+                "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf"
+            )
+            is True
+        )
+
+    def test_non_gguf_two_part_ref_is_not_native(self) -> None:
+        """Two-part refs (e.g. ``cohere/rerank-v3``) still go to the SDK."""
+        from lilbee.providers.routing_provider import _is_native_rerank_ref
+
+        assert _is_native_rerank_ref("cohere/rerank-english-v3.0") is False
+
     def test_rerank_with_empty_model_raises_provider_error(self) -> None:
         """rerank() raises ProviderError when cfg.reranker_model is empty."""
         from lilbee.providers.base import ProviderError

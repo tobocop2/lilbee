@@ -17,6 +17,9 @@ from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
 log = logging.getLogger(__name__)
 
+_NATIVE_GGUF_REF_MIN_SLASHES = 2
+"""``<org>/<repo>/<filename>.gguf`` has at least two slashes."""
+
 
 class RoutingProvider(LLMProvider):
     """Dispatches calls based on the model ref prefix.
@@ -171,5 +174,21 @@ class RoutingProvider(LLMProvider):
 
 
 def _is_native_rerank_ref(model: str) -> bool:
-    """Return True if *model* resolves to a featured rerank catalog entry."""
-    return is_rerank_ref(model)
+    """Return True iff *model* should route to the native llama-cpp rerank worker.
+
+    Two acceptance paths:
+
+    1. The ref resolves to a featured rerank catalog entry (the historical
+       fast path).
+    2. The ref has the native HuggingFace GGUF shape
+       ``<org>/<repo>/<filename>.gguf`` (3+ slashes, ``.gguf`` suffix). This
+       lets users point ``cfg.reranker_model`` at any installed native GGUF
+       reranker instead of only the ones that ship in ``FEATURED_ALL``.
+       Non-GGUF refs without a known SDK prefix still raise downstream
+       through ``parse_model_ref``.
+    """
+    if not model:
+        return False
+    if is_rerank_ref(model):
+        return True
+    return model.lower().endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES

@@ -200,7 +200,7 @@ def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_p
         monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
     )
     try:
-        with pytest.raises(ProviderError, match="Embedding worker crashed"):
+        with pytest.raises(ProviderError, match=r"Embedding worker (exited|reported)"):
             provider.embed(["hello"])
     finally:
         provider.shutdown()
@@ -243,7 +243,7 @@ def test_embed_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp
     provider = LlamaCppProvider()
     _install_mock_services_with_provider(provider)
     try:
-        with pytest.raises(ProviderError, match="Embedding worker crashed"):
+        with pytest.raises(ProviderError, match=r"Embedding worker (exited|reported)"):
             provider.embed(["abc"])
     finally:
         provider.shutdown()
@@ -396,7 +396,7 @@ def test_rerank_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_
         monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
     )
     try:
-        with pytest.raises(ProviderError, match="Rerank worker crashed"):
+        with pytest.raises(ProviderError, match=r"Rerank worker (exited|reported)"):
             provider.rerank("q", ["abc", "de"])
     finally:
         provider.shutdown()
@@ -459,7 +459,7 @@ def test_rerank_pool_protocol_error_propagates_as_provider_error(monkeypatch, tm
     provider = LlamaCppProvider()
     _install_mock_services_with_provider(provider)
     try:
-        with pytest.raises(ProviderError, match="Rerank worker crashed"):
+        with pytest.raises(ProviderError, match=r"Rerank worker (exited|reported)"):
             provider.rerank("q", ["abc"])
     finally:
         provider.shutdown()
@@ -566,7 +566,9 @@ def test_chat_routes_through_pool_streaming_yields_chunks(chat_pool_provider) ->
         stream=True,
     )
     chunks = list(iterator)
-    assert chunks == ["hi", " ", "there"]
+    # Token batching may coalesce subsequent tokens after the first eager flush;
+    # only the joined text matters at the wire level.
+    assert "".join(chunks) == "hi there"
 
 
 def test_chat_streaming_close_is_idempotent(chat_pool_provider) -> None:
@@ -610,7 +612,7 @@ def test_chat_streaming_mid_stream_worker_error_raises_provider_error(
             raise WorkerError("RuntimeError", "worker died mid-stream", "")
 
     iterator._async_iter = _AnextWorkerError()
-    with pytest.raises(ProviderError, match="Chat worker crashed"):
+    with pytest.raises(ProviderError, match=r"Chat worker (exited|reported)"):
         next(iter(iterator))
     # Iterator must mark itself exhausted so subsequent next() returns
     # StopIteration instead of repeatedly raising the same crash error.
@@ -653,7 +655,7 @@ def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_pa
         monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
     )
     try:
-        with pytest.raises(ProviderError, match="Chat worker crashed"):
+        with pytest.raises(ProviderError, match=r"Chat worker (exited|reported)"):
             provider.chat([{"role": "user", "content": "hi"}])
     finally:
         provider.shutdown()
@@ -716,7 +718,7 @@ def test_chat_pool_protocol_error_propagates_as_provider_error(monkeypatch, tmp_
     provider = LlamaCppProvider()
     _install_mock_services_with_provider(provider)
     try:
-        with pytest.raises(ProviderError, match="Chat worker crashed"):
+        with pytest.raises(ProviderError, match=r"Chat worker (exited|reported)"):
             provider.chat([{"role": "user", "content": "hi"}])
     finally:
         provider.shutdown()
@@ -810,7 +812,7 @@ def test_vision_ocr_pool_worker_error_propagates_as_provider_error(monkeypatch, 
         monkeypatch, WorkerError("RuntimeError", "simulated pool failure", "")
     )
     try:
-        with pytest.raises(ProviderError, match="Vision worker crashed"):
+        with pytest.raises(ProviderError, match=r"Vision worker (exited|reported)"):
             provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
     finally:
         provider.shutdown()
@@ -873,7 +875,7 @@ def test_vision_ocr_pool_protocol_error_propagates_as_provider_error(monkeypatch
     provider = LlamaCppProvider()
     _install_mock_services_with_provider(provider)
     try:
-        with pytest.raises(ProviderError, match="Vision worker crashed"):
+        with pytest.raises(ProviderError, match=r"Vision worker (exited|reported)"):
             provider.vision_ocr(b"\x89PNG", "stub/vision", "p")
     finally:
         provider.shutdown()

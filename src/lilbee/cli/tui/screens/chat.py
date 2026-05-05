@@ -504,7 +504,7 @@ class ChatScreen(Screen[None]):
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
             _remove_copied_files(copied)
-            raise RuntimeError(msg.SYNC_SKIPPED_FILES.format(files=", ".join(sync_result.skipped)))
+            raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -1165,7 +1165,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self,
                 self.notify,
-                msg.SYNC_SKIPPED_FILES.format(files=", ".join(result.skipped)),
+                msg.sync_skipped_message(", ".join(result.skipped)),
                 severity="warning",
             )
 

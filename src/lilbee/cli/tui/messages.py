@@ -34,10 +34,30 @@ SETUP_CHROMIUM_DETAIL = "chromium: {done}/{total} MB"
 SETUP_CHROMIUM_DETAIL_UNKNOWN = "chromium: {done} MB"
 SETUP_CHROMIUM_CLI_PROGRESS = "  chromium: {pct}%"
 SYNC_FAILED_FILES = "Sync failed for {files}"
-SYNC_SKIPPED_FILES = (
+SYNC_SKIPPED_NO_VISION = (
     "Skipped (no text extracted): {files}. "
-    "Set vision_model in settings or check that the PDF is readable."
+    "Configure a vision_model in Settings to OCR scanned PDFs."
 )
+SYNC_SKIPPED_VISION_FAILED = (
+    "Skipped (vision OCR returned no text): {files}. "
+    "See ~/Library/Application Support/lilbee/logs/worker-vision.log "
+    "for the underlying error."
+)
+
+
+def sync_skipped_message(files: str) -> str:
+    """Pick the right skipped-files message based on whether vision_model is set.
+
+    When the user has no vision_model configured the actionable advice is
+    'go set one'; when one IS configured the OCR failed at runtime, so the
+    message points the user at the worker log instead of telling them to
+    do something they have already done.
+    """
+    if cfg.vision_model:
+        return SYNC_SKIPPED_VISION_FAILED.format(files=files)
+    return SYNC_SKIPPED_NO_VISION.format(files=files)
+
+
 CMD_DELETE_NO_DOCS = "No documents indexed"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
