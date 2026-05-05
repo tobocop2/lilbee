@@ -243,10 +243,16 @@ class ChatScreen(Screen[None]):
 
         dismiss()
         self.refresh_model_bar()
-        # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
-        # via [/] navigation needs an explicit focus restore.
+        # AUTO_FOCUS only fires once on initial mount. Re-entering the
+        # screen via view-nav needs an explicit focus restore. In INSERT
+        # mode we send focus to the chat input; in NORMAL mode we send
+        # focus to the chat log (the input is intentionally unfocusable
+        # so global bindings keep firing).
         with contextlib.suppress(Exception):
-            self.set_focus(self._chat_input)
+            if self._insert_mode:
+                self._enter_insert_mode()
+            else:
+                self._chat_log.focus()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
@@ -1052,7 +1058,10 @@ class ChatScreen(Screen[None]):
             self._cancel_inflight_stream()
             return
         if isinstance(self.focused, (Select, ModelPickerButton)):
-            self._chat_input.focus()
+            # Returning from a model picker should put us back in INSERT
+            # so the user can type their next prompt; routing through the
+            # helper makes sure can_focus is re-enabled.
+            self._enter_insert_mode()
             return
         self._insert_mode = False
         # Make the chat input unfocusable in NORMAL mode so Tab traversal
@@ -1178,8 +1187,11 @@ class ChatScreen(Screen[None]):
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
+        # Route through the helper so can_focus is re-enabled when this
+        # action fires from NORMAL mode; bare ``inp.focus()`` would
+        # silently no-op while the input is intentionally unfocusable.
+        self._enter_insert_mode()
         inp = self._chat_input
-        inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/"
             inp.action_end()

@@ -181,7 +181,7 @@ def _is_native_rerank_ref(model: str) -> bool:
     1. The ref resolves to a featured rerank catalog entry (the historical
        fast path).
     2. The ref has the native HuggingFace GGUF shape
-       ``<org>/<repo>/<filename>.gguf`` (3+ slashes, ``.gguf`` suffix). This
+       ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix). This
        lets users point ``cfg.reranker_model`` at any installed native GGUF
        reranker instead of only the ones that ship in ``FEATURED_ALL``.
        Non-GGUF refs without a known SDK prefix still raise downstream

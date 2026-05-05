@@ -27,8 +27,12 @@ limit. Sized so each flush write batches ~16 syscalls into 1.
 _STREAM_BATCH_MAX_INTERVAL_S = 0.05
 """Flush a streaming-chat batch at least this often (50 ms).
 
-Caps user-perceived latency for a slow generator that produces fewer
-than ``_STREAM_BATCH_MAX_CHUNKS`` tokens per interval.
+The check fires only when the *next* token arrives (we never wake on a
+timer), so a generator that stalls after token N keeps token N+1's
+buffer parked until the next token lands. The eager-first-flush at
+the top of :func:`_handle_chat_streaming` guarantees the user sees
+something within the very first token, so the parked-tail case only
+delays subsequent batches, not initial output.
 """
 
 
@@ -107,6 +111,11 @@ def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopSt
     Tokens are accumulated and flushed every ``_STREAM_BATCH_MAX_CHUNKS``
     or ``_STREAM_BATCH_MAX_INTERVAL_S``, whichever comes first, so the
     pipe sees ~one syscall per batch instead of one per token.
+
+    Cancel path: ``break`` exits the for loop normally, control falls
+    through to ``completed_cleanly = True``, the finally clause flushes
+    any buffered tail, and ``stream_end`` fires. The parent's
+    ``stream()`` reader then returns cleanly without a hang.
     """
     abort_flag = state.session._abort_flag
     buffer: list[str] = []

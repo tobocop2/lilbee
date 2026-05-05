@@ -5508,6 +5508,36 @@ async def test_chat_enter_returns_to_insert_mode():
         assert app.screen._insert_mode is True
 
 
+async def test_chat_focus_commands_re_enables_input_focus_from_normal_mode():
+    """Pressing the / shortcut from NORMAL mode must focus the input.
+
+    Regression for a follow-up to bb-aluu: with the chat input
+    intentionally ``can_focus = False`` while in NORMAL mode, the
+    ``action_focus_commands`` helper (bound to ``/`` and the command
+    palette shortcut) must route through ``_enter_insert_mode`` to
+    re-enable focusability and enter INSERT cleanly.
+    """
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input", ChatInput)
+
+        # Drop into NORMAL mode (input becomes unfocusable).
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+        assert inp.can_focus is False
+
+        # Trigger the slash-prefill shortcut.
+        app.screen.action_focus_commands()
+        await pilot.pause()
+        assert app.screen._insert_mode is True
+        assert inp.can_focus is True
+        assert inp.has_focus
+        assert inp.value.startswith("/")
+
+
 async def test_chat_focus_restored_to_input_in_normal_mode_bounces_to_log():
     """Programmatic focus restore (e.g. modal pop) must not silently flip to INSERT.
 
