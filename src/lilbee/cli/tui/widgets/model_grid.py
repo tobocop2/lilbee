@@ -270,38 +270,54 @@ class ModelGrid(Widget, can_focus=True):
         return Strip(joined.render_segments(Style.null())).simplify()
 
 
+_NAME_MAX_CHARS = 28
+"""Cap displayed model names so long refs don't blow up the grid layout."""
+
+_ELLIPSIS = "…"
+
+
+def _truncate_name(name: str) -> str:
+    if len(name) <= _NAME_MAX_CHARS:
+        return name
+    return name[: _NAME_MAX_CHARS - 1].rstrip() + _ELLIPSIS
+
+
 def _render_card_strip(row: CatalogRow, *, selected: bool, width: int) -> _CardLines:
     """Return the ``_CARD_HEIGHT`` content lines that make up one card slot.
 
     Borrows the styling decisions from ``model_card.py`` so the grid view
     looks identical to the wizard cards even though the grid never mounts
-    a ``ModelCard`` widget.
+    a ``ModelCard`` widget. Selected cards fill with a tinted accent
+    background so the focused tile separates clearly from the screen.
     """
     if isinstance(row, FrontierCatalogRow):
         body = _frontier_lines(row)
     else:
         body = _local_lines(row, selected=selected)
-    border_style = "$primary" if selected else "$surface-lighten-2"
+    fill_style = "on $accent 20%" if selected else "on $surface-lighten-1"
     inner_width = max(1, width - _CARD_GUTTER)
-    framed = [_pad_line(line, inner_width, border_style) for line in body[:_CARD_HEIGHT]]
+    framed = [_pad_line(line, inner_width, fill_style) for line in body[:_CARD_HEIGHT]]
     gap = Content(" " * _CARD_GUTTER) if _CARD_GUTTER else Content("")
     return _CardLines(lines=[Content.assemble(line, gap) for line in framed])
 
 
-def _pad_line(content: Content, width: int, border_style: str) -> Content:
-    """Right-pad *content* to *width* columns using the card border style."""
+def _pad_line(content: Content, width: int, fill_style: str) -> Content:
+    """Right-pad *content* to *width* columns and tint the whole strip."""
     rendered_width = content.cell_length
-    if rendered_width >= width:
-        return content
-    pad = Content.styled(" " * (width - rendered_width), border_style)
-    return Content.assemble(content, pad)
+    if rendered_width < width:
+        pad = Content.styled(" " * (width - rendered_width), fill_style)
+        content = Content.assemble(content, pad)
+    # Apply the fill background underneath any per-segment styles so
+    # selected cards read as a contiguous coloured tile, not an empty
+    # frame around colored text.
+    return content.stylize_before(fill_style)
 
 
 def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     from lilbee.cli.tui import messages as msg
 
     bg = TASK_COLORS.get(row.task, "$primary")
-    name = Content.styled(row.name, "bold")
+    name = Content.styled(_truncate_name(row.name), "bold")
     pills: list[Content] = []
     if row.featured:
         pills.append(pill("pick", "$warning", "$text"))
@@ -321,7 +337,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
 
 
 def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
-    name = Content.styled(row.name, "bold")
+    name = Content.styled(_truncate_name(row.name), "bold")
     pill_line = Content(" ").join(
         [pill(row.provider, "$accent", "$text"), _key_status_pill(row.key_status)]
     )

@@ -168,24 +168,41 @@ SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
 SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
 SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
 WIKI_EMPTY_STATE = "No wiki pages found"
-WIKI_EMPTY_NEEDS_SPACY = (
-    "Wiki entity extraction needs spaCy. Install it then re-ingest documents:\n"
-    "  uv pip install spacy\n"
-    "  python -m spacy download en_core_web_sm"
+WIKI_EMPTY_NEEDS_SPACY_LEAF = "spaCy not installed (see right pane)"
+WIKI_EMPTY_NEEDS_SPACY_DETAIL = (
+    "## Wiki entity extraction needs spaCy\n\n"
+    "Install it then re-ingest documents:\n\n"
+    "```sh\n"
+    "uv pip install spacy\n"
+    "python -m spacy download en_core_web_sm\n"
+    "```"
 )
 
 
-def wiki_empty_message() -> str:
-    """Return the empty-wiki message, with install hint when spaCy is missing."""
+def wiki_empty_state_leaf() -> str:
+    """Single-line sidebar tree leaf for the empty-wiki state."""
+    if not _spacy_available():
+        return WIKI_EMPTY_NEEDS_SPACY_LEAF
+    return WIKI_EMPTY_STATE
+
+
+def wiki_empty_state_detail() -> str:
+    """Right-pane markdown body for the empty-wiki state."""
+    if not _spacy_available():
+        return WIKI_EMPTY_NEEDS_SPACY_DETAIL
+    return WIKI_NO_CONTENT
+
+
+def _spacy_available() -> bool:
     try:
         from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
 
         load_spacy_pipeline()
     except (ImportError, OSError):
-        return WIKI_EMPTY_NEEDS_SPACY
+        return False
     except Exception:
-        return WIKI_EMPTY_STATE
-    return WIKI_EMPTY_STATE
+        return True
+    return True
 
 
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."

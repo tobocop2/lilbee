@@ -342,12 +342,13 @@ class SettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
-        # Tab walks every focusable on the screen (reset-all button,
-        # the group Tabs strip, then editors inside the active
-        # TabPane). Use ←/→ to switch tabs while focus is on the strip.
+        # Tab walks every focusable on the screen (group Tabs strip,
+        # then editors inside the active TabPane). Use ←/→ to switch
+        # tabs while focus is on the strip.
         Binding("tab", "app.focus_next", "Next field", show=True),
         Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
-        Binding("ctrl+r", "reset_focused", "Reset", show=False),
+        Binding("ctrl+r", "reset_focused", "Reset field", show=False),
+        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -376,12 +377,6 @@ class SettingsScreen(Screen[None]):
             yield ViewTabs()
         with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
             yield from self._compose_group_tabs()
-        with Horizontal(id="settings-bottom-row"):
-            yield Button(
-                msg.SETTINGS_RESET_ALL_LABEL,
-                id="reset-all-defaults",
-                classes="reset-all-button",
-            )
         with BottomBars():
             yield TaskBar()
             yield Footer()
@@ -724,9 +719,8 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh model picker label for %s", key, exc_info=True)
 
-    @on(Button.Pressed, "#reset-all-defaults")
-    def _on_reset_all_pressed(self) -> None:
-        """Open a destructive-confirm dialog before resetting every writable field."""
+    def action_reset_all(self) -> None:
+        """Bound to Ctrl+Shift+R; opens the destructive-confirm dialog."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         self.app.push_screen(

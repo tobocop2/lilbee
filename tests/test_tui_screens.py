@@ -1250,15 +1250,14 @@ async def test_ctrl_r_with_no_focus_is_noop():
 
 async def test_ctrl_r_on_non_row_focus_is_noop():
     """action_reset_focused ignores focus that isn't inside a setting row."""
-    from textual.widgets import Button
-
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        screen.query_one("#reset-all-defaults", Button).focus()
+        # Focus a non-row widget (the toolbar / view tabs strip).
+        await pilot.press("tab")
         await pilot.pause()
         with patch.object(screen, "_reset_to_default") as mock_reset:
             screen.action_reset_focused()
@@ -1485,21 +1484,26 @@ async def test_reset_list_default_joins_newlines():
             mock_persist.assert_called_once_with("crawl_exclude_patterns", defn, expected)
 
 
-async def test_reset_all_button_mounts_in_bottom_row():
-    """The Reset-all button renders below the settings tabs, not above them.
+async def test_reset_all_uses_footer_binding_not_button():
+    """Reset-all is now a Ctrl+Shift+R footer binding, not a button widget.
 
-    Moved out of the eye-line above the category tabs (where it was the
-    most-prominent control on the page despite being the most destructive
-    action) into a bottom row so the user has to deliberately reach it.
+    Per user feedback the button was awkwardly placed; replaced with a
+    keyboard binding shown in the Footer so the destructive action is
+    deliberate (modal confirms before mutating cfg).
     """
     from textual.widgets import Button
 
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        button = app.screen.query_one("#reset-all-defaults", Button)
-        assert button is not None
-        bottom_row = app.screen.query_one("#settings-bottom-row")
-        assert button in list(bottom_row.query(Button))
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        # The button widget must be gone.
+        assert not list(app.screen.query("#reset-all-defaults").results(Button))
+        # The footer-visible binding must be present.
+        names = [b.action for b in screen.BINDINGS]  # type: ignore[attr-defined]
+        assert "reset_all" in names
 
 
 async def test_reset_all_cancel_does_nothing():
@@ -1679,8 +1683,8 @@ async def test_publish_batch_signals_on_lilbee_app():
         assert mock_pub.call_count == 2
 
 
-async def test_reset_all_button_press_opens_confirm_dialog():
-    """Pressing Reset-all pushes the ConfirmDialog screen before mutating state."""
+async def test_reset_all_action_opens_confirm_dialog():
+    """Triggering action_reset_all (Ctrl+Shift+R) pushes the ConfirmDialog."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
@@ -1689,7 +1693,7 @@ async def test_reset_all_button_press_opens_confirm_dialog():
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
         with patch.object(screen.app, "push_screen") as mock_push:
-            screen._on_reset_all_pressed()
+            screen.action_reset_all()
         mock_push.assert_called_once()
         pushed_screen = mock_push.call_args.args[0]
         assert isinstance(pushed_screen, ConfirmDialog)
@@ -6306,9 +6310,10 @@ class TestWikiScreenEmptyState:
 
             tree = app.screen.query_one("#wiki-page-list", Tree)
             labels = [str(c.label) for c in tree.root.children]
-            # When spaCy is missing, the empty-state surfaces the install hint
-            # instead of the bare "no pages found" string. Either is correct.
-            expected = (msg.WIKI_EMPTY_STATE, msg.WIKI_EMPTY_NEEDS_SPACY.split("\n", 1)[0])
+            # When spaCy is missing, the leaf surfaces a single-line spaCy
+            # hint and the right pane carries the install instructions.
+            # Either bare empty-state or the spaCy hint is acceptable.
+            expected = (msg.WIKI_EMPTY_STATE, msg.WIKI_EMPTY_NEEDS_SPACY_LEAF)
             assert any(any(needle in label for needle in expected) for label in labels)
 
     async def test_shows_empty_when_no_pages(self, tmp_path):

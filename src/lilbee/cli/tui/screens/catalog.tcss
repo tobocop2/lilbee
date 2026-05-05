@@ -87,17 +87,7 @@ ModelGrid:focus {
 CatalogScreen.-grid-view #catalog-list { display: none; }
 CatalogScreen.-grid-view #sort-label { display: none; }
 CatalogScreen.-grid-view #model-detail { display: none; }
-CatalogScreen.-grid-view #catalog-list-footer { display: none; }
 CatalogScreen.-list-view #catalog-grid { display: none; }
-CatalogScreen.-list-view #catalog-list-footer { display: block; }
-
-#catalog-list-footer {
-    height: auto;
-    padding: 0 2;
-    margin: 0 2;
-    text-align: center;
-    color: $text-muted;
-}
 
 GridSelect {
     height: auto;

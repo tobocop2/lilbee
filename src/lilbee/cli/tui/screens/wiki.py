@@ -149,7 +149,7 @@ class WikiScreen(Screen[None]):
         self._page_slugs = []
 
         if not cfg.wiki:
-            tree.root.add_leaf(msg.wiki_empty_message())
+            tree.root.add_leaf(msg.wiki_empty_state_leaf())
             self._show_placeholder()
             return
 
@@ -165,7 +165,7 @@ class WikiScreen(Screen[None]):
             all_pages = [p for p in all_pages if needle in p.title.lower()]
 
         if not all_pages:
-            tree.root.add_leaf(msg.wiki_empty_message())
+            tree.root.add_leaf(msg.wiki_empty_state_leaf())
             self._show_placeholder()
             return
 
@@ -228,7 +228,7 @@ class WikiScreen(Screen[None]):
         """Show the no-content placeholder in the main area."""
         self.query_one("#wiki-breadcrumb", Static).update("")
         self.query_one("#wiki-page-header", Static).update("")
-        self.query_one("#wiki-content", Markdown).update(msg.WIKI_NO_CONTENT)
+        self.query_one("#wiki-content", Markdown).update(msg.wiki_empty_state_detail())
 
     @on(Tree.NodeSelected, "#wiki-page-list")
     def _on_node_selected(self, event: Tree.NodeSelected[str | None]) -> None:

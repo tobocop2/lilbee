@@ -1,23 +1,4 @@
 SettingsScreen {
-    #settings-bottom-row {
-        height: auto;
-        margin: 0 1;
-        padding: 0 1;
-        align: right middle;
-        background: $surface;
-    }
-
-    .reset-all-button {
-        width: auto;
-        color: $text-muted;
-        background: $boost;
-        border: tall $surface-lighten-2;
-    }
-
-    .reset-all-button:hover {
-        color: $error;
-        border: tall $error;
-    }
 
     #settings-scroll {
         height: 1fr;
