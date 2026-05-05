@@ -5076,7 +5076,7 @@ class TestModelGridOnClick:
 
     def test_click_below_grid_rows_is_ignored(self) -> None:
         """Clicks past the last data row land outside the grid and do nothing."""
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid, _ROW_HEIGHT
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
 
         rows = [_vgrid_row(f"m{i}") for i in range(2)]  # one row of 2 cards
         grid = ModelGrid(rows)
