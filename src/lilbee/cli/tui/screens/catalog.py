@@ -951,6 +951,11 @@ class CatalogScreen(Screen[None]):
         """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
 
+    @on(ModelGrid.Highlighted)
+    def _on_grid_highlighted(self, _event: ModelGrid.Highlighted) -> None:
+        """Run keyboard-driven prefetch on every grid cursor move."""
+        self._maybe_prefetch_on_grid_nav()
+
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
@@ -1358,6 +1363,34 @@ class CatalogScreen(Screen[None]):
         if idx is None:
             return
         if idx >= self._list_widget.option_count - _HF_LOAD_MORE_TRIGGER:
+            self._load_more()
+
+    def _maybe_prefetch_on_grid_nav(self) -> None:
+        """Fire ``_load_more`` when the keyboard cursor lands within the last
+        rows of the catalog. Mouse wheel triggers via ``_on_grid_scrolled`` at
+        the 85 % scroll threshold, but cell-by-cell keyboard nav advances
+        scroll_y too gradually to ever cross that threshold; this check
+        guarantees keyboard reaches the same prefetch trigger.
+        """
+        if not self._grid_view or not self._hf_has_more or self._loading_more:
+            return
+        grids = list(self._grid_container.query(ModelGrid))
+        if not grids:
+            return
+        focused = self._focused_grid()
+        if not isinstance(focused, ModelGrid) or focused.highlighted is None:
+            return
+        # Absolute cursor position = cards in earlier grids + cursor in this grid.
+        try:
+            grid_index = grids.index(focused)
+        except ValueError:
+            return
+        cards_before = sum(len(g.rows) for g in grids[:grid_index])
+        absolute = cards_before + focused.highlighted
+        total = sum(len(g.rows) for g in grids)
+        if total <= 0:
+            return
+        if absolute >= total - _HF_LOAD_MORE_TRIGGER:
             self._load_more()
 
     _SCROLL_PREFETCH_RATIO = 0.85

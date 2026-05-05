@@ -107,6 +107,16 @@ class ModelGrid(Widget, can_focus=True):
     class LeaveDown(Message):
         grid: ModelGrid
 
+    @dataclass
+    class Highlighted(Message):
+        """Posted on every cursor move so the catalog can run keyboard-driven
+        prefetch (mouse wheel triggers via the scroll watcher; cell-by-cell
+        keyboard scrolling never crosses the 85 % threshold by itself).
+        """
+
+        grid: ModelGrid
+        index: int
+
     def __init__(
         self,
         rows: list[CatalogRow] | None = None,
@@ -163,17 +173,18 @@ class ModelGrid(Widget, can_focus=True):
         return rows * _ROW_HEIGHT
 
     def watch_highlighted(self, _old: int | None, new: int | None) -> None:
-        """Repaint and scroll the highlighted cell into view.
+        """Repaint, scroll the cell into view, post Highlighted.
 
         ModelGrid itself has ``height: auto`` so it isn't scrollable; the
         outer ``#catalog-grid`` VerticalScroll is. We translate the cell's
         local offset to the parent's doc coords (using ``virtual_region``)
-        and ask the parent to scroll. That side effect also wakes the
-        catalog screen's pagination watcher on ``scroll_y``.
+        and ask the parent to scroll. The Highlighted message lets the
+        catalog screen run keyboard-driven prefetch on every cursor move.
         """
         self.refresh()
         if new is None or self._cards_per_row <= 0 or self.size.width <= 0:
             return
+        self.post_message(self.Highlighted(self, new))
         parent = self.parent
         if not isinstance(parent, Widget):
             return
