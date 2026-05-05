@@ -107,8 +107,7 @@ class TestChatFlow:
             # instead of synthesizing the answer. The integration concern here
             # is that the TUI streams a real RAG response end to end; factual
             # accuracy of the LLM is covered by ``test_ask_answer_references_facts``
-            # in test_rag_integration.py, which is gated on
-            # ``skip_if_small_chat_model``.
+            # in test_rag_integration.py.
             reply_lower = assistant_reply.lower()
             assert any(
                 term in reply_lower
@@ -185,6 +184,8 @@ class TestStatusScreen:
 
     async def test_status_shows_real_stats(self, rag_pipeline) -> None:
         """Status screen displays real document names and chunk counts."""
+        from textual.css.query import NoMatches
+
         from lilbee.cli.tui.screens.status import StatusScreen
 
         class _StatusApp(App[None]):
@@ -198,9 +199,22 @@ class TestStatusScreen:
 
         app = _StatusApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            table = app.screen.query_one("#docs-table", DataTable)
-            row_count = table.row_count
+            # StatusScreen mounts the docs table via call_after_refresh and
+            # then populates it from a thread worker. On Windows the worker
+            # callback can land several pilot ticks after mount, so poll
+            # until the Loading placeholder is replaced by real rows.
+            table = None
+            row_count = 0
+            for _ in range(60):
+                await pilot.pause()
+                try:
+                    table = app.screen.query_one("#docs-table", DataTable)
+                except NoMatches:
+                    continue
+                row_count = table.row_count
+                if row_count >= 9:
+                    break
+            assert table is not None, "docs-table never mounted"
             assert row_count >= 9, f"Expected >= 9 document rows, got {row_count}"
 
             rows = [table.get_row_at(i) for i in range(row_count)]

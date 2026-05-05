@@ -1,15 +1,4 @@
-"""Per-page event emission and result-translation helpers for the crawl runner.
-
-The runner streams ``FetchedPage`` objects from the backend; this module
-turns each page into a ``CrawlResult``, fires ``CRAWL_PAGE`` progress
-events, calls back the optional per-page flush hook, and classifies
-post-cancel teardown errors so they don't masquerade as failures.
-
-No backend-specific knowledge: ``crawl4ai`` lives only in
-:mod:`lilbee.crawler.crawl4ai_fetcher`. These helpers consume the
-backend-neutral types in :mod:`lilbee.crawler.models` and the progress
-shapes in :mod:`lilbee.runtime.progress`.
-"""
+"""Per-page event emission, result translation, and cancel-teardown classification."""
 
 from __future__ import annotations
 

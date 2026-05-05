@@ -34,6 +34,22 @@ def _frontier(
     )
 
 
+async def _wait_for_active_tab(pilot, screen, expected: str, timeout_iters: int = 20) -> None:
+    """Pace until ``CatalogScreen._active_tab_id()`` reports *expected*.
+
+    The bare ``tabs.active = "frontier"; await pilot.pause()`` pattern races
+    on Windows: the assignment dispatches via a Textual message and a single
+    pause does not always flush before the next read. Poll instead.
+    """
+    import asyncio
+
+    for _ in range(timeout_iters):
+        if screen._active_tab_id() == expected:
+            return
+        await pilot.pause()
+        await asyncio.sleep(0.05)
+
+
 def _local(name: str, *, installed: bool = False, featured: bool = False) -> LocalCatalogRow:
     return LocalCatalogRow(
         name=name,
@@ -135,7 +151,7 @@ class TestFrontierTabBehavior:
             screen._sync_frontier_tab()
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await pilot.pause()
+            await _wait_for_active_tab(pilot, screen, "frontier")
             from unittest import mock
 
             with mock.patch.object(screen, "_populate_frontier_list") as populate:
@@ -159,7 +175,7 @@ class TestFrontierTabBehavior:
             screen._sync_frontier_tab()
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await pilot.pause()
+            await _wait_for_active_tab(pilot, screen, "frontier")
             grid_before = screen._grid_view
             screen.action_toggle_view()
             assert screen._grid_view is grid_before
@@ -181,7 +197,7 @@ class TestFrontierTabBehavior:
             screen._sync_frontier_tab()
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await pilot.pause()
+            await _wait_for_active_tab(pilot, screen, "frontier")
             sort_before = screen._sort_column
             screen.action_cycle_sort()
             assert screen._sort_column == sort_before
@@ -206,8 +222,8 @@ class TestFrontierTabBehavior:
             screen._sync_frontier_tab()
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
+            await _wait_for_active_tab(pilot, screen, "frontier")
             screen._update_sort_label()
-            await pilot.pause()
             text = str(screen.query_one("#sort-label", Static).render())
             assert "2" in text  # 2 cloud models
             assert "providers" in text
@@ -236,7 +252,7 @@ class TestFrontierTabBehavior:
             screen._sync_frontier_tab()
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await pilot.pause()
+            await _wait_for_active_tab(pilot, screen, "frontier")
             from unittest import mock
 
             with mock.patch.object(screen, "_load_more") as mock_load:

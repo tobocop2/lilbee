@@ -1,0 +1,13 @@
+GridListToggle {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    margin: 0 1 0 1;
+    background: transparent;
+    color: $text-muted;
+}
+
+GridListToggle:focus {
+    background: $surface 30%;
+    text-style: bold;
+}

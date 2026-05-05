@@ -3,9 +3,9 @@ ConfirmDialog {
 }
 
 ConfirmDialog > Vertical {
-    width: 50;
+    width: 60;
     height: auto;
-    max-height: 12;
+    max-height: 14;
     border: thick $primary;
     background: $surface;
     padding: 1 2;
@@ -16,19 +16,53 @@ ConfirmDialog #confirm-title {
     width: 100%;
     content-align: center middle;
     margin-bottom: 1;
+    color: $text;
 }
 
 ConfirmDialog #confirm-message {
     width: 100%;
     content-align: center middle;
     margin-bottom: 1;
+    color: $text;
 }
 
 ConfirmDialog Center {
     width: 100%;
     height: auto;
+    margin-top: 1;
 }
 
-ConfirmDialog Button {
+ConfirmDialog #confirm-buttons {
+    width: auto;
+    height: 1;
+}
+
+ConfirmDialog .confirm-pill {
+    width: auto;
+    height: 1;
+    padding: 0 2;
     margin: 0 1;
+    background: $boost;
+    color: $text;
+    text-style: bold;
+    content-align: center middle;
+}
+
+ConfirmDialog #confirm-yes {
+    background: $primary 20%;
+    color: $text;
+}
+
+ConfirmDialog #confirm-yes:focus,
+ConfirmDialog #confirm-yes:hover {
+    background: $primary 40%;
+    color: $text;
+    text-style: bold;
+}
+
+ConfirmDialog #confirm-no:focus,
+ConfirmDialog #confirm-no:hover {
+    background: $boost;
+    color: $text;
+    text-style: bold;
 }

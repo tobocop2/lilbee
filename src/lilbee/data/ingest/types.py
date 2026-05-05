@@ -62,6 +62,7 @@ class SyncResult(BaseModel):
     removed: list[str] = []
     unchanged: int = 0
     failed: list[str] = []
+    skipped: list[str] = []
 
     def __str__(self) -> str:
         lines = [
@@ -69,8 +70,11 @@ class SyncResult(BaseModel):
             f"Updated: {len(self.updated)}",
             f"Removed: {len(self.removed)}",
             f"Unchanged: {self.unchanged}",
+            f"Skipped: {len(self.skipped)}",
             f"Failed: {len(self.failed)}",
         ]
+        for f in self.skipped:
+            lines.append(f"  [yellow]{f}[/yellow]")
         for f in self.failed:
             lines.append(f"  [red]{f}[/red]")
         return "\n".join(lines)
@@ -79,7 +83,7 @@ class SyncResult(BaseModel):
         return (
             f"SyncResult(added={len(self.added)}, updated={len(self.updated)}, "
             f"removed={len(self.removed)}, unchanged={self.unchanged}, "
-            f"failed={len(self.failed)})"
+            f"skipped={len(self.skipped)}, failed={len(self.failed)})"
         )
 
     def __rich__(self) -> str:

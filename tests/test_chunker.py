@@ -329,6 +329,74 @@ class Greeter:
             assert _ensure_language("python") is True
             has.assert_called_once_with("python")
 
+    def test_ensure_language_runs_install_when_not_loaded(self):
+        """Cover the init()-then-recheck branch deterministically; without this,
+        coverage of that line drifts whenever the tree-sitter language pack
+        ships pre-installed for a given Python version."""
+        from unittest.mock import patch
+
+        from lilbee.data.code_chunker import _ensure_language
+
+        with (
+            patch("lilbee.data.code_chunker.has_language", side_effect=[False, True]) as has,
+            patch("lilbee.data.code_chunker.init") as init_mock,
+        ):
+            assert _ensure_language("python") is True
+            assert has.call_count == 2
+            init_mock.assert_called_once_with({"languages": ["python"]})
+
+    def test_chunk_code_empty_source_returns_empty(self):
+        """Empty (whitespace-only) source short-circuits before tree-sitter."""
+        from lilbee.data.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("\n   \n")
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            assert chunk_code(path) == []
+        finally:
+            path.unlink()
+
+    def test_chunk_code_emits_symbol_chunks(self):
+        """Cover the structured-chunk emission path when _extract_symbols
+        returns at least one symbol. Mocked so the test is independent of
+        whether tree-sitter actually parses on this CI host."""
+        from unittest.mock import patch
+
+        from lilbee.data.code_chunker import SymbolInfo, chunk_code
+
+        symbol = SymbolInfo(
+            name="hello",
+            kind="function",
+            line_start=1,
+            line_end=3,
+            text="def hello():\n    return 1\n",
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("def hello():\n    return 1\n")
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with (
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value={}),
+                patch("lilbee.data.code_chunker._extract_symbols", return_value=[symbol]),
+            ):
+                chunks = chunk_code(path)
+        finally:
+            path.unlink()
+
+        assert len(chunks) == 1
+        first = chunks[0]
+        assert "function: hello" in first.chunk
+        assert first.line_start == 1
+        assert first.line_end == 3
+        assert first.chunk_index == 0
+
 
 class TestHeadingContextNoDuplicate:
     def test_heading_context_no_duplicate(self):

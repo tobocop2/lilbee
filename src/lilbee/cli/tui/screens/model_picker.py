@@ -27,7 +27,18 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 
-PickerScope = Literal["chat", "embed"]
+PickerScope = Literal["chat", "embed", "vision", "rerank"]
+
+
+def _picker_title(scope: PickerScope) -> str:
+    """Return the modal heading for the requested scope."""
+    if scope == "embed":
+        return msg.MODEL_PICKER_TITLE_EMBED
+    if scope == "vision":
+        return msg.MODEL_PICKER_TITLE_VISION
+    if scope == "rerank":
+        return msg.MODEL_PICKER_TITLE_RERANK
+    return msg.MODEL_PICKER_TITLE_CHAT
 
 
 @dataclass
@@ -89,11 +100,8 @@ class ModelPickerModal(ModalScreen[str | None]):
         self._search_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
-        title = (
-            msg.MODEL_PICKER_TITLE_CHAT if self._scope == "chat" else msg.MODEL_PICKER_TITLE_EMBED
-        )
         with Vertical(id="picker-root"):
-            yield Label(title, id="picker-title")
+            yield Label(_picker_title(self._scope), id="picker-title")
             yield Input(placeholder=msg.MODEL_PICKER_SEARCH_PLACEHOLDER, id="picker-search")
             yield ModelList(id="picker-list")
             yield Static(msg.MODEL_PICKER_HINT, id="picker-hint")

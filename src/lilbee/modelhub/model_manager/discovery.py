@@ -46,6 +46,22 @@ def _classify_remote_task(name: str, family: str) -> str:
     return ModelTask.CHAT
 
 
+def reclassify_by_name(ref: str, declared_task: str) -> str:
+    """Override declared_task to RERANK / VISION when ref names a known role.
+
+    Defends against pre-fix manifests that stored ``task="chat"`` for
+    models whose ref obviously identifies them as rerankers (e.g.
+    ``bge-reranker-*``) or vision loaders. The model bar uses this so a
+    historical mis-tag does not surface a reranker in the chat picker.
+    """
+    name_lower = ref.lower()
+    if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
+        return ModelTask.RERANK
+    if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
+        return ModelTask.VISION
+    return declared_task
+
+
 def classify_remote_models(
     base_url: str = "http://localhost:11434",
     *,

@@ -17,6 +17,7 @@ from enum import Enum
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
+from lilbee.providers.model_ref import format_remote_ref
 
 # SI thresholds for short download counts ("12.3M" / "456K") and binary
 # thresholds for sizes ("4.2 GB" / "768 MB").
@@ -168,9 +169,9 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> LocalCatalogRow:
 def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
     """Convert a RemoteModel to a LocalCatalogRow.
 
-    Remote/Ollama models live on a local-network backend and present the
-    same operational shape as installed GGUFs (no API key gating, name
-    suffices as ref). They render through the local row path.
+    ``ref`` is the canonical ``provider/name`` form so it round-trips
+    through ``Config.chat_model``'s validator without a per-call-site
+    fixup.
     """
     return LocalCatalogRow(
         name=rm.name,
@@ -183,7 +184,7 @@ def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
         installed=True,
         sort_downloads=0,
         sort_size=0.0,
-        ref=rm.name,
+        ref=format_remote_ref(rm),
         backend=rm.provider.lower(),
         remote_model=rm,
     )
@@ -192,10 +193,14 @@ def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
 def frontier_row_from_remote(
     rm: RemoteModel, *, provider_id: str, key_status: KeyStatus
 ) -> FrontierCatalogRow:
-    """Convert a discovered cloud chat model to a FrontierCatalogRow."""
+    """Convert a discovered cloud chat model to a FrontierCatalogRow.
+
+    ``ref`` is the canonical ``provider/name`` form so callers pass it
+    straight to ``Config.chat_model`` without re-prefixing.
+    """
     return FrontierCatalogRow(
         name=rm.name,
-        ref=rm.name,
+        ref=format_remote_ref(rm),
         task=rm.task,
         provider=rm.provider,
         provider_id=provider_id,
@@ -222,6 +227,20 @@ def _param_sort_value(params: str) -> float:
     """Convert param label to sortable float (e.g. '8B' -> 8.0)."""
     match = re.search(r"(\d+\.?\d*)", params)
     return float(match.group(1)) if match else 0.0
+
+
+def row_delete_id(row: CatalogRow) -> str | None:
+    """Return the model_manager-compatible identifier for *row*.
+
+    Remote rows hand back the bare ``RemoteModel.name`` because the
+    Ollama HTTP API keys models by bare name, while ``ref`` carries the
+    canonical ``ollama/<name>`` chat_model form.
+    """
+    if isinstance(row, FrontierCatalogRow):
+        return row.ref or None
+    if row.remote_model is not None:
+        return row.remote_model.name or None
+    return row.ref or None
 
 
 def matches_search(row: CatalogRow, search: str) -> bool:

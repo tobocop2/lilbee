@@ -111,6 +111,7 @@ class SyncDoneEvent(BaseModel):
     updated: int
     removed: int
     failed: int
+    skipped: int = 0
 
 
 class SetupStartEvent(BaseModel):

@@ -119,17 +119,36 @@ class LilbeeApp(App[None]):
     _NAV_GROUP = Binding.Group("Navigate")
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=True),
-        Binding("f1", "push_help", "Help", show=False),
-        Binding("ctrl+h", "push_help", "Help", show=False),
+        Binding("question_mark", "push_help", "Help", show=True, priority=True),
+        Binding("f1", "push_help", "Help", show=False, priority=True),
+        Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
+        Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
-        # Non-priority: a focused Input or TextArea consumes the printable
-        # before this binding fires, so brackets type literally inside any
-        # input. With no input focused, the bindings reach the app and
-        # navigate. This mirrors vim-style insert vs. normal modes.
-        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
-        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
+        # Non-priority so Chat's "focus_commands" and Catalog's
+        # "focus_search" still win on those screens. Fires only on
+        # screens that don't bind slash themselves, routing the user
+        # to Chat with the slash already typed.
+        Binding("slash", "global_slash_to_chat", "Command", show=False),
+        # priority=True so a focused TextArea cannot swallow the bracket
+        # under stress (multi-key send-keys etc.); type literal brackets
+        # via Shift+[ / Shift+] which produce { / } and bypass these.
+        Binding(
+            "left_square_bracket",
+            "nav_prev",
+            "Prev",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
+        Binding(
+            "right_square_bracket",
+            "nav_next",
+            "Next",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
@@ -235,7 +254,19 @@ class LilbeeApp(App[None]):
         """Single write boundary for non-model settings."""
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
-        settings.set_value(cfg.data_root, key, normalized)
+        # settings.set_value persists into TOML, which only accepts strings.
+        # Mirror SettingsScreen._stringify_for_toml's contract: None -> "",
+        # list[str] -> newline-joined, everything else -> str().
+        if normalized is None:
+            persisted: str = ""
+        elif isinstance(normalized, list):
+            persisted = "\n".join(str(x) for x in normalized)
+        else:
+            persisted = str(normalized)
+        settings.set_value(cfg.data_root, key, persisted)
+        if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
+            self.theme = normalized
+            self._sync_theme_index_to_current()
         self.settings_changed_signal.publish((key, normalized))
 
     def _sync_theme_index_to_current(self) -> None:
@@ -311,9 +342,47 @@ class LilbeeApp(App[None]):
         else:
             self.action_show_help_panel()
 
+    def action_dismiss_help_if_open(self) -> None:
+        """Esc dismisses the HelpPanel when it is open; otherwise no-op.
+
+        Without this, focus inside the panel could prevent ``?`` from
+        toggling it back off and the user had no key to escape with.
+        Bubble the Escape so screens can still receive it when no panel
+        is mounted.
+        """
+        from textual.actions import SkipAction
+
+        if self.screen.query("HelpPanel"):
+            self.action_hide_help_panel()
+            return
+        raise SkipAction()
+
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
         self.switch_view("Tasks")
+
+    def action_global_slash_to_chat(self) -> None:
+        """Route a slash typed on a non-slash-bound screen back to Chat's prompt.
+
+        Lets the user type ``/setup`` from Settings/Tasks/etc. without
+        the next character (``s``, ``t``, ...) hitting a global single-key
+        binding before the slash command can compose.
+        """
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        if not isinstance(self.screen, ChatScreen):
+            self.switch_view("Chat")
+        # Defer the prompt focus until after switch_view's call_later
+        # _finish has updated active_view, so the chat input is mounted
+        # and ready when we prefill it.
+        self.call_later(self._prefill_chat_command)
+
+    def _prefill_chat_command(self) -> None:
+        """Focus the chat input and seed it with a leading slash."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        if isinstance(self.screen, ChatScreen):
+            self.screen.action_focus_commands()
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""
