@@ -1485,16 +1485,21 @@ async def test_reset_list_default_joins_newlines():
             mock_persist.assert_called_once_with("crawl_exclude_patterns", defn, expected)
 
 
-async def test_reset_all_button_mounts_in_top_row():
-    """The Reset-all button renders alongside the search input."""
+async def test_reset_all_button_mounts_in_bottom_row():
+    """The Reset-all button renders below the settings tabs, not above them.
+
+    Moved out of the eye-line above the category tabs (where it was the
+    most-prominent control on the page despite being the most destructive
+    action) into a bottom row so the user has to deliberately reach it.
+    """
     from textual.widgets import Button
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         button = app.screen.query_one("#reset-all-defaults", Button)
         assert button is not None
-        top_row = app.screen.query_one("#settings-top-row")
-        assert button in list(top_row.query(Button))
+        bottom_row = app.screen.query_one("#settings-bottom-row")
+        assert button in list(bottom_row.query(Button))
 
 
 async def test_reset_all_cancel_does_nothing():
@@ -5503,6 +5508,39 @@ async def test_chat_enter_returns_to_insert_mode():
         assert app.screen._insert_mode is True
 
 
+async def test_chat_focus_restored_to_input_in_normal_mode_bounces_to_log():
+    """Programmatic focus restore (e.g. modal pop) must not silently flip to INSERT.
+
+    Regression for bb-aluu: closing a modal returned focus to the chat
+    input, which auto-flipped INSERT mode. The next keystroke (intended
+    as a global binding like ``[`` or ``]`` for view nav) then landed as
+    a literal character in the input field instead of switching views.
+    """
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+
+        # Drop into NORMAL mode (focus moves to chat log).
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+        assert log.has_focus
+
+        # Simulate a modal pop restoring focus to the chat input.
+        inp.focus()
+        await pilot.pause()
+        # The screen must NOT silently flip to INSERT; focus bounces back
+        # to the chat log so global bindings keep firing.
+        assert app.screen._insert_mode is False
+        assert log.has_focus
+        assert not inp.has_focus
+
+
 async def test_chat_normal_mode_dims_input():
     """Input widget gets normal-mode class when in normal mode."""
     app = ChatTestApp()
@@ -6228,7 +6266,7 @@ def _count_descendants(node):
 
 class TestWikiScreenEmptyState:
     async def test_shows_empty_when_wiki_disabled(self):
-        """Shows empty state message when cfg.wiki is False."""
+        """Shows empty state (or spaCy install hint) when cfg.wiki is False."""
         cfg.wiki = False
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
@@ -6238,7 +6276,10 @@ class TestWikiScreenEmptyState:
 
             tree = app.screen.query_one("#wiki-page-list", Tree)
             labels = [str(c.label) for c in tree.root.children]
-            assert any(msg.WIKI_EMPTY_STATE in label for label in labels)
+            # When spaCy is missing, the empty-state surfaces the install hint
+            # instead of the bare "no pages found" string. Either is correct.
+            expected = (msg.WIKI_EMPTY_STATE, msg.WIKI_EMPTY_NEEDS_SPACY.split("\n", 1)[0])
+            assert any(any(needle in label for needle in expected) for label in labels)
 
     async def test_shows_empty_when_no_pages(self, tmp_path):
         """Shows empty state when wiki is enabled but no pages exist."""

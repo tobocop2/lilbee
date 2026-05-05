@@ -374,14 +374,14 @@ class SettingsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-            with Horizontal(id="settings-top-row"):
-                yield Button(
-                    msg.SETTINGS_RESET_ALL_LABEL,
-                    id="reset-all-defaults",
-                    classes="reset-all-button",
-                )
         with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
             yield from self._compose_group_tabs()
+        with Horizontal(id="settings-bottom-row"):
+            yield Button(
+                msg.SETTINGS_RESET_ALL_LABEL,
+                id="reset-all-defaults",
+                classes="reset-all-button",
+            )
         with BottomBars():
             yield TaskBar()
             yield Footer()

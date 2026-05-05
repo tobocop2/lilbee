@@ -1,15 +1,19 @@
 ModelCard {
     height: auto;
-    border: tall $surface-lighten-2;
+    border: round $primary 50%;
+    background: $boost;
     padding: 0 1;
+    margin: 0 0;
     pointer: pointer;
 
     &:hover {
         background: $surface;
+        border: round $accent;
     }
 
     &.-highlight {
-        border: tall $primary;
+        border: round $accent;
+        background: $surface;
     }
 
     .card-body {

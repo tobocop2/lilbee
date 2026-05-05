@@ -149,7 +149,7 @@ class WikiScreen(Screen[None]):
         self._page_slugs = []
 
         if not cfg.wiki:
-            tree.root.add_leaf(msg.WIKI_EMPTY_STATE)
+            tree.root.add_leaf(msg.wiki_empty_message())
             self._show_placeholder()
             return
 
@@ -165,7 +165,7 @@ class WikiScreen(Screen[None]):
             all_pages = [p for p in all_pages if needle in p.title.lower()]
 
         if not all_pages:
-            tree.root.add_leaf(msg.WIKI_EMPTY_STATE)
+            tree.root.add_leaf(msg.wiki_empty_message())
             self._show_placeholder()
             return
 

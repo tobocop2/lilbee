@@ -168,6 +168,26 @@ SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
 SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
 SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
 WIKI_EMPTY_STATE = "No wiki pages found"
+WIKI_EMPTY_NEEDS_SPACY = (
+    "Wiki entity extraction needs spaCy. Install it then re-ingest documents:\n"
+    "  uv pip install spacy\n"
+    "  python -m spacy download en_core_web_sm"
+)
+
+
+def wiki_empty_message() -> str:
+    """Return the empty-wiki message, with install hint when spaCy is missing."""
+    try:
+        from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
+
+        load_spacy_pipeline()
+    except (ImportError, OSError):
+        return WIKI_EMPTY_NEEDS_SPACY
+    except Exception:
+        return WIKI_EMPTY_STATE
+    return WIKI_EMPTY_STATE
+
+
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
 WIKI_INDEX_LABEL = "Index"

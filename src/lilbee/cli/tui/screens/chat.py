@@ -292,6 +292,7 @@ class ChatScreen(Screen[None]):
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
+        self._chat_input.can_focus = True
         self._chat_input.focus()
         self._update_input_style()
 
@@ -335,12 +336,13 @@ class ChatScreen(Screen[None]):
 
     @on(events.DescendantFocus, "#chat-input")
     def _on_chat_input_focused(self, event: events.DescendantFocus) -> None:
-        """Focusing the chat input always implies insert mode.
+        """Mark INSERT mode whenever the chat input takes focus.
 
-        Without this, a normal-mode user who clicks back into the input
-        (or whose focus is restored after a screen pop) keeps typing
-        even though the screen still thinks it's in normal mode -- which
-        bypasses the vim-style guards everywhere else.
+        With ``can_focus = False`` while in NORMAL mode, the only way the
+        input gains focus is via an explicit user action (click, or the
+        :meth:`_enter_insert_mode` helper that sets ``can_focus = True``
+        and focuses the input). Either path implies INSERT, so we sync
+        the screen mode here.
         """
         if not self._insert_mode:
             self._enter_insert_mode()
@@ -1053,6 +1055,11 @@ class ChatScreen(Screen[None]):
             self._chat_input.focus()
             return
         self._insert_mode = False
+        # Make the chat input unfocusable in NORMAL mode so Tab traversal
+        # skips past it AND a programmatic focus restore (modal close,
+        # screen pop) cannot land on it. The user re-enters INSERT
+        # explicitly via i/a/o/Enter or by clicking the input.
+        self._chat_input.can_focus = False
         self._chat_log.focus()
         self._update_input_style()
 
