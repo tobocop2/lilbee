@@ -201,6 +201,10 @@ class CatalogScreen(Screen[None]):
         ):
             yield VerticalScroll(id="catalog-grid")
             yield ModelList(id="catalog-list")
+            # Mirrors the grid-view's bottom CTA so the list view also
+            # surfaces "loading more" / "press n for more" / "all loaded"
+            # at the bottom of the visible region.
+            yield Static("", id="catalog-list-footer", classes="grid-cta scroll-hint")
         yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()
@@ -815,6 +819,12 @@ class CatalogScreen(Screen[None]):
         for section in remaining:
             self._mount_grid_section(section)
         self._mount_grid_ctas(hf_count=hf_count)
+        # Lock focus onto the first grid once mount completes so j / k /
+        # PgDn / PgUp dispatch correctly. Without this, on first paint
+        # the focus race can leave nothing focused and the catalog feels
+        # frozen until the user toggles to list view and back.
+        if self._grid_view and self._focused_grid() is None:
+            self._focus_first_grid()
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""
@@ -932,11 +942,24 @@ class CatalogScreen(Screen[None]):
         )
         if self._list_cache_key == list_key:
             self._update_sort_label()
+            self._sync_list_footer()
             return
         self._list_cache_key = list_key
         visible = [r for r in self._rows if not search or matches_search(r, search)]
         self._list_widget.set_rows([ModelListSection(heading=None, rows=list(visible))])
         self._update_sort_label()
+        self._sync_list_footer()
+
+    def _sync_list_footer(self) -> None:
+        """Update the list-view bottom hint with the same copy as the grid CTA."""
+        from textual.css.query import NoMatches
+
+        try:
+            footer = self.query_one("#catalog-list-footer", Static)
+        except NoMatches:
+            return
+        hf_count = sum(1 for r in self._rows if not r.installed)
+        footer.update(self._grid_scroll_hint_text(hf_count))
 
     def _filter_list(self) -> None:
         """Filter the list view to rows matching the active search."""
@@ -971,9 +994,9 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
                 )
-            # Mirror the spinner into the in-grid scroll hint so users
-            # waiting at the bottom of the grid see the activity without
-            # glancing back up at the toolbar.
+            # Mirror the spinner into the in-grid AND in-list bottom hints
+            # so users waiting at the bottom of either view see activity
+            # without glancing back up at the toolbar.
             if self._loading_more:
                 with contextlib.suppress(Exception):
                     hint = self.query_one("#catalog-grid > .scroll-hint", Static)
@@ -982,6 +1005,7 @@ class CatalogScreen(Screen[None]):
                             frame=_SPINNER_FRAMES[self._spinner_frame]
                         )
                     )
+                self._sync_list_footer()
         else:
             spinner.update("")
             spinner.styles.display = "none"
@@ -992,6 +1016,7 @@ class CatalogScreen(Screen[None]):
             # Restore the post-load CTA text now that the fetch settled.
             hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched else []
             self._refresh_grid_ctas(hf_count=len(hf_rows))
+            self._sync_list_footer()
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""
