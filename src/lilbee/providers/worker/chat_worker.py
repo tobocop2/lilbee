@@ -69,14 +69,13 @@ class _ChatSession:
         target_str = str(target_path)
         if self._llm is None or target_str != self._model_path:
             self._close_model()
-            # The abort flag lives in shared memory (mp.Value), so the
-            # callback bound here lets the parent's pool.cancel() reach
-            # llama-cpp's inference loop in this subprocess.
-            self._llm = load_llama(
-                target_path,
-                mode=MODE_CHAT,
-                abort_callback_override=_make_abort_callback(self._abort_flag),
-            )
+            # No abort_callback_override: routing the cancel signal through
+            # ggml's mid-token abort path crashes the worker on macOS Metal
+            # (M1 Pro reproducer; same crash with both Gemma4 E4B and
+            # Qwen3-4B). Cancel is enforced one token boundary later by the
+            # Python-side polling loop in ``_handle_chat_streaming``, which
+            # reads the same shared ``mp.Value`` flag.
+            self._llm = load_llama(target_path, mode=MODE_CHAT)
             self._model_path = target_str
         return self._llm
 
@@ -103,9 +102,20 @@ def _extract_stream_content(chunk: Any) -> str | None:
     return content if isinstance(content, str) and content else None
 
 
-def _handle_chat_streaming(conn: Any, response_iter: Any, _state: WorkerLoopState) -> None:
-    """Drain *response_iter* and emit per-token stream_chunk frames on the data pipe."""
+def _handle_chat_streaming(conn: Any, response_iter: Any, state: WorkerLoopState) -> None:
+    """Drain *response_iter* and emit per-token stream_chunk frames on the data pipe.
+
+    Polls ``state.session._abort_flag`` between chunks so a cancel from the
+    parent flushes a clean ``stream_end`` at the next token boundary,
+    instead of relying on llama-cpp's ggml mid-token abort_callback path
+    (which crashes the worker on macOS Metal).
+    """
+    abort_flag = state.session._abort_flag
     for raw_chunk in response_iter:
+        if abort_flag.value:
+            with contextlib.suppress(Exception):
+                response_iter.close()
+            break
         content = _extract_stream_content(raw_chunk)
         if content is not None:
             conn.send((STREAM_CHUNK_KIND, content))

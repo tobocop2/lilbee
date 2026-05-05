@@ -338,10 +338,18 @@ class _RecordingConn:
         self.sent.append(message)
 
 
+class _FlagStub:
+    """Mimics the .value attribute on an mp.Value bool flag."""
+
+    def __init__(self, value: int = 0) -> None:
+        self.value = value
+
+
 class _StubSession:
     def __init__(self, *, response: Any = None, exc: Exception | None = None) -> None:
         self._response = response
         self._exc = exc
+        self._abort_flag = _FlagStub()
 
     def chat(
         self,
@@ -377,6 +385,50 @@ def test_handle_chat_streaming() -> None:
         ("stream_chunk", "b"),
         ("stream_end", None),
     ]
+
+
+def test_handle_chat_streaming_aborts_on_flag() -> None:
+    """Cancel raised mid-stream stops the iterator at the next token boundary."""
+    from lilbee.providers.worker.chat_worker import _handle_chat
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
+
+    conn = _RecordingConn()
+    session = _StubSession()
+
+    closed: list[bool] = []
+
+    class _Iter:
+        def __init__(self) -> None:
+            self._chunks = iter(
+                [
+                    {"choices": [{"delta": {"content": "a"}}]},
+                    {"choices": [{"delta": {"content": "b"}}]},
+                    {"choices": [{"delta": {"content": "c"}}]},
+                ]
+            )
+            self._calls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            chunk = next(self._chunks)
+            self._calls += 1
+            if self._calls == 2:
+                session._abort_flag.value = 1
+            return chunk
+
+        def close(self) -> None:
+            closed.append(True)
+
+    session._response = _Iter()
+    payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=True)
+    _handle_chat(conn, payload, WorkerLoopState(session=session))
+    assert conn.sent == [
+        ("stream_chunk", "a"),
+        ("stream_end", None),
+    ]
+    assert closed == [True]
 
 
 def test_handle_chat_non_streaming() -> None:
@@ -484,18 +536,22 @@ def test_chat_session_close_idempotent_and_swallows() -> None:
 
 
 def test_chat_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_path) -> None:
-    """Default _ensure_loaded reaches load_llama with the role config's path
-    and binds the abort_callback at load time (mp.Value-backed)."""
+    """Default _ensure_loaded reaches load_llama with the role config's path.
+
+    No abort_callback_override is passed for chat: routing the cancel
+    signal through ggml's mid-token abort path crashed the worker on
+    macOS Metal. Cancel is enforced one token boundary later by the
+    Python-side polling loop in _handle_chat_streaming.
+    """
     role_config = RoleConfig(role="chat", model_path=tmp_path / "stub.gguf", mode="chat")
     flag = multiprocessing.Value("b", 0)
     session = _ChatSession(role_config, flag)
     sentinel = object()
     captured: dict[str, Any] = {}
 
-    def fake_load_llama(path: Any, *, mode: str, abort_callback_override: Any = None) -> Any:
+    def fake_load_llama(path: Any, *, mode: str) -> Any:
         captured["path"] = path
         captured["mode"] = mode
-        captured["abort_callback_override"] = abort_callback_override
         return sentinel
 
     monkeypatch.setattr(
@@ -506,13 +562,6 @@ def test_chat_session_ensure_loaded_routes_through_real_loader(monkeypatch, tmp_
     assert result is sentinel
     assert captured["path"] == tmp_path / "stub.gguf"
     assert captured["mode"] == "chat"
-    # The override must be a callable that reads the mp.Value-backed flag.
-    cb = captured["abort_callback_override"]
-    assert callable(cb)
-    flag.value = 0
-    assert cb() is False
-    flag.value = 1
-    assert cb() is True
 
 
 def test_chat_session_chat_passes_options_to_llama(monkeypatch, tmp_path) -> None:
