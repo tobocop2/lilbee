@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import time
 from typing import Any
 
 from lilbee.providers.worker.transport import ChatRequest, RoleConfig
@@ -14,26 +15,28 @@ from lilbee.providers.worker.wire_kinds import (
     STREAM_CHUNK_KIND,
     STREAM_END_KIND,
 )
-from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker
+from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
+_STREAM_BATCH_MAX_CHUNKS = 16
+"""Flush a streaming-chat batch once this many tokens have queued.
 
-def _make_abort_callback(abort_flag: Any) -> Any:
-    """Return a llama-cpp abort_callback bound to the shared mp.Value flag."""
+Bounded so a long answer at high tok/s doesn't grow the buffer without
+limit. Sized so each flush write batches ~16 syscalls into 1.
+"""
 
-    def _callback(_user_data: Any = None) -> bool:
-        return bool(abort_flag.value)
+_STREAM_BATCH_MAX_INTERVAL_S = 0.05
+"""Flush a streaming-chat batch at least this often (50 ms).
 
-    return _callback
+Caps user-perceived latency for a slow generator that produces fewer
+than ``_STREAM_BATCH_MAX_CHUNKS`` tokens per interval.
+"""
 
 
 class _ChatSession:
     """Lazy-loaded Llama chat handle, kept alive for the worker's lifetime.
 
     Reloads in place when the parent passes a per-call ``model`` override
-    different from the currently loaded one. The pool's standard model-
-    swap path (``invalidate_load_cache`` + lazy respawn) still applies
-    when ``cfg.chat_model`` itself changes; this is just the per-call
-    override.
+    different from the currently loaded one.
     """
 
     def __init__(self, role_config: RoleConfig, abort_flag: Any) -> None:
@@ -50,11 +53,7 @@ class _ChatSession:
         options: dict[str, Any] | None,
         model: str | None,
     ) -> Any:
-        """Run one chat completion and return the llama-cpp response.
-
-        For ``stream=True`` returns the iterator the caller must drain.
-        For ``stream=False`` returns the full result dict.
-        """
+        """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
@@ -70,11 +69,9 @@ class _ChatSession:
         if self._llm is None or target_str != self._model_path:
             self._close_model()
             # No abort_callback_override: routing the cancel signal through
-            # ggml's mid-token abort path crashes the worker on macOS Metal
-            # (M1 Pro reproducer; same crash with both Gemma4 E4B and
-            # Qwen3-4B). Cancel is enforced one token boundary later by the
-            # Python-side polling loop in ``_handle_chat_streaming``, which
-            # reads the same shared ``mp.Value`` flag.
+            # ggml's mid-token abort path crashes the worker on macOS Metal.
+            # Cancel is enforced one token boundary later by the Python-side
+            # polling loop in _handle_chat_streaming.
             self._llm = load_llama(target_path, mode=MODE_CHAT)
             self._model_path = target_str
         return self._llm
@@ -102,34 +99,56 @@ def _extract_stream_content(chunk: Any) -> str | None:
     return content if isinstance(content, str) and content else None
 
 
-def _handle_chat_streaming(conn: Any, response_iter: Any, state: WorkerLoopState) -> None:
-    """Drain *response_iter* and emit per-token stream_chunk frames on the data pipe.
+def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopState) -> None:
+    """Drain *response_iter* and emit batched stream_chunk frames on the data pipe.
 
     Polls ``state.session._abort_flag`` between chunks so a cancel from the
-    parent flushes a clean ``stream_end`` at the next token boundary,
-    instead of relying on llama-cpp's ggml mid-token abort_callback path
-    (which crashes the worker on macOS Metal).
+    parent flushes a clean ``stream_end`` at the next token boundary.
+    Tokens are accumulated and flushed every ``_STREAM_BATCH_MAX_CHUNKS``
+    or ``_STREAM_BATCH_MAX_INTERVAL_S``, whichever comes first, so the
+    pipe sees ~one syscall per batch instead of one per token.
     """
     abort_flag = state.session._abort_flag
-    for raw_chunk in response_iter:
-        if abort_flag.value:
-            with contextlib.suppress(Exception):
-                response_iter.close()
-            break
-        content = _extract_stream_content(raw_chunk)
-        if content is not None:
-            conn.send((STREAM_CHUNK_KIND, content))
-    conn.send((STREAM_END_KIND, None))
+    buffer: list[str] = []
+    last_flush = time.monotonic()
+    seen_first_token = False
+    completed_cleanly = False
+    try:
+        for raw_chunk in response_iter:
+            if abort_flag.value:
+                with contextlib.suppress(Exception):
+                    response_iter.close()
+                break
+            content = _extract_stream_content(raw_chunk)
+            if content is None:
+                continue
+            buffer.append(content)
+            now = time.monotonic()
+            # Flush the very first token immediately so a generator that
+            # stalls after one token still surfaces something to the user.
+            should_flush = (
+                not seen_first_token
+                or len(buffer) >= _STREAM_BATCH_MAX_CHUNKS
+                or (now - last_flush) >= _STREAM_BATCH_MAX_INTERVAL_S
+            )
+            if should_flush:
+                reply.send(STREAM_CHUNK_KIND, "".join(buffer))
+                buffer.clear()
+                last_flush = now
+                seen_first_token = True
+        completed_cleanly = True
+    finally:
+        # Flush any buffered tokens regardless of how the loop exited so
+        # the user sees partial output before the error frame the outer
+        # handler may emit.
+        if buffer:
+            reply.send(STREAM_CHUNK_KIND, "".join(buffer))
+    if completed_cleanly:
+        reply.send(STREAM_END_KIND, None)
 
 
 def _extract_non_streaming_content(response: Any) -> str:
-    """Pull the assistant text out of one llama-cpp non-streaming response.
-
-    Mirrors :func:`_extract_stream_content`'s defensive walk so a
-    malformed (or truncated) response surfaces as a typed
-    :class:`TypeError` we can serialize back to the parent, instead of
-    a raw :class:`KeyError` / :class:`IndexError` deep in the worker.
-    """
+    """Pull the assistant text out of one llama-cpp non-streaming response."""
     if not isinstance(response, dict):
         raise TypeError(f"chat response must be dict, got {type(response).__name__}")
     choices = response.get("choices")
@@ -145,19 +164,19 @@ def _extract_non_streaming_content(response: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _handle_chat_non_streaming(conn: Any, response: Any) -> None:
+def _handle_chat_non_streaming(reply: Reply, response: Any) -> None:
     """Emit one result frame with the full assistant message text."""
     text = _extract_non_streaming_content(response)
-    conn.send((RESULT_KIND, text))
+    reply.send(RESULT_KIND, text)
 
 
-def _handle_chat(conn: Any, payload: Any, state: WorkerLoopState) -> None:
+def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
     """Run one chat request and dispatch to the streaming/non-streaming handler."""
     if not isinstance(payload, ChatRequest):
         try:
             raise TypeError(f"chat payload must be ChatRequest, got {type(payload).__name__}")
         except TypeError as exc:
-            conn.send((ERROR_KIND, _serialize_exception(exc)))
+            reply.send(ERROR_KIND, _serialize_exception(exc))
         return
     session: _ChatSession = state.session
     try:
@@ -168,15 +187,15 @@ def _handle_chat(conn: Any, payload: Any, state: WorkerLoopState) -> None:
             model=payload.model,
         )
     except Exception as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
+        reply.send(ERROR_KIND, _serialize_exception(exc))
         return
     try:
         if payload.stream:
-            _handle_chat_streaming(conn, response, state)
+            _handle_chat_streaming(reply, response, state)
         else:
-            _handle_chat_non_streaming(conn, response)
+            _handle_chat_non_streaming(reply, response)
     except Exception as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
+        reply.send(ERROR_KIND, _serialize_exception(exc))
 
 
 def chat_worker_main(

@@ -53,30 +53,33 @@ def _drive_test_worker(
     abort_flag: Any,
     on_data: Any,
 ) -> None:
-    """Test-worker multiplexer: routes data frames through *on_data* and ping/pong
-    on the health pipe. Built-in shutdown reply lives here so each test worker
-    can focus on its data-side behavior. *on_data* signature is
-    ``(conn, kind, payload, abort_flag) -> None``.
+    """Test-worker multiplexer using the new ``(call_id, kind, payload)`` frame format.
+
+    The dedicated heartbeat thread responsibility lives in real workers via
+    ``worker_runtime.run_worker``; tests bake an inline equivalent so each
+    test worker stays self-contained. *on_data* signature is
+    ``(conn, call_id, kind, payload, abort_flag) -> None`` and it owns
+    sending response frames with the right call_id echoed back.
     """
     try:
         while True:
             ready = wait([data_conn, health_conn], timeout=_POLL_TIMEOUT_S)
             if data_conn in ready:
                 try:
-                    kind, payload = data_conn.recv()
+                    call_id, kind, payload = data_conn.recv()
                 except EOFError:
                     return
                 if kind == "shutdown":
-                    data_conn.send(("ack", None))
+                    data_conn.send((call_id, "ack", None))
                     return
-                on_data(data_conn, kind, payload, abort_flag)
+                on_data(data_conn, call_id, kind, payload, abort_flag)
             if health_conn in ready:
                 try:
-                    hkind, _ = health_conn.recv()
+                    hcall_id, hkind, _ = health_conn.recv()
                 except EOFError:
                     continue
                 if hkind == "ping":
-                    health_conn.send(("pong", None))
+                    health_conn.send((hcall_id, "pong", None))
     finally:  # pragma: no cover - cleanup runs in subprocess
         with contextlib.suppress(Exception):
             data_conn.close()
@@ -84,52 +87,54 @@ def _drive_test_worker(
             health_conn.close()
 
 
-def _handle_echo(conn: Any, payload: Any, _abort: Any) -> None:
-    conn.send(("result", payload))
+def _handle_echo(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
+    conn.send((call_id, "result", payload))
 
 
-def _handle_raise(conn: Any, payload: Any, _abort: Any) -> None:
+def _handle_raise(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
     try:
         raise RuntimeError(payload)
     except RuntimeError as exc:
-        conn.send(("error", _serialize_exception(exc)))
+        conn.send((call_id, "error", _serialize_exception(exc)))
 
 
-def _handle_stream_error(conn: Any, payload: Any, _abort: Any) -> None:
-    conn.send(("stream_chunk", "first"))
+def _handle_stream_error(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
+    conn.send((call_id, "stream_chunk", "first"))
     try:
         raise ValueError(payload)
     except ValueError as exc:
-        conn.send(("error", _serialize_exception(exc)))
+        conn.send((call_id, "error", _serialize_exception(exc)))
 
 
-def _handle_stream(conn: Any, payload: Any, _abort: Any) -> None:
+def _handle_stream(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
     count, suffix = payload
     for i in range(count):
-        conn.send(("stream_chunk", f"{suffix}{i}"))
-    conn.send(("stream_end", None))
+        conn.send((call_id, "stream_chunk", f"{suffix}{i}"))
+    conn.send((call_id, "stream_end", None))
 
 
-def _handle_abort_loop(conn: Any, _payload: Any, abort: Any) -> None:
+def _handle_abort_loop(conn: Any, call_id: int, _payload: Any, abort: Any) -> None:
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if abort.value:
-            conn.send(("result", "aborted"))
+            conn.send((call_id, "result", "aborted"))
             return
         time.sleep(0.01)
-    conn.send(("result", "timeout"))
+    conn.send((call_id, "result", "timeout"))
 
 
-def _handle_bad_kind(conn: Any, _payload: Any, _abort: Any) -> None:
-    conn.send(("not_a_known_kind", None))
+def _handle_bad_kind(conn: Any, call_id: int, _payload: Any, _abort: Any) -> None:
+    conn.send((call_id, "not_a_known_kind", None))
 
 
-def _handle_bad_stream_kind(conn: Any, _payload: Any, _abort: Any) -> None:
-    conn.send(("totally_bogus_kind", None))
+def _handle_bad_stream_kind(conn: Any, call_id: int, _payload: Any, _abort: Any) -> None:
+    conn.send((call_id, "totally_bogus_kind", None))
 
 
-def _handle_bad_ping_kind(conn: Any, _payload: Any, _abort: Any) -> None:
-    conn.send(("not_pong", None))
+def _handle_bad_ping_kind(conn: Any, _call_id: int, _payload: Any, _abort: Any) -> None:
+    """Reply to ping with non-pong kind on the health pipe (separate driver)."""
+    # Unused. bad_ping behavior lives in _ping_replies_garbage_main.
+    raise NotImplementedError
 
 
 _ECHO_DISPATCH = {
@@ -149,10 +154,10 @@ def _echo_worker_main(
 ) -> None:
     """Worker that dispatches data-pipe kinds via _ECHO_DISPATCH and pings on health."""
 
-    def _on_data(conn: Any, kind: str, payload: Any, abort: Any) -> None:
+    def _on_data(conn: Any, call_id: int, kind: str, payload: Any, abort: Any) -> None:
         handler = _ECHO_DISPATCH.get(kind)
         if handler is not None:
-            handler(conn, payload, abort)
+            handler(conn, call_id, payload, abort)
 
     _drive_test_worker(data_conn, health_conn, abort_flag, _on_data)
 
@@ -185,10 +190,10 @@ def _ping_replies_garbage_main(
         if not health_conn.poll(timeout=_POLL_TIMEOUT_S):
             continue
         try:
-            health_conn.recv()
+            call_id, _kind, _ = health_conn.recv()
         except EOFError:
             return
-        health_conn.send(("not_a_known_reply", None))
+        health_conn.send((call_id, "not_a_known_reply", None))
 
 
 def _stream_replies_garbage_main(
@@ -196,8 +201,8 @@ def _stream_replies_garbage_main(
 ) -> None:
     """Worker that replies to a streaming kind with a non-stream message."""
 
-    def _on_data(conn: Any, _kind: str, _payload: Any, _abort: Any) -> None:
-        conn.send(("totally_bogus_kind", None))
+    def _on_data(conn: Any, call_id: int, _kind: str, _payload: Any, _abort: Any) -> None:
+        conn.send((call_id, "totally_bogus_kind", None))
 
     _drive_test_worker(data_conn, health_conn, abort_flag, _on_data)
 
@@ -554,7 +559,7 @@ def test_check_pickle_size_wraps_pickle_failure() -> None:
 
     # Lambda is famously unpicklable; pickle.dumps raises immediately.
     with pytest.raises(WorkerError) as excinfo:
-        _check_pickle_size(lambda: None, "echo")
+        _check_pickle_size(lambda: None, "echo", call_id=1)
     assert excinfo.value.original_type == "PickleError"
 
 
@@ -566,11 +571,11 @@ def _crashing_health_pipe_main(
     while True:
         if data_conn.poll(timeout=_POLL_TIMEOUT_S):
             try:
-                kind, _ = data_conn.recv()
+                call_id, kind, _ = data_conn.recv()
             except EOFError:
                 return
             if kind == "shutdown":
-                data_conn.send(("ack", None))
+                data_conn.send((call_id, "ack", None))
                 return
 
 
@@ -631,6 +636,174 @@ async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
     finally:
         with contextlib.suppress(Exception):
             parent_data.close()
+        with contextlib.suppress(Exception):
+            child_data.close()
+        with contextlib.suppress(Exception):
+            child_health.close()
+
+
+def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
+    """Without LILBEE_DATA the log path resolver returns None."""
+    from lilbee.providers.worker.transport_pipe import _worker_log_path
+
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
+    assert _worker_log_path("embed") is None
+
+
+def test_worker_log_path_joins_data_dir_when_env_set(monkeypatch, tmp_path) -> None:
+    """With LILBEE_DATA set, the path lands under <data>/logs/worker-<role>.log."""
+    from lilbee.providers.worker.transport_pipe import _worker_log_path
+
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+    assert _worker_log_path("chat") == str(tmp_path / "logs" / "worker-chat.log")
+
+
+def test_format_exit_reason_for_normal_exit_code() -> None:
+    """Non-zero code surfaces as 'exited with code N'."""
+    from lilbee.providers.worker.transport_pipe import PipeChannel
+
+    assert PipeChannel._format_exit_reason(2) == "exited with code 2"
+
+
+def test_format_exit_reason_for_known_signal() -> None:
+    """Negative exit code maps to the signal name."""
+    import signal as _signal
+
+    from lilbee.providers.worker.transport_pipe import PipeChannel
+
+    msg = PipeChannel._format_exit_reason(-_signal.SIGTERM)
+    assert "SIGTERM" in msg
+    assert f"({int(_signal.SIGTERM)})" in msg
+
+
+def test_format_exit_reason_for_unknown_signal() -> None:
+    """Unrecognised signum (no Signals enum entry) falls back to SIG<num>."""
+    from lilbee.providers.worker.transport_pipe import PipeChannel
+
+    msg = PipeChannel._format_exit_reason(-9999)
+    assert "SIG9999" in msg
+
+
+def test_record_exit_reason_writes_to_worker_log(monkeypatch, tmp_path) -> None:
+    """When LILBEE_DATA is set, exit reason gets appended to the worker log."""
+    import multiprocessing
+
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+    (tmp_path / "logs").mkdir()
+    log_file = tmp_path / "logs" / "worker-chat.log"
+    log_file.write_text("preexisting\n")
+
+    class _FakeProcess:
+        @property
+        def exitcode(self) -> int:
+            return -15  # SIGTERM
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+    channel = PipeChannel(
+        role="chat",
+        process=_FakeProcess(),  # type: ignore[arg-type]
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    try:
+        channel._record_exit_reason()
+    finally:
+        with contextlib.suppress(Exception):
+            parent_data.close()
+        with contextlib.suppress(Exception):
+            parent_health.close()
+        with contextlib.suppress(Exception):
+            child_data.close()
+        with contextlib.suppress(Exception):
+            child_health.close()
+    body = log_file.read_text()
+    assert "[supervisor]" in body
+    assert "SIGTERM" in body
+
+
+def test_record_exit_reason_skips_when_log_path_unset(monkeypatch, caplog) -> None:
+    """Without LILBEE_DATA the reason logs to stderr but no file is touched."""
+    import multiprocessing
+
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
+
+    class _FakeProcess:
+        @property
+        def exitcode(self) -> int:
+            return 7
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+    channel = PipeChannel(
+        role="chat",
+        process=_FakeProcess(),  # type: ignore[arg-type]
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    try:
+        with caplog.at_level("WARNING", logger="lilbee.providers.worker.transport_pipe"):
+            channel._record_exit_reason()
+    finally:
+        with contextlib.suppress(Exception):
+            parent_data.close()
+        with contextlib.suppress(Exception):
+            parent_health.close()
+        with contextlib.suppress(Exception):
+            child_data.close()
+        with contextlib.suppress(Exception):
+            child_health.close()
+    assert any("exited with code 7" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_recv_for_drains_stale_call_id_frames(caplog) -> None:
+    """Frames with mismatched call_id are silently discarded; the right one wins."""
+    import multiprocessing as _mp
+
+    ctx = _mp.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+
+    class _FakeProcess:
+        def is_alive(self) -> bool:
+            return True
+
+        @property
+        def pid(self) -> int:
+            return -1
+
+    channel = PipeChannel(
+        role="echo",
+        process=_FakeProcess(),  # type: ignore[arg-type]
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    # Stuff three frames into the parent end via the child side: stale,
+    # stale, then matching call_id=42.
+    child_data.send((1, "result", "stale-1"))
+    child_data.send((2, "result", "stale-2"))
+    child_data.send((42, "result", "winner"))
+    try:
+        with caplog.at_level("DEBUG", logger="lilbee.providers.worker.transport_pipe"):
+            kind, value = await channel._recv_for(42)
+        assert kind == "result"
+        assert value == "winner"
+        assert any("discarding stale frame" in rec.message for rec in caplog.records)
+    finally:
+        channel._executor.shutdown(wait=False, cancel_futures=True)
+        with contextlib.suppress(Exception):
+            parent_data.close()
+        with contextlib.suppress(Exception):
+            parent_health.close()
         with contextlib.suppress(Exception):
             child_data.close()
         with contextlib.suppress(Exception):

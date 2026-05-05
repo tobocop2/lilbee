@@ -166,13 +166,24 @@ async def test_embed_worker_surfaces_load_failure(
 
 
 class _RecordingConn:
-    """In-process stand-in for multiprocessing.Connection.send."""
+    """Captures raw ``(call_id, kind, payload)`` 3-tuples sent through Reply."""
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, Any]] = []
+        self.sent: list[tuple[int, str, Any]] = []
 
-    def send(self, message: tuple[str, Any]) -> None:
+    def send(self, message: tuple[int, str, Any]) -> None:
         self.sent.append(message)
+
+
+def _make_reply(call_id: int = 1):
+    from lilbee.providers.worker.worker_runtime import Reply
+
+    conn = _RecordingConn()
+    return Reply(conn, call_id), conn
+
+
+def _kinds_payloads(conn: _RecordingConn) -> list[tuple[str, Any]]:
+    return [(kind, payload) for _call_id, kind, payload in conn.sent]
 
 
 class _StubSession:
@@ -192,10 +203,10 @@ def test_handle_embed_emits_result() -> None:
     from lilbee.providers.worker.embed_worker import _handle_embed
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession(vectors=[[1.0, 2.0]])
-    _handle_embed(conn, ["hello"], WorkerLoopState(session=session))
-    assert conn.sent == [("result", [[1.0, 2.0]])]
+    _handle_embed(reply, ["hello"], WorkerLoopState(session=session))
+    assert _kinds_payloads(conn) == [("result", [[1.0, 2.0]])]
     assert session.calls == [["hello"]]
 
 
@@ -203,11 +214,12 @@ def test_handle_embed_emits_error_on_exception() -> None:
     from lilbee.providers.worker.embed_worker import _handle_embed
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession(exc=RuntimeError("boom"))
-    _handle_embed(conn, ["hello"], WorkerLoopState(session=session))
-    assert len(conn.sent) == 1
-    kind, payload = conn.sent[0]
+    _handle_embed(reply, ["hello"], WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert len(frames) == 1
+    kind, payload = frames[0]
     assert kind == "error"
     assert payload.type_name == "RuntimeError"
     assert payload.message == "boom"
@@ -331,14 +343,15 @@ def test_handle_embed_rejects_non_list_payload_in_process() -> None:
     from lilbee.providers.worker.embed_worker import _handle_embed
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     role_config = RoleConfig(
         role="embed", model_path=__import__("pathlib").Path("/nope"), mode="embed"
     )
     session = _EmbedSession(role_config)
-    _handle_embed(conn, "not-a-list", WorkerLoopState(session=session))
-    assert len(conn.sent) == 1
-    kind, payload = conn.sent[0]
+    _handle_embed(reply, "not-a-list", WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert len(frames) == 1
+    kind, payload = frames[0]
     assert kind == "error"
     assert payload.type_name == "TypeError"
     assert "list[str]" in payload.message

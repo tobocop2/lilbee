@@ -128,11 +128,24 @@ async def test_vision_worker_unknown_kind_returns_error(
 
 
 class _RecordingConn:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, Any]] = []
+    """Captures raw ``(call_id, kind, payload)`` 3-tuples sent through Reply."""
 
-    def send(self, message: tuple[str, Any]) -> None:
+    def __init__(self) -> None:
+        self.sent: list[tuple[int, str, Any]] = []
+
+    def send(self, message: tuple[int, str, Any]) -> None:
         self.sent.append(message)
+
+
+def _make_reply(call_id: int = 1):
+    from lilbee.providers.worker.worker_runtime import Reply
+
+    conn = _RecordingConn()
+    return Reply(conn, call_id), conn
+
+
+def _kinds_payloads(conn: _RecordingConn) -> list[tuple[str, Any]]:
+    return [(kind, payload) for _call_id, kind, payload in conn.sent]
 
 
 class _StubSession:
@@ -152,11 +165,11 @@ def test_handle_vision_emits_result() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession(text="hello")
     payload = VisionRequest(png_bytes=b"x", prompt="p", model=None)
-    _handle_vision(conn, payload, WorkerLoopState(session=session))
-    assert conn.sent == [("result", "hello")]
+    _handle_vision(reply, payload, WorkerLoopState(session=session))
+    assert _kinds_payloads(conn) == [("result", "hello")]
     assert session.calls == [VisionRequest(png_bytes=b"x", prompt="p", model=None)]
 
 
@@ -164,23 +177,25 @@ def test_handle_vision_emits_error_on_exception() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession(exc=RuntimeError("boom"))
     payload = VisionRequest(png_bytes=b"x", prompt="", model=None)
-    _handle_vision(conn, payload, WorkerLoopState(session=session))
-    assert conn.sent[0][0] == "error"
-    assert conn.sent[0][1].type_name == "RuntimeError"
+    _handle_vision(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "RuntimeError"
 
 
 def test_handle_vision_rejects_non_visionrequest_payload() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession()
-    _handle_vision(conn, "garbage", WorkerLoopState(session=session))
-    assert conn.sent[0][0] == "error"
-    assert conn.sent[0][1].type_name == "TypeError"
+    _handle_vision(reply, "garbage", WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "TypeError"
 
 
 def test_handle_vision_rejects_dict_payload() -> None:
@@ -188,24 +203,26 @@ def test_handle_vision_rejects_dict_payload() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession()
     _handle_vision(
-        conn, {"png_bytes": b"x", "prompt": "p", "model": None}, WorkerLoopState(session=session)
+        reply, {"png_bytes": b"x", "prompt": "p", "model": None}, WorkerLoopState(session=session)
     )
-    assert conn.sent[0][0] == "error"
-    assert conn.sent[0][1].type_name == "TypeError"
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "TypeError"
 
 
 def test_handle_vision_rejects_non_bytes_png() -> None:
     from lilbee.providers.worker.vision_worker import _handle_vision
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession()
     payload = VisionRequest(png_bytes="string-not-bytes", prompt="", model=None)  # type: ignore[arg-type]
-    _handle_vision(conn, payload, WorkerLoopState(session=session))
-    assert conn.sent[0][0] == "error"
+    _handle_vision(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
 
 
 def test_extract_vision_content_walks_defensively() -> None:

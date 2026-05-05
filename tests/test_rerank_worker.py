@@ -110,11 +110,24 @@ async def test_rerank_worker_unknown_kind_returns_error(
 
 
 class _RecordingConn:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, Any]] = []
+    """Captures raw ``(call_id, kind, payload)`` 3-tuples sent through Reply."""
 
-    def send(self, message: tuple[str, Any]) -> None:
+    def __init__(self) -> None:
+        self.sent: list[tuple[int, str, Any]] = []
+
+    def send(self, message: tuple[int, str, Any]) -> None:
         self.sent.append(message)
+
+
+def _make_reply(call_id: int = 1):
+    from lilbee.providers.worker.worker_runtime import Reply
+
+    conn = _RecordingConn()
+    return Reply(conn, call_id), conn
+
+
+def _kinds_payloads(conn: _RecordingConn) -> list[tuple[str, Any]]:
+    return [(kind, payload) for _call_id, kind, payload in conn.sent]
 
 
 class _StubSession:
@@ -139,11 +152,11 @@ def test_handle_rerank_emits_result() -> None:
     from lilbee.providers.worker.rerank_worker import _handle_rerank
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession(scores=[0.7, 0.2])
     payload = RerankPayload(query="q", candidates=["a", "b"])
-    _handle_rerank(conn, payload, WorkerLoopState(session=session))
-    assert conn.sent == [("result", [0.7, 0.2])]
+    _handle_rerank(reply, payload, WorkerLoopState(session=session))
+    assert _kinds_payloads(conn) == [("result", [0.7, 0.2])]
     assert session.calls == [("q", ["a", "b"])]
 
 
@@ -151,12 +164,13 @@ def test_handle_rerank_emits_error_on_exception() -> None:
     from lilbee.providers.worker.rerank_worker import _handle_rerank
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     session = _StubSession(exc=RuntimeError("boom"))
     payload = RerankPayload(query="q", candidates=["a"])
-    _handle_rerank(conn, payload, WorkerLoopState(session=session))
-    assert len(conn.sent) == 1
-    kind, payload = conn.sent[0]
+    _handle_rerank(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert len(frames) == 1
+    kind, payload = frames[0]
     assert kind == "error"
     assert payload.type_name == "RuntimeError"
 
@@ -166,16 +180,17 @@ def test_handle_rerank_rejects_non_rerankpayload() -> None:
     from lilbee.providers.worker.rerank_worker import _handle_rerank
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     role_config = RoleConfig(
         role="rerank",
         model_path=__import__("pathlib").Path("/nope"),
         mode="rerank",
     )
     session = _RerankSession(role_config)
-    _handle_rerank(conn, "not-a-rerankpayload", WorkerLoopState(session=session))
-    assert conn.sent[0][0] == "error"
-    assert conn.sent[0][1].type_name == "TypeError"
+    _handle_rerank(reply, "not-a-rerankpayload", WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "TypeError"
 
 
 def test_handle_rerank_rejects_dict_payload() -> None:
@@ -183,16 +198,17 @@ def test_handle_rerank_rejects_dict_payload() -> None:
     from lilbee.providers.worker.rerank_worker import _handle_rerank
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
-    conn = _RecordingConn()
+    reply, conn = _make_reply()
     role_config = RoleConfig(
         role="rerank",
         model_path=__import__("pathlib").Path("/nope"),
         mode="rerank",
     )
     session = _RerankSession(role_config)
-    _handle_rerank(conn, {"query": "q", "candidates": ["a"]}, WorkerLoopState(session=session))
-    assert conn.sent[0][0] == "error"
-    assert conn.sent[0][1].type_name == "TypeError"
+    _handle_rerank(reply, {"query": "q", "candidates": ["a"]}, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "TypeError"
 
 
 def test_session_load_routes_through_real_loader(monkeypatch, tmp_path) -> None:

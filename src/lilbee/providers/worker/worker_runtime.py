@@ -1,7 +1,8 @@
 """Cross-role helpers for worker subprocesses.
 
 Bootstraps the per-role workers (embed, chat, rerank, vision) and runs
-the recv loop with shared ping/shutdown handling via :func:`run_worker`.
+the recv loop. Health pings live on a dedicated daemon thread so a long
+inference call cannot starve heartbeats.
 """
 
 from __future__ import annotations
@@ -10,9 +11,9 @@ import contextlib
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from multiprocessing.connection import wait
 from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
@@ -27,19 +28,12 @@ from lilbee.providers.worker.wire_kinds import (
 
 log = logging.getLogger(__name__)
 
-_POLL_TIMEOUT_S = 0.5
-"""Bounded poll so the worker can react to shutdown within a tick instead
-of blocking forever on bare recv."""
+_CONTROL_CALL_ID = 0
+"""Sentinel call-id for shutdown/ack/ping/pong frames."""
 
 
 def redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swap
-    """Send stdout/stderr to /dev/null so llama-cpp's C-level prints stay quiet.
-
-    The pool transport speaks pickle over a pipe; nothing the worker
-    process writes to fd 1 or fd 2 is ever consumed by the parent.
-    Carries ``# pragma: no cover`` because closing fds 1/2 inside the
-    pytest-runner process would deadlock pytest-xdist.
-    """
+    """Send stdout/stderr to /dev/null so llama-cpp's C-level prints stay quiet."""
     devnull_fd = os.open(os.devnull, os.O_RDWR)
     os.dup2(devnull_fd, 1)
     os.dup2(devnull_fd, 2)
@@ -64,6 +58,23 @@ def configure_worker_logging(role: str) -> None:
     root.setLevel(logging.INFO)
 
 
+class Reply:
+    """Per-call sender bound to one ``call_id`` on the data pipe.
+
+    Handlers receive a Reply instance and emit response frames via
+    ``reply.send(KIND, payload)``. The call_id is injected transparently so
+    handlers do not need to thread it through their internal logic.
+    """
+
+    def __init__(self, conn: Any, call_id: int) -> None:
+        self._conn = conn
+        self._call_id = call_id
+
+    def send(self, kind: str, payload: Any) -> None:
+        """Send one response frame tagged with this Reply's call_id."""
+        self._conn.send((self._call_id, kind, payload))
+
+
 @dataclass
 class WorkerLoopState:
     """Per-loop state shared by the dispatcher and the role's handlers.
@@ -75,10 +86,11 @@ class WorkerLoopState:
     session: Any
 
 
-KindHandler = Callable[[Any, Any, WorkerLoopState], None]
-"""Per-role handler signature: ``(data_conn, payload, state) -> None``.
+KindHandler = Callable[[Reply, Any, WorkerLoopState], None]
+"""Per-role handler signature: ``(reply, payload, state) -> None``.
 
-Handlers reach their role-specific session via ``state.session``.
+Handlers reach their role-specific session via ``state.session`` and
+emit response frames via ``reply.send(kind, payload)``.
 """
 
 
@@ -93,13 +105,11 @@ def run_worker(
 ) -> None:
     """Bootstrap stdio + logging, then run the recv loop until shutdown.
 
-    Two pipes per worker: ``data_conn`` carries call/stream/shutdown,
-    ``health_conn`` carries ping/pong. The loop multiplexes the two via
-    :func:`multiprocessing.connection.wait` so neither stalls the other.
-    Built-in kinds (ping on health, shutdown on data) are handled here;
-    *kind_handlers* maps role-specific kinds (e.g. ``"embed"``, ``"chat"``)
-    to the function that processes one such request. Unknown kinds reply
-    with a serialized ``ValueError``.
+    Health pings travel on a separate pipe owned by a daemon thread that
+    answers ping → pong without depending on the data-frame handler. The
+    main loop reads frames as ``(call_id, kind, payload)`` and dispatches
+    role-specific kinds via *kind_handlers*. Unknown kinds reply with a
+    serialized ``ValueError``.
     """
     redirect_stdio_to_devnull()
     configure_worker_logging(role_config.role)
@@ -110,25 +120,45 @@ def run_worker(
         role_config.model_path,
     )
     state = WorkerLoopState(session=session_factory(role_config, abort_flag))
+    heartbeat = _start_heartbeat_thread(health_conn, role_config.role)
     try:
-        while True:
-            ready = wait([data_conn, health_conn], timeout=_POLL_TIMEOUT_S)
-            if not ready:
-                continue
-            if data_conn in ready and not _handle_data_frame(
-                data_conn, state, kind_handlers, role_config.role
-            ):
-                return
-            if health_conn in ready:
-                _handle_health_frame(health_conn, role_config.role)
+        while _handle_data_frame(data_conn, state, kind_handlers, role_config.role):
+            pass
     finally:
-        # session.close() swallows its own teardown errors per role-specific
-        # contract. conn.close() can raise if the parent already tore down.
         state.session.close()
         with contextlib.suppress(Exception):
             data_conn.close()
         with contextlib.suppress(Exception):
             health_conn.close()
+        heartbeat.join(timeout=1.0)
+
+
+def _start_heartbeat_thread(health_conn: Any, role: str) -> threading.Thread:
+    """Spawn the daemon thread that owns the health pipe."""
+    thread = threading.Thread(
+        target=_heartbeat_loop,
+        args=(health_conn, role),
+        name=f"lilbee-worker-{role}-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _heartbeat_loop(health_conn: Any, role: str) -> None:
+    """Respond to ping → pong on the health pipe until the parent closes it."""
+    while True:
+        try:
+            _call_id, kind, _ = health_conn.recv()
+        except (EOFError, OSError):
+            return
+        if kind == PING_KIND:
+            try:
+                health_conn.send((_CONTROL_CALL_ID, PONG_KIND, None))
+            except (BrokenPipeError, OSError):
+                return
+            continue
+        log.warning("%s worker dropped unexpected health-pipe kind %r", role, kind)
 
 
 def _handle_data_frame(
@@ -139,37 +169,27 @@ def _handle_data_frame(
 ) -> bool:
     """Read and dispatch one data-pipe frame. Return False to stop the loop."""
     try:
-        kind, payload = data_conn.recv()
+        call_id, kind, payload = data_conn.recv()
     except EOFError:
         return False
     if kind == SHUTDOWN_KIND:
-        data_conn.send((ACK_KIND, None))
+        data_conn.send((call_id, ACK_KIND, None))
         return False
+    reply = Reply(data_conn, call_id)
     handler = kind_handlers.get(kind)
     if handler is not None:
-        handler(data_conn, payload, state)
+        handler(reply, payload, state)
         return True
     try:
         raise ValueError(f"{role} worker received unknown kind {kind!r}")
     except ValueError as exc:
-        data_conn.send((ERROR_KIND, _serialize_exception(exc)))
+        reply.send(ERROR_KIND, _serialize_exception(exc))
     return True
-
-
-def _handle_health_frame(health_conn: Any, role: str) -> None:
-    """Read one health-pipe frame; reply pong on ping, log + drop on anything else."""
-    try:
-        kind, _ = health_conn.recv()
-    except EOFError:
-        return
-    if kind == PING_KIND:
-        health_conn.send((PONG_KIND, None))
-        return
-    log.warning("%s worker dropped unexpected health-pipe kind %r", role, kind)
 
 
 __all__ = [
     "KindHandler",
+    "Reply",
     "WorkerLoopState",
     "configure_worker_logging",
     "redirect_stdio_to_devnull",

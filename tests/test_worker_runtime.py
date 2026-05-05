@@ -1,33 +1,36 @@
 """Tests for the shared worker bootstrap helpers in :mod:`worker_runtime`.
 
 The per-role workers (embed, chat, rerank, vision) all dispatch through
-``_handle_data_frame`` / ``_handle_health_frame`` and bootstrap through
-``run_worker``. Per-role handler tests live next to their handler in
-the worker-specific test files.
+``_handle_data_frame`` and bootstrap through ``run_worker``. Per-role
+handler tests live next to their handler in the worker-specific test
+files.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 from lilbee.providers.worker.worker_runtime import (
+    Reply,
     WorkerLoopState,
     _handle_data_frame,
-    _handle_health_frame,
+    _heartbeat_loop,
 )
 
 
 class _RecordingConn:
     """In-process stand-in for multiprocessing.Connection."""
 
-    def __init__(self, incoming: list[tuple[str, Any]] | None = None) -> None:
+    def __init__(self, incoming: list[tuple[int, str, Any]] | None = None) -> None:
         self._incoming = list(incoming or [])
-        self.sent: list[tuple[str, Any]] = []
+        self.sent: list[tuple[int, str, Any]] = []
 
-    def send(self, message: tuple[str, Any]) -> None:
+    def send(self, message: tuple[int, str, Any]) -> None:
         self.sent.append(message)
 
-    def recv(self) -> tuple[str, Any]:
+    def recv(self) -> tuple[int, str, Any]:
         return self._incoming.pop(0)
 
 
@@ -36,33 +39,36 @@ def _state() -> WorkerLoopState:
 
 
 def test_handle_data_frame_shutdown_returns_false() -> None:
-    """Shutdown frame on the data pipe acks and stops the worker loop."""
-    conn = _RecordingConn(incoming=[("shutdown", None)])
+    """Shutdown frame on the data pipe acks (echoing call_id) and stops the loop."""
+    conn = _RecordingConn(incoming=[(7, "shutdown", None)])
     assert _handle_data_frame(conn, _state(), {}, "embed") is False
-    assert conn.sent == [("ack", None)]
+    assert conn.sent == [(7, "ack", None)]
 
 
 def test_handle_data_frame_routes_to_role_handler() -> None:
-    """Recognized role kinds get dispatched to their handler with the live state."""
-    conn = _RecordingConn(incoming=[("embed", ["x"])])
+    """Recognized role kinds get a Reply bound to the request's call_id."""
+    conn = _RecordingConn(incoming=[(42, "embed", ["x"])])
     seen: list[tuple[Any, Any, WorkerLoopState]] = []
 
-    def _handler(c: Any, payload: Any, state: WorkerLoopState) -> None:
-        seen.append((c, payload, state))
+    def _handler(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
+        seen.append((reply, payload, state))
+        reply.send("result", [[1.0]])
 
     state = WorkerLoopState(session="session-marker")
     assert _handle_data_frame(conn, state, {"embed": _handler}, "embed") is True
     assert len(seen) == 1
     assert seen[0][1] == ["x"]
     assert seen[0][2] is state
+    assert conn.sent == [(42, "result", [[1.0]])]
 
 
 def test_handle_data_frame_unknown_emits_serialized_value_error() -> None:
-    """Unknown kinds reply with a serialized ValueError naming the role + kind."""
-    conn = _RecordingConn(incoming=[("totally_unknown", None)])
+    """Unknown kinds reply with a serialized ValueError tagged with the call_id."""
+    conn = _RecordingConn(incoming=[(99, "totally_unknown", None)])
     assert _handle_data_frame(conn, _state(), {}, "embed") is True
     assert len(conn.sent) == 1
-    kind, payload = conn.sent[0]
+    call_id, kind, payload = conn.sent[0]
+    assert call_id == 99
     assert kind == "error"
     assert payload.type_name == "ValueError"
     assert "totally_unknown" in payload.message
@@ -73,46 +79,74 @@ def test_handle_data_frame_eof_returns_false() -> None:
     """Pipe EOF on the data side stops the worker loop cleanly."""
 
     class _EOFConn:
-        def recv(self) -> tuple[str, Any]:
+        def recv(self) -> tuple[int, str, Any]:
             raise EOFError
 
-        def send(self, message: tuple[str, Any]) -> None:
+        def send(self, message: tuple[int, str, Any]) -> None:
             raise AssertionError("worker must not send after EOF")
 
     assert _handle_data_frame(_EOFConn(), _state(), {}, "embed") is False
 
 
-def test_handle_health_frame_pings_pong() -> None:
-    """A ping on the health pipe replies with pong."""
-    conn = _RecordingConn(incoming=[("ping", None)])
-    _handle_health_frame(conn, "embed")
-    assert conn.sent == [("pong", None)]
+def test_heartbeat_loop_pongs_pings() -> None:
+    """The heartbeat thread responds to ping with pong on its own pipe."""
 
+    class _EOFAfterFirst(_RecordingConn):
+        """RecordingConn that raises EOF after the first recv, to exit the loop."""
 
-def test_handle_health_frame_eof_is_silent() -> None:
-    """EOF on the health pipe drops without raising; the data side handles shutdown."""
-
-    class _EOFConn:
-        def recv(self) -> tuple[str, Any]:
+        def recv(self) -> tuple[int, str, Any]:
+            if self._incoming:
+                return self._incoming.pop(0)
             raise EOFError
 
-        def send(self, message: tuple[str, Any]) -> None:
-            raise AssertionError("worker must not send on EOF")
+    health = _EOFAfterFirst(incoming=[(0, "ping", None)])
+    _heartbeat_loop(health, "embed")
+    assert health.sent == [(0, "pong", None)]
 
-    _handle_health_frame(_EOFConn(), "embed")  # must not raise
 
-
-def test_handle_health_frame_unexpected_kind_logs_and_drops(caplog) -> None:
+def test_heartbeat_loop_drops_unexpected_kind(caplog) -> None:
     """Anything other than ping on the health pipe logs a warning and drops."""
-    conn = _RecordingConn(incoming=[("garbage", None)])
+
+    class _Pump:
+        def __init__(self) -> None:
+            self._pending = [(0, "garbage", None)]
+            self.sent: list[tuple[int, str, Any]] = []
+
+        def recv(self) -> tuple[int, str, Any]:
+            if self._pending:
+                return self._pending.pop(0)
+            raise EOFError
+
+        def send(self, message: tuple[int, str, Any]) -> None:
+            self.sent.append(message)
+
+    health = _Pump()
     with caplog.at_level("WARNING", logger="lilbee.providers.worker.worker_runtime"):
-        _handle_health_frame(conn, "embed")
-    assert conn.sent == []
+        _heartbeat_loop(health, "embed")
+    assert health.sent == []
     assert any("unexpected health-pipe kind" in rec.message for rec in caplog.records)
 
 
-def test_run_worker_dispatches_data_then_health_then_shutdown(monkeypatch) -> None:
-    """End-to-end: run_worker loops over data + health, drains both, exits on shutdown."""
+def test_heartbeat_loop_returns_on_send_error() -> None:
+    """Pong send that fails (parent already closed) exits the loop quietly."""
+
+    class _BadSend:
+        def __init__(self) -> None:
+            self._pending = [(0, "ping", None)]
+
+        def recv(self) -> tuple[int, str, Any]:
+            if self._pending:
+                return self._pending.pop(0)
+            raise EOFError
+
+        def send(self, _message: tuple[int, str, Any]) -> None:
+            raise BrokenPipeError("parent gone")
+
+    _heartbeat_loop(_BadSend(), "embed")  # must not raise
+
+
+def test_run_worker_dispatches_data_then_shutdown(monkeypatch) -> None:
+    """End-to-end: run_worker reads data frames, dispatches handler, exits on shutdown."""
     from collections import deque
 
     from lilbee.providers.worker import worker_runtime
@@ -126,37 +160,32 @@ def test_run_worker_dispatches_data_then_health_then_shutdown(monkeypatch) -> No
     )
 
     class _FakeConn:
-        def __init__(self, incoming: list[tuple[str, Any]]) -> None:
+        def __init__(self, incoming: list[tuple[int, str, Any]]) -> None:
             self._incoming = deque(incoming)
-            self.sent: list[tuple[str, Any]] = []
+            self.sent: list[tuple[int, str, Any]] = []
             self.closed = False
 
-        def recv(self) -> tuple[str, Any]:
-            return self._incoming.popleft()
+        def recv(self) -> tuple[int, str, Any]:
+            if self._incoming:
+                return self._incoming.popleft()
+            raise EOFError
 
-        def send(self, message: tuple[str, Any]) -> None:
+        def send(self, message: tuple[int, str, Any]) -> None:
             self.sent.append(message)
 
         def close(self) -> None:
             self.closed = True
 
-    data = _FakeConn(incoming=[("embed", ["x"]), ("shutdown", None)])
-    health = _FakeConn(incoming=[("ping", None)])
-
-    # First wait returns no ready conns (timeout, exercises the continue
-    # branch). Then the embed (data), the ping (health), and the shutdown.
-    sequence: deque[list[Any]] = deque([[], [data], [health], [data]])
-
-    def _fake_wait(_conns: Any, timeout: float) -> list[Any]:
-        return sequence.popleft() if sequence else []
-
-    monkeypatch.setattr("lilbee.providers.worker.worker_runtime.wait", _fake_wait)
+    data = _FakeConn(incoming=[(11, "embed", ["x"]), (0, "shutdown", None)])
+    health = _FakeConn(incoming=[])  # heartbeat thread will get EOF and exit
 
     seen_payloads: list[Any] = []
+    handler_started = threading.Event()
 
-    def _embed_handler(conn: Any, payload: Any, _state: WorkerLoopState) -> None:
+    def _embed_handler(reply: Reply, payload: Any, _state: WorkerLoopState) -> None:
         seen_payloads.append(payload)
-        conn.send(("result", [[1.0]]))
+        reply.send("result", [[1.0]])
+        handler_started.set()
 
     closed_sessions: list[bool] = []
 
@@ -175,10 +204,12 @@ def test_run_worker_dispatches_data_then_health_then_shutdown(monkeypatch) -> No
         session_factory=lambda *_a: _Session(),
         kind_handlers={"embed": _embed_handler},
     )
+    assert handler_started.is_set()
+    # Brief wait so the heartbeat daemon thread can observe the EOF on health.
+    time.sleep(0.05)
     assert seen_payloads == [["x"]]
-    assert ("result", [[1.0]]) in data.sent
-    assert ("ack", None) in data.sent
-    assert ("pong", None) in health.sent
+    assert (11, "result", [[1.0]]) in data.sent
+    assert (0, "ack", None) in data.sent
     assert closed_sessions == [True]
     assert data.closed
     assert health.closed

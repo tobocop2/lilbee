@@ -10,7 +10,7 @@ from typing import Any
 from lilbee.providers.worker.transport import RoleConfig, VisionRequest
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import ERROR_KIND, RESULT_KIND, VISION_KIND
-from lilbee.providers.worker.worker_runtime import WorkerLoopState, run_worker
+from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def _extract_vision_content(response: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _handle_vision(conn: Any, payload: Any, state: WorkerLoopState) -> None:
+def _handle_vision(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
     """Run one vision OCR request and send the typed reply (or error)."""
     if not isinstance(payload, VisionRequest):
         try:
@@ -115,13 +115,13 @@ def _handle_vision(conn: Any, payload: Any, state: WorkerLoopState) -> None:
                 f"vision_ocr payload must be VisionRequest, got {type(payload).__name__}"
             )
         except TypeError as exc:
-            conn.send((ERROR_KIND, _serialize_exception(exc)))
+            reply.send(ERROR_KIND, _serialize_exception(exc))
         return
     if not isinstance(payload.png_bytes, (bytes, bytearray)):
         try:
             raise TypeError("vision_ocr payload.png_bytes must be bytes")
         except TypeError as exc:
-            conn.send((ERROR_KIND, _serialize_exception(exc)))
+            reply.send(ERROR_KIND, _serialize_exception(exc))
         return
     session: _VisionSession = state.session
     try:
@@ -131,9 +131,9 @@ def _handle_vision(conn: Any, payload: Any, state: WorkerLoopState) -> None:
             model=payload.model,
         )
     except Exception as exc:
-        conn.send((ERROR_KIND, _serialize_exception(exc)))
+        reply.send(ERROR_KIND, _serialize_exception(exc))
         return
-    conn.send((RESULT_KIND, text))
+    reply.send(RESULT_KIND, text)
 
 
 def vision_worker_main(
