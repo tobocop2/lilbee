@@ -2555,8 +2555,8 @@ class TestCatalogViewToggle:
                 await pilot.pause()
                 assert app.screen.query_one(GridListToggle) is not None
 
-    async def test_our_picks_heading_in_grid(self, _mock_resolve):
-        """Grid view shows 'Our picks' section heading."""
+    async def test_task_headings_in_grid(self, _mock_resolve):
+        """Grid view shows task-based section headings (no separate Our picks)."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -2569,9 +2569,10 @@ class TestCatalogViewToggle:
                     await pilot.pause()
                     headings = app.screen.query(".section-heading")
                     texts = [str(h.render()) for h in headings]
-                    if "Our picks" in texts:
+                    if "Chat" in texts:
                         break
-                assert "Our picks" in texts
+                assert "Chat" in texts
+                assert "Our picks" not in texts
 
 
 class TestCatalogPickBadge:

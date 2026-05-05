@@ -809,9 +809,9 @@ class CatalogScreen(Screen[None]):
         # Section count changed: teardown + remount. Capture the user's
         # current cursor + scroll position so we can restore both after
         # remount; otherwise the _focus_first_grid fallback snaps the
-        # cursor back to "Our picks" mid-keypress, and the layout shift
-        # from extra sections drifts the visible window away from where
-        # the user was looking.
+        # cursor back to the top of the catalog mid-keypress, and the
+        # layout shift from extra sections drifts the visible window
+        # away from where the user was looking.
         focus_anchor = self._capture_focused_section()
         container = self._grid_container
         prior_scroll_y = container.scroll_y
@@ -1525,15 +1525,17 @@ def _group_frontier_rows(
 
 
 def _group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]:
-    """Group local rows into sections for the grid view."""
-    recommended: list[CatalogRow] = []
+    """Group local rows into sections for the grid view.
+
+    Layout: Installed first, then one section per task. Featured rows live
+    at the top of their task section (recognizable by the ``pick`` pill);
+    no separate "Our picks" bucket so the catalog reads as a single
+    task-organized list.
+    """
     installed: list[CatalogRow] = []
     by_task: dict[str, list[CatalogRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
     extras: dict[str, list[CatalogRow]] = {}
     for row in local_rows:
-        if row.featured:
-            recommended.append(row)
-            continue
         if row.installed:
             installed.append(row)
             continue
@@ -1542,8 +1544,14 @@ def _group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]
             bucket.append(row)
         else:
             extras.setdefault(row.task, []).append(row)
+    # Within each task bucket: featured first (preserving their input order),
+    # then the rest in their incoming order. Stable so HF rank from the API
+    # is preserved among non-featured rows.
+    for bucket in by_task.values():
+        bucket.sort(key=lambda r: not getattr(r, "featured", False))
+    for bucket in extras.values():
+        bucket.sort(key=lambda r: not getattr(r, "featured", False))
     return [
-        GridSection(msg.HEADING_OUR_PICKS, recommended),
         GridSection(msg.HEADING_INSTALLED, installed),
         *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
         *[GridSection(task.capitalize(), extras[task]) for task in extras],

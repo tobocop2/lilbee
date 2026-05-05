@@ -107,7 +107,6 @@ EMBEDDING_MISSING = (
     "Run /pull to install one, or: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 )
 THEME_SET = "Theme: {name}"
-HEADING_OUR_PICKS = "Our picks"
 HEADING_INSTALLED = "Installed"
 CATALOG_TAB_LOCAL = "Local"
 CATALOG_TAB_FRONTIER = "Frontier"

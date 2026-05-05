@@ -94,14 +94,21 @@ class TestRowTypes:
 
 class TestGroupRowsForGrid:
     def test_grid_groups_only_local_rows(self) -> None:
+        """Featured rows live at the top of their task section; no separate
+        "Our picks" bucket. Installed rows still get their own section."""
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
 
         local = [_local("Qwen3", featured=True), _local("Llama", installed=True)]
         sections = _group_rows_for_grid(local)
         non_empty = [s for s in sections if s.rows]
         headings = [s.heading for s in non_empty]
-        assert "Our picks" in headings
+        assert "Our picks" not in headings
         assert "Installed" in headings
+        # Featured row lives in its task section (Chat).
+        chat_section = next(s for s in non_empty if s.heading == "Chat")
+        assert any(getattr(r, "featured", False) for r in chat_section.rows)
+        # Featured comes first in the task section.
+        assert getattr(chat_section.rows[0], "featured", False) is True
 
 
 class TestGroupFrontierRows:

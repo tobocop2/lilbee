@@ -474,19 +474,35 @@ class TestGroupRowsForGrid:
         assert len(rerank_section.rows) == 1
         assert rerank_section.rows[0].task == ModelTask.RERANK
 
-    def test_featured_and_installed_excluded_from_task_buckets(self) -> None:
-        """A featured rerank row appears only in Our Picks, not the RERANK bucket."""
+    def test_featured_lives_at_top_of_task_section(self) -> None:
+        """Featured rows merge into their task section with the pick first."""
+        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.modelhub.models import ModelTask
+
+        rows = [
+            self._row(ModelTask.RERANK, featured=False),
+            self._row(ModelTask.RERANK, featured=True),
+        ]
+        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        assert "Our picks" not in sections
+        rerank = sections[ModelTask.RERANK.capitalize()]
+        assert len(rerank) == 2
+        assert getattr(rerank[0], "featured", False) is True
+        assert getattr(rerank[1], "featured", False) is False
+
+    def test_installed_still_has_its_own_section(self) -> None:
+        """Installed rows are pulled out of task sections into their own bucket."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
         from lilbee.modelhub.models import ModelTask
 
         rows = [
-            self._row(ModelTask.RERANK, featured=True),
-            self._row(ModelTask.RERANK),
+            self._row(ModelTask.CHAT, installed=True),
+            self._row(ModelTask.CHAT),
         ]
         sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
-        assert len(sections[msg.HEADING_OUR_PICKS]) == 1
-        assert len(sections[ModelTask.RERANK.capitalize()]) == 1
+        assert len(sections[msg.HEADING_INSTALLED]) == 1
+        assert len(sections[ModelTask.CHAT.capitalize()]) == 1
 
     def test_unknown_task_gets_its_own_section(self) -> None:
         """A row whose task is outside _TASK_BUCKET_ORDER still appears,
