@@ -154,12 +154,15 @@ class ModelGrid(Widget, can_focus=True):
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         # Recompute columns from the available width so the height stays
-        # consistent with what ``render_line`` will draw.
+        # consistent with what ``render_line`` will draw. With no row
+        # gutter, every row contributes exactly _ROW_HEIGHT lines, so
+        # the section needs the full N * _ROW_HEIGHT to keep the last
+        # row's bottom border visible.
         if not self._rows:
             return 0
         cols = self._columns_for_width(width)
         rows = (len(self._rows) + cols - 1) // cols
-        return rows * _ROW_HEIGHT - 1
+        return rows * _ROW_HEIGHT
 
     def watch_highlighted(self, _old: int | None, new: int | None) -> None:
         """Repaint and scroll the highlighted cell into view.

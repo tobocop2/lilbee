@@ -5232,8 +5232,9 @@ class TestModelGridUtilityMethods:
         # Width 80 with the default _CARD_MIN_WIDTH lays out 2 cards per row.
         size = mock.Mock(width=80, height=24)
         height = grid.get_content_height(size, size, 80)
-        # 8 rows / 2 cols = 4 grid rows; 4 * _ROW_HEIGHT - 1 (no trailing gutter).
-        assert height == 4 * _ROW_HEIGHT - 1
+        # 8 rows / 2 cols = 4 grid rows; each row is _ROW_HEIGHT lines tall.
+        # No trailing gutter to subtract.
+        assert height == 4 * _ROW_HEIGHT
 
     def test_get_content_height_zero_when_empty(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
