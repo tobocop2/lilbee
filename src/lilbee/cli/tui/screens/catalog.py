@@ -126,11 +126,12 @@ class CatalogScreen(Screen[None]):
         Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
-        # Arrow keys scroll the grid container smoothly so the keyboard
-        # path matches the mouse wheel behaviour. j / k still move the
-        # card cursor for selection.
-        Binding("down", "scroll_down", "Down", show=False, group=_SCROLL_GROUP),
-        Binding("up", "scroll_up", "Up", show=False, group=_SCROLL_GROUP),
+        # Arrows move the card cursor too (auto-scrolls into view) so
+        # the highlight follows the visible region. Decoupling them
+        # into pure viewport scroll left a stale highlight on the
+        # previously-focused card.
+        Binding("down", "cursor_down", "Down", show=False, group=_SCROLL_GROUP),
+        Binding("up", "cursor_up", "Up", show=False, group=_SCROLL_GROUP),
         # priority=True so vim jump-to-top/bottom always wins over the
         # focused ModelGrid's enter/select binding when keys collide.
         Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP, priority=True),
@@ -1377,29 +1378,13 @@ class CatalogScreen(Screen[None]):
         else:
             self._nudge_list(-self._page_rows())
 
-    def action_scroll_down(self) -> None:
-        """Down arrow: smooth-scroll the grid container, mirroring the mouse wheel."""
-        if isinstance(self.focused, Input):
-            return
-        if self._grid_view:
-            self._grid_container.scroll_down(animate=True)
-        else:
-            self._nudge_list(1)
-
-    def action_scroll_up(self) -> None:
-        """Up arrow: smooth-scroll the grid container, mirroring the mouse wheel."""
-        if isinstance(self.focused, Input):
-            return
-        if self._grid_view:
-            self._grid_container.scroll_up(animate=True)
-        else:
-            self._nudge_list(-1)
-
     def action_cursor_down(self) -> None:
         if isinstance(self.focused, Input):
             return
         if self._grid_view:
-            if (grid := self._focused_grid()) is not None:
+            grid = self._focused_grid() or self._first_grid_or_none()
+            if grid is not None:
+                grid.focus()
                 grid.action_cursor_down()
         else:
             self._nudge_list(1)
@@ -1408,10 +1393,26 @@ class CatalogScreen(Screen[None]):
         if isinstance(self.focused, Input):
             return
         if self._grid_view:
-            if (grid := self._focused_grid()) is not None:
+            grid = self._focused_grid() or self._first_grid_or_none()
+            if grid is not None:
+                grid.focus()
                 grid.action_cursor_up()
         else:
             self._nudge_list(-1)
+
+    def _first_grid_or_none(self) -> ModelGrid | None:
+        """Return the first ModelGrid mounted on the screen, or None.
+
+        Lets ``cursor_down`` / ``cursor_up`` proceed even when nothing
+        is focused yet (e.g. the user pressed an arrow before focus
+        landed on a grid after a cold catalog mount).
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            return self.query_one(ModelGrid)
+        except NoMatches:
+            return None
 
     def action_jump_top(self) -> None:
         if isinstance(self.focused, Input):

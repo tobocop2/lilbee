@@ -306,13 +306,10 @@ def _render_card_strip(row: CatalogRow, *, selected: bool, width: int) -> _CardL
     else:
         body = _local_lines(row, selected=selected)
     border_style = "$accent" if selected else "$surface-lighten-2"
-    # Unselected cards leave the interior transparent so text contrast
-    # comes from the screen background, not from a theme-coloured fill
-    # that may render near-white on light $boost themes (Catppuccin-Latte
-    # etc.) and hide the bold name. The accent border alone is enough to
-    # define the tile. Selected card gets a subtle accent tint so focus
-    # is unmistakable without breaking readability.
-    fill_style = "on $accent 20%" if selected else ""
+    # Use the theme's $surface tone for unselected cards so tiles read
+    # as theme-matching panels rather than transparent black rectangles.
+    # Selected card layers $accent on top for unmistakable focus.
+    fill_style = "on $accent 30%" if selected else "on $surface"
     outer_width = max(3, width - _CARD_GUTTER)
     inner_width = outer_width - 2  # subtract the two vertical border cells
     top = Content.styled(f"{_BORDER_TL}{_BORDER_H * inner_width}{_BORDER_TR}", border_style)
