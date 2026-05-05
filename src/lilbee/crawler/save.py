@@ -1,8 +1,4 @@
-"""URL → filename mapping, metadata I/O, and per-page save-to-disk.
-
-Backend-agnostic: all I/O lives here so a future adapter doesn't
-need to reinvent the crawl metadata sidecar or the ``_web/`` layout.
-"""
+"""URL-to-filename mapping, metadata I/O, and per-page save-to-disk."""
 
 from __future__ import annotations
 

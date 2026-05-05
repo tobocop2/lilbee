@@ -4,11 +4,26 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, Vertical
+from textual.containers import Center, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.widgets import Label, Static
+
+
+class _ConfirmPill(Static, can_focus=True):
+    """Pill-styled clickable label used as Yes/No in :class:`ConfirmDialog`."""
+
+    def __init__(self, label: str, *, dialog_id: str) -> None:
+        super().__init__(label, id=dialog_id, classes="confirm-pill")
+        self._dialog_id = dialog_id
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        screen = self.screen
+        if isinstance(screen, ConfirmDialog):
+            screen.dismiss(self._dialog_id == "confirm-yes")
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -32,12 +47,9 @@ class ConfirmDialog(ModalScreen[bool]):
         with Vertical():
             yield Static(self._title, id="confirm-title")
             yield Label(self._message, id="confirm-message")
-            with Center():
-                yield Button("Yes (y)", variant="error", id="confirm-yes")
-                yield Button("No (n)", variant="default", id="confirm-no")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "confirm-yes")
+            with Center(), Horizontal(id="confirm-buttons"):
+                yield _ConfirmPill("Yes (y)", dialog_id="confirm-yes")
+                yield _ConfirmPill("No (n)", dialog_id="confirm-no")
 
     def action_confirm(self) -> None:
         self.dismiss(True)

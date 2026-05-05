@@ -736,6 +736,121 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     assert any("Syncing a.pdf" in str(call) for call in reporter.update.call_args_list)
 
 
+def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
+    """BATCH_PROGRESS events from the vision-OCR subprocess become per-page reporter updates."""
+    import asyncio
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest.types import SyncResult
+    from lilbee.runtime.progress import BatchProgressEvent, EventType
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    from lilbee.app.ingest import CopyResult
+
+    copy_result = CopyResult(copied=[str(src)], skipped=[])
+
+    async def fake_sync(*, quiet, on_progress):
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(file="a.pdf", status="rasterizing", current=2, total=10),
+        )
+        return SyncResult()
+
+    def _worker() -> None:
+        screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+        with (
+            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+            # Run the coroutine inline so on_progress fires; bypass asyncio_loop
+            # which may not be primed inside this worker thread (Windows CI).
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
+        ):
+            screen._do_add(src, reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    page_updates = [call for call in reporter.update.call_args_list if "page 2 of 10" in str(call)]
+    assert page_updates
+
+
+def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:
+    """Auto-sync surfaces skipped files via notify so the user knows about them."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest.types import SyncResult
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen._auto_sync = False  # type: ignore[attr-defined]
+    reporter = MagicMock(spec=ProgressReporter)
+    screen.notify = lambda body, **kw: None  # type: ignore[assignment]
+    notify_calls: list[tuple[str, ...]] = []
+
+    def _worker() -> None:
+        with (
+            patch(
+                "lilbee.runtime.asyncio_loop.run",
+                new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda *a, **kw: notify_calls.append(a),
+            ),
+        ):
+            screen._do_sync(reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    # call_from_thread(self, self.notify, message, severity="warning") was invoked.
+    assert notify_calls
+    assert any("scan.pdf" in str(call) for call in notify_calls)
+
+
+def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
+    """When sync returns skipped files, _do_add raises so the worker surfaces the error."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest.types import SyncResult
+
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(b"x")
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    from lilbee.app.ingest import CopyResult
+
+    copy_result = CopyResult(copied=[str(src)], skipped=[])
+    captured: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+            with (
+                patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+                patch(
+                    "lilbee.runtime.asyncio_loop.run",
+                    new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
+                ),
+                patch("lilbee.cli.tui.screens.chat._remove_copied_files"),
+            ):
+                screen._do_add(src, reporter)
+        except BaseException as e:
+            captured.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert captured and "scan.pdf" in str(captured[0])
+
+
 @pytest.mark.asyncio
 async def test_cmd_crawl_with_valid_url_routes_to_start_crawl() -> None:
     """/crawl with a valid URL (explicit https) triggers _start_crawl."""

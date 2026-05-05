@@ -4,6 +4,12 @@ Renders both ``LocalCatalogRow`` (installable / installed GGUFs) and
 ``FrontierCatalogRow`` (cloud chat models) via type dispatch so the
 catalog can show a Frontier section above local sections without a
 second widget class.
+
+A card composes its name + pills + specs + status + (highlight-only)
+hint into a single ``Static`` rendering one ``Content`` object. This
+keeps the per-card widget count to two (the container + one Static)
+so the catalog's grid view can scale to thousands of rows without
+saturating the compositor with mount/reflow work.
 """
 
 from __future__ import annotations
@@ -34,10 +40,6 @@ _CSS_FILE = Path(__file__).parent / "model_card.tcss"
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
 
-    # Widget CSS lives in model_card.tcss so it gets syntax highlighting and
-    # matches the convention used for screens. Textual's Widget class only
-    # supports DEFAULT_CSS (there is no widget-level CSS_PATH), so we load the
-    # file once at import time.
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     selected: reactive[bool] = reactive(False)
@@ -45,9 +47,7 @@ class ModelCard(containers.VerticalGroup):
     def __init__(self, row: CatalogRow) -> None:
         self._row = row
         super().__init__()
-        # The card uses a class to style frontier rows distinctly from
-        # local rows in the grid (e.g. accent border, key-status badge).
-        if isinstance(row, FrontierCatalogRow):  # frontier branch
+        if isinstance(row, FrontierCatalogRow):
             self.add_class("-frontier")
 
     @property
@@ -56,47 +56,60 @@ class ModelCard(containers.VerticalGroup):
 
     def watch_selected(self, selected: bool) -> None:
         self.set_class(selected, "-selected")
+        # Re-render so the highlight-only hint appears / disappears.
+        # Cheap: one Static.update() per highlight move beats the
+        # CSS-driven display: none toggle on a separate Label widget.
+        try:
+            body = self.query_one(".card-body", widgets.Static)
+        except Exception:
+            return
+        body.update(_render(self._row, selected=selected))
 
     def compose(self) -> ComposeResult:
-        # Dispatch on row type. isinstance is annotated per AGENTS.md
-        # so future readers see why a runtime check is the right tool
-        # here (sealed union dispatch, not a bandaid).
-        row = self._row
-        if isinstance(row, FrontierCatalogRow):  # sealed-union dispatch
-            yield from _compose_frontier(row)
-        else:
-            yield from _compose_local(row)
+        yield widgets.Static(
+            _render(self._row, selected=self.selected),
+            classes="card-body",
+            markup=False,
+        )
 
 
-def _compose_local(row: LocalCatalogRow) -> ComposeResult:
+def _render(row: CatalogRow, *, selected: bool) -> Content:
+    """Compose the full card content (name + pills + specs + status + hint)."""
+    if isinstance(row, FrontierCatalogRow):
+        return _render_frontier(row)
+    return _render_local(row, selected=selected)
+
+
+def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
     from lilbee.cli.tui import messages as msg
 
     bg = TASK_COLORS.get(row.task, "$primary")
-    yield widgets.Label(row.name, id="card-name")
-    with containers.HorizontalGroup(id="card-pills"):
-        if row.featured:
-            yield widgets.Label(pill("pick", "$warning", "$text"), id="card-pick")
-        yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
-        if row.backend:
-            yield widgets.Label(pill(row.backend, "$accent", "$text"), id="card-backend")
+    name = Content.styled(row.name, "bold")
+    pills: list[Content] = []
+    if row.featured:
+        pills.append(pill("pick", "$warning", "$text"))
+    pills.append(pill(row.task, bg, "$text"))
+    if row.backend:
+        pills.append(pill(row.backend, "$accent", "$text"))
+    pill_line = Content(" ").join(pills)
     specs = _build_specs(row.params, row.quant, row.size)
-    yield widgets.Label(specs, id="card-info")
     status = _build_local_status(row)
+
+    parts: list[Content] = [name, pill_line, specs]
     if status is not None:
-        yield widgets.Label(status, id="card-status")
-    # Subtle "Enter to install" hint; CSS shows it only when the card
-    # is highlighted (GridSelect cursor), hides for installed cards.
-    if not row.installed:
-        yield widgets.Label(msg.SETUP_CARD_HINT, id="card-hint")
+        parts.append(status)
+    if selected and not row.installed:
+        parts.append(Content.styled(msg.SETUP_CARD_HINT, "$text-muted 40% italic"))
+    return Content("\n").join(parts)
 
 
-def _compose_frontier(row: FrontierCatalogRow) -> ComposeResult:
-    yield widgets.Label(row.name, id="card-name")
-    with containers.HorizontalGroup(id="card-pills"):
-        yield widgets.Label(pill(row.provider, "$accent", "$text"), id="card-backend")
-        yield widgets.Label(_key_status_pill(row.key_status), id="card-status")
+def _render_frontier(row: FrontierCatalogRow) -> Content:
+    name = Content.styled(row.name, "bold")
+    backend_pill = pill(row.provider, "$accent", "$text")
+    status_pill = _key_status_pill(row.key_status)
+    pill_line = Content(" ").join([backend_pill, status_pill])
     info = Content.styled(f"Cloud via {row.provider} API", "$text-muted")
-    yield widgets.Label(info, id="card-info")
+    return Content("\n").join([name, pill_line, info])
 
 
 def _key_status_pill(status: KeyStatus) -> Content:

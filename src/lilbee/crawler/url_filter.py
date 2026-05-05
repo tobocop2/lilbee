@@ -1,10 +1,4 @@
-"""URL validation, blocked-network checks, and host-scope helpers.
-
-Backend-agnostic: no crawl4ai or Playwright imports. The crawl4ai
-adapter reads :class:`lilbee.crawler.models.FilterSpec` and builds
-its own ``URLFilter`` / ``DomainFilter`` objects from these inputs,
-so a future adapter can reuse the same specs directly.
-"""
+"""URL validation, blocked-network checks, and host-scope helpers."""
 
 from __future__ import annotations
 

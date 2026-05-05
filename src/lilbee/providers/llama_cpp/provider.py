@@ -22,7 +22,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort, request_abort
 from lilbee.providers.llama_cpp.batching import (
     BATCH_WINDOW_S,
     EMBED_FUTURE_TIMEOUT_S,
@@ -39,6 +39,7 @@ from lilbee.providers.llama_cpp.gguf_meta import (
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
+    stderr_suppressed,
     suppress_native_stderr,
 )
 from lilbee.providers.model_cache import (
@@ -149,16 +150,20 @@ class LlamaCppProvider(LLMProvider):
                 if not req.future.done():
                     req.future.set_exception(exc)
             return
-        for req in batch:
-            try:
-                vectors: list[list[float]] = []
-                for text in req.texts:
-                    response = embed_one(llm, text)
-                    vectors.append(response)
-                req.future.set_result(vectors)
-            except Exception as exc:
-                if not req.future.done():
-                    req.future.set_exception(exc)
+        # Hold the stderr-suppression lock + fd-2 swap once for the whole batch
+        # rather than once per text; per-text wrapping is what made the TUI
+        # appear frozen during multi-page-PDF ingest.
+        with stderr_suppressed():
+            for req in batch:
+                try:
+                    vectors: list[list[float]] = []
+                    for text in req.texts:
+                        response = embed_one(llm, text)
+                        vectors.append(response)
+                    req.future.set_result(vectors)
+                except Exception as exc:
+                    if not req.future.done():
+                        req.future.set_exception(exc)
 
     def _rerank_worker(self) -> None:
         """Background thread: drain rerank queue, serialize through the model.
@@ -183,7 +188,8 @@ class LlamaCppProvider(LLMProvider):
                 req.future.set_exception(exc)
             return
         try:
-            scores = compute_rerank_scores(llm, req.query, req.candidates)
+            with stderr_suppressed():
+                scores = compute_rerank_scores(llm, req.query, req.candidates)
             req.future.set_result(scores)
         except Exception as exc:
             if not req.future.done():
@@ -245,9 +251,11 @@ class LlamaCppProvider(LLMProvider):
         """llama-cpp can rerank iff llama-cpp-python exposes the rank pooling type."""
         return _llama_cpp_has_rank_pooling()
 
-    def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
-        """Run vision OCR via the subprocess worker."""
-        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt)
+    def vision_ocr(
+        self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
+    ) -> str:
+        """Run vision OCR via the subprocess worker, honouring an optional per-call timeout."""
+        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
     def chat(
         self,
@@ -326,12 +334,27 @@ class LlamaCppProvider(LLMProvider):
             log.debug("no mmproj for %s", model, exc_info=True)
         return caps
 
+    _SHUTDOWN_JOIN_TIMEOUT_S = 30.0
+
     def shutdown(self) -> None:
-        """Stop workers and unload all cached models."""
+        """Stop workers and unload all cached models.
+
+        Trips the process-wide abort flag so any inference inside ggml
+        returns at the next token-poll, which lets the workers see the
+        ``None`` sentinel within seconds instead of blocking on a full
+        completion. The flag is cleared once the workers exit so the next
+        provider does not start in an aborted state.
+        """
+        request_abort()
         self._embed_queue.put(None)
-        self._embed_thread.join(timeout=2)
         self._rerank_queue.put(None)
-        self._rerank_thread.join(timeout=2)
+        self._embed_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
+        self._rerank_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
+        if self._embed_thread.is_alive():
+            log.warning("embed worker did not exit within shutdown timeout")
+        if self._rerank_thread.is_alive():
+            log.warning("rerank worker did not exit within shutdown timeout")
+        clear_abort()
         if self._subprocess_worker is not None:
             self._subprocess_worker.stop()
             self._subprocess_worker = None

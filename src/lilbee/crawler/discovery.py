@@ -1,16 +1,4 @@
-"""URL discovery: spec builders that scope what the crawler will reach.
-
-The runner needs three pieces of discovery configuration before it
-starts: the concurrency knobs (how many in flight, how to back off
-under rate limits), the URL filter (what hosts and patterns are in
-scope), and the best-effort sitemap denominator for progress events.
-
-Sitemap parsing lives in :mod:`lilbee.crawler.sitemap` (its own module
-because it only does HTTP + regex). This module owns the spec
-builders that project ``cfg`` into the backend-neutral
-:class:`ConcurrencySpec` / :class:`FilterSpec` shapes consumed by
-:class:`lilbee.crawler.fetcher.WebFetcher`.
-"""
+"""URL discovery: build backend-neutral concurrency and filter specs from ``cfg``."""
 
 from __future__ import annotations
 

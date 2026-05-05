@@ -1,10 +1,4 @@
-"""Backend-agnostic value types for the crawler package.
-
-These dataclasses cross the seam between the orchestration layer
-(``runner.py``) and the web-fetcher backend (``crawl4ai_fetcher.py``).
-No third-party types leak through them, so a future adapter can
-satisfy the ``WebFetcher`` Protocol without pulling in crawl4ai.
-"""
+"""Backend-agnostic value types crossing the runner/fetcher seam."""
 
 from __future__ import annotations
 

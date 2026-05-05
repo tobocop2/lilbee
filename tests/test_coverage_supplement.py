@@ -139,6 +139,26 @@ class TestChatInputNewline:
             assert "\n" in inp.value
 
 
+class TestChatInputCheckConsumeKey:
+    """`ChatInput.check_consume_key` releases keys that App-level help binds."""
+
+    async def test_question_mark_passes_through(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.chat_input import ChatInput
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput(id="probe-input")
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            inp = pilot.app.query_one("#probe-input", ChatInput)
+            assert inp.check_consume_key("question_mark", "?") is False
+            # Other printable keys still consumed so typing works.
+            assert inp.check_consume_key("a", "a") is True
+
+
 class TestStatusBarSwitch:
     """`ViewTab.action_activate` calls `_switch`; under a non-LilbeeApp
     test parent the isinstance gate skips ``switch_view`` but still
@@ -187,6 +207,48 @@ class TestCatalogUtilsFrontierFromRemote:
         assert isinstance(row, FrontierCatalogRow)
         assert row.provider == "Gemini"
         assert row.key_status == KeyStatus.READY
+        # ref must be the canonical provider/name form so it round-trips
+        # through Config.chat_model's validator without a per-call-site fixup.
+        assert row.ref == "gemini/gemini-test"
+
+
+class TestRowDeleteId:
+    """`row_delete_id` returns frontier ``ref`` directly, but for remote
+    rows hands back the bare backend name (Ollama keys models by bare
+    name, not the canonical ``ollama/<name>`` ref)."""
+
+    def test_frontier_row_returns_canonical_ref(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import (
+            FrontierCatalogRow,
+            KeyStatus,
+            row_delete_id,
+        )
+
+        row = FrontierCatalogRow(
+            name="claude",
+            ref="anthropic/claude",
+            task="chat",
+            provider="Anthropic",
+            provider_id="anthropic",
+            key_status=KeyStatus.READY,
+        )
+        assert row_delete_id(row) == "anthropic/claude"
+
+    def test_ollama_remote_row_returns_bare_backend_name(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import remote_to_row, row_delete_id
+        from lilbee.modelhub.model_manager import RemoteModel
+
+        rm = RemoteModel(
+            name="qwen3:0.6b",
+            provider="Ollama",
+            task="chat",
+            family="qwen",
+            parameter_size="0.6B",
+        )
+        row = remote_to_row(rm)
+        # ref carries the canonical chat_model form; delete uses the bare name.
+        assert row.ref == "ollama/qwen3:0.6b"
+        assert row_delete_id(row) == "qwen3:0.6b"
 
 
 class TestCatalogVimNavListView:
@@ -427,6 +489,7 @@ class TestCatalogSelectFrontierRow:
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.core.config import cfg
 
         class _Probe(App[None]):
             def compose(self) -> ComposeResult:
@@ -435,13 +498,15 @@ class TestCatalogSelectFrontierRow:
             def on_mount(self) -> None:
                 self.push_screen(CatalogScreen())
 
+        # No apply_active_model mock: the canonical ref must round-trip
+        # through Config.chat_model's validator (a bare ref would raise
+        # and regress b3a36798).
         with (
             mock.patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
             mock.patch(
                 "lilbee.cli.tui.screens.catalog.get_catalog",
                 return_value=mock.MagicMock(models=[], total=0, has_more=False),
             ),
-            mock.patch("lilbee.cli.tui.screens.catalog.apply_active_model") as apply_model,
         ):
             async with _Probe().run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
@@ -449,14 +514,14 @@ class TestCatalogSelectFrontierRow:
                 assert isinstance(screen, CatalogScreen)
                 row = FrontierCatalogRow(
                     name="gemini-2.0-flash",
-                    ref="gemini-2.0-flash",
+                    ref="gemini/gemini-2.0-flash",
                     task="chat",
                     provider="Gemini",
                     provider_id="gemini",
                     key_status=KeyStatus.READY,
                 )
                 screen._select_frontier_row(row)
-                apply_model.assert_called_once()
+                assert cfg.chat_model == "gemini/gemini-2.0-flash"
 
     async def test_select_frontier_missing_key_notifies(self) -> None:
         from textual.app import App, ComposeResult

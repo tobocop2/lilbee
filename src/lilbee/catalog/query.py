@@ -9,6 +9,7 @@ from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.core.services import get_services
 from lilbee.modelhub.models import ModelTask
+from lilbee.modelhub.registry import format_native_gguf_ref
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -170,7 +171,7 @@ def _build_catalog_index() -> CatalogIndex:
     for m in FEATURED_ALL:
         by_hf_repo.setdefault(m.hf_repo.lower(), m)
         if "*" not in m.gguf_filename:
-            by_full_ref[f"{m.hf_repo}/{m.gguf_filename}".lower()] = m
+            by_full_ref[format_native_gguf_ref(m.hf_repo, m.gguf_filename).lower()] = m
     return CatalogIndex(by_hf_repo, by_full_ref)
 
 

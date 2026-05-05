@@ -11,8 +11,9 @@ from typing import ClassVar
 from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
-from textual.events import Click
+from textual.containers import Horizontal, VerticalScroll
+from textual.events import Click, MouseScrollDown
+from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Input, Static, TabbedContent, TabPane
@@ -38,12 +39,15 @@ from lilbee.cli.tui.screens.catalog_utils import (
     frontier_row_from_remote,
     matches_search,
     remote_to_row,
+    row_delete_id,
     variant_to_row,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -52,13 +56,16 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
-from lilbee.providers.model_ref import OLLAMA_PREFIX
-from lilbee.providers.sdk_backend import OLLAMA_BACKEND_NAME
 
 log = logging.getLogger(__name__)
 
-_HF_PAGE_SIZE = 25
-_HF_LOAD_MORE_TRIGGER = 5
+# Models fetched per task per page. We make one /api/models call per
+# task (chat / embedding / vision / rerank), so the user-visible page
+# size is _HF_PAGE_SIZE * 4. Small pages keep each HF round-trip well
+# under a second on a typical connection and keep the freshly-rendered
+# row count low so layout reflow stays cheap.
+_HF_PAGE_SIZE = 4
+_HF_LOAD_MORE_TRIGGER = 4
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
@@ -76,6 +83,13 @@ _FRONTIER_TAB_ID = "frontier"
 _FRONTIER_LIST_ID = "frontier-list"
 
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
+
+# Braille spinner frames for the catalog pagination/search loading
+# indicator. Cycled on a 100 ms timer while the catalog is fetching
+# more HF rows or a remote search is in flight, so the user always
+# has a moving signal during the wait instead of an empty pane.
+_SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SPINNER_INTERVAL_S = 0.1
 
 _RowCacheKey = tuple[int, int, int, bool, int, int]
 
@@ -112,8 +126,10 @@ class CatalogScreen(Screen[None]):
         Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
-        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP),
-        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP),
+        # priority=True so vim jump-to-top/bottom always wins over the
+        # focused ModelGrid's enter/select binding when keys collide.
+        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP, priority=True),
+        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP, priority=True),
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
@@ -157,14 +173,25 @@ class CatalogScreen(Screen[None]):
         self._frontier_refresh_timer: Timer | None = None
         self._search_filter_timer: Timer | None = None
         self._scroll_prefetch_armed_at: float = 0.0
+        self._spinner_timer: Timer | None = None
+        self._spinner_frame: int = 0
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
+        from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
+
         with TopBars():
             yield ViewTabs()
-            yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
-        yield Static("", id="sort-label", shrink=True)
+            yield Input(
+                placeholder=msg.CATALOG_FILTER_PLACEHOLDER,
+                id="catalog-search",
+                classes="-hidden",
+            )
+        with Horizontal(id="catalog-toolbar"):
+            yield GridListToggle()
+            yield Static("", id="sort-label", shrink=True)
+            yield Static("", id="catalog-loading-spinner")
         with (
             TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
             TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
@@ -191,13 +218,34 @@ class CatalogScreen(Screen[None]):
             self.app.provider_availability_changed_signal.subscribe(
                 self, self._on_provider_availability_changed
             )
-        # Auto-load more HF rows when scrolled near the bottom of the list.
+        # Auto-load more HF rows when scrolled near the bottom in either view.
         self.watch(self._list_widget, "scroll_y", self._on_list_scrolled, init=False)
+        self.watch(self._grid_container, "scroll_y", self._on_grid_scrolled, init=False)
 
     def on_unmount(self) -> None:
         if isinstance(self.app, LilbeeApp):
             with contextlib.suppress(Exception):
                 self.app.provider_availability_changed_signal.unsubscribe(self)
+        self._stop_spinner_timer()
+
+    def on_screen_suspend(self) -> None:
+        """Pause the spinner timer while the screen is offscreen.
+
+        Without this the 100 ms braille tick keeps firing for the full
+        TUI session even when the catalog is not visible, costing ~4%
+        of main-thread CPU forever.
+        """
+        self._stop_spinner_timer()
+
+    def on_screen_resume(self) -> None:
+        """Re-arm the spinner only if a fetch is still in flight."""
+        if self._loading_more or self._search_in_flight:
+            self._sync_loading_spinner()
+
+    def _stop_spinner_timer(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
 
     _FRONTIER_REFRESH_DEBOUNCE = 1.0
 
@@ -210,9 +258,11 @@ class CatalogScreen(Screen[None]):
         )
 
     def _focus_first_grid(self) -> None:
-        """Focus the first GridSelect widget if available."""
-        with contextlib.suppress(Exception):
-            self.query_one(GridSelect).focus()
+        """Focus the first grid widget (ModelGrid in grid view) if any."""
+        for cls in (ModelGrid, GridSelect):
+            with contextlib.suppress(Exception):
+                self.query_one(cls).focus()
+                return
 
     def _initial_focus_first_grid(self) -> None:
         """on_mount initial focus: skip if a later refresh-tick has already
@@ -271,12 +321,20 @@ class CatalogScreen(Screen[None]):
                 with self.app.batch_update():
                     self._refresh_grid()
                 with contextlib.suppress(Exception):
-                    self.query_one("#catalog-grid GridSelect", GridSelect).focus()
+                    self.query_one("#catalog-grid ModelGrid", ModelGrid).focus()
         finally:
             self._view_switching = False
+        self._sync_grid_list_toggle()
+
+    def _sync_grid_list_toggle(self) -> None:
+        from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
+
+        with contextlib.suppress(Exception):
+            self.query_one(GridListToggle).set_grid(self._grid_view)
 
     def action_focus_search(self) -> None:
-        """Focus the filter input -- bound to / key."""
+        """Reveal and focus the filter input. Bound to / key."""
+        self._search_input.remove_class("-hidden")
         self._search_input.focus()
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
@@ -285,11 +343,10 @@ class CatalogScreen(Screen[None]):
     def _on_search_changed(self, event: Input.Changed) -> None:
         """Schedule a filter pass after a short debounce.
 
-        Per keystroke the filter walks every visible ``ModelCard`` /
-        ``ModelListItem`` and toggles ``display``, which Textual treats
-        as a layout invalidation. Without the debounce, a 5-char term
-        produces 5 full layout passes; with it, typing collapses to a
-        single pass once the user pauses.
+        Each keystroke triggers a grid re-render or a list redraw, both of
+        which Textual treats as layout invalidations. Without the debounce
+        a 5-char term produces 5 full passes; with it, typing collapses
+        to a single pass once the user pauses.
         """
         if self._search_filter_timer is not None:
             self._search_filter_timer.stop()
@@ -313,7 +370,7 @@ class CatalogScreen(Screen[None]):
         """Enter installs the first visible match; falls through to a remote
         HF search when nothing matches locally."""
         if self._grid_view:
-            if any(card.display for card in self.query(ModelCard)):
+            if any(grid.rows for grid in self.query(ModelGrid)):
                 self._select_first_visible_grid_card()
                 return
         elif self._list_widget.option_count:
@@ -327,6 +384,7 @@ class CatalogScreen(Screen[None]):
             return
         self._search_in_flight = True
         self._update_sort_label()
+        self._sync_loading_spinner()
         # Sort label is hidden in grid view, so the toast is the only feedback there.
         self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
         self._fetch_hf_search(query)
@@ -345,11 +403,10 @@ class CatalogScreen(Screen[None]):
         install fires on what the user can actually see.
         """
         with contextlib.suppress(Exception):
-            for grid in self.query(GridSelect):
-                visible = [i for i, card in enumerate(grid.children) if card.display]
-                if visible:
+            for grid in self.query(ModelGrid):
+                if grid.rows:
                     grid.focus()
-                    grid.highlighted = visible[0]
+                    grid.highlighted = 0
                     grid.action_select()
                     return
 
@@ -458,10 +515,13 @@ class CatalogScreen(Screen[None]):
         worker_name = event.worker.name
         if not self._apply_worker_result(worker_name, result):
             return
-        # FETCH_MORE_HF appends to the list (and is invisible to the capped grid).
-        # Skip the full _refresh_view rebuild; just mount the new rows at the end.
-        if worker_name == _WORKER_FETCH_MORE_HF and not self._grid_view:
-            self._append_more_hf_to_list(result)
+        # FETCH_MORE_HF appends to the active view's tail; skip the full
+        # _refresh_view rebuild so scroll position and focus are preserved.
+        if worker_name == _WORKER_FETCH_MORE_HF:
+            if self._grid_view:
+                self._refresh_grid()
+            else:
+                self._append_more_hf_to_list(result)
             return
         self._refresh_view()
 
@@ -489,6 +549,7 @@ class CatalogScreen(Screen[None]):
         if name == _WORKER_FETCH_SEARCH:
             self._search_in_flight = False
             self._update_sort_label()
+        self._sync_loading_spinner()
 
     def _apply_worker_result(self, name: str, result: list) -> bool:
         """Land worker results into the screen's caches.
@@ -498,6 +559,7 @@ class CatalogScreen(Screen[None]):
         decorator name won't silently rebuild the grid)."""
         if name == _WORKER_FETCH_HF:
             self._hf_models = result
+            self._loading_more = False
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
             self._loading_more = False
@@ -514,6 +576,7 @@ class CatalogScreen(Screen[None]):
         else:
             return False
         self._data_version += 1
+        self._sync_loading_spinner()
         return True
 
     def _sync_frontier_tab(self) -> None:
@@ -680,44 +743,64 @@ class CatalogScreen(Screen[None]):
             else:
                 self._refresh_list()
 
-    # Cap protects against ItemGrid layout cost (~5 subwidgets per
-    # card * N cards locks the UI). List view has no cap.
-    _GRID_HF_BUDGET = 24
-
     def _refresh_grid(self) -> None:
-        """Rebuild the grid view with all cards (called when data changes)."""
-        family_rows = self._build_family_rows("")
-        remote_rows = self._build_remote_rows("")
-        hf_rows_full = self._build_hf_rows("") if self._hf_fetched else []
-        hf_overflow = max(0, len(hf_rows_full) - self._GRID_HF_BUDGET)
-        hf_rows = hf_rows_full[: self._GRID_HF_BUDGET]
+        """Rebuild grid view; extend in-place when sections already mounted.
+
+        Initial paint mounts everything (first time a tab is opened).
+        Subsequent dataset updates (HF pagination, sort change, filter)
+        update each existing ModelGrid via set_rows rather than tearing
+        the container down and re-mounting from scratch. Avoids a 100%
+        CPU spike on every "Browse more" return.
+        """
+        search = self._get_search_text()
+        family_rows = self._build_family_rows(search)
+        remote_rows = self._build_remote_rows(search)
+        hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
+        # Keep self._rows in sync so the toolbar sort-label can render
+        # "{n} loaded" whichever view (grid or list) is active.
+        self._rows = list(all_rows)
         row_key = (
             tuple((r.name, r.installed) for r in all_rows),
             self._get_search_text(),
         )
         if self._grid_cache_key == row_key:
+            self._update_sort_label()
             return
         self._grid_cache_key = row_key
-        container = self._grid_container
-        container.remove_children()
         sections = [s for s in _group_rows_for_grid(all_rows) if s.rows]
         if not sections:
-            self._mount_grid_ctas(hf_overflow)
+            container = self._grid_container
+            container.remove_children()
+            self._mount_grid_ctas(hf_count=len(hf_rows))
+            self._update_sort_label()
             return
-        # Mount the first section immediately (cheap; user sees content fast),
-        # then drop the rest + CTAs onto the next refresh tick as a single
-        # batch. Per-section streaming yielded across N frames, but each
-        # extra deferral can pump focus on slow runners and breaks tests
-        # that focus the search input between ticks. One deferred batch
-        # keeps the first-paint win without the cascade.
+        # Extend in-place when we already have a grid mounted. Each
+        # section heading is keyed by its text so we can match a new
+        # section to its existing ModelGrid without tearing down.
+        existing_grids = list(self._grid_container.query(ModelGrid))
+        existing_headings = [
+            w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
+        ]
+        if existing_grids and len(existing_grids) == len(sections):
+            for grid, heading, section in zip(
+                existing_grids, existing_headings, sections, strict=True
+            ):
+                heading.update(section.heading)
+                grid.set_rows(section.rows)
+            self._refresh_grid_ctas(hf_count=len(hf_rows))
+            self._update_sort_label()
+            return
+        # First paint (or section count changed): teardown + remount.
+        container = self._grid_container
+        container.remove_children()
         self._mount_grid_section(sections[0])
         rest = sections[1:]
-        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_overflow)
+        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_count=len(hf_rows))
+        self._update_sort_label()
 
     def _mount_grid_section(self, section: GridSection) -> None:
-        cards = [ModelCard(row) for row in section.rows]
-        grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
+        grid = ModelGrid(section.rows, classes="catalog-section")
         self._grid_container.mount_all(
             [
                 Static(section.heading, classes="section-heading"),
@@ -725,22 +808,28 @@ class CatalogScreen(Screen[None]):
             ]
         )
 
-    def _mount_remaining_grid_sections(
-        self, remaining: list[GridSection], hf_overflow: int
-    ) -> None:
+    def _mount_remaining_grid_sections(self, remaining: list[GridSection], hf_count: int) -> None:
         for section in remaining:
             self._mount_grid_section(section)
-        self._mount_grid_ctas(hf_overflow)
+        self._mount_grid_ctas(hf_count=hf_count)
 
-    def _mount_grid_ctas(self, hf_overflow: int) -> None:
-        ctas: list[Static] = []
-        if not self._hf_fetched:
-            ctas.append(Static(msg.CATALOG_BROWSE_MORE, classes="grid-cta browse-more-hf"))
-        elif hf_overflow:
+    def _grid_scroll_hint_text(self, hf_count: int) -> str:
+        """Pick the bottom scroll-hint text based on fetch state."""
+        if self._loading_more:
+            return msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+        if self._hf_has_more:
+            return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
+        return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
+
+    def _mount_grid_ctas(self, *, hf_count: int) -> None:
+        ctas: list[Static | BrowseMoreCtaItem] = []
+        if not self._hf_fetched and not self._loading_more:
+            ctas.append(BrowseMoreCtaItem())
+        else:
             ctas.append(
                 Static(
-                    msg.CATALOG_GRID_OVERFLOW.format(count=hf_overflow),
-                    classes="grid-cta",
+                    self._grid_scroll_hint_text(hf_count),
+                    classes="grid-cta scroll-hint",
                 )
             )
         search = self._get_search_text()
@@ -751,8 +840,15 @@ class CatalogScreen(Screen[None]):
                     classes="grid-cta search-hf-cta",
                 )
             )
-        ctas.append(Static(msg.CATALOG_VIEW_TOGGLE_GRID, classes="grid-cta"))
         self._grid_container.mount_all(ctas)
+
+    def _refresh_grid_ctas(self, *, hf_count: int) -> None:
+        """Update the bottom CTA strip in place; remount when class changes."""
+        existing = list(self._grid_container.query(".grid-cta"))
+        for w in existing:
+            with contextlib.suppress(Exception):
+                w.remove()
+        self._mount_grid_ctas(hf_count=hf_count)
 
     def _sync_grid_search_cta(self) -> None:
         """Mount/remove/update the grid-view search-HF CTA in response to typing."""
@@ -772,58 +868,46 @@ class CatalogScreen(Screen[None]):
         container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
-        """Filter visible cards by search text without recreating widgets.
+        """Re-render the grid with the current filter applied via _refresh_grid."""
+        self._refresh_grid()
 
-        Walks the grid container once per section: toggles each card's
-        ``display`` and accumulates ``has_visible`` in the same pass, so
-        we avoid a second ``self.query(ModelCard)`` DOM walk that would
-        match the same set the section iteration already enumerates.
-        """
-        search = self._get_search_text()
-        children = list(self._grid_container.children)
-        for i, child in enumerate(children):
-            if not child.has_class("section-heading"):
-                continue
-            grid = children[i + 1] if i + 1 < len(children) else None
-            if not isinstance(
-                grid, GridSelect
-            ):  # pragma: no cover - heading always paired with grid
-                continue
-            has_visible = False
-            for card in grid.children:
-                if not isinstance(
-                    card, ModelCard
-                ):  # pragma: no cover - grid only mounts ModelCards
-                    continue
-                visible = matches_search(card.row, search)
-                card.display = visible
-                if visible:
-                    has_visible = True
-            child.display = has_visible
-            grid.display = has_visible
-
-    @on(Click, ".browse-more-hf")
+    @on(BrowseMoreCtaItem.Selected)
     def _on_browse_more_clicked(self) -> None:
-        """Fetch all models when the browse-more card is clicked."""
+        """Fetch all models when the browse-more card is activated (click or Enter)."""
         if not self._hf_fetched:
             self._hf_fetched = True
+            self._loading_more = True
+            self._sync_loading_spinner()
             self._fetch_all_hf_models()
 
     @on(GridSelect.LeaveDown)
-    def _on_grid_leave_down(self, event: GridSelect.LeaveDown) -> None:
-        """Move focus to the next GridSelect or focusable widget."""
+    @on(ModelGrid.LeaveDown)
+    def _on_grid_leave_down(self, event: Message) -> None:
+        """Move focus to the next grid widget, or fetch more if at the end."""
+        if isinstance(event, ModelGrid.LeaveDown):
+            grids = list(self._grid_container.query(ModelGrid))
+            if grids and event.grid is grids[-1] and self._hf_has_more and not self._loading_more:
+                self._load_more()
+                return
         self.focus_next()
 
     @on(GridSelect.LeaveUp)
-    def _on_grid_leave_up(self, event: GridSelect.LeaveUp) -> None:
-        """Move focus to the previous GridSelect or focusable widget."""
+    @on(ModelGrid.LeaveUp)
+    def _on_grid_leave_up(self, event: Message) -> None:
+        """Move focus to the previous grid widget."""
         self.focus_previous()
 
     @on(GridSelect.Selected)
-    def _on_grid_selected(self, event: GridSelect.Selected) -> None:
-        """Handle model selection from the grid view."""
-        if isinstance(event.widget, ModelCard):
-            self._select_row(event.widget.row)
+    def _on_grid_select_selected(self, event: GridSelect.Selected) -> None:
+        """Handle model selection from a GridSelect (setup wizard path)."""
+        widget = event.widget
+        if isinstance(widget, ModelCard):
+            self._select_row(widget.row)
+
+    @on(ModelGrid.Selected)
+    def _on_grid_selected(self, event: ModelGrid.Selected) -> None:
+        """Handle model selection from the catalog grid view."""
+        self._select_row(event.row)
 
     @on(ModelList.Selected)
     def _on_model_list_selected(self, event: ModelList.Selected) -> None:
@@ -858,6 +942,60 @@ class CatalogScreen(Screen[None]):
             search,
         )
         self._update_sort_label()
+
+    def _sync_loading_spinner(self) -> None:
+        """Show/hide the toolbar spinner based on active fetch state.
+
+        Visible when a paginated HF fetch or a remote search is in
+        flight (both grid and list views share the same toolbar
+        widget). Cycles braille frames on a 100 ms timer so the
+        wait reads as "moving" rather than "frozen".
+        """
+        try:
+            spinner = self.query_one("#catalog-loading-spinner", Static)
+        except Exception:
+            return
+        active = self._loading_more or self._search_in_flight
+        if active:
+            spinner.styles.display = "block"
+            spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
+            if self._spinner_timer is None:
+                self._spinner_timer = self.set_interval(
+                    _SPINNER_INTERVAL_S, self._tick_loading_spinner
+                )
+            # Mirror the spinner into the in-grid scroll hint so users
+            # waiting at the bottom of the grid see the activity without
+            # glancing back up at the toolbar.
+            if self._loading_more:
+                with contextlib.suppress(Exception):
+                    hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                    hint.update(
+                        msg.CATALOG_GRID_LOADING_MORE.format(
+                            frame=_SPINNER_FRAMES[self._spinner_frame]
+                        )
+                    )
+        else:
+            spinner.update("")
+            spinner.styles.display = "none"
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+            self._spinner_frame = 0
+            # Restore the post-load CTA text now that the fetch settled.
+            hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched else []
+            self._refresh_grid_ctas(hf_count=len(hf_rows))
+
+    def _tick_loading_spinner(self) -> None:
+        """Advance the spinner one braille frame; called by the interval timer."""
+        self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
+        with contextlib.suppress(Exception):
+            spinner = self.query_one("#catalog-loading-spinner", Static)
+            spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
+        with contextlib.suppress(Exception):
+            hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+            hint.update(
+                msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+            )
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label, switching copy by active tab."""
@@ -912,12 +1050,7 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            ref = (
-                f"{OLLAMA_PREFIX}{row.remote_model.name}"
-                if row.remote_model.provider == OLLAMA_BACKEND_NAME
-                else row.remote_model.name
-            )
-            apply_active_model(self.app, "chat_model", ref)
+            apply_active_model(self.app, "chat_model", row.ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
@@ -940,6 +1073,7 @@ class CatalogScreen(Screen[None]):
         if self._loading_more or not self._hf_has_more:
             return
         self._loading_more = True
+        self._sync_loading_spinner()
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
 
@@ -997,9 +1131,12 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def action_go_back(self) -> None:
-        # Escape unfocuses the filter input first so screen-level keys
-        # (s / v) reach the screen, not the input.
+        # Escape from a focused filter input collapses the input back to
+        # hidden and restores focus to the grid/list, so screen-level
+        # keys (s / v) reach the screen instead of the (now-hidden) input.
         if isinstance(self.focused, Input):
+            self._search_input.value = ""
+            self._search_input.add_class("-hidden")
             self._focus_list_or_grid()
             return
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
@@ -1039,13 +1176,20 @@ class CatalogScreen(Screen[None]):
         """Return the registry-compatible model ref for the focused/highlighted row."""
         if not self._grid_view and self._list_widget.has_focus:
             row = self._list_widget.highlighted_row()
-            return row.ref or None if row else None
+            return row_delete_id(row) if row else None
         focused_grid = self._focused_grid()
         if focused_grid is None or focused_grid.highlighted is None:
             return None
+        if isinstance(focused_grid, ModelGrid):
+            rows = focused_grid.rows
+            index = focused_grid.highlighted
+            if 0 <= index < len(rows):
+                return row_delete_id(rows[index])
+            return None
+        # GridSelect path: cards are direct children indexed positionally.
         child = focused_grid.children[focused_grid.highlighted]
         if isinstance(child, ModelCard):
-            return child.row.ref or None
+            return row_delete_id(child.row)
         return None
 
     @work(thread=True)
@@ -1078,9 +1222,9 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
         self._fetch_remote_models()
 
-    def _focused_grid(self) -> GridSelect | None:
-        """Return the focused GridSelect (grid view), else None."""
-        if self._grid_view and isinstance(self.focused, GridSelect):
+    def _focused_grid(self) -> ModelGrid | GridSelect | None:
+        """Return the focused grid widget (grid view), else None."""
+        if self._grid_view and isinstance(self.focused, (ModelGrid, GridSelect)):
             return self.focused
         return None
 
@@ -1123,25 +1267,55 @@ class CatalogScreen(Screen[None]):
 
     def _on_list_scrolled(self, _scroll_y: float) -> None:
         """Trigger _load_more when the user scrolls near the bottom of the list."""
-        if not self._scroll_prefetch_due():
+        if not self._scroll_prefetch_due(self._list_widget):
             return
         self._scroll_prefetch_armed_at = time.monotonic()
         self._load_more()
 
-    def _scroll_prefetch_due(self) -> bool:
+    def _on_grid_scrolled(self, _scroll_y: float) -> None:
+        """Trigger _load_more when the user scrolls near the bottom of the grid."""
+        if not self._grid_view:
+            return
+        if not self._scroll_prefetch_due(self._grid_container):
+            return
+        self._scroll_prefetch_armed_at = time.monotonic()
+        self._load_more()
+
+    def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
+        """Force pagination when wheeling at max_scroll_y.
+
+        At ``scroll_y == max_scroll_y`` further wheel events produce no
+        ``scroll_y`` delta, so ``_on_grid_scrolled`` never fires and the user
+        appears stuck. This handler re-checks at the bottom and respects the
+        same cooldown.
+        """
+        if not self._grid_view or not self._hf_has_more or self._loading_more:
+            return
+        container = self._grid_container
+        max_y = container.max_scroll_y
+        if max_y <= 0 or container.scroll_y < max_y:
+            return
+        if self._scroll_prefetch_armed_at:
+            elapsed = time.monotonic() - self._scroll_prefetch_armed_at
+            if elapsed < self._SCROLL_PREFETCH_COOLDOWN:
+                return
+        self._scroll_prefetch_armed_at = time.monotonic()
+        self._load_more()
+
+    def _scroll_prefetch_due(self, widget: VerticalScroll | ModelList) -> bool:
         # Cooldown blocks a runaway cascade where appending rows shifts
         # max_scroll_y, the watcher refires, and load_more kicks off the
         # next fetch before the user notices.
-        if self._grid_view or not self._hf_has_more or self._loading_more:
+        if not self._hf_has_more or self._loading_more:
             return False
         if self._scroll_prefetch_armed_at:
             elapsed = time.monotonic() - self._scroll_prefetch_armed_at
             if elapsed < self._SCROLL_PREFETCH_COOLDOWN:
                 return False
-        max_y = self._list_widget.max_scroll_y
+        max_y = widget.max_scroll_y
         if max_y <= 0:
             return False
-        return self._list_widget.scroll_y / max_y >= self._SCROLL_PREFETCH_RATIO
+        return widget.scroll_y / max_y >= self._SCROLL_PREFETCH_RATIO
 
     def _page_rows(self) -> int:
         """How many cursor steps make up one 'page' in the active view."""

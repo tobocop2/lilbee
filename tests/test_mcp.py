@@ -338,6 +338,16 @@ class TestReset:
         assert result["deleted_docs"] == 0
         assert result["deleted_data"] == 0
 
+    def test_reset_drops_cached_store(self):
+        """reset must invalidate the cached Store so a follow-up sees the empty data dir."""
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "doc.txt").write_text("content")
+
+        with mock.patch("lilbee.mcp_server.reset_store") as mock_reset_store:
+            result = reset(confirm=True)
+            assert result["command"] == "reset"
+            mock_reset_store.assert_called_once()
+
 
 class TestInit:
     def test_init_creates_structure(self, tmp_path):

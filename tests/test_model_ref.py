@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.providers.model_ref import parse_model_ref, translate_options
+from lilbee.modelhub.model_manager.types import RemoteModel
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref, translate_options
 
 # Canonical native HF ref for tests that need a local model.
 _LOCAL_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -117,6 +118,34 @@ class TestForDisplay:
     def test_preserves_raw(self) -> None:
         ref = parse_model_ref("openai/gpt-4o")
         assert ref.for_display() == "openai/gpt-4o"
+
+
+class TestFormatRemoteRef:
+    def test_openai_provider_lowercases_and_prefixes(self) -> None:
+        model = RemoteModel(
+            name="gpt-4o", task="chat", family="", parameter_size="", provider="OpenAI"
+        )
+        assert format_remote_ref(model) == "openai/gpt-4o"
+
+    def test_anthropic_provider(self) -> None:
+        model = RemoteModel(
+            name="claude-sonnet-4-20250514",
+            task="chat",
+            family="",
+            parameter_size="",
+            provider="Anthropic",
+        )
+        assert format_remote_ref(model) == "anthropic/claude-sonnet-4-20250514"
+
+    def test_ollama_provider_uses_ollama_prefix(self) -> None:
+        model = RemoteModel(
+            name="qwen3:8b",
+            task="chat",
+            family="",
+            parameter_size="",
+            provider="Ollama",
+        )
+        assert format_remote_ref(model) == "ollama/qwen3:8b"
 
 
 class TestTranslateOptions:
