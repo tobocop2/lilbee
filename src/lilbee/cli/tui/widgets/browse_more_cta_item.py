@@ -24,6 +24,13 @@ class BrowseMoreCtaItem(containers.VerticalGroup, can_focus=True):
 
     BINDINGS: ClassVar = [Binding("enter", "select", "Select", show=False)]
 
+    def __init__(self) -> None:
+        # Carry the ``grid-cta`` class so the catalog's _refresh_grid_ctas
+        # cleanup query picks this up too. Without it, every refresh
+        # appended a fresh BrowseMore button while the old one(s) stayed
+        # mounted, accumulating duplicates on screen.
+        super().__init__(classes="grid-cta")
+
     @dataclass
     class Selected(Message):
         item: BrowseMoreCtaItem
