@@ -2735,10 +2735,16 @@ class TestGlobalSlashRoutesToChat:
             assert inp.value == "/setup", f"global slash route should compose, got {inp.value!r}"
 
 
-class TestQuestionMarkOpensHelp:
-    """The ? key opens the help panel even when chat input is focused (bb-qbfy)."""
+class TestQuestionMarkBehavior:
+    """The ? key opens help only when no text input is swallowing it.
 
-    async def test_question_mark_opens_help_with_chat_input_focused(self, _mock_resolve):
+    The user explicitly wants ``?`` typed into the focused chat input to
+    land as a literal character (so things like "what?" work), not pop
+    the help modal mid-typing. F1 / Ctrl+H stay priority-routed and
+    always open help.
+    """
+
+    async def test_question_mark_types_literal_into_focused_chat_input(self, _mock_resolve):
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -2750,8 +2756,25 @@ class TestQuestionMarkOpensHelp:
             assert app.focused is inp
             await pilot.press("?")
             await pilot.pause()
-            assert inp.value == "", "? must not be typed into chat input"
-            assert app.screen.query("HelpPanel"), "? must open the help panel"
+            assert "?" in inp.value, (
+                f"? must land as a literal character in chat input, got {inp.value!r}"
+            )
+            assert not app.screen.query("HelpPanel"), (
+                "? must not open help while the chat input has focus"
+            )
+
+    async def test_f1_opens_help_even_with_chat_input_focused(self, _mock_resolve):
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.focus()
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            assert app.screen.query("HelpPanel"), "F1 must always open the help panel"
 
 
 class TestSetupWizardGrid:

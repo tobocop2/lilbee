@@ -51,9 +51,11 @@ class ViewTab(Label, can_focus=True):
     def set_active(self, active: bool) -> None:
         self.set_class(active, "-active")
         if active:
-            self.update(pill(f" {self.view_name} ", "$primary", "$text"))
+            # Bold + accent + underline reads as a clear border-like
+            # marker without the inverted/black-looking pill background.
+            self.update(Content.styled(f"  {self.view_name}  ", "bold underline $accent"))
         else:
-            self.update(Content.assemble((f" {self.view_name} ", "dim")))
+            self.update(Content.assemble((f"  {self.view_name}  ", "dim")))
 
     def on_click(self) -> None:
         self._switch()

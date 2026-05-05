@@ -138,6 +138,9 @@ class CatalogScreen(Screen[None]):
         # to the user instead.
         Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
+        # ``b`` triggers the bulk-HF cold fetch from anywhere on the screen,
+        # so the BrowseMore CTA does not have to be tab-focused first.
+        Binding("b", "browse_more", "Browse all", show=True, group=_ACTION_GROUP),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -874,11 +877,16 @@ class CatalogScreen(Screen[None]):
     @on(BrowseMoreCtaItem.Selected)
     def _on_browse_more_clicked(self) -> None:
         """Fetch all models when the browse-more card is activated (click or Enter)."""
-        if not self._hf_fetched:
-            self._hf_fetched = True
-            self._loading_more = True
-            self._sync_loading_spinner()
-            self._fetch_all_hf_models()
+        self.action_browse_more()
+
+    def action_browse_more(self) -> None:
+        """Fire the bulk-HF cold fetch; safe to call repeatedly (idempotent)."""
+        if self._hf_fetched or self._loading_more:
+            return
+        self._hf_fetched = True
+        self._loading_more = True
+        self._sync_loading_spinner()
+        self._fetch_all_hf_models()
 
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)

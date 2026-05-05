@@ -292,35 +292,40 @@ class _ThinkingHeaderApp(App):
 
 
 class TestThinkingHeader:
-    """The thinking header animates a snake + shimmering word until stopped."""
+    """The thinking header animates a Knight-Rider bouncing block until stopped."""
 
     def test_frame_content_shifts_filled_block_with_frame(self) -> None:
-        """Frame N renders the filled block at column N % snake-length."""
+        """Frame N renders exactly one filled block; consecutive frames differ."""
         from lilbee.cli.tui.widgets.thinking_header import (
             _BLOCK_EMPTY,
             _BLOCK_FILLED,
-            _SNAKE_CELLS,
+            _TRACK_CELLS,
             _frame_content,
         )
 
         rendered_frame_0 = str(_frame_content(0))
         rendered_frame_1 = str(_frame_content(1))
-        # The same set of cells appears, but the filled cell moved.
+        # Exactly one cell is lit per frame; the rest are dim.
         assert rendered_frame_0.count(_BLOCK_FILLED) == 1
         assert rendered_frame_1.count(_BLOCK_FILLED) == 1
-        assert rendered_frame_0.count(_BLOCK_EMPTY) == _SNAKE_CELLS - 1
+        assert rendered_frame_0.count(_BLOCK_EMPTY) == _TRACK_CELLS - 1
         assert rendered_frame_0 != rendered_frame_1
-        # Cycles back after _SNAKE_CELLS frames.
-        assert str(_frame_content(_SNAKE_CELLS)) == rendered_frame_0
 
-    def test_frame_content_shimmers_thinking_word(self) -> None:
-        """Each frame shifts the bright letter one slot through THINKING…."""
-        from lilbee.cli.tui.widgets.thinking_header import _THINKING_WORD, _frame_content
+    def test_frame_content_bounces_back_at_track_end(self) -> None:
+        """At the right edge the lit block reverses direction (Knight Rider)."""
+        from lilbee.cli.tui.widgets.thinking_header import _TRACK_CELLS, _bounce_position
 
-        rendered = str(_frame_content(0))
-        # Every letter of the word is in the rendered output.
-        for ch in _THINKING_WORD:
-            assert ch in rendered
+        # Forward sweep occupies frames 0..cells-1.
+        for f in range(_TRACK_CELLS):
+            assert _bounce_position(f) == f
+        # Backward sweep retraces cells-2..1 (skips both endpoints to
+        # avoid stalling for two ticks at the turnaround).
+        for offset in range(1, _TRACK_CELLS - 1):
+            f = _TRACK_CELLS - 1 + offset
+            assert _bounce_position(f) == _TRACK_CELLS - 1 - offset
+        # And the cycle restarts at the left edge.
+        cycle = 2 * (_TRACK_CELLS - 1)
+        assert _bounce_position(cycle) == 0
 
     async def test_tick_advances_frame_and_repaints(self) -> None:
         """Calling _tick increments the internal frame counter and repaints."""
@@ -3267,8 +3272,8 @@ class TestLilbeeAppViewTabs:
             bar = app.screen.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
-    async def test_view_tabs_uses_pill_for_active(self) -> None:
-        """Active tab should render as a pill with half-block characters."""
+    async def test_view_tabs_marks_exactly_one_active(self) -> None:
+        """One and only one ViewTab carries the ``-active`` class."""
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp

@@ -36,6 +36,18 @@ if TYPE_CHECKING:
 
 _CSS_FILE = Path(__file__).parent / "model_card.tcss"
 
+_NAME_MAX_CHARS = 28
+"""Maximum displayed model-name length; longer names are ellipsis-truncated."""
+
+_ELLIPSIS = "…"
+
+
+def _truncate_name(name: str) -> str:
+    """Return *name* shortened to ``_NAME_MAX_CHARS`` with an ellipsis tail."""
+    if len(name) <= _NAME_MAX_CHARS:
+        return name
+    return name[: _NAME_MAX_CHARS - 1].rstrip() + _ELLIPSIS
+
 
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
@@ -84,7 +96,7 @@ def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
     from lilbee.cli.tui import messages as msg
 
     bg = TASK_COLORS.get(row.task, "$primary")
-    name = Content.styled(row.name, "bold")
+    name = Content.styled(_truncate_name(row.name), "bold")
     pills: list[Content] = []
     if row.featured:
         pills.append(pill("pick", "$warning", "$text"))
@@ -104,7 +116,7 @@ def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
 
 
 def _render_frontier(row: FrontierCatalogRow) -> Content:
-    name = Content.styled(row.name, "bold")
+    name = Content.styled(_truncate_name(row.name), "bold")
     backend_pill = pill(row.provider, "$accent", "$text")
     status_pill = _key_status_pill(row.key_status)
     pill_line = Content(" ").join([backend_pill, status_pill])

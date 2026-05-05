@@ -85,8 +85,13 @@ ModelBar #chat-mode-toggle {
     background: transparent;
 }
 
-ModelBar #chat-mode-toggle:focus {
-    outline: none;
+ModelBar #chat-mode-toggle:focus .chat-mode-pill.-active {
+    text-style: bold;
+    background: $accent;
+}
+
+ModelBar #chat-mode-toggle:focus .chat-mode-pill {
+    text-style: bold;
 }
 
 ModelBar #chat-mode-toggle Horizontal {

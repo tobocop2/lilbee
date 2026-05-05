@@ -1,17 +1,4 @@
-"""Animated ``THINKING...`` header for the assistant bubble.
-
-The widget owns a 100 ms timer that advances a single frame counter.
-Each tick rebuilds the styled content: a moving block snake and a
-shimmering letter on the ``THINKING...`` word, both in lockstep.
-
-The header can either paint itself (default ``Static.update``) or
-forward each frame's content to a callable -- so when reasoning
-streams in and we mount a ``Collapsible`` below, the animator keeps
-running by writing the latest frame to ``collapsible.title``.
-``Collapsible.title`` is a plain string (not a widget), so this
-indirection is the only way to keep one running animation across the
-"no reasoning yet" and "reasoning streaming" states.
-"""
+"""Animated Knight-Rider scanner-bar header for the assistant bubble."""
 
 from __future__ import annotations
 
@@ -25,45 +12,46 @@ from textual.widgets import Static
 
 _CSS_FILE = Path(__file__).parent / "thinking_header.tcss"
 
-# Block snake (5 cells, one filled) glides left-to-right; loops every 5 frames.
-_BLOCK_FILLED = "▰"  # ▰
-_BLOCK_EMPTY = "▱"  # ▱
-_SNAKE_CELLS = 5
+_BLOCK_FILLED = "▰"
+_BLOCK_EMPTY = "▱"
+_TRACK_CELLS = 9
+"""Visible width of the bouncing track. Wider than the old 5-cell snake
+so the back-and-forth motion reads as deliberate scanning."""
 
-# Shimmer word travels one letter at a time, looping over the word length.
-_THINKING_WORD = "THINKING…"  # THINKING…
-
-# 100 ms per frame: fast enough to read as motion, slow enough not to thrash
-# the renderer on large chat logs.
 _FRAME_INTERVAL = 0.1
+"""100 ms per frame: motion without renderer thrash on large chat logs."""
 
-# Style strings, kept as constants so themes that swap palette keys see a
-# single source of truth.
 _DIM_STYLE = "$text-muted"
-_BRIGHT_STYLE = "bold $primary"
 _FILL_STYLE = "bold $success"
-_SEPARATOR = "  "
+
+
+def _bounce_position(frame: int) -> int:
+    """Return the lit cell index for *frame* in a Knight-Rider bounce.
+
+    Cycle length is ``2 * (cells - 1)``: forward sweep 0..cells-1, then
+    backward sweep cells-2..1, repeating.
+    """
+    cycle = 2 * (_TRACK_CELLS - 1)
+    step = frame % cycle
+    if step < _TRACK_CELLS:
+        return step
+    return cycle - step
 
 
 def _frame_content(frame: int) -> Content:
-    """Render the snake + shimmer for *frame* as styled content."""
-    snake_pos = frame % _SNAKE_CELLS
-    snake_parts: list[Content] = []
-    for i in range(_SNAKE_CELLS):
-        if i == snake_pos:
-            snake_parts.append(Content.styled(_BLOCK_FILLED, _FILL_STYLE))
+    """Render the bouncing-block track for *frame* as styled content."""
+    pos = _bounce_position(frame)
+    parts: list[Content] = []
+    for i in range(_TRACK_CELLS):
+        if i == pos:
+            parts.append(Content.styled(_BLOCK_FILLED, _FILL_STYLE))
         else:
-            snake_parts.append(Content.styled(_BLOCK_EMPTY, _DIM_STYLE))
-    shimmer_pos = frame % len(_THINKING_WORD)
-    word_parts: list[Content] = []
-    for i, ch in enumerate(_THINKING_WORD):
-        style = _BRIGHT_STYLE if i == shimmer_pos else _DIM_STYLE
-        word_parts.append(Content.styled(ch, style))
-    return Content.assemble(*snake_parts, _SEPARATOR, *word_parts)
+            parts.append(Content.styled(_BLOCK_EMPTY, _DIM_STYLE))
+    return Content.assemble(*parts)
 
 
 class ThinkingHeader(Static):
-    """Single Static that animates a moving snake and shimmering word."""
+    """Single Static that animates a Knight-Rider bouncing block."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 

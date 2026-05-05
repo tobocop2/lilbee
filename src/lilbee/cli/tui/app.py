@@ -126,7 +126,10 @@ class LilbeeApp(App[None]):
     _NAV_GROUP = Binding.Group("Navigate")
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=True, priority=True),
+        # ``?`` is non-priority so a focused TextArea (chat input in INSERT
+        # mode) can swallow it and type the literal character. F1 / Ctrl+H
+        # remain priority routes that always open help, even mid-typing.
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False, priority=True),
         Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),

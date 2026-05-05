@@ -251,7 +251,6 @@ MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
 TASKBAR_HINT = "Press t for Tasks"
 TASKBAR_HINT_INPUT = "Esc then t for Tasks"
-CHAT_REASONING_STREAMING = "thinking..."
 CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
 CHAT_SOURCES_LABEL = "sources"
 

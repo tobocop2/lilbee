@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Static
@@ -41,6 +42,27 @@ _SCOPE_CYCLE: tuple[SearchScope, ...] = (
 )
 
 
+class ScopePill(Static, can_focus=True):
+    """Single focusable scope pill; Enter / Space activates the parent scope."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "select", "Pick", show=False),
+        Binding("space", "select", "Pick", show=False),
+    ]
+
+    def action_select(self) -> None:
+        """Tell the enclosing ScopeChip to switch to this pill's scope."""
+        chip = next(
+            (n for n in self.ancestors_with_self if isinstance(n, ScopeChip)),
+            None,
+        )
+        if chip is None or self.id is None:
+            return
+        target = _PILL_TO_SCOPE.get(self.id)
+        if target is not None:
+            chip._set_scope(target)
+
+
 class ScopeChip(Widget):
     """Three-pill search filter; visible when cfg.chat_mode=='search' and cfg.wiki.
 
@@ -63,9 +85,9 @@ class ScopeChip(Widget):
 
     def compose(self) -> ComposeResult:
         with Horizontal():
-            yield Static(msg.SCOPE_PILL_BOTH, id=_SCOPE_BOTH_PILL_ID, classes=_SCOPE_PILL_CLASS)
-            yield Static(msg.SCOPE_PILL_WIKI, id=_SCOPE_WIKI_PILL_ID, classes=_SCOPE_PILL_CLASS)
-            yield Static(msg.SCOPE_PILL_RAW, id=_SCOPE_RAW_PILL_ID, classes=_SCOPE_PILL_CLASS)
+            yield ScopePill(msg.SCOPE_PILL_BOTH, id=_SCOPE_BOTH_PILL_ID, classes=_SCOPE_PILL_CLASS)
+            yield ScopePill(msg.SCOPE_PILL_WIKI, id=_SCOPE_WIKI_PILL_ID, classes=_SCOPE_PILL_CLASS)
+            yield ScopePill(msg.SCOPE_PILL_RAW, id=_SCOPE_RAW_PILL_ID, classes=_SCOPE_PILL_CLASS)
 
     @property
     def scope(self) -> SearchScope:
@@ -92,7 +114,7 @@ class ScopeChip(Widget):
     def _refresh(self) -> None:
         """Toggle the ``-active`` class on each pill based on ``self._scope``."""
         for pill_id, scope in _PILL_TO_SCOPE.items():
-            pill = self.query_one(f"#{pill_id}", Static)
+            pill = self.query_one(f"#{pill_id}", ScopePill)
             pill.set_class(scope is self._scope, _ACTIVE_CLASS)
 
     def _set_scope(self, target: SearchScope) -> None:
