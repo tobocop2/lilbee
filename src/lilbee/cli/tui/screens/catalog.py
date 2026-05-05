@@ -126,6 +126,11 @@ class CatalogScreen(Screen[None]):
         Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
+        # Arrow keys scroll the grid container smoothly so the keyboard
+        # path matches the mouse wheel behaviour. j / k still move the
+        # card cursor for selection.
+        Binding("down", "scroll_down", "Down", show=False, group=_SCROLL_GROUP),
+        Binding("up", "scroll_up", "Up", show=False, group=_SCROLL_GROUP),
         # priority=True so vim jump-to-top/bottom always wins over the
         # focused ModelGrid's enter/select binding when keys collide.
         Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP, priority=True),
@@ -1366,6 +1371,24 @@ class CatalogScreen(Screen[None]):
                     grid.action_cursor_up()
         else:
             self._nudge_list(-self._page_rows())
+
+    def action_scroll_down(self) -> None:
+        """Down arrow: smooth-scroll the grid container, mirroring the mouse wheel."""
+        if isinstance(self.focused, Input):
+            return
+        if self._grid_view:
+            self._grid_container.scroll_down(animate=True)
+        else:
+            self._nudge_list(1)
+
+    def action_scroll_up(self) -> None:
+        """Up arrow: smooth-scroll the grid container, mirroring the mouse wheel."""
+        if isinstance(self.focused, Input):
+            return
+        if self._grid_view:
+            self._grid_container.scroll_up(animate=True)
+        else:
+            self._nudge_list(-1)
 
     def action_cursor_down(self) -> None:
         if isinstance(self.focused, Input):

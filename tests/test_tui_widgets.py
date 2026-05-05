@@ -5074,15 +5074,16 @@ class TestModelGridOnClick:
         grid.on_click(click)
         assert grid.highlighted is None
 
-    def test_click_in_gutter_is_ignored(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+    def test_click_below_grid_rows_is_ignored(self) -> None:
+        """Clicks past the last data row land outside the grid and do nothing."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid, _ROW_HEIGHT
 
-        rows = [_vgrid_row(f"m{i}") for i in range(4)]
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]  # one row of 2 cards
         grid = ModelGrid(rows)
         grid._cards_per_row = 2
         grid._size = mock.Mock(width=60, height=20)  # type: ignore[attr-defined]
-        # y=5 lands in the gutter row between grid row 0 and grid row 1.
-        click = self._click(0, 5)
+        # y just past the only mounted row of cards lands in empty space.
+        click = self._click(0, _ROW_HEIGHT + 1)
         grid.on_click(click)
         assert grid.highlighted is None
 
@@ -5141,8 +5142,10 @@ class TestModelGridScrollIntoView:
 
         assert captured, "scroll_to_region must run on cursor moves"
         region = captured[0]
-        assert region.y == (4 // 2) * (5 + 1)
-        assert region.height == 5
+        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _ROW_HEIGHT
+
+        assert region.y == (4 // 2) * _ROW_HEIGHT
+        assert region.height == _CARD_HEIGHT
 
     def test_highlight_set_to_none_does_not_scroll(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -5583,10 +5586,14 @@ class TestModelGridCardRendering:
         # All-default-row specs produce the placeholder.
         assert str(_build_specs("--", "--", "--")) == "--"
 
-    def test_pad_line_is_a_no_op_when_content_already_full(self) -> None:
+    def test_frame_line_truncation_keeps_content_when_already_full(self) -> None:
+        """Inner content at or above the available width keeps its body unchanged."""
         from textual.content import Content
 
-        from lilbee.cli.tui.widgets.model_grid import _pad_line
+        from lilbee.cli.tui.widgets.model_grid import _BORDER_V, _frame_line
 
         content = Content("0123456789")
-        assert _pad_line(content, 5, "$primary") is content
+        framed = _frame_line(content, 5, "$primary", "on $boost")
+        # Frame still wraps the body in vertical bars even when overflowed.
+        assert _BORDER_V in str(framed)
+        assert "0123456789" in str(framed)

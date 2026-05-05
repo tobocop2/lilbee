@@ -306,30 +306,34 @@ def _render_card_strip(row: CatalogRow, *, selected: bool, width: int) -> _CardL
     else:
         body = _local_lines(row, selected=selected)
     border_style = "$accent" if selected else "$surface-lighten-2"
+    fill_style = "on $accent 25%" if selected else "on $boost"
     outer_width = max(3, width - _CARD_GUTTER)
     inner_width = outer_width - 2  # subtract the two vertical border cells
     top = Content.styled(f"{_BORDER_TL}{_BORDER_H * inner_width}{_BORDER_TR}", border_style)
     bottom = Content.styled(f"{_BORDER_BL}{_BORDER_H * inner_width}{_BORDER_BR}", border_style)
     framed_body = [
-        _frame_line(line, inner_width, border_style) for line in body[:_CARD_BODY_HEIGHT]
+        _frame_line(line, inner_width, border_style, fill_style)
+        for line in body[:_CARD_BODY_HEIGHT]
     ]
     gap = Content(" " * _CARD_GUTTER) if _CARD_GUTTER else Content("")
     framed: list[Content] = [top, *framed_body, bottom]
     return _CardLines(lines=[Content.assemble(line, gap) for line in framed])
 
 
-def _frame_line(content: Content, inner_width: int, border_style: str) -> Content:
-    """Wrap *content* with vertical border bars and pad to *inner_width*."""
+def _frame_line(content: Content, inner_width: int, border_style: str, fill_style: str) -> Content:
+    """Wrap *content* with vertical border bars; fill the interior with *fill_style*."""
     left = Content.styled(_BORDER_V, border_style)
     right = Content.styled(_BORDER_V, border_style)
     rendered_width = content.cell_length
     if rendered_width >= inner_width:
-        # Truncation handled by the per-line builders (e.g. _truncate_name);
-        # fall through with whatever the caller produced.
+        # Truncation handled by the per-line builders (_truncate_name etc.).
         body = content
     else:
-        pad = Content(" " * (inner_width - rendered_width))
+        pad = Content.styled(" " * (inner_width - rendered_width), fill_style)
         body = Content.assemble(content, pad)
+    # Layer the fill bg under any per-segment styles so colored pills /
+    # bold names keep their fg but pick up the tile background.
+    body = body.stylize_before(fill_style)
     return Content.assemble(left, body, right)
 
 
