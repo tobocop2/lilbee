@@ -201,7 +201,6 @@ class CatalogScreen(Screen[None]):
         ):
             yield VerticalScroll(id="catalog-grid")
             yield ModelList(id="catalog-list")
-        yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()
             yield Footer()

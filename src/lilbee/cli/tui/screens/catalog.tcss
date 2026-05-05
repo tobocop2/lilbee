@@ -71,11 +71,6 @@ ModelGrid:focus {
     display: none;
 }
 
-#model-detail {
-    height: 6;
-    padding: 1;
-    border-top: solid $surface-lighten-2;
-}
 
 .section-heading {
     text-style: bold;
@@ -86,7 +81,6 @@ ModelGrid:focus {
 
 CatalogScreen.-grid-view #catalog-list { display: none; }
 CatalogScreen.-grid-view #sort-label { display: none; }
-CatalogScreen.-grid-view #model-detail { display: none; }
 CatalogScreen.-list-view #catalog-grid { display: none; }
 
 GridSelect {
