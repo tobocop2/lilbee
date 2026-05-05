@@ -18,6 +18,7 @@ class RenderStyle(StrEnum):
     COMPACT = "compact"
     FULL = "full"
     LIST_COLLAPSED = "list_collapsed"
+    MULTILINE = "multiline"
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Ingest",
         help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
+    ),
+    "vision_load_budget_s": SettingDef(
+        float,
+        nullable=False,
+        group="Ingest",
+        help_text=(
+            "Wall-clock seconds reserved for the PDF-extract subprocess to load"
+            " the vision model. Total budget = load_budget + per_page * pages."
+        ),
+    ),
+    "vision_per_page_budget_s": SettingDef(
+        float,
+        nullable=False,
+        group="Ingest",
+        help_text=(
+            "Wall-clock seconds budgeted per page in the PDF-extract subprocess."
+            " Bump up for slow hardware (M1 Pro vision OCR is ~5min/page)."
+        ),
     ),
     "semantic_chunking": SettingDef(
         bool,
@@ -176,14 +195,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "rag_system_prompt": SettingDef(
         str,
         nullable=False,
-        render=RenderStyle.FULL,
+        render=RenderStyle.MULTILINE,
         group="Generation",
         help_text="System prompt sent when answering with retrieved context",
     ),
     "general_system_prompt": SettingDef(
         str,
         nullable=False,
-        render=RenderStyle.FULL,
+        render=RenderStyle.MULTILINE,
         group="Generation",
         help_text="System prompt sent when there are no documents to ground the answer",
     ),
@@ -459,5 +478,208 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="API-Keys",
         help_text="Google Gemini API key (enables frontier models in chat picker)",
+    ),
+    "chunk_size": SettingDef(
+        int,
+        nullable=False,
+        group="Ingest",
+        help_text="Document chunk size in tokens (changes invalidate the index)",
+    ),
+    "chunk_overlap": SettingDef(
+        int,
+        nullable=False,
+        group="Ingest",
+        help_text="Tokens of overlap between adjacent chunks (preserves context across boundaries)",
+    ),
+    "tesseract_timeout": SettingDef(
+        float,
+        nullable=False,
+        group="Ingest",
+        help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
+    ),
+    "vision_concurrency": SettingDef(
+        int,
+        nullable=False,
+        group="Ingest",
+        help_text="Concurrent vision-OCR pages per document (1 keeps memory predictable)",
+    ),
+    "subprocess_embed": SettingDef(
+        bool,
+        nullable=False,
+        group="Ingest",
+        help_text="Run embedding in a subprocess (avoids GIL contention; slower cold start)",
+    ),
+    "max_tokens": SettingDef(
+        int,
+        nullable=True,
+        group="Generation",
+        help_text="Hard cap on generated tokens per response (blank = no cap)",
+    ),
+    "model_keep_alive": SettingDef(
+        int,
+        nullable=False,
+        group="Generation",
+        help_text="Seconds the loaded model stays warm between calls (0 = unload immediately)",
+    ),
+    "gpu_memory_fraction": SettingDef(
+        float,
+        nullable=False,
+        group="Generation",
+        help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+    ),
+    "candidate_multiplier": SettingDef(
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Candidate-pool multiplier over top_k before reranking",
+    ),
+    "max_distance": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Maximum vector distance for retrieval matches (lower = stricter)",
+    ),
+    "min_relevance_score": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Minimum RRF relevance score for hybrid search results (0.0 = no filter)",
+    ),
+    "max_context_sources": SettingDef(
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Maximum unique sources contributing chunks to a single answer",
+    ),
+    "diversity_max_per_source": SettingDef(
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Maximum chunks accepted from any one source (caps source dominance)",
+    ),
+    "mmr_lambda": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text=(
+            "MMR lambda balancing relevance vs diversity (0 = max diversity, 1 = max relevance)"
+        ),
+    ),
+    "temporal_filtering": SettingDef(
+        bool,
+        nullable=False,
+        group="Retrieval",
+        help_text="Detect temporal queries and bias retrieval toward recent chunks",
+    ),
+    "hyde": SettingDef(
+        bool,
+        nullable=False,
+        group="Retrieval",
+        help_text="Use HyDE (hypothetical answer expansion) to broaden retrieval",
+    ),
+    "hyde_weight": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Weight on the HyDE-generated query vector when blending with the original",
+    ),
+    "query_expansion_count": SettingDef(
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Number of paraphrase expansions per query (0 disables expansion)",
+    ),
+    "expansion_similarity_threshold": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Minimum cosine similarity an expansion must keep with the original query",
+    ),
+    "expansion_short_query_tokens": SettingDef(
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Queries at or below this token count skip expansion (saves a model call)",
+    ),
+    "expansion_guardrails": SettingDef(
+        bool,
+        nullable=False,
+        group="Retrieval",
+        help_text="Drop expansions that diverge from the original intent",
+    ),
+    "adaptive_threshold_step": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Step size for adaptive relevance-score relaxation when initial recall is empty",
+    ),
+    "concept_graph": SettingDef(
+        bool,
+        nullable=False,
+        group="Retrieval",
+        help_text="Boost retrieval scores for chunks that share concepts with the query",
+    ),
+    "concept_boost_weight": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Maximum boost (0-1) the concept graph can add to a chunk's relevance",
+    ),
+    "concept_boost_floor": SettingDef(
+        float,
+        nullable=False,
+        group="Retrieval",
+        help_text="Minimum cosine similarity needed before the concept graph boosts a chunk",
+    ),
+    "concept_max_per_chunk": SettingDef(
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Maximum concept tags stored per chunk (caps graph density)",
+    ),
+    "documents_dir": SettingDef(
+        str,
+        nullable=False,
+        group="System",
+        help_text="Local documents root that lilbee sync ingests (blank = data_root/documents)",
+    ),
+    "vault_base": SettingDef(
+        str,
+        nullable=True,
+        group="System",
+        help_text="Path to the active Obsidian-style vault (blank = none)",
+    ),
+    "sse_heartbeat_interval": SettingDef(
+        float,
+        nullable=False,
+        group="System",
+        help_text="Seconds between SSE keep-alive frames (server -> Obsidian plugin)",
+    ),
+    "llm_provider": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        choices=("auto", "llama-cpp", "remote"),
+        help_text=(
+            "Provider routing: auto picks the first key present; force a specific one when set"
+        ),
+    ),
+    "remote_base_url": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="OpenAI-compatible base URL (Ollama default: http://localhost:11434)",
+    ),
+    "wiki_summary_max_tokens": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Maximum tokens generated per wiki page",
+    ),
+    "wiki_temperature": SettingDef(
+        float,
+        nullable=False,
+        group="Wiki",
+        help_text="Temperature used for wiki page synthesis (low = stay close to sources)",
     ),
 }

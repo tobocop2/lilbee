@@ -174,6 +174,21 @@ def _drain_textual_threads():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_provider_env_keys():
+    """Snapshot and restore per-provider API-key env vars for every test."""
+    from lilbee.providers.sdk_backend import PROVIDER_KEYS
+
+    env_vars = [env for _prov, _cfg, env, _label in PROVIDER_KEYS]
+    snapshot = {var: os.environ.get(var) for var in env_vars}
+    yield
+    for var, value in snapshot.items():
+        if value is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = value
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cfg(tmp_path, request):
     """Snapshot and restore cfg for every test to prevent cross-test pollution.
 

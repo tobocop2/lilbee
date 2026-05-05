@@ -14,6 +14,7 @@ from lilbee.modelhub.registry import (
     _sha256_file,
     _validate_gguf_filename,
     _validate_hf_repo,
+    format_native_gguf_ref,
     parse_hf_ref,
     repo_to_dir,
 )
@@ -116,6 +117,15 @@ class TestRepoToDir:
 
     def test_namespace_with_dashes(self) -> None:
         assert repo_to_dir("nomic-ai/x") == "nomic-ai--x"
+
+
+class TestFormatNativeGgufRef:
+    def test_canonical_shape(self) -> None:
+        assert format_native_gguf_ref(_REPO, _FILENAME) == _REF
+
+    def test_round_trips_through_parse_hf_ref(self) -> None:
+        ref = format_native_gguf_ref(_REPO, _FILENAME)
+        assert parse_hf_ref(ref) == (_REPO, _FILENAME)
 
 
 class TestModelManifest:

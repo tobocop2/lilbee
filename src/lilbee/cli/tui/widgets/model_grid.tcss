@@ -1,0 +1,8 @@
+ModelGrid {
+    height: 1fr;
+    background: $background;
+}
+
+ModelGrid:focus {
+    background: $surface 30%;
+}

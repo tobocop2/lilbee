@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import ClassVar
@@ -140,6 +142,12 @@ class StatusScreen(Screen[None]):
         Binding("G", "jump_bottom", "End", show=False),
     ]
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._sections_mounted: bool = False
+        self._pending_sources: list[SourceRecord] | None = None
+        self._pending_arch: ModelArchInfo | None = None
+
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
 
@@ -150,11 +158,14 @@ class StatusScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
+        # Mount only the first (Configuration) collapsible up front so the
+        # screen paints fast on push. Documents/arch/storage hydrate via
+        # ``call_after_refresh`` once the screen is visible -- their
+        # backing widgets are still cheap to mount, but the synchronous
+        # cost of mounting all four under a single VerticalScroll spiked
+        # screen-switch latency to ~1s on cold caches.
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
-            Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
-            Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),
-            Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             id="status-scroll",
         )
         with BottomBars():
@@ -168,18 +179,60 @@ class StatusScreen(Screen[None]):
         # parses their headers (~hundreds of ms each cold); ``get_sources``
         # reads LanceDB (seconds on cold caches).
         self._load_config()
-        self._show_loading_placeholders()
+        self.call_after_refresh(self._mount_remaining_sections)
         self._fetch_sources_worker()
         self._fetch_arch_worker()
 
+    async def _mount_remaining_sections(self) -> None:
+        """Mount Documents/Architecture/Storage once the screen is visible."""
+        if not self.is_mounted:
+            return
+        scroll = self.query_one("#status-scroll", VerticalScroll)
+        await scroll.mount_all(
+            [
+                Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
+                Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),
+                Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
+            ]
+        )
+        self._sections_mounted = True
+        # Yield once so Textual gets a chance to compose the freshly-
+        # mounted Collapsibles' children. Without this, querying
+        # #docs-table immediately after mount_all races on Windows.
+        await asyncio.sleep(0)
+        self._show_loading_placeholders()
+        # Replay any worker callbacks that arrived before the deferred
+        # mount completed.
+        if self._pending_sources is not None:
+            self._load_documents(self._pending_sources)
+            self._load_storage(len(self._pending_sources))
+            self._pending_sources = None
+        if self._pending_arch is not None:
+            self._load_arch(self._pending_arch)
+            self._pending_arch = None
+
     def _show_loading_placeholders(self) -> None:
-        """Surface a 'Loading…' marker for sections backed by workers."""
-        table = self.query_one("#docs-table", DataTable)
-        table.add_columns("Document", "Chunks")
-        table.cursor_type = "row"
-        table.add_row("Loading...", "")
-        self.query_one("#storage-info", Static).update(Content.styled("Loading...", "$text-muted"))
-        self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
+        """Surface a 'Loading…' marker for sections backed by workers.
+
+        Wrapped in NoMatches suppression because Collapsible children
+        compose on the next refresh tick, which on Windows can outlast
+        the synchronous return from mount_all. Worker callbacks repaint
+        the same widgets when they arrive, so a missed placeholder is
+        only a brief cosmetic gap.
+        """
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            table.add_columns("Document", "Chunks")
+            table.cursor_type = "row"
+            table.add_row("Loading...", "")
+        with contextlib.suppress(NoMatches):
+            self.query_one("#storage-info", Static).update(
+                Content.styled("Loading...", "$text-muted")
+            )
+        with contextlib.suppress(NoMatches):
+            self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
     @work(thread=True, name="status_fetch_sources", exit_on_error=False)
     def _fetch_sources_worker(self) -> list[SourceRecord]:
@@ -204,31 +257,46 @@ class StatusScreen(Screen[None]):
             sources = event.worker.result
             if not isinstance(sources, list):
                 sources = []
-            self._load_documents(sources)
-            self._load_storage(len(sources))
+            if self._sections_mounted:
+                self._load_documents(sources)
+                self._load_storage(len(sources))
+            else:
+                self._pending_sources = sources
         elif event.worker.name == "status_fetch_arch":
             arch = event.worker.result
             if isinstance(arch, ModelArchInfo):
-                self._load_arch(arch)
+                if self._sections_mounted:
+                    self._load_arch(arch)
+                else:
+                    self._pending_arch = arch
 
     def _load_arch(self, info: ModelArchInfo) -> None:
         """Populate the model architecture section from worker result."""
-        self.query_one("#arch-info", Static).update(_build_arch_content(info))
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            self.query_one("#arch-info", Static).update(_build_arch_content(info))
 
     def _load_config(self) -> None:
         """Populate the configuration section."""
         self.query_one("#config-info", Static).update(_build_config_content())
 
     def _load_documents(self, sources: list[SourceRecord]) -> None:
-        """Populate the documents table.
+        """Populate the documents table once it is mounted in the DOM.
 
-        Replaces any 'Loading...' placeholder that on_mount put up
-        while the worker was in flight. Columns stay; only the rows
-        get rebuilt against the real source list.
+        Suppresses NoMatches because the deferred Collapsible parents
+        compose their inner DataTable on a later refresh tick than
+        ``mount_all`` returns. The replay path inside
+        ``_mount_remaining_sections`` may run before that tick on
+        Windows; subsequent worker callbacks repaint when the table
+        is actually queryable.
         """
-        table = self.query_one("#docs-table", DataTable)
-        table.clear()
-        self._fill_doc_rows(table, sources)
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            table.clear()
+            self._fill_doc_rows(table, sources)
 
     def _fill_doc_rows(self, table: DataTable, sources: list[SourceRecord]) -> None:
         """Fill the documents table with source data."""
@@ -240,7 +308,10 @@ class StatusScreen(Screen[None]):
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""
-        self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp

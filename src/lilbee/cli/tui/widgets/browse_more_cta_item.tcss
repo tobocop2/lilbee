@@ -1,0 +1,26 @@
+BrowseMoreCtaItem {
+    height: auto;
+    padding: 1 2;
+    margin: 1 2;
+    border: tall $surface-lighten-2;
+    color: $primary;
+    text-style: bold;
+    text-align: center;
+    pointer: pointer;
+
+    &:hover {
+        background: $surface;
+        border: tall $primary;
+    }
+
+    &:focus {
+        background: $surface;
+        border: tall $primary;
+    }
+
+    #browse-more-label {
+        width: 1fr;
+        height: 1;
+        text-align: center;
+    }
+}

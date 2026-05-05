@@ -110,12 +110,21 @@ def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
 
     chat_handler = build_vision_chat_handler(model_path, mmproj_path)
 
+    import os
+
+    # llama-cpp-python defaults n_threads to ~cpu_count()//2 which leaves the
+    # GPU starved on prompt-eval work (image projection through the vision
+    # adapter is CPU-bound on the encode side even with all layers on GPU).
+    # Ollama runs full-core. Match that here for perf parity.
+    n_threads = os.cpu_count() or 4
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
         "chat_handler": chat_handler,
         "verbose": False,
         "n_gpu_layers": -1,
         "n_ctx": _resolve_vision_n_ctx(model_path),
+        "n_threads": n_threads,
+        "n_threads_batch": n_threads,
     }
     kwargs.setdefault("abort_callback", abort_callback)
 

@@ -54,6 +54,11 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
     return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
 
 
+def format_native_gguf_ref(hf_repo: str, gguf_filename: str) -> str:
+    """Render the canonical ``<hf_repo>/<gguf_filename>`` native GGUF ref."""
+    return f"{hf_repo}/{gguf_filename}"
+
+
 def repo_to_dir(hf_repo: str) -> str:
     """Encode an HF repo for use as a directory name (HF cache convention)."""
     return hf_repo.replace("/", REPO_DIR_SEPARATOR)
@@ -72,7 +77,7 @@ class ModelManifest:
 
     @property
     def ref(self) -> str:
-        return f"{self.hf_repo}/{self.gguf_filename}"
+        return format_native_gguf_ref(self.hf_repo, self.gguf_filename)
 
 
 def _sha256_file(path: Path) -> str:
