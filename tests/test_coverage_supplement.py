@@ -1300,23 +1300,22 @@ class TestModelGridTruncateAndPad:
 
     def test_render_card_strip_pads_short_body(self) -> None:
         """Force the render path that pads body lines up to _CARD_BODY_HEIGHT."""
-        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+        from textual.content import Content
 
-        row = LocalCatalogRow(
-            name="m",
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets import model_grid as mg
+
+        row = FrontierCatalogRow(
+            name="api",
+            ref="acme/api",
             task="chat",
-            params="",
-            size="",
-            quant="",
-            downloads="",
-            featured=False,
-            installed=False,
-            sort_downloads=0,
-            sort_size=0.0,
-            ref="m/m",
+            provider="Acme",
+            provider_id="acme",
+            key_status=KeyStatus.READY,
         )
-        out = _render_card_strip(row, selected=False, width=20, border_style="dim")
+        # 1-line body forces the pad loop to run _CARD_BODY_HEIGHT-1 times.
+        with mock.patch.object(mg, "_frontier_lines", return_value=[Content("hi")]):
+            out = mg._render_card_strip(row, selected=False, width=20, border_style="dim")
         assert out.lines, "expected card lines"
 
     def test_cell_at_returns_none_in_gutter_row(self) -> None:
@@ -1588,6 +1587,37 @@ class TestCatalogPriorScrollAndPrefetchEdges:
                 grid.remove()
             await pilot.pause()
             assert screen._focused_grid() is None
+            assert screen._first_grid_or_none() is None
+
+    async def test_scroll_to_end_of_last_grid_when_cursor_on_last_row(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("no grids mounted in this build")
+            target = grids[-1]
+            target.highlighted = max(0, len(target.rows) - 1)
+            with (
+                mock.patch.object(screen, "_focused_grid", return_value=target),
+                mock.patch.object(screen._grid_container, "scroll_end") as scroll_end,
+            ):
+                screen._reveal_scroll_hint_at_catalog_end()
+                scroll_end.assert_called()
 
     async def test_prefetch_returns_when_no_grids(self) -> None:
         from textual.app import App, ComposeResult
