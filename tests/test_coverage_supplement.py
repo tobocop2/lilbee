@@ -1594,6 +1594,25 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             screen._reveal_scroll_hint_at_catalog_end()
         fake_container.scroll_end.assert_called_once()
 
+    def test_reveal_scroll_hint_returns_when_cursor_not_on_last_row(self) -> None:
+        """Cursor above the last row leaves the catalog viewport in place."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        target = mock.MagicMock(spec=ModelGrid)
+        target.highlighted = 0  # row 0
+        target.columns_per_row = 1
+        target.rows = [object(), object(), object()]  # last_row = 2
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = [target]
+        with (
+            mock.patch.object(screen, "_focused_grid", return_value=target),
+            mock.patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        ):
+            screen._reveal_scroll_hint_at_catalog_end()
+        fake_container.scroll_end.assert_not_called()
+
     def test_prefetch_returns_when_no_grids(self) -> None:
         """Direct call: when grid container has no ModelGrid, prefetch no-ops."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
