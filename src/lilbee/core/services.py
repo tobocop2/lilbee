@@ -15,6 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from lilbee.providers.worker.pool import shutdown_pool_runtime
+
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
@@ -185,8 +187,6 @@ def set_services(services: Services | None) -> None:
 
 def reset_services() -> None:
     """Shut down and discard all cached instances."""
-    from lilbee.providers.worker.pool import shutdown_pool_runtime
-
     global _svc
     if _svc is not None:
         shutdown_pool_runtime(_svc.worker_pool, _svc.pool_runtime, _svc.pool_health_ticker)
