@@ -297,8 +297,14 @@ async def test_catalog_nav_noop_when_search_focused():
         await pilot.pause()
 
         screen = app.screen
-        screen.action_focus_search()
-        await pilot.pause()
+        # Slow Windows runners can need several frames after action_focus_search
+        # before the input takes focus (the input is hidden by default and the
+        # action removes -hidden + focuses on the next refresh tick).
+        for _ in range(50):
+            screen.action_focus_search()
+            await pilot.pause()
+            if isinstance(screen.focused, Input):
+                break
         assert isinstance(screen.focused, Input)
 
         actions = ("cursor_down", "cursor_up", "page_down", "page_up", "jump_top", "jump_bottom")
