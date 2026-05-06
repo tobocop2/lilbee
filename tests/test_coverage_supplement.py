@@ -1232,6 +1232,29 @@ class TestWikiEmptyStateSpacyBranches:
         ):
             assert _spacy_available() is True
 
+    def test_spacy_available_returns_true_on_success(self) -> None:
+        from lilbee.cli.tui.messages import _spacy_available
+
+        with mock.patch(
+            "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
+            return_value=mock.MagicMock(),
+        ):
+            assert _spacy_available() is True
+
+    def test_wiki_empty_state_leaf_when_spacy_present(self) -> None:
+        from lilbee.cli.tui import messages as mod
+        from lilbee.cli.tui.messages import WIKI_EMPTY_STATE, wiki_empty_state_leaf
+
+        with mock.patch.object(mod, "_spacy_available", return_value=True):
+            assert wiki_empty_state_leaf() == WIKI_EMPTY_STATE
+
+    def test_wiki_empty_state_detail_when_spacy_present(self) -> None:
+        from lilbee.cli.tui import messages as mod
+        from lilbee.cli.tui.messages import WIKI_NO_CONTENT, wiki_empty_state_detail
+
+        with mock.patch.object(mod, "_spacy_available", return_value=True):
+            assert wiki_empty_state_detail() == WIKI_NO_CONTENT
+
 
 class TestChatInputUnconsumedKey:
     """`ChatInput.check_consume_key` releases keys named in _UNCONSUMED_KEYS."""
@@ -1261,6 +1284,302 @@ class TestModelCardTruncate:
         long_name = "x" * (_NAME_MAX_CHARS + 5)
         out = _truncate_name(long_name)
         assert len(out) == _NAME_MAX_CHARS
+
+
+class TestModelGridTruncateAndPad:
+    """The model_grid module has its own _truncate_name + render padding."""
+
+    def test_grid_truncate_name_long(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _NAME_MAX_CHARS, _truncate_name
+
+        long_name = "x" * (_NAME_MAX_CHARS + 5)
+        out = _truncate_name(long_name)
+        assert len(out) == _NAME_MAX_CHARS
+
+    def test_render_card_strip_pads_short_body(self) -> None:
+        """Force the render path that pads body lines up to _CARD_BODY_HEIGHT."""
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = LocalCatalogRow(
+            name="m",
+            task="chat",
+            params="",
+            size="",
+            quant="",
+            downloads="",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref="m/m",
+        )
+        out = _render_card_strip(row, selected=False, width=20, border_style="dim")
+        assert out.lines, "expected card lines"
+
+    def test_cell_at_returns_none_in_gutter_row(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, ModelGrid
+
+        row = LocalCatalogRow(
+            name="m",
+            task="chat",
+            params="",
+            size="",
+            quant="",
+            downloads="",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref="m/m",
+        )
+        grid = ModelGrid(rows=[row])
+        grid._cards_per_row = 1
+        # y at _CARD_HEIGHT lands in the gutter strip below the card body.
+        assert grid._cell_at(0, _CARD_HEIGHT) is None
+
+
+class TestChatScreenFocusBranches:
+    """`ChatScreen` on_show normal-mode focus + chat input focus event."""
+
+    def test_on_show_normal_mode_focuses_chat_log(self) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = False
+        screen._chat_log = mock.MagicMock()
+        screen.refresh_model_bar = mock.MagicMock()  # type: ignore[method-assign]
+        with mock.patch("lilbee.runtime.splash.dismiss"):
+            screen.on_show()
+        screen._chat_log.focus.assert_called_once()
+
+    def test_on_show_insert_mode_re_enters_input(self) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = True
+        screen.refresh_model_bar = mock.MagicMock()  # type: ignore[method-assign]
+        screen._enter_insert_mode = mock.MagicMock()  # type: ignore[method-assign]
+        with mock.patch("lilbee.runtime.splash.dismiss"):
+            screen.on_show()
+        screen._enter_insert_mode.assert_called_once()
+
+    def test_chat_input_focus_event_flips_to_insert(self) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = False
+        screen._enter_insert_mode = mock.MagicMock()  # type: ignore[method-assign]
+        screen._on_chat_input_focused(mock.MagicMock())
+        screen._enter_insert_mode.assert_called_once()
+
+
+class TestChatModeToggleAction:
+    """`ChatModePill.action_select` switches the parent toggle's mode."""
+
+    async def test_pill_action_select_routes_to_toggle(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_mode = "search"
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatModeToggle()
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            toggle = pilot.app.query_one(ChatModeToggle)
+            chat_pill = toggle.query_one("#chat-mode-chat")
+            chat_pill.action_select()
+            await pilot.pause()
+            assert cfg.chat_mode == "chat"
+
+    async def test_pill_action_select_returns_when_no_toggle(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.model_bar import ChatModePill
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatModePill("Chat", id="chat-mode-chat")
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            pill = pilot.app.query_one("#chat-mode-chat", ChatModePill)
+            pill.action_select()
+
+
+class TestModelBarVisionSidecarPicker:
+    """`classify_installed_models_full` drops a vision-sidecar chat model into VISION too."""
+
+    def test_chat_model_with_vision_sidecar_appears_in_vision_bucket(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+        from lilbee.modelhub.models import ModelTask
+
+        manifest = SimpleNamespace(
+            ref="acme/chat-with-vision",
+            hf_repo="acme/chat-with-vision",
+            gguf_filename="model-Q8_0.gguf",
+            task=ModelTask.CHAT.value,
+        )
+        registry = mock.MagicMock()
+        registry.list_installed.return_value = [manifest]
+        registry.resolve.return_value = Path("/tmp/fake/chat.gguf")
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry",
+                return_value=registry,
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discovery.reclassify_by_name",
+                return_value=ModelTask.CHAT,
+            ),
+            mock.patch(
+                "pathlib.Path.glob",
+                return_value=[Path("/tmp/fake/mmproj-vision.gguf")],
+            ),
+        ):
+            buckets = classify_installed_models_full()
+        assert any(opt.ref == manifest.ref for opt in buckets[ModelTask.VISION])
+
+
+class TestScopeChipPillNoChipReturns:
+    """`ScopePill.action_select` returns when no ScopeChip ancestor exists."""
+
+    async def test_orphaned_pill_select_returns_silently(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopePill
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ScopePill("docs", id="scope-pill-both")
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            pill = pilot.app.query_one("#scope-pill-both", ScopePill)
+            pill.action_select()
+
+
+class TestProviderProtocolBranches:
+    """Each persistent-pool wrapper raises ProviderError when the worker returns the wrong type."""
+
+    def _provider(self) -> Any:
+        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+        return LlamaCppProvider()
+
+    def test_embed_protocol_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        provider = self._provider()
+        accessor = mock.MagicMock()
+        runtime = mock.MagicMock()
+        runtime.run_sync = mock.MagicMock(return_value="not-a-list")
+        with (
+            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
+            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
+            pytest.raises(ProviderError),
+        ):
+            provider.embed(["text"])
+
+    def test_rerank_protocol_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        provider = self._provider()
+        accessor = mock.MagicMock()
+        runtime = mock.MagicMock()
+        runtime.run_sync = mock.MagicMock(return_value="not-a-list")
+        with (
+            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
+            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
+            pytest.raises(ProviderError),
+        ):
+            provider.rerank("q", ["a", "b"])
+
+    def test_vision_ocr_protocol_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        provider = self._provider()
+        accessor = mock.MagicMock()
+        runtime = mock.MagicMock()
+        runtime.run_sync = mock.MagicMock(return_value=42)
+        with (
+            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
+            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
+            pytest.raises(ProviderError),
+        ):
+            provider.vision_ocr(b"png", "ref")
+
+    def test_chat_protocol_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        provider = self._provider()
+        accessor = mock.MagicMock()
+        runtime = mock.MagicMock()
+        runtime.run_sync = mock.MagicMock(return_value=42)
+        with (
+            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
+            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
+            pytest.raises(ProviderError),
+        ):
+            provider.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+class TestCatalogPriorScrollAndPrefetchEdges:
+    """Catalog edges around prior_scroll_y and prefetch ValueError/empty grid guards."""
+
+    async def test_focused_grid_returns_none_when_no_grid_in_dom(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            for grid in list(screen.query(ModelGrid)):
+                grid.remove()
+            await pilot.pause()
+            assert screen._focused_grid() is None
+
+    async def test_prefetch_returns_when_no_grids(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            for grid in list(screen.query(ModelGrid)):
+                grid.remove()
+            await pilot.pause()
+            screen._maybe_prefetch_on_grid_nav()
 
 
 class TestModelBarVisionSidecarErrors:
