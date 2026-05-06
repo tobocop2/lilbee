@@ -1173,3 +1173,195 @@ class TestSettingsTabNavFallbacks:
             screen.mount(empty_body)
             await pilot.pause()
             screen._focus_pane_edge("settings-tab-empty", direction=-1)
+
+
+class TestSyncSkippedMessageBranches:
+    """`sync_skipped_message` returns vision-failed vs no-vision text."""
+
+    def test_returns_vision_failed_when_vision_model_set(self) -> None:
+        from lilbee.cli.tui.messages import sync_skipped_message
+
+        cfg.vision_model = "stub/vision"
+        assert "vision OCR returned no text" in sync_skipped_message("a.pdf")
+
+    def test_returns_no_vision_when_vision_model_unset(self) -> None:
+        from lilbee.cli.tui.messages import sync_skipped_message
+
+        cfg.vision_model = ""
+        assert "Configure a vision_model" in sync_skipped_message("a.pdf")
+
+
+class TestWikiEmptyStateSpacyBranches:
+    """Wiki-empty-state messages have a spaCy-unavailable branch."""
+
+    def test_wiki_empty_state_leaf_when_spacy_missing(self) -> None:
+        from lilbee.cli.tui import messages as mod
+        from lilbee.cli.tui.messages import (
+            WIKI_EMPTY_NEEDS_SPACY_LEAF,
+            wiki_empty_state_leaf,
+        )
+
+        with mock.patch.object(mod, "_spacy_available", return_value=False):
+            assert wiki_empty_state_leaf() == WIKI_EMPTY_NEEDS_SPACY_LEAF
+
+    def test_wiki_empty_state_detail_when_spacy_missing(self) -> None:
+        from lilbee.cli.tui import messages as mod
+        from lilbee.cli.tui.messages import (
+            WIKI_EMPTY_NEEDS_SPACY_DETAIL,
+            wiki_empty_state_detail,
+        )
+
+        with mock.patch.object(mod, "_spacy_available", return_value=False):
+            assert wiki_empty_state_detail() == WIKI_EMPTY_NEEDS_SPACY_DETAIL
+
+    def test_spacy_available_returns_false_on_import_error(self) -> None:
+        from lilbee.cli.tui.messages import _spacy_available
+
+        with mock.patch(
+            "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
+            side_effect=ImportError,
+        ):
+            assert _spacy_available() is False
+
+    def test_spacy_available_returns_true_on_other_exception(self) -> None:
+        from lilbee.cli.tui.messages import _spacy_available
+
+        with mock.patch(
+            "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
+            side_effect=RuntimeError,
+        ):
+            assert _spacy_available() is True
+
+
+class TestChatInputUnconsumedKey:
+    """`ChatInput.check_consume_key` releases keys named in _UNCONSUMED_KEYS."""
+
+    async def test_unconsumed_key_returns_false(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.chat_input import ChatInput
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput(id="probe")
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            inp = pilot.app.query_one("#probe", ChatInput)
+            for key in inp._UNCONSUMED_KEYS:
+                assert inp.check_consume_key(key, None) is False
+
+
+class TestModelCardTruncate:
+    """`_truncate_name` shortens names longer than the visible budget."""
+
+    def test_long_name_is_truncated(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _NAME_MAX_CHARS, _truncate_name
+
+        long_name = "x" * (_NAME_MAX_CHARS + 5)
+        out = _truncate_name(long_name)
+        assert len(out) == _NAME_MAX_CHARS
+
+
+class TestModelBarVisionSidecarErrors:
+    """`_has_vision_sidecar` returns False when registry.resolve raises."""
+
+    def test_has_vision_sidecar_returns_false_on_missing_ref(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _has_vision_sidecar
+
+        registry = mock.MagicMock()
+        registry.resolve.side_effect = KeyError
+        assert _has_vision_sidecar(registry, "missing/ref") is False
+
+    def test_has_vision_sidecar_returns_false_on_value_error(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _has_vision_sidecar
+
+        registry = mock.MagicMock()
+        registry.resolve.side_effect = ValueError
+        assert _has_vision_sidecar(registry, "bad/ref") is False
+
+
+class TestScopeChipPillSelect:
+    """`ScopePill.action_select` routes to the parent chip's scope setter."""
+
+    async def test_pill_select_changes_chip_scope(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ScopeChip()
+
+        async with _Probe().run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            chip = pilot.app.query_one(ScopeChip)
+            wiki_pill = chip.query_one("#scope-pill-wiki")
+            wiki_pill.action_select()
+            await pilot.pause()
+            assert chip.scope is SearchScope.WIKI
+
+
+class TestCatalogSmallEdgeBranches:
+    """A handful of small catalog branches that flake out across xdist workers."""
+
+    async def _push_catalog(self, pilot: Any) -> Any:
+        """Push a CatalogScreen onto a minimal app and return it."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen()
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        return screen
+
+    async def test_focused_grid_returns_none_when_no_grid_in_dom(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            # Fall back to the NoMatches catch by removing every ModelGrid.
+            for grid in list(screen.query(ModelGrid)):
+                grid.remove()
+            await pilot.pause()
+            assert screen._focused_grid() is None
+
+    async def test_action_toggle_view_to_list_triggers_first_hf_fetch(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            screen._hf_fetched = False
+            screen._grid_view = True
+            with mock.patch.object(screen, "_fetch_all_hf_models") as mock_fetch:
+                screen.action_toggle_view()
+                assert screen._hf_fetched is True
+                mock_fetch.assert_called_once()
