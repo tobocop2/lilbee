@@ -8233,9 +8233,16 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             app.push_screen(screen)
             await pilot.pause()
             screen._hf_has_more = False
+            # Re-query grids right before exercising LeaveDown so a slow
+            # Windows worker that mounts more grids between push and pause
+            # still sees the truly-last grid, not a stale snapshot.
             grids = list(screen.query(ModelGrid))
             if not grids:
                 pytest.skip("test requires at least one grid mounted")
+            last = grids[-1]
+            last.focus()
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
             last = grids[-1]
             last.focus()
             await pilot.pause()
