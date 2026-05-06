@@ -237,8 +237,23 @@ class Config(BaseSettings):
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Run embedding and vision inference in a subprocess (llama-cpp only).
-    subprocess_embed: bool = ConfigField(default=False, writable=True)
+    # Per-call deadline for one pool round-trip (send + recv). Embed batches
+    # larger than this on slow machines surface as TimeoutError; raise for
+    # heavy ingest jobs.
+    worker_pool_call_timeout_s: float = ConfigField(default=300.0, gt=0.0, writable=True)
+
+    # Spawn every configured role at startup instead of on first use. Trades
+    # a slower TUI mount (~1-3s per worker, cold-started in parallel) for a
+    # responsive first interaction. Roles whose model is unset are skipped,
+    # so a setup with only chat + embed never spawns rerank or vision.
+    # Set to false for headless / scripted use where the first call doesn't
+    # need to be fast.
+    worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
+
+    # Idle worker reap. A worker that has been quiet for this many seconds
+    # is shut down to free RAM/VRAM; the next request respawns it.
+    # ``0`` disables reaping (workers stay up until TUI exit).
+    worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
     # largest 256-multiple ctx that fits in available memory and the

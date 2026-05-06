@@ -85,10 +85,15 @@ class TestChatFlow:
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
 
-            for _ in range(600):
+            # Wall-clock budget: real chat inference on Windows-3.12 CPU
+            # runners has been observed to take >75 s for Qwen3-0.6B, so
+            # tick-based polling underestimates. Cap at 240 s and pump
+            # frames in between so the event loop keeps progressing.
+            import time
+
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline and app.screen.streaming:
                 await pilot.pause()
-                if not app.screen.streaming:
-                    break
 
             assert not app.screen.streaming, "Streaming did not complete in time"
 

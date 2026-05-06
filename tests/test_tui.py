@@ -921,7 +921,8 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         assert any("Search" in d for d in visible)
         assert any("Delete" in d for d in visible)
-        assert len(visible) <= 5
+        assert any("Info" in d for d in visible)
+        assert len(visible) <= 6
 
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen

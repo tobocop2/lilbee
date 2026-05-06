@@ -163,6 +163,13 @@ async def _extract_pdf_vision_in_subprocess(
     macOS. The child writes per-page progress to stderr so the parent can
     surface it via ``on_progress``. JSON args go in via stdin; the result
     (or an error string) comes back as JSON on stdout.
+
+    NOTE: this per-PDF subprocess pre-dates the persistent worker pool.
+    The vision pool worker (lilbee.providers.worker.vision_worker) only
+    handles single-image OCR today; routing PDF rasterize + per-page
+    OCR through the same pool worker is tracked as a follow-up so the
+    pdfium decoder still runs in its own process here. Until that
+    lands, this path remains the canonical multi-page OCR entry point.
     """
     import json
     import sys

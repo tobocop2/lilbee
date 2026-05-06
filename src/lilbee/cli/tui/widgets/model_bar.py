@@ -5,7 +5,10 @@ from __future__ import annotations
 import contextlib
 import logging
 from pathlib import Path
-from typing import ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
+
+if TYPE_CHECKING:
+    from lilbee.modelhub.registry import ModelRegistry
 
 from textual import events, work
 from textual.app import ComposeResult
@@ -110,6 +113,21 @@ def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
     return f"{base} ({quant})" if quant else base
 
 
+def _has_vision_sidecar(registry: ModelRegistry, ref: str) -> bool:
+    """Return True if *ref* resolves to a model with an adjacent ``*mmproj*.gguf`` file.
+
+    Models like ``google/gemma-3-12b-it`` carry their vision capability in
+    a sibling ``mmproj`` GGUF; without checking the file system, the
+    ref's name alone gives no signal that the model is multimodal, so the
+    vision picker would silently miss it.
+    """
+    try:
+        path = registry.resolve(ref)
+    except (KeyError, ValueError):
+        return False
+    return any(path.parent.glob("*mmproj*.gguf"))
+
+
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
@@ -128,14 +146,20 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
             task = reclassify_by_name(ref, manifest.task)
-            bucket = _lookup_bucket(buckets, task, ref)
-            if bucket is None:
-                continue
-            seen.add(ref)
             label = _native_label(
                 manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
             )
-            bucket.append(ModelOption(label=label, ref=ref))
+            primary_bucket = _lookup_bucket(buckets, task, ref)
+            if primary_bucket is None:
+                continue
+            seen.add(ref)
+            primary_bucket.append(ModelOption(label=label, ref=ref))
+            # If the model has an mmproj sidecar it is also vision-capable.
+            # Surface it under the vision picker too without dropping its
+            # primary classification, so a chat model with vision (e.g.
+            # gemma-3 with mmproj) shows up in both pickers.
+            if task != ModelTask.VISION and _has_vision_sidecar(registry, ref):
+                buckets[ModelTask.VISION].append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 
@@ -271,12 +295,36 @@ class ModelPickerButton(Static, can_focus=True):
             b._after_model_change()
 
 
-class ChatModeToggle(Widget, can_focus=True):
-    """Two-pill control toggling cfg.chat_mode between Search and Chat."""
+class ChatModePill(Static, can_focus=True):
+    """Single focusable mode pill; Enter / Space picks this pill's mode."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "flip_mode", "Toggle mode", show=False),
-        Binding("space", "flip_mode", "Toggle mode", show=False),
+        Binding("enter", "select", "Pick mode", show=False),
+        Binding("space", "select", "Pick mode", show=False),
+    ]
+
+    def action_select(self) -> None:
+        toggle = next(
+            (n for n in self.ancestors_with_self if isinstance(n, ChatModeToggle)),
+            None,
+        )
+        if toggle is None:
+            return
+        target = (
+            ChatMode.SEARCH.value if self.id == _CHAT_MODE_SEARCH_PILL_ID else ChatMode.CHAT.value
+        )
+        toggle._set_mode(target)
+
+
+class ChatModeToggle(Widget, can_focus=False):
+    """Two-pill control toggling cfg.chat_mode between Search and Chat.
+
+    The toggle itself is not focusable; the inner pills are. Tab walks
+    Search then Chat, Enter / Space picks. The container keeps left /
+    right arrow handling so the legacy keyboard flow still works.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("left", "select_search", "Search mode", show=False),
         Binding("right", "select_chat", "Chat mode", show=False),
     ]
@@ -286,12 +334,12 @@ class ChatModeToggle(Widget, can_focus=True):
 
     def compose(self) -> ComposeResult:
         with Horizontal():
-            yield Static(
+            yield ChatModePill(
                 msg.CHAT_MODE_SEARCH_LABEL,
                 id=_CHAT_MODE_SEARCH_PILL_ID,
                 classes=_CHAT_MODE_PILL_CLASS,
             )
-            yield Static(
+            yield ChatModePill(
                 msg.CHAT_MODE_CHAT_LABEL,
                 id=_CHAT_MODE_CHAT_PILL_ID,
                 classes=_CHAT_MODE_PILL_CLASS,
@@ -312,8 +360,8 @@ class ChatModeToggle(Widget, can_focus=True):
         ready = self._embedding_ready()
         mode = cfg.chat_mode if ready else ChatMode.CHAT.value
         active_search = mode == ChatMode.SEARCH.value
-        search_pill = self.query_one(f"#{_CHAT_MODE_SEARCH_PILL_ID}", Static)
-        chat_pill = self.query_one(f"#{_CHAT_MODE_CHAT_PILL_ID}", Static)
+        search_pill = self.query_one(f"#{_CHAT_MODE_SEARCH_PILL_ID}", ChatModePill)
+        chat_pill = self.query_one(f"#{_CHAT_MODE_CHAT_PILL_ID}", ChatModePill)
         # Search half is disabled whenever embedding isn't ready; Chat is
         # always reachable so it never carries the disabled class.
         search_pill.set_class(active_search, _CHAT_MODE_ACTIVE_CLASS)

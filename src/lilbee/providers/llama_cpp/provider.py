@@ -1,19 +1,12 @@
-"""Llama.cpp provider: class, model loader, and path resolution.
-
-Includes a thread-safe batching queue for embeddings so that concurrent
-ingest threads don't hit the non-thread-safe Llama object simultaneously.
-When subprocess_embed is enabled, embedding and vision calls are delegated
-to a persistent child process to avoid GIL contention.
-"""
+"""Llama.cpp provider: class, model loader, and path resolution."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import queue
 import threading
-import time
 from collections.abc import Callable
-from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,16 +15,7 @@ from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.services import get_services
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort, request_abort
-from lilbee.providers.llama_cpp.batching import (
-    BATCH_WINDOW_S,
-    EMBED_FUTURE_TIMEOUT_S,
-    RERANK_FUTURE_TIMEOUT_S,
-    EmbedRequest,
-    RerankRequest,
-    compute_rerank_scores,
-    embed_one,
-)
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.gguf_meta import (
     find_mmproj_for_model,
     read_gguf_metadata,
@@ -39,7 +23,6 @@ from lilbee.providers.llama_cpp.gguf_meta import (
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
-    stderr_suppressed,
     suppress_native_stderr,
 )
 from lilbee.providers.model_cache import (
@@ -47,19 +30,38 @@ from lilbee.providers.model_cache import (
     MODE_EMBED,
     MODE_RERANK,
     LoaderMode,
-    MemoryAwareModelCache,
     compute_dynamic_ctx,
     get_available_memory,
     kv_bytes_per_token,
 )
-from lilbee.providers.worker import WorkerManager
+from lilbee.providers.worker.chat_worker import chat_worker_main
+from lilbee.providers.worker.embed_worker import embed_worker_main
+from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
+from lilbee.providers.worker.rerank_worker import rerank_worker_main
+from lilbee.providers.worker.transport import (
+    ChatRequest,
+    RerankPayload,
+    RoleConfig,
+    VisionRequest,
+)
+from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
+from lilbee.providers.worker.vision_worker import vision_worker_main
+
+_EMBED_ROLE = "embed"
+_RERANK_ROLE = "rerank"
+_CHAT_ROLE = "chat"
+_VISION_ROLE = "vision"
 
 log = logging.getLogger(__name__)
 
-# Cap on tokens consumed during ``_LockedStreamIterator.close()``'s drain. A
-# runaway model (e.g. Qwen3-0.6B stuck in a never-closing ``<think>`` loop)
-# would otherwise block ``close()`` indefinitely.
-_LOCKED_STREAM_DRAIN_CAP = 1024
+# Vision OCR sentinel used when no per-call timeout and no ``cfg.ocr_timeout``
+# is set. 24h is effectively "no cap" for the round-trip wait loop.
+_VISION_NO_CAP_TIMEOUT_S = 86_400.0
+
+# Cap on tokens drained during ``_PoolChatStreamIterator.close()`` after a
+# mid-stream cancel. A runaway model (Qwen3-0.6B stuck in a never-closing
+# ``<think>`` loop) would otherwise block close() indefinitely.
+_CHAT_STREAM_DRAIN_CAP = 1024
 
 # Chat-load OOM retry knobs. The OOM wrapper halves ``n_ctx`` (rounded down to
 # the next ``_CTX_QUANTUM`` multiple) up to ``_MAX_OOM_RETRIES`` times before
@@ -84,168 +86,126 @@ LOAD_AFFECTING_KEYS = frozenset(
     }
 )
 
+# Subset of LOAD_AFFECTING_KEYS whose change is observed by the worker on the
+# next per-call ``request.model`` (chat_worker / vision_worker check the path
+# in ``_ensure_loaded`` and reload in place). For these, the parent does not
+# need to release the pool role; the next call swaps the model inside the live
+# worker, saving the 1-3 s spawn cost.
+PER_CALL_RELOADABLE_KEYS = frozenset({"chat_model", "vision_model"})
+
 
 class LlamaCppProvider(LLMProvider):
-    """Provider backed by llama-cpp-python for local GGUF model inference.
-    Embedding calls are funnelled through a single background worker thread
-    that batches concurrent requests into one ``create_embedding`` call.
-    Chat calls are serialized via a lock (no batching possible).
-    Vision models are loaded with a CLIP chat handler for image understanding.
-    """
+    """Provider backed by llama-cpp-python for local GGUF model inference."""
 
     def __init__(self) -> None:
-        self._cache = MemoryAwareModelCache(
-            max_memory_fraction=cfg.gpu_memory_fraction,
-            keep_alive_seconds=cfg.model_keep_alive,
-            loader=load_llama,
-        )
-        self._embed_queue: queue.Queue[EmbedRequest | None] = queue.Queue()
-        self._rerank_queue: queue.Queue[RerankRequest | None] = queue.Queue()
-        self._chat_lock = threading.Lock()
-        self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
-        self._embed_thread.start()
-        self._rerank_thread = threading.Thread(target=self._rerank_worker, daemon=True)
-        self._rerank_thread.start()
-        self._subprocess_worker: WorkerManager | None = None
-        self._subprocess_enabled = cfg.subprocess_embed
+        self._pool_lock = threading.Lock()
+        self._registered_roles: set[str] = set()
 
-    def _embed_worker(self) -> None:
-        """Background thread: drain queue, batch, inference, dispatch results."""
-        while True:
-            first = self._embed_queue.get()
-            if first is None:
-                break
+    @staticmethod
+    def _worker_error_message(role_label: str, exc: WorkerError) -> str:
+        """Render a user-facing message that names the role and points at the log.
 
-            batch: list[EmbedRequest] = [first]
-            shutting_down = False
-            deadline = time.monotonic() + BATCH_WINDOW_S
-            while time.monotonic() < deadline:
-                try:
-                    req = self._embed_queue.get_nowait()
-                    if req is None:
-                        shutting_down = True
-                        break
-                    batch.append(req)
-                except queue.Empty:
-                    time.sleep(0.001)
-                    continue
-
-            self._dispatch_batch(batch)
-            if shutting_down:
-                break
-
-    def _dispatch_batch(self, batch: list[EmbedRequest]) -> None:
-        """Serialize embedding requests and resolve all futures.
-        Embeds one text at a time because some model architectures (e.g.
-        nomic-bert) fail with llama_decode -1 on multi-text batches.
+        ``WorkerCrashError`` already embeds the log path in its message; for
+        plain ``WorkerError`` (the worker reported an exception or returned
+        a malformed reply) the surfaced text is the worker's exception
+        repr so the user sees enough to file a bug report.
         """
-        # Each new dispatch starts with a fresh abort flag: a previous
-        # request_abort() unblocks the prior in-flight call but must not
-        # latch and break this one.
-        clear_abort()
-        try:
-            llm = self._get_embed_llm()
-        except Exception as exc:
-            for req in batch:
-                if not req.future.done():
-                    req.future.set_exception(exc)
-            return
-        # Hold the stderr-suppression lock + fd-2 swap once for the whole batch
-        # rather than once per text; per-text wrapping is what made the TUI
-        # appear frozen during multi-page-PDF ingest.
-        with stderr_suppressed():
-            for req in batch:
-                try:
-                    vectors: list[list[float]] = []
-                    for text in req.texts:
-                        response = embed_one(llm, text)
-                        vectors.append(response)
-                    req.future.set_result(vectors)
-                except Exception as exc:
-                    if not req.future.done():
-                        req.future.set_exception(exc)
+        if isinstance(exc, WorkerCrashError):
+            return f"{role_label} worker exited unexpectedly. {exc}. Please try again."
+        return f"{role_label} worker reported an error: {exc}. Please try again."
 
-    def _rerank_worker(self) -> None:
-        """Background thread: drain rerank queue, serialize through the model.
+    def _pool_runtime(self) -> PoolRuntime:
+        """Return the Services-owned :class:`PoolRuntime`, starting it lazily."""
+        runtime = get_services().pool_runtime
+        runtime.start()
+        return runtime
 
-        The queue is unbounded; back-pressure comes from callers awaiting
-        their futures synchronously.
+    def _get_pool_accessor(
+        self,
+        role: str,
+        worker_main: Any,
+        config_factory: Callable[[], RoleConfig],
+    ) -> RoleAccessor:
+        """Register *role* on the Services pool the first time it is used.
+
+        Subsequent calls return the same accessor without touching the
+        pool state. Registration is gated by ``self._pool_lock`` so two
+        concurrent first-callers do not race to register the role twice.
         """
-        while True:
-            req = self._rerank_queue.get()
-            if req is None:
-                break
-            self._dispatch_rerank(req)
-
-    def _dispatch_rerank(self, req: RerankRequest) -> None:
-        """Run a single rerank request and resolve its future."""
-        # See ``_dispatch_batch`` for why we clear at the start of each dispatch.
-        clear_abort()
-        try:
-            llm = self._get_rerank_llm()
-        except Exception as exc:
-            if not req.future.done():
-                req.future.set_exception(exc)
-            return
-        try:
-            with stderr_suppressed():
-                scores = compute_rerank_scores(llm, req.query, req.candidates)
-            req.future.set_result(scores)
-        except Exception as exc:
-            if not req.future.done():
-                req.future.set_exception(exc)
-
-    def _get_chat_llm(self, model: str | None = None) -> Any:
-        """Load or return a cached Llama instance for chat.
-
-        Vision OCR has its own entry point (``vision_ocr``); the chat path
-        never substitutes a vision model, even if the chat pick is multimodal.
-        """
-        resolved_model = model or cfg.chat_model
-        model_path = resolve_model_path(resolved_model)
-        return self._cache.load_model(model_path, mode=MODE_CHAT)
-
-    def _get_embed_llm(self) -> Any:
-        """Load or return a cached Llama instance for embeddings."""
-        model_path = resolve_model_path(cfg.embedding_model)
-        return self._cache.load_model(model_path, mode=MODE_EMBED)
-
-    def _get_rerank_llm(self) -> Any:
-        """Load or return a cached Llama instance for reranking."""
-        model_name = cfg.reranker_model
-        if not model_name:
-            raise ProviderError(
-                "No reranker model configured. Set cfg.reranker_model first.",
-                provider="llama-cpp",
-            )
-        model_path = resolve_model_path(model_name)
-        return self._cache.load_model(model_path, mode=MODE_RERANK)
-
-    def _get_subprocess_worker(self) -> WorkerManager:
-        """Lazy-create and return the subprocess worker."""
-        if self._subprocess_worker is None:
-            self._subprocess_worker = WorkerManager()
-        return self._subprocess_worker
+        pool = get_services().worker_pool
+        with self._pool_lock:
+            if role not in self._registered_roles:
+                pool.register(role, worker_main, config_factory)
+                self._registered_roles.add(role)
+        return pool.accessor(role)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts. Delegates to subprocess worker if enabled, with fallback."""
-        if self._subprocess_enabled:
-            try:
-                return self._get_subprocess_worker().embed(texts)
-            except (OSError, RuntimeError) as exc:
-                log.warning("Subprocess embed failed, falling back to in-process: %s", exc)
-                self._subprocess_enabled = False
-        fut: Future[list[list[float]]] = Future()
-        self._embed_queue.put(EmbedRequest(texts=texts, future=fut))
-        return fut.result(timeout=EMBED_FUTURE_TIMEOUT_S)
+        """Embed texts via the persistent pool worker.
+
+        Worker crashes and timeouts surface as :class:`ProviderError`;
+        the pool respawns the embed role lazily on the next call.
+        """
+        accessor = self._get_pool_accessor(
+            _EMBED_ROLE, embed_worker_main, _make_role_config_factory(_EMBED_ROLE)
+        )
+        runtime = self._pool_runtime()
+        try:
+            result = runtime.run_sync(
+                accessor.call("embed", texts, timeout=cfg.worker_pool_call_timeout_s),
+                timeout=cfg.worker_pool_call_timeout_s,
+            )
+            if not isinstance(result, list):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool embed returned {type(result).__name__}, expected list[list[float]].",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                self._worker_error_message("Embedding", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Embedding worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        return result
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Score *candidates* by relevance to *query*, queued through a single worker."""
+        """Score *candidates* by relevance to *query* via the pool worker."""
         if not candidates:
             return []
-        fut: Future[list[float]] = Future()
-        self._rerank_queue.put(RerankRequest(query=query, candidates=candidates, future=fut))
-        return fut.result(timeout=RERANK_FUTURE_TIMEOUT_S)
+        accessor = self._get_pool_accessor(
+            _RERANK_ROLE, rerank_worker_main, _make_role_config_factory(_RERANK_ROLE)
+        )
+        runtime = self._pool_runtime()
+        try:
+            result = runtime.run_sync(
+                accessor.call(
+                    "rerank",
+                    RerankPayload(query=query, candidates=candidates),
+                    timeout=cfg.worker_pool_call_timeout_s,
+                ),
+                timeout=cfg.worker_pool_call_timeout_s,
+            )
+            if not isinstance(result, list):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool rerank returned {type(result).__name__}, expected list[float].",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                self._worker_error_message("Rerank", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Rerank worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        return result
 
     def supports_rerank(self) -> bool:
         """llama-cpp can rerank iff llama-cpp-python exposes the rank pooling type."""
@@ -254,8 +214,41 @@ class LlamaCppProvider(LLMProvider):
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
-        """Run vision OCR via the subprocess worker, honouring an optional per-call timeout."""
-        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt, timeout=timeout)
+        """Run vision OCR via the persistent pool worker."""
+        accessor = self._get_pool_accessor(
+            _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
+        )
+        runtime = self._pool_runtime()
+        budget = self._vision_call_budget(timeout)
+        request = VisionRequest(png_bytes=png_bytes, prompt=prompt, model=model or None)
+        try:
+            result = runtime.run_sync(
+                accessor.call("vision_ocr", request, timeout=budget),
+                timeout=budget,
+            )
+            if not isinstance(result, str):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool vision_ocr returned {type(result).__name__}, expected str.",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                self._worker_error_message("Vision", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Vision worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        return result
+
+    @staticmethod
+    def _vision_call_budget(timeout: float | None) -> float:
+        """Wall-clock budget for one vision_ocr call (per-call > cfg.ocr_timeout > no cap)."""
+        effective = timeout if timeout is not None else cfg.ocr_timeout
+        return float(effective) if effective and effective > 0 else _VISION_NO_CAP_TIMEOUT_S
 
     def chat(
         self,
@@ -265,28 +258,62 @@ class LlamaCppProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
-        """Chat completion: serialized via lock (Llama is not thread-safe)."""
-        self._chat_lock.acquire()
-        # Clear AFTER the lock acquires so a concurrent chat can't clobber a
-        # mid-stream cancel still being honored by the prior holder.
-        clear_abort()
+        """Chat completion via the persistent pool worker.
+
+        Streaming returns a :class:`ClosableIterator[str]` whose
+        ``close()`` flips the worker's abort flag so in-flight generation
+        drains cleanly. Non-streaming returns the assembled assistant text.
+        """
+        accessor = self._get_pool_accessor(
+            _CHAT_ROLE, chat_worker_main, _make_role_config_factory(_CHAT_ROLE)
+        )
+        runtime = self._pool_runtime()
+        accessor.clear_abort()  # honor mid-stream cancels from the previous turn
+        request = ChatRequest(
+            messages=messages,
+            stream=stream,
+            options=self._chat_kwargs_from_options(options) or None,
+            model=model,
+        )
+        if stream:
+            return _PoolChatStreamIterator(
+                runtime=runtime,
+                accessor=accessor,
+                async_iter=accessor.stream("chat", request),
+            )
         try:
-            llm = self._get_chat_llm(model)
-            kwargs: dict[str, Any] = {}
-            if options:
-                filtered = filter_options(options)
-                if "num_predict" in filtered:
-                    filtered["max_tokens"] = filtered.pop("num_predict")
-                filtered.pop("num_ctx", None)  # model-load param, not per-call
-                kwargs.update(filtered)
-            response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
-            if stream:
-                return _LockedStreamIterator(response, self._chat_lock)
-            result: str = response["choices"][0]["message"]["content"] or ""
-            return result
-        finally:
-            if not stream:
-                self._chat_lock.release()
+            result = runtime.run_sync(
+                accessor.call("chat", request, timeout=cfg.worker_pool_call_timeout_s),
+                timeout=cfg.worker_pool_call_timeout_s,
+            )
+            if not isinstance(result, str):
+                raise WorkerError(
+                    "ProtocolError",
+                    f"Pool chat returned {type(result).__name__}, expected str.",
+                    "",
+                )
+        except WorkerError as exc:
+            raise ProviderError(
+                self._worker_error_message("Chat", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "Chat worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+        return result
+
+    @staticmethod
+    def _chat_kwargs_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
+        """Translate user-facing options into llama-cpp create_chat_completion kwargs."""
+        if not options:
+            return {}
+        filtered = filter_options(options)
+        if "num_predict" in filtered:
+            filtered["max_tokens"] = filtered.pop("num_predict")
+        filtered.pop("num_ctx", None)  # model-load param, not per-call
+        return filtered
 
     def list_models(self) -> list[str]:
         """List installed models from registry."""
@@ -334,98 +361,187 @@ class LlamaCppProvider(LLMProvider):
             log.debug("no mmproj for %s", model, exc_info=True)
         return caps
 
-    _SHUTDOWN_JOIN_TIMEOUT_S = 30.0
+    def warm_up_pool(self) -> None:
+        """Register roles for every configured model. Idempotent.
+
+        Called by ``Services`` when ``cfg.worker_pool_eager_start`` is on so
+        ``WorkerPool.start_eager()`` has roles to spawn. Roles whose model is
+        unset are skipped; this lets a setup with only ``chat_model`` +
+        ``embedding_model`` configured eager-start exactly those two and not
+        pay rerank or vision spawn cost.
+        """
+        for role, _spec in _ROLE_SPECS.items():
+            if not _is_role_configured(role):
+                continue
+            entrypoint = _ROLE_ENTRYPOINTS[role]
+            self._get_pool_accessor(role, entrypoint, _make_role_config_factory(role))
 
     def shutdown(self) -> None:
-        """Stop workers and unload all cached models.
+        """Drop pool registrations so a follow-up provider can re-register cleanly."""
+        self._release_pool_roles()
 
-        Trips the process-wide abort flag so any inference inside ggml
-        returns at the next token-poll, which lets the workers see the
-        ``None`` sentinel within seconds instead of blocking on a full
-        completion. The flag is cleared once the workers exit so the next
-        provider does not start in an aborted state.
+    def _release_pool_roles(self) -> None:
+        """Drop our registrations on the Services pool so the next call respawns.
+
+        Safe even when Services has not yet been built (early shutdown
+        on import-time failure). Holds ``self._pool_lock`` so a concurrent
+        ``_get_pool_accessor`` does not race the role removal.
         """
-        request_abort()
-        self._embed_queue.put(None)
-        self._rerank_queue.put(None)
-        self._embed_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
-        self._rerank_thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT_S)
-        if self._embed_thread.is_alive():
-            log.warning("embed worker did not exit within shutdown timeout")
-        if self._rerank_thread.is_alive():
-            log.warning("rerank worker did not exit within shutdown timeout")
-        clear_abort()
-        if self._subprocess_worker is not None:
-            self._subprocess_worker.stop()
-            self._subprocess_worker = None
-        self._cache.unload_all()
+        with self._pool_lock:
+            roles = tuple(self._registered_roles)
+            self._registered_roles.clear()
+        if not roles:
+            return
+        services = get_services()
+        runtime = services.pool_runtime
+        for role in roles:
+            try:
+                runtime.run_sync(services.worker_pool.release(role), timeout=10.0)
+            except (TimeoutError, RuntimeError, OSError) as exc:
+                log.warning("Pool release of role=%s raised %s", role, exc)
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Evict cached models so the next call reloads with current settings."""
-        if model_path is None:
-            self._cache.unload_all()
-        else:
-            self._cache.unload_path(model_path)
+        """Drop the pool's per-role workers so the next call respawns with current settings.
+
+        The ``model_path`` argument is accepted for protocol parity with
+        other providers but does not narrow the scope: workers reload all
+        their roles on respawn anyway.
+        """
+        del model_path
+        self._release_pool_roles()
 
 
-class _LockedStreamIterator:
-    """Wraps a streaming response so the chat lock is held until iteration ends.
-    The lock must already be acquired by the caller; this iterator releases it
-    when the underlying stream is exhausted (or on explicit close).
+class _PoolChatStreamIterator:
+    """Sync facade over an async chat-stream iterator from the worker pool.
+
+    Each ``__next__`` submits one ``__anext__`` to the pool's runtime
+    loop and blocks for the result. ``close()`` flips the worker's abort
+    flag so any in-flight generation stops at the next token-tick;
+    in-flight chunks already in the pipe still drain.
     """
 
-    def __init__(self, response: Any, lock: threading.Lock) -> None:
-        self._response = response
-        self._lock = lock
-        self._released = False
+    def __init__(
+        self,
+        *,
+        runtime: PoolRuntime,
+        accessor: RoleAccessor,
+        async_iter: Any,
+    ) -> None:
+        self._runtime = runtime
+        self._accessor = accessor
+        self._async_iter = async_iter
+        self._exhausted = False
 
-    def __iter__(self) -> _LockedStreamIterator:
+    def __iter__(self) -> _PoolChatStreamIterator:
         return self
 
     def __next__(self) -> str:
+        if self._exhausted:
+            raise StopIteration
         try:
-            while True:
-                try:
-                    chunk = next(self._response)
-                except StopIteration:
-                    self._release()
-                    raise
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                content: str | None = delta.get("content")
-                if content:
-                    return content
-        except StopIteration:
-            raise
-        except Exception:
-            self._release()
-            raise
-
-    def _release(self) -> None:
-        if not self._released:
-            self._released = True
-            self._lock.release()
+            chunk: str = self._runtime.run_sync(
+                self._async_iter.__anext__(),
+                timeout=cfg.worker_pool_call_timeout_s,
+            )
+            return chunk
+        except StopAsyncIteration:
+            self._exhausted = True
+            raise StopIteration from None
+        except WorkerError as exc:
+            # Mid-stream worker crashes propagate as ProviderError so the
+            # streaming path matches the non-streaming contract.
+            self._exhausted = True
+            raise ProviderError(
+                LlamaCppProvider._worker_error_message("Chat", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            self._exhausted = True
+            raise ProviderError(
+                "Chat worker timed out mid-stream. Please try again.",
+                provider="llama-cpp",
+            ) from exc
 
     def close(self) -> None:
-        """Drain (capped) the underlying C iterator, then release the lock.
+        """Cancel mid-stream and drain remaining tokens from the pipe.
 
-        Simply releasing the lock without finishing inference leaves the
-        llama-cpp model in an inconsistent state. Draining lets inference
-        complete cleanly. The cap (``_LOCKED_STREAM_DRAIN_CAP``) keeps a
-        runaway think loop from blocking close() indefinitely; once the
-        cap fires we accept the inconsistent state in exchange for not
-        hanging the UI.
+        Drain is bounded by ``_CHAT_STREAM_DRAIN_CAP`` so a stuck
+        worker cannot block close() indefinitely; once the cap fires we
+        accept the partial-state for not hanging the UI.
         """
-        if not self._released:
+        if self._exhausted:
+            return
+        self._accessor.cancel()
+        drained = 0
+        while drained < _CHAT_STREAM_DRAIN_CAP:
             try:
-                for i, _ in enumerate(self._response):
-                    if i >= _LOCKED_STREAM_DRAIN_CAP:
-                        break
-            except Exception:  # noqa: S110 -- best-effort drain during release; ignore partial-read errors
-                pass
-            self._release()
+                next(self)
+            except StopIteration:
+                break
+            except Exception:
+                break
+            drained += 1
+        self._accessor.clear_abort()
+        self._exhausted = True
 
     def __del__(self) -> None:  # pragma: no cover
-        self._release()
+        with contextlib.suppress(Exception):
+            self.close()
+
+
+@dataclass(frozen=True)
+class _RoleSpec:
+    """Per-role recipe for building a :class:`RoleConfig` from cfg."""
+
+    cfg_attr: str
+    mode: str
+
+
+_ROLE_SPECS: dict[str, _RoleSpec] = {
+    _EMBED_ROLE: _RoleSpec(cfg_attr="embedding_model", mode=MODE_EMBED),
+    _RERANK_ROLE: _RoleSpec(cfg_attr="reranker_model", mode=MODE_RERANK),
+    _CHAT_ROLE: _RoleSpec(cfg_attr="chat_model", mode=MODE_CHAT),
+    # Vision uses a custom mtmd loader (not load_llama); the mode hint is
+    # documentation only, the vision worker calls load_vision_llama directly.
+    _VISION_ROLE: _RoleSpec(cfg_attr="vision_model", mode="vision"),
+}
+
+
+_ROLE_ENTRYPOINTS = {
+    _EMBED_ROLE: embed_worker_main,
+    _RERANK_ROLE: rerank_worker_main,
+    _CHAT_ROLE: chat_worker_main,
+    _VISION_ROLE: vision_worker_main,
+}
+
+
+def _is_role_configured(role: str) -> bool:
+    """True iff the cfg attribute for *role* holds a non-empty model name."""
+    return bool(getattr(cfg, _ROLE_SPECS[role].cfg_attr))
+
+
+def _make_role_config_factory(role: str) -> Callable[[], RoleConfig]:
+    """Return a factory that resolves the role's configured model at spawn time.
+
+    The pool calls the factory on every spawn (lazy or restart) so model
+    swaps in cfg propagate without an explicit invalidation call.
+    """
+    spec = _ROLE_SPECS[role]
+
+    def _make() -> RoleConfig:
+        model_name = getattr(cfg, spec.cfg_attr)
+        if not model_name:
+            raise ProviderError(
+                f"No {role} model configured. Set cfg.{spec.cfg_attr} first.",
+                provider="llama-cpp",
+            )
+        return RoleConfig(
+            role=role,
+            model_path=resolve_model_path(model_name),
+            mode=spec.mode,
+        )
+
+    return _make
 
 
 def resolve_model_path(model: str) -> Path:
@@ -470,8 +586,17 @@ def _llama_cpp_has_rank_pooling() -> bool:
     return True
 
 
-def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
-    """Load a llama_cpp.Llama in chat, embed, or rerank mode."""
+def load_llama(
+    model_path: Path,
+    *,
+    mode: LoaderMode,
+    abort_callback_override: Any = None,
+) -> Any:
+    """Load a llama_cpp.Llama in chat, embed, or rerank mode.
+
+    ``abort_callback_override`` lets pool workers bind a callback that
+    reads the worker's shared ``mp.Value`` abort flag.
+    """
     Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
@@ -521,6 +646,9 @@ def load_llama(model_path: Path, *, mode: LoaderMode) -> Any:
     if not embedding:
         _apply_flash_attention(kwargs)
         _apply_kv_cache_type(kwargs)
+
+    if abort_callback_override is not None:
+        kwargs["abort_callback"] = abort_callback_override
 
     return _construct_llama(Llama, model_path, kwargs)
 

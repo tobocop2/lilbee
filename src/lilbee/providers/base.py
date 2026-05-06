@@ -77,6 +77,17 @@ class LLMProvider(Protocol):
         """Chat completion. Returns str for non-stream, ClosableIterator[str] for stream."""
         ...
 
+    def vision_ocr(
+        self,
+        png_bytes: bytes,
+        model: str,
+        prompt: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap."""
+        ...
+
     def list_models(self) -> list[str]:
         """List available model identifiers."""
         ...
@@ -138,4 +149,14 @@ class LLMProvider(Protocol):
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
+        return
+
+    def warm_up_pool(self) -> None:
+        """Eagerly register configured roles so :meth:`WorkerPool.start_eager` has work to do.
+
+        Default no-op so providers without a worker pool (SDK / routing
+        wrappers) can be passed to ``Services`` unchanged. Implemented by
+        :class:`LlamaCppProvider` to register chat / embed / rerank / vision
+        roles whose model is configured.
+        """
         return
