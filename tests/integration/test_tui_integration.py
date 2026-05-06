@@ -85,7 +85,11 @@ class TestChatFlow:
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
 
-            for _ in range(600):
+            # 1500 ticks of pilot.pause() is roughly 75 s on the default
+            # cadence. Real chat inference on CI's CPU-only runners can
+            # take 30-60 s for Qwen3-0.6B, so the previous 600-tick window
+            # was tight enough to flake on slow Ubuntu workers.
+            for _ in range(1500):
                 await pilot.pause()
                 if not app.screen.streaming:
                     break
