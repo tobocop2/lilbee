@@ -20,12 +20,21 @@ def _clean_vision_module() -> None:
 
 @pytest.fixture()
 def mock_provider():
-    """Create a mock provider and inject it via Services.
-    Uses spec_set to exclude vision_ocr: tests that need the subprocess
-    path should set it explicitly on the mock.
+    """Create a mock provider with the full LLMProvider surface.
+
+    ``vision_ocr`` is part of the protocol now, so every concrete provider
+    implements it; tests mock it directly rather than the chat fallthrough.
     """
     provider = mock.MagicMock(
-        spec=["chat", "embed", "list_models", "pull_model", "show_model", "shutdown"]
+        spec=[
+            "chat",
+            "embed",
+            "vision_ocr",
+            "list_models",
+            "pull_model",
+            "show_model",
+            "shutdown",
+        ]
     )
     store = mock.MagicMock()
     embedder = mock.MagicMock()
@@ -138,102 +147,41 @@ class TestExtractPageText:
     def test_returns_text_on_success(self, mock_provider) -> None:
         from lilbee.vision import extract_page_text
 
-        mock_provider.chat.return_value = "extracted text"
+        mock_provider.vision_ocr.return_value = "extracted text"
         result = extract_page_text(b"fake-png", "test-model")
         assert result == "extracted text"
 
     def test_returns_none_on_error(self, mock_provider) -> None:
         from lilbee.vision import extract_page_text
 
-        mock_provider.chat.side_effect = RuntimeError("model error")
+        mock_provider.vision_ocr.side_effect = RuntimeError("model error")
         result = extract_page_text(b"fake-png", "test-model")
         assert result is None
 
-    def test_sends_ocr_prompt_and_image(self, mock_provider) -> None:
+    def test_passes_ocr_prompt_image_and_model(self, mock_provider) -> None:
         from lilbee.vision import OCR_PROMPT, extract_page_text
 
-        mock_provider.chat.return_value = "text"
-        extract_page_text(b"png-bytes", "my-model")
+        mock_provider.vision_ocr.return_value = "text"
+        extract_page_text(b"png-bytes", "my-model", timeout=12.5)
 
-        mock_provider.chat.assert_called_once()
-        call_args = mock_provider.chat.call_args
-        messages = call_args[0][0]
-        # OpenAI-compatible multipart content format
-        content = messages[0]["content"]
-        assert isinstance(content, list)
-        assert content[0]["type"] == "image_url"
-        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
-        assert content[1]["type"] == "text"
-        assert content[1]["text"] == OCR_PROMPT
-        assert call_args[1]["model"] == "my-model"
-
-
-class TestExtractPageTextSubprocess:
-    """Test extract_page_text when provider has vision_ocr method."""
-
-    def test_delegates_to_vision_ocr(self) -> None:
-        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
-        provider.vision_ocr.return_value = "subprocess text"
-        services = Services(
-            provider=provider,
-            store=mock.MagicMock(),
-            embedder=mock.MagicMock(),
-            reranker=mock.MagicMock(),
-            concepts=mock.MagicMock(),
-            clusterer=mock.MagicMock(),
-            searcher=mock.MagicMock(),
-            registry=mock.MagicMock(),
-            hf_client=mock.MagicMock(),
-            ingest_lock_registry=mock.MagicMock(),
-            model_manager=mock.MagicMock(),
-            crawler_semaphore=None,
-            crawler_sync_state=CrawlerSyncState(),
-            worker_pool=mock.MagicMock(),
-            pool_runtime=mock.MagicMock(),
-            pool_health_ticker=HealthTickerHandle(),
+        mock_provider.vision_ocr.assert_called_once_with(
+            b"png-bytes", "my-model", OCR_PROMPT, timeout=12.5
         )
-        set_services(services)
+        mock_provider.chat.assert_not_called()
 
+    def test_timeout_error_returns_none(self, mock_provider) -> None:
+        """Provider-raised TimeoutError surfaces as a per-page miss."""
         from lilbee.vision import extract_page_text
 
-        result = extract_page_text(b"png", "vision-model")
-        assert result == "subprocess text"
-        provider.vision_ocr.assert_called_once()
-        provider.chat.assert_not_called()
-
-    def test_vision_ocr_error_returns_none(self) -> None:
-        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
-        provider.vision_ocr.side_effect = RuntimeError("worker died")
-        services = Services(
-            provider=provider,
-            store=mock.MagicMock(),
-            embedder=mock.MagicMock(),
-            reranker=mock.MagicMock(),
-            concepts=mock.MagicMock(),
-            clusterer=mock.MagicMock(),
-            searcher=mock.MagicMock(),
-            registry=mock.MagicMock(),
-            hf_client=mock.MagicMock(),
-            ingest_lock_registry=mock.MagicMock(),
-            model_manager=mock.MagicMock(),
-            crawler_semaphore=None,
-            crawler_sync_state=CrawlerSyncState(),
-            worker_pool=mock.MagicMock(),
-            pool_runtime=mock.MagicMock(),
-            pool_health_ticker=HealthTickerHandle(),
-        )
-        set_services(services)
-
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "vision-model")
+        mock_provider.vision_ocr.side_effect = TimeoutError("budget exceeded")
+        result = extract_page_text(b"png", "model", timeout=0.01)
         assert result is None
 
 
 class TestExtractPdfVision:
     def test_returns_page_texts(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=2)
-        mock_provider.chat.return_value = "page text"
+        mock_provider.vision_ocr.return_value = "page text"
 
         with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import extract_pdf_vision
@@ -257,7 +205,7 @@ class TestExtractPdfVision:
 
     def test_skips_failed_pages(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=2)
-        mock_provider.chat.side_effect = [RuntimeError("fail"), "success text"]
+        mock_provider.vision_ocr.side_effect = [RuntimeError("fail"), "success text"]
 
         with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import extract_pdf_vision
@@ -275,7 +223,7 @@ class TestExtractPdfVision:
 
         monkeypatch.setattr(cfg, "vision_concurrency", 1)
         mock_iter = _mock_iterator(num_pages=5)
-        mock_provider.chat.return_value = "ok"
+        mock_provider.vision_ocr.return_value = "ok"
         with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import extract_pdf_vision
 
@@ -285,7 +233,7 @@ class TestExtractPdfVision:
 
     def test_skips_empty_text(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=2)
-        mock_provider.chat.side_effect = ["  \n  ", "real text"]
+        mock_provider.vision_ocr.side_effect = ["  \n  ", "real text"]
 
         with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import extract_pdf_vision
@@ -297,7 +245,7 @@ class TestExtractPdfVision:
 
     def test_fires_progress_events(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=1)
-        mock_provider.chat.return_value = "text"
+        mock_provider.vision_ocr.return_value = "text"
         progress_calls: list[tuple[str, dict]] = []
 
         def capture_progress(event_type: str, data: dict) -> None:
@@ -370,7 +318,7 @@ class TestMakeProgress:
 class TestExtractPdfVisionNonQuiet:
     def test_failed_pages_logs_warning_and_prints(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=2)
-        mock_provider.chat.side_effect = [RuntimeError("fail"), RuntimeError("fail")]
+        mock_provider.vision_ocr.side_effect = [RuntimeError("fail"), RuntimeError("fail")]
 
         mock_console_instance = mock.MagicMock()
         mock_console_cls = mock.MagicMock(return_value=mock_console_instance)
@@ -389,7 +337,7 @@ class TestExtractPdfVisionNonQuiet:
 
     def test_progress_advance_called(self, mock_provider) -> None:
         mock_iter = _mock_iterator(num_pages=1)
-        mock_provider.chat.return_value = "text"
+        mock_provider.vision_ocr.return_value = "text"
 
         mock_progress = mock.MagicMock()
         mock_task = mock.MagicMock()
@@ -402,31 +350,6 @@ class TestExtractPdfVisionNonQuiet:
             from lilbee.vision import extract_pdf_vision
 
             extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
-
-
-class TestExtractPageTextTimeout:
-    def test_timeout_path_uses_thread_pool(self, mock_provider) -> None:
-        """When timeout > 0, extract_page_text uses ThreadPoolExecutor."""
-        mock_provider.chat.return_value = "ocr result"
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"fake-png", "model", timeout=30)
-        assert result == "ocr result"
-        mock_provider.chat.assert_called_once()
-
-    def test_timeout_expiry_returns_none(self, mock_provider) -> None:
-        """When the provider exceeds timeout, returns None (logs warning)."""
-        import time
-
-        def slow_chat(*args, **kwargs):
-            time.sleep(5)
-            return "too late"
-
-        mock_provider.chat.side_effect = slow_chat
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"fake-png", "model", timeout=0.01)
-        assert result is None
 
 
 class TestPngToDataUrl:

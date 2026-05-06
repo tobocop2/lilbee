@@ -77,6 +77,17 @@ class LLMProvider(Protocol):
         """Chat completion. Returns str for non-stream, ClosableIterator[str] for stream."""
         ...
 
+    def vision_ocr(
+        self,
+        png_bytes: bytes,
+        model: str,
+        prompt: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap."""
+        ...
+
     def list_models(self) -> list[str]:
         """List available model identifiers."""
         ...
