@@ -75,6 +75,14 @@ jobs:
           # in the pytest ecosystem today.
           - os: macos-latest
             python-version: "3.11"
+          # Windows 3.11 hangs under pytest-xdist (ProactorEventLoop +
+          # reactive-timing scheduler thread-accumulation wedge), so the
+          # only reliable path was serial -p no:xdist, which pushes the
+          # job past 60 minutes wall-clock. 3.12 and 3.13 still own the
+          # Windows coverage story; re-enable once 3.11 reaches end-of-life
+          # or asyncio's Windows transport teardown is patched upstream.
+          - os: windows-latest
+            python-version: "3.11"
 
     steps:
       - uses: actions/checkout@v6
@@ -115,10 +123,9 @@ jobs:
         # thread-accumulation wedge. That path loses coverage because
         # forks exit via os._exit, skipping coverage.py's atexit save —
         # accepted tradeoff: 3.11 lanes prove the code runs, 3.12 and
-        # 3.13 own the coverage story. Windows 3.11 stays on the normal
-        # parallel path.
+        # 3.13 own the coverage story.
         run: |
-          if [ "${{ matrix.python-version }}" = "3.11" ] && [ "${{ matrix.os }}" != "windows-latest" ]; then
+          if [ "${{ matrix.python-version }}" = "3.11" ]; then
             make test-ci-forked
           else
             make test-ci
