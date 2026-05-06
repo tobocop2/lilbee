@@ -795,18 +795,13 @@ class CatalogScreen(Screen[None]):
         existing_headings = [
             w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
         ]
-        # Heading + grid mounts are sequential but each runs its own compose
-        # tick, so a partially-mounted state can land here with grids ahead
-        # of (or behind) headings. Only take the in-place branch when all
-        # three lists agree; fall through to the teardown+remount path
-        # otherwise.
-        if (
-            existing_grids
-            and len(existing_grids) == len(sections)
-            and len(existing_headings) == len(sections)
-        ):
+        # Heading + grid mounts each compose on their own frame, so a
+        # partially-mounted state can land here with the heading list
+        # one short of the grid list. Drop strict=True so we cleanly
+        # update whatever pairs we have without forcing a full remount.
+        if existing_grids and len(existing_grids) == len(sections):
             for grid, heading, section in zip(
-                existing_grids, existing_headings, sections, strict=True
+                existing_grids, existing_headings, sections, strict=False
             ):
                 heading.update(section.heading)
                 grid.set_rows(section.rows)
