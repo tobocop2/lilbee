@@ -1753,9 +1753,14 @@ class TestModelGridScrollIntoViewParentGuard:
         )
         grid = ModelGrid(rows=[row])
         grid._cards_per_row = 1
-        # No mounted parent: `parent` is None which is not a Widget. The
-        # guard at line 189 returns early.
-        grid.watch_highlighted(None, 0)
+        # Stub size so the first early-return guard passes. With no parent
+        # mounted, `self.parent` is None and the isinstance(parent, Widget)
+        # guard returns at line 190.
+        type(grid).size = property(lambda self: mock.Mock(width=80, height=20))  # type: ignore[assignment]
+        try:
+            grid.watch_highlighted(None, 0)
+        finally:
+            del type(grid).size  # restore the descriptor inherited from Widget
 
 
 class TestModelBarVisionSidecarErrors:
