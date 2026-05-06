@@ -10643,6 +10643,53 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
         mock_apply.assert_not_called()
 
 
+def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monkeypatch):
+    """Nullable fields treat ref='' as 'disable'; ref=None is still cancel."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+
+    def _raise(*_a, **_k):
+        raise RuntimeError("button absent in unit test")
+
+    screen.query_one = _raise
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
+    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+        screen._on_model_picker_dismissed("vision_model", None)
+        mock_apply.assert_not_called()
+        screen._on_model_picker_dismissed("vision_model", "")
+        mock_apply.assert_called_once()
+        args = mock_apply.call_args.args
+        assert args[1] == "vision_model"
+        assert args[2] == ""
+
+
+async def test_settings_push_model_picker_prepends_disable_option_for_nullable(monkeypatch):
+    """Nullable fields get a 'disabled' row prepended; non-nullable fields don't."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    monkeypatch.setattr(SettingsScreen, "is_mounted", property(lambda self: True))
+    pushed: list[list[ModelOption]] = []
+
+    class _FakeApp:
+        def push_screen(self, modal, *_args, **_kwargs):
+            pushed.append(list(modal._options.options))
+
+    fake_app = _FakeApp()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
+    real = [ModelOption(label="LightOnOCR 2 1B", ref="noctrex/lighton")]
+    screen._push_model_picker("vision_model", "vision", list(real))
+    screen._push_model_picker("chat_model", "chat", list(real))
+    assert pushed[0][0].label == "(disabled, no model)"
+    assert pushed[0][0].ref == ""
+    assert pushed[0][1].ref == "noctrex/lighton"
+    assert pushed[1][0].ref == "noctrex/lighton"
+
+
 async def test_status_mount_remaining_sections_bails_when_not_mounted(monkeypatch):
     """is_mounted guard short-circuits the deferred mount when the screen popped."""
     from lilbee.cli.tui.screens.status import StatusScreen

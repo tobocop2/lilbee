@@ -312,6 +312,7 @@ MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"
 MODEL_PICKER_TITLE_VISION = "Pick a vision model"
 MODEL_PICKER_TITLE_RERANK = "Pick a reranker model"
 MODEL_VALUE_NONE = "(none)"
+MODEL_PICKER_DISABLE_LABEL = "(disabled, no model)"
 MODEL_PICKER_CHAT_TOOLTIP = "Model used to answer your questions. Click to pick a different one."
 MODEL_PICKER_EMBED_TOOLTIP = (
     "Model used to vectorize search queries (Search mode). Click to pick a different one."
