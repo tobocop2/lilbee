@@ -16,7 +16,7 @@ from textual.events import Click, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Input, Static, TabbedContent, TabPane
+from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -123,6 +123,7 @@ class CatalogScreen(Screen[None]):
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
         Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
         Binding("x", "delete_model", "Delete", show=False),
+        Binding("i", "show_info", "Info", show=True, group=_ACTION_GROUP),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
         # Arrows move the card cursor too (auto-scrolls into view) so
@@ -207,6 +208,7 @@ class CatalogScreen(Screen[None]):
             yield ModelList(id="catalog-list")
         with BottomBars():
             yield TaskBar()
+            yield Footer()
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
@@ -1279,6 +1281,37 @@ class CatalogScreen(Screen[None]):
             self._focus_first_grid()
         else:
             self._focus_list_item(0)
+
+    def action_show_info(self) -> None:
+        """Pop up an info modal for the highlighted catalog row."""
+        if isinstance(self.focused, Input):
+            return
+        row = self._highlighted_row()
+        if row is None:
+            self.notify(msg.CATALOG_SELECT_FOR_INFO, severity="warning")
+            return
+        if not isinstance(row, LocalCatalogRow):
+            self.notify(msg.CATALOG_FRONTIER_NO_INFO, severity="warning")
+            return
+        from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+        self.app.push_screen(ModelInfoModal(row))
+
+    def _highlighted_row(self):
+        """Return the focused row in either grid or list view, or None."""
+        if not self._grid_view and self._list_widget.has_focus:
+            return self._list_widget.highlighted_row()
+        focused_grid = self._focused_grid()
+        if focused_grid is None or focused_grid.highlighted is None:
+            return None
+        if isinstance(focused_grid, ModelGrid):
+            rows = focused_grid.rows
+            index = focused_grid.highlighted
+            return rows[index] if 0 <= index < len(rows) else None
+        child = focused_grid.children[focused_grid.highlighted]
+        if isinstance(child, ModelCard):
+            return child.row
+        return None
 
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""

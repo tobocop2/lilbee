@@ -3084,6 +3084,33 @@ class _ViewTabsApp(App):
         yield ViewTabs()
 
 
+class TestViewTabsWikiVisibility:
+    """ViewTabs hides Wiki tab live when cfg.wiki toggles."""
+
+    async def test_wiki_visibility_follows_cfg_signal(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        cfg.wiki = True
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
+            assert wiki_tab.display is True
+
+            cfg.wiki = False
+            app.settings_changed_signal.publish(("wiki", False))
+            for _ in range(3):
+                await pilot.pause()
+            assert wiki_tab.display is False
+
+            cfg.wiki = True
+            app.settings_changed_signal.publish(("wiki", True))
+            for _ in range(3):
+                await pilot.pause()
+            assert wiki_tab.display is True
+
+
 class TestViewTabs:
     async def test_compose_yields_static(self) -> None:
         from lilbee.cli.tui.widgets.status_bar import ViewTabs

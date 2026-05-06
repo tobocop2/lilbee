@@ -9,6 +9,7 @@ SettingsScreen {
     #settings-tabs {
         height: 1fr;
         min-height: 0;
+        margin-top: 1;
     }
 
     /* TabbedContent's inner ContentSwitcher and TabPane default to

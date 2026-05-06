@@ -86,10 +86,18 @@ class ViewTabs(Widget):
     mode_text: reactive[str] = reactive("")
 
     def compose(self) -> ComposeResult:
+        # Compose every nav view including Wiki; visibility is toggled at
+        # runtime via _apply_wiki_visibility so the user can flip the wiki
+        # setting without restarting.
+        all_views = [*msg._BASE_NAV_VIEWS, "Wiki"]
         with Horizontal(id="view-tabs-row"):
-            for i, name in enumerate(msg.get_nav_views()):
+            for i, name in enumerate(all_views):
                 if i > 0:
-                    yield Static(DOT_SEP, classes="view-tab-sep")
+                    yield Static(
+                        DOT_SEP,
+                        classes="view-tab-sep",
+                        id=f"view-tab-sep-{name.lower()}",
+                    )
                 yield ViewTab(name)
             yield Static(id="view-tabs-trailing")
 
@@ -105,6 +113,7 @@ class ViewTabs(Widget):
             self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         else:
             self.active_view = msg.DEFAULT_VIEW
+        self._apply_wiki_visibility()
         # Defer the initial paint: update() during on_mount can no-op while
         # children are still completing their mount cycle.
         self.call_after_refresh(self._refresh)
@@ -116,10 +125,22 @@ class ViewTabs(Widget):
         self._refresh()
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
-        """Refresh the model pill when the active chat model changes."""
+        """Refresh the model pill, and toggle Wiki tab visibility on wiki."""
         key, _value = payload
+        if key == "wiki":
+            self._apply_wiki_visibility()
+            return
         if key in _MODEL_PILL_KEYS:
             self._refresh()
+
+    def _apply_wiki_visibility(self) -> None:
+        """Show or hide the Wiki tab and its preceding separator based on cfg.wiki."""
+        if not self.is_mounted:
+            return
+        visible = bool(cfg.wiki)
+        for selector in ("#view-tab-wiki", "#view-tab-sep-wiki"):
+            for widget in self.query(selector):
+                widget.display = visible
 
     def _refresh(self) -> None:
         if not self.is_mounted:

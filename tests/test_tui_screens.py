@@ -5266,6 +5266,66 @@ async def test_catalog_delete_installed_model_confirmation():
             assert screen._pending_delete == "test-model:latest"
 
 
+async def test_catalog_action_show_info_toasts_with_no_highlight():
+    """action_show_info warns when no row is selected."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+            with (
+                patch.object(screen, "_highlighted_row", return_value=None),
+                patch.object(screen, "notify") as mock_notify,
+            ):
+                screen.action_show_info()
+                mock_notify.assert_called_once()
+
+
+async def test_catalog_action_show_info_pushes_modal_for_local_row():
+    """action_show_info pushes ModelInfoModal for a LocalCatalogRow."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+            row = LocalCatalogRow(
+                name="Acme 1B",
+                task="chat",
+                params="1B",
+                size="700 MB",
+                quant="Q8_0",
+                downloads="42",
+                featured=False,
+                installed=False,
+                sort_downloads=42,
+                sort_size=0.7,
+                ref="acme/acme-1b-gguf",
+            )
+            with (
+                patch.object(screen, "_highlighted_row", return_value=row),
+                patch.object(screen.app, "push_screen") as mock_push,
+            ):
+                screen.action_show_info()
+                mock_push.assert_called_once()
+                pushed = mock_push.call_args[0][0]
+                assert isinstance(pushed, ModelInfoModal)
+
+
 async def test_catalog_delete_with_no_highlight_warns():
     """action_delete_model toasts when nothing is highlighted to delete."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
