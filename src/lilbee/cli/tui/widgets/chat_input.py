@@ -29,13 +29,13 @@ class ChatInput(TextArea):
         Binding("shift+enter", "newline", "Newline", show=False, priority=True),
     ]
 
-    # Keys we deliberately let bubble up to the App-level help binding
-    # even though the underlying TextArea is happy to type them. Without
-    # this, Textual's binding-chain filter strips the App's `?` binding
-    # whenever the chat input is focused (because TextArea consumes any
-    # printable). Users who need a literal `?` can paste it.
-    # ``"question_mark"`` is Textual's canonical name for `?`.
-    _UNCONSUMED_KEYS: ClassVar[frozenset[str]] = frozenset({"question_mark"})
+    # Keys we deliberately let bubble up to the App-level binding chain
+    # even though the underlying TextArea is happy to type them. Empty
+    # by default so printable characters (including ``?``) land as literal
+    # text in the input; the user explicitly asked for help to NOT pop
+    # mid-typing. Help still opens via F1 / Ctrl+H, and ``?`` works as a
+    # binding any time the chat input does not have focus.
+    _UNCONSUMED_KEYS: ClassVar[frozenset[str]] = frozenset()
 
     # Per-keystroke layout cost is dominated by ``height: auto`` reflow.
     # Pin the visual height to a single row while the content has no

@@ -206,13 +206,13 @@ Standalone mode runs entirely on your machine. No cloud required.
 
 ### Resources
 
-| Resource              | Minimum                                  | Recommended                                                                                                                                                 |
-| --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **RAM**               | 8 GB                                     | 16 to 32 GB                                                                                                                                                 |
-| **GPU / Accelerator** | none required (CPU-only inference works) | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
-| **Disk**              | 2 GB (models + data)                     | 10+ GB if you load multiple models                                                                                                                          |
+| Resource              | Minimum                                                  | Recommended                                                                                                                                                 |
+| --------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **RAM**               | 8 GB                                                     | 16 to 32 GB if you load several local models at once (chat + embed + rerank + vision); the actual footprint scales with the size and quantization you pick |
+| **GPU / Accelerator** | none required (CPU-only inference works)                 | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
+| **Disk**              | 2 GB (models + data)                                     | 10+ GB if you load multiple models                                                                                                                          |
 
-Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
+Each active inference role (chat, embed, rerank, vision) runs in its own subprocess to keep the TUI responsive; the resident memory you'll need follows the size of the models you keep warm. Popular frontier models are optional; install with `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
 ## Install
 

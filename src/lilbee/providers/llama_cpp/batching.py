@@ -1,52 +1,17 @@
-"""Embedding and rerank batching primitives for the llama.cpp provider.
-
-Holds the request dataclasses, batching/timeout constants, and the
-single-text inference helpers that the worker threads in
-:mod:`lilbee.providers.llama_cpp.provider` drain queues into.
-"""
+"""Single-text llama-cpp embed and rerank helpers used inside worker subprocesses."""
 
 from __future__ import annotations
 
-from concurrent.futures import Future
-from dataclasses import dataclass
 from typing import Any
 
 from lilbee.providers.base import ProviderError
 
-BATCH_WINDOW_S = 0.01  # 10ms: collect concurrent requests before dispatching
-EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
-RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
-
 _RERANK_PAIR_SEPARATOR = "</s></s>"
 
 
-@dataclass
-class EmbedRequest:
-    """A single embedding request submitted to the batch queue."""
-
-    texts: list[str]
-    future: Future[list[list[float]]]
-
-
-@dataclass
-class RerankRequest:
-    """A single rerank request submitted to the batch queue."""
-
-    query: str
-    candidates: list[str]
-    future: Future[list[float]]
-
-
 def embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text. Caller must run with fd 2 already redirected.
-
-    Either ``stderr_suppressed()`` must be held in-process or the caller
-    must run inside a subprocess where ``_redirect_stdio()`` ran at start
-    (see ``lilbee.providers.worker.worker``). Hoisting the suppression to
-    the caller is deliberate: per-text wrapping serializes ``_STDERR_LOCK``
-    plus four syscalls inside the embed loop, which starves the TUI threads
-    of CPU during long ingests (the visible UI freeze).
-    """
+    """Embed a single text. Caller must run inside a worker subprocess where
+    ``redirect_stdio_to_devnull()`` ran at startup so fd 2 is already redirected."""
     response = llm.create_embedding(input=[text])
     result: list[float] = response["data"][0]["embedding"]
     return result
@@ -71,11 +36,7 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
 
 
 def _extract_rerank_score(response: dict[str, Any]) -> float:
-    """Extract a single relevance score from a pooling_type=RANK response.
-
-    Raises ``ProviderError`` with the observed shape for anything other
-    than a non-empty ``list[float]`` so upstream format changes surface.
-    """
+    """Extract a single relevance score from a pooling_type=RANK response."""
     data = response.get("data") or []
     if not data:
         raise ProviderError("Reranker returned no data", provider="llama-cpp")

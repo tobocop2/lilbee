@@ -33,7 +33,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = "ollama/test-chat-model:v1"
     cfg.embedding_model = "ollama/test-embed-model:v1"
-    cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -71,16 +70,29 @@ def test_load_affecting_key_evicts_cache():
         _restore_services()
 
 
-def test_model_name_change_evicts_cache():
-    """Switching chat_model via Settings UI evicts the cache so the old model is gone."""
+def test_non_reloadable_model_change_evicts_cache():
+    """Switching embedding_model or reranker_model evicts the cache so the
+    next call respawns under the new cfg. These workers do not honor a
+    per-call ``request.model`` override."""
+    provider = _install_recording_provider()
+    try:
+        _on_settings_changed_evict_cache(("embedding_model", "nomic-embed-text"))
+        _on_settings_changed_evict_cache(("reranker_model", "bge-reranker-v2"))
+        assert len(provider.calls) == 2
+        assert all(c is None for c in provider.calls)
+    finally:
+        _restore_services()
+
+
+def test_per_call_reloadable_model_change_skips_eviction():
+    """Switching chat_model or vision_model does NOT evict the cache: the
+    chat/vision workers reload in place via ``_ensure_loaded`` on the next
+    request, saving the 1-3 s spawn cost."""
     provider = _install_recording_provider()
     try:
         _on_settings_changed_evict_cache(("chat_model", "qwen3:8b"))
-        _on_settings_changed_evict_cache(("embedding_model", "nomic-embed-text"))
         _on_settings_changed_evict_cache(("vision_model", "llava:7b"))
-        _on_settings_changed_evict_cache(("reranker_model", "bge-reranker-v2"))
-        assert len(provider.calls) == 4
-        assert all(c is None for c in provider.calls)
+        assert provider.calls == []
     finally:
         _restore_services()
 
