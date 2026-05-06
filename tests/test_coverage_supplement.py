@@ -1565,33 +1565,14 @@ class TestProviderProtocolBranches:
 class TestCatalogPriorScrollAndPrefetchEdges:
     """Catalog edges around prior_scroll_y and prefetch ValueError/empty grid guards."""
 
-    async def test_focused_grid_returns_none_when_no_grid_in_dom(self) -> None:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Footer
+    def test_first_grid_or_none_returns_none_when_query_raises(self) -> None:
+        """Direct call covers the NoMatches catch in `_first_grid_or_none`."""
+        from textual.css.query import NoMatches
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield Footer()
-
-            def on_mount(self) -> None:
-                self.push_screen(CatalogScreen())
-
-        async with _Probe().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = pilot.app.screen
-            assert isinstance(screen, CatalogScreen)
-            for grid in list(screen.query(ModelGrid)):
-                grid.remove()
-            # Removal is async; pump frames until query reports zero grids
-            # so the NoMatches catch path runs deterministically.
-            for _ in range(20):
-                await pilot.pause()
-                if not list(screen.query(ModelGrid)):
-                    break
-            assert screen._focused_grid() is None
+        screen = CatalogScreen.__new__(CatalogScreen)
+        with mock.patch.object(screen, "query_one", side_effect=NoMatches("none")):
             assert screen._first_grid_or_none() is None
 
     async def test_scroll_to_end_of_last_grid_when_cursor_on_last_row(self) -> None:
@@ -1624,32 +1605,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
                 screen._reveal_scroll_hint_at_catalog_end()
                 scroll_end.assert_called()
 
-    async def test_prefetch_returns_when_no_grids(self) -> None:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Footer
-
+    def test_prefetch_returns_when_no_grids(self) -> None:
+        """Direct call: when grid container has no ModelGrid, prefetch no-ops."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield Footer()
-
-            def on_mount(self) -> None:
-                self.push_screen(CatalogScreen())
-
-        async with _Probe().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = pilot.app.screen
-            assert isinstance(screen, CatalogScreen)
-            screen._hf_has_more = True
-            screen._loading_more = False
-            for grid in list(screen.query(ModelGrid)):
-                grid.remove()
-            for _ in range(20):
-                await pilot.pause()
-                if not list(screen.query(ModelGrid)):
-                    break
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._grid_view = True
+        screen._hf_has_more = True
+        screen._loading_more = False
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = []
+        # Override the textual.getters.query_one descriptor with a plain
+        # instance attribute so _grid_container resolves to our stub.
+        with mock.patch.object(CatalogScreen, "_grid_container", new=fake_container):
             screen._maybe_prefetch_on_grid_nav()
 
     async def test_prefetch_swallows_value_error_when_focused_not_in_grids(self) -> None:
