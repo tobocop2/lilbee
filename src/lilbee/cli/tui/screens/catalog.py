@@ -1177,6 +1177,10 @@ class CatalogScreen(Screen[None]):
             return
         self._loading_more = True
         self._sync_loading_spinner()
+        # Brief toast so the user gets in-viewport feedback even when their
+        # cursor is mid-content and the toolbar spinner / bottom CTA are
+        # both off-screen.
+        self.notify(msg.CATALOG_LOADING_MORE_TOAST, timeout=2)
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
 
