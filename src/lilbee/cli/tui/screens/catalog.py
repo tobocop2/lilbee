@@ -903,9 +903,12 @@ class CatalogScreen(Screen[None]):
         self._focus_first_grid()
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
-        """Pick the bottom scroll-hint text based on fetch state."""
-        if self._loading_more:
-            return msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+        """Pick the bottom scroll-hint text based on fetch state.
+
+        Active-load feedback now lives in the docked ``#catalog-load-bar``;
+        this inline hint only conveys the post-load state so it never
+        duplicates the spinner shown by the load bar.
+        """
         if self._hf_has_more:
             return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
@@ -1058,18 +1061,7 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
                 )
-            # Mirror the spinner into the in-grid scroll hint so users
-            # waiting at the bottom of the grid see the activity without
-            # glancing back up at the toolbar. The list view shows the
-            # same loading state via #sort-label at the top.
             if self._loading_more:
-                with contextlib.suppress(Exception):
-                    hint = self.query_one("#catalog-grid > .scroll-hint", Static)
-                    hint.update(
-                        msg.CATALOG_GRID_LOADING_MORE.format(
-                            frame=_SPINNER_FRAMES[self._spinner_frame]
-                        )
-                    )
                 self._sync_load_bar(active=True)
         else:
             spinner.update("")
@@ -1102,11 +1094,6 @@ class CatalogScreen(Screen[None]):
         with contextlib.suppress(Exception):
             spinner = self.query_one("#catalog-loading-spinner", Static)
             spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
-        with contextlib.suppress(Exception):
-            hint = self.query_one("#catalog-grid > .scroll-hint", Static)
-            hint.update(
-                msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
-            )
         if self._loading_more:
             self._sync_load_bar(active=True)
 

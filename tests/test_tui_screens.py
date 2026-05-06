@@ -10413,14 +10413,20 @@ def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
     assert "LILBEE_CHAT_MODEL" not in content.plain
 
 
-def test_catalog_grid_scroll_hint_text_loading_branch():
-    """_grid_scroll_hint_text returns the loading-more text when fetching."""
+def test_catalog_grid_scroll_hint_text_load_more_branch():
+    """_grid_scroll_hint_text shows the load-more hint when more HF remain.
+
+    Active-load feedback lives in the docked #catalog-load-bar; the inline
+    hint only carries post-load state so the two indicators never collide.
+    """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     screen = CatalogScreen()
     screen._loading_more = True
+    screen._hf_has_more = True
     text = screen._grid_scroll_hint_text(hf_count=5)
-    assert "loading" in text
+    assert "loading" not in text.lower()
+    assert "5" in text
 
 
 def test_catalog_grid_scroll_hint_text_all_loaded_branch():
@@ -10774,7 +10780,8 @@ async def test_catalog_sync_grid_search_cta_mounts_when_missing():
 
 
 async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
-    """The success branches of _tick_loading_spinner update both targets."""
+    """``_tick_loading_spinner`` advances the toolbar spinner and the docked
+    load bar in lockstep while a HF pagination fetch is in flight."""
     from textual.widgets import Static
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -10785,14 +10792,13 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            # Mount a scroll-hint inside the grid container so the second
-            # contextlib.suppress block successfully resolves the query.
-            await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
-            await _pilot.pause()
+            screen._loading_more = True
             screen._tick_loading_spinner()
             await _pilot.pause()
-            hint = screen.query_one("#catalog-grid > .scroll-hint", Static)
-            assert "loading" in str(hint.render()).lower()
+            spinner = screen.query_one("#catalog-loading-spinner", Static)
+            assert "loading" in str(spinner.render()).lower()
+            bar = screen.query_one("#catalog-load-bar", Static)
+            assert "loading" in str(bar.render()).lower()
 
 
 def test_status_worker_state_changed_dispatches_when_sections_mounted():
