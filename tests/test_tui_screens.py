@@ -3215,6 +3215,22 @@ def _patch_catalog():
     )
 
 
+@pytest.fixture(autouse=True)
+def _suppress_catalog_auto_hf_fetch():
+    """Block the catalog auto-fired HF fetch.
+
+    CatalogScreen kicks off `_fetch_all_hf_models` on mount; on slow
+    Windows runners that re-mounts ModelGrid sections under tests that
+    snapshotted them, causing flake. Suppress the fetch in every test
+    in this file; tests that need to exercise the fetch path call it
+    directly.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    with patch.object(CatalogScreen, "_fetch_all_hf_models"):
+        yield
+
+
 async def test_catalog_screen_renders():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
