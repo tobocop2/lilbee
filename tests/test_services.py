@@ -220,3 +220,22 @@ class TestResetStore:
         assert services_mod._svc is None
         reset_store()
         assert services_mod._svc is None
+
+
+def test_reset_services_dependencies_load_eagerly():
+    """``reset_services`` is registered with atexit; its imports must be eager.
+
+    Lazy-importing ``shutdown_pool_runtime`` from inside ``reset_services``
+    used to first-load ``concurrent.futures.thread`` during interpreter
+    shutdown, which fails with ``RuntimeError: can't register atexit
+    after shutdown``. Hoisting the import to module top forces the
+    stdlib atexit registration to happen at app start. This test pins
+    that contract so a future contributor cannot re-introduce the lazy
+    import without breaking the build.
+    """
+    import sys
+
+    import lilbee.core.services  # noqa: F401
+
+    assert "lilbee.providers.worker.pool" in sys.modules
+    assert "concurrent.futures.thread" in sys.modules

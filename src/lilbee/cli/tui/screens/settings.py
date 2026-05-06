@@ -702,14 +702,33 @@ class SettingsScreen(Screen[None]):
             return
         if not options:
             options = [ModelOption(label=msg.MODEL_VALUE_NONE, ref="")]
+        # Nullable model fields (vision_model, reranker_model) need an
+        # explicit "disable this model" pick. The picker's empty-input
+        # cancel returns None; this row returns "" so the dismiss
+        # handler can distinguish "cancel" from "set to none".
+        defn = SETTINGS_MAP.get(key)
+        if defn is not None and defn.nullable:
+            options = [
+                ModelOption(label=msg.MODEL_PICKER_DISABLE_LABEL, ref=""),
+                *options,
+            ]
         self.app.push_screen(
             ModelPickerModal(scope=scope, options=options),
             lambda ref: self._on_model_picker_dismissed(key, ref),
         )
 
     def _on_model_picker_dismissed(self, key: str, ref: str | None) -> None:
-        """Persist the picker selection and refresh the button label."""
-        if ref is None or not ref:
+        """Persist the picker selection and refresh the button label.
+
+        ``ref is None`` means the user cancelled (Esc); leave the field
+        alone. ``ref == ""`` for a nullable field means the user picked
+        the explicit "disabled" row; clear the field. Any other value is
+        a real model ref.
+        """
+        if ref is None:
+            return
+        defn = SETTINGS_MAP.get(key)
+        if not ref and (defn is None or not defn.nullable):
             return
         from lilbee.cli.tui.app import apply_active_model
 
