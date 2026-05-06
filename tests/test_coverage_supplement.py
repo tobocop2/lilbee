@@ -1575,35 +1575,24 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         with mock.patch.object(screen, "query_one", side_effect=NoMatches("none")):
             assert screen._first_grid_or_none() is None
 
-    async def test_scroll_to_end_of_last_grid_when_cursor_on_last_row(self) -> None:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Footer
-
+    def test_scroll_to_end_of_last_grid_when_cursor_on_last_row(self) -> None:
+        """Direct call covers the scroll_end branch deterministically."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield Footer()
-
-            def on_mount(self) -> None:
-                self.push_screen(CatalogScreen())
-
-        async with _Probe().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = pilot.app.screen
-            assert isinstance(screen, CatalogScreen)
-            grids = list(screen.query(ModelGrid))
-            if not grids:
-                pytest.skip("no grids mounted in this build")
-            target = grids[-1]
-            target.highlighted = max(0, len(target.rows) - 1)
-            with (
-                mock.patch.object(screen, "_focused_grid", return_value=target),
-                mock.patch.object(screen._grid_container, "scroll_end") as scroll_end,
-            ):
-                screen._reveal_scroll_hint_at_catalog_end()
-                scroll_end.assert_called()
+        screen = CatalogScreen.__new__(CatalogScreen)
+        target = mock.MagicMock(spec=ModelGrid)
+        target.highlighted = 0
+        target.columns_per_row = 1
+        target.rows = [object()]
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = [target]
+        with (
+            mock.patch.object(screen, "_focused_grid", return_value=target),
+            mock.patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        ):
+            screen._reveal_scroll_hint_at_catalog_end()
+        fake_container.scroll_end.assert_called_once()
 
     def test_prefetch_returns_when_no_grids(self) -> None:
         """Direct call: when grid container has no ModelGrid, prefetch no-ops."""
