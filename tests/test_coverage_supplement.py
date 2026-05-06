@@ -1784,6 +1784,27 @@ class TestCatalogPriorScrollAndPrefetchEdges:
                 screen._mount_remaining_grid_sections([], hf_count=0, prior_scroll_y=12.5)
                 scroll_to.assert_called_once()
 
+    def test_mount_remaining_returns_when_restore_focused_section_succeeds(self) -> None:
+        """`_mount_remaining_grid_sections` returns after a successful restore."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        screen._grid_view = True
+        fake_container = mock.MagicMock()
+        fake_container.scroll_y = 0
+        with (
+            mock.patch.object(CatalogScreen, "_grid_container", new=fake_container),
+            mock.patch.object(screen, "_mount_grid_section"),
+            mock.patch.object(screen, "_mount_grid_ctas"),
+            mock.patch.object(screen, "_focused_grid", return_value=None),
+            mock.patch.object(screen, "_restore_focused_section", return_value=True),
+            mock.patch.object(screen, "_focus_first_grid") as focus_first,
+        ):
+            screen._mount_remaining_grid_sections(
+                [], hf_count=0, focus_anchor=("Chat", 0), prior_scroll_y=0.0
+            )
+            focus_first.assert_not_called()
+
 
 class TestModelGridScrollIntoViewParentGuard:
     """`watch_highlighted` returns early when the parent isn't a Widget."""
