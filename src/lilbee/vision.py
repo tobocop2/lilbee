@@ -11,7 +11,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple
 
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
@@ -110,32 +110,9 @@ def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
 
 
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
-    """Send a page image to a vision model and return extracted text.
-    If the provider exposes a ``vision_ocr`` method (subprocess-isolated),
-    that path is preferred. Otherwise falls back to ``provider.chat``.
-    The *timeout* parameter (seconds) caps wall-clock time for the provider
-    call: routed natively into ``vision_ocr`` when supported, otherwise via
-    ``concurrent.futures`` around the ``chat`` fallback. ``None`` or ``0``
-    means no limit.
-    """
+    """OCR one page; returns ``None`` on provider failure so the caller skips it."""
     try:
-        provider = get_services().provider
-
-        # vision_ocr is optional; only the llama-cpp provider implements it.
-        if hasattr(provider, "vision_ocr"):
-            result: str = provider.vision_ocr(png_bytes, model, OCR_PROMPT, timeout=timeout)  # type: ignore[attr-defined]
-            return result
-
-        messages = build_vision_messages(OCR_PROMPT, png_bytes)
-
-        if timeout and timeout > 0:
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(provider.chat, messages, stream=False, model=model)
-                return cast(str, future.result(timeout=timeout))
-
-        return cast(str, provider.chat(messages, stream=False, model=model))
+        return get_services().provider.vision_ocr(png_bytes, model, OCR_PROMPT, timeout=timeout)
     except Exception as exc:
         log.warning("Vision OCR: page skipped (%s: %s)", type(exc).__name__, exc)
         log.debug("Vision OCR traceback for model %s", model, exc_info=True)

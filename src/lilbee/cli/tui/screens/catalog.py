@@ -11,12 +11,12 @@ from typing import ClassVar
 from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.events import Click, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Input, Static, TabbedContent, TabPane
+from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -44,7 +44,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -124,8 +123,15 @@ class CatalogScreen(Screen[None]):
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
         Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
         Binding("x", "delete_model", "Delete", show=False),
+        Binding("i", "show_info", "Info", show=True, group=_ACTION_GROUP),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
+        # Arrows move the card cursor too (auto-scrolls into view) so
+        # the highlight follows the visible region. Decoupling them
+        # into pure viewport scroll left a stale highlight on the
+        # previously-focused card.
+        Binding("down", "cursor_down", "Down", show=False, group=_SCROLL_GROUP),
+        Binding("up", "cursor_up", "Up", show=False, group=_SCROLL_GROUP),
         # priority=True so vim jump-to-top/bottom always wins over the
         # focused ModelGrid's enter/select binding when keys collide.
         Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP, priority=True),
@@ -177,8 +183,6 @@ class CatalogScreen(Screen[None]):
         self._spinner_frame: int = 0
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import Footer
-
         from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
 
         with TopBars():
@@ -192,13 +196,16 @@ class CatalogScreen(Screen[None]):
             yield GridListToggle()
             yield Static("", id="sort-label", shrink=True)
             yield Static("", id="catalog-loading-spinner")
+        # Wrap TabbedContent in a Container with strict 1fr / overflow:hidden
+        # so its inner TabPane / VerticalScroll cascade respects the screen
+        # height bound.
         with (
+            Container(id="catalog-tabs-wrap"),
             TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
             TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
         ):
             yield VerticalScroll(id="catalog-grid")
             yield ModelList(id="catalog-list")
-        yield Static("", id="model-detail")
         with BottomBars():
             yield TaskBar()
             yield Footer()
@@ -214,6 +221,12 @@ class CatalogScreen(Screen[None]):
         self.call_after_refresh(self._initial_focus_first_grid)
         self._fetch_remote_models()
         self._fetch_frontier_models()
+        # Eagerly load the HF catalog so the user lands on a populated
+        # browse view; no more "Browse more" CTA gating discovery behind
+        # an extra keypress. Featured + Installed paint immediately, HF
+        # task sections stream in as the worker completes.
+        self._hf_fetched = True
+        self._fetch_all_hf_models()
         if isinstance(self.app, LilbeeApp):
             self.app.provider_availability_changed_signal.subscribe(
                 self, self._on_provider_availability_changed
@@ -782,25 +795,77 @@ class CatalogScreen(Screen[None]):
         existing_headings = [
             w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
         ]
+        # Heading + grid mounts each compose on their own frame, so a
+        # partially-mounted state can land here with the heading list
+        # one short of the grid list. Drop strict=True so we cleanly
+        # update whatever pairs we have without forcing a full remount.
         if existing_grids and len(existing_grids) == len(sections):
             for grid, heading, section in zip(
-                existing_grids, existing_headings, sections, strict=True
+                existing_grids, existing_headings, sections, strict=False
             ):
                 heading.update(section.heading)
                 grid.set_rows(section.rows)
             self._refresh_grid_ctas(hf_count=len(hf_rows))
             self._update_sort_label()
             return
-        # First paint (or section count changed): teardown + remount.
+        # Section count changed: teardown + remount. Capture the user's
+        # current cursor + scroll position so we can restore both after
+        # remount; otherwise the _focus_first_grid fallback snaps the
+        # cursor back to the top of the catalog mid-keypress, and the
+        # layout shift from extra sections drifts the visible window
+        # away from where the user was looking.
+        focus_anchor = self._capture_focused_section()
         container = self._grid_container
+        prior_scroll_y = container.scroll_y
         container.remove_children()
         self._mount_grid_section(sections[0])
         rest = sections[1:]
-        self.call_after_refresh(self._mount_remaining_grid_sections, rest, hf_count=len(hf_rows))
+        self.call_after_refresh(
+            self._mount_remaining_grid_sections,
+            rest,
+            hf_count=len(hf_rows),
+            focus_anchor=focus_anchor,
+            prior_scroll_y=prior_scroll_y,
+        )
         self._update_sort_label()
 
+    def _capture_focused_section(self) -> tuple[str, int | None] | None:
+        """Return ``(heading, highlighted_index)`` for the focused grid.
+
+        Heading is read from ``ModelGrid.name`` (set by
+        ``_mount_grid_section``). Used to restore the cursor across a
+        teardown+remount in ``_refresh_grid`` so paginated loads don't
+        yank the user back to the top of the catalog.
+        """
+        focused = self._focused_grid()
+        if not isinstance(focused, ModelGrid) or focused.name is None:
+            return None
+        return (focused.name, focused.highlighted)
+
+    def _restore_focused_section(self, anchor: tuple[str, int | None] | None) -> bool:
+        """Refocus the grid whose ``name`` matches the captured anchor.
+
+        Returns True when the previous focus position was successfully
+        restored; False when no anchor was given or the matching section
+        no longer exists (caller falls back to ``_focus_first_grid``).
+        """
+        if anchor is None:
+            return False
+        target_heading, target_highlighted = anchor
+        for grid in self._grid_container.query(ModelGrid):
+            if grid.name != target_heading:
+                continue
+            grid.focus()
+            if target_highlighted is not None and grid.rows:
+                grid.highlighted = min(target_highlighted, len(grid.rows) - 1)
+            return True
+        return False
+
     def _mount_grid_section(self, section: GridSection) -> None:
-        grid = ModelGrid(section.rows, classes="catalog-section")
+        # ``name=section.heading`` doubles as the section identity used by
+        # ``_capture_focused_section`` / ``_restore_focused_section`` to
+        # preserve the cursor across teardown + remount.
+        grid = ModelGrid(section.rows, name=section.heading, classes="catalog-section")
         self._grid_container.mount_all(
             [
                 Static(section.heading, classes="section-heading"),
@@ -808,10 +873,31 @@ class CatalogScreen(Screen[None]):
             ]
         )
 
-    def _mount_remaining_grid_sections(self, remaining: list[GridSection], hf_count: int) -> None:
+    def _mount_remaining_grid_sections(
+        self,
+        remaining: list[GridSection],
+        hf_count: int,
+        focus_anchor: tuple[str, int | None] | None = None,
+        prior_scroll_y: float = 0.0,
+    ) -> None:
         for section in remaining:
             self._mount_grid_section(section)
         self._mount_grid_ctas(hf_count=hf_count)
+        # Restore the prior viewport position; mounting fresh sections shifts
+        # the layout and ``focus()`` below would otherwise overshoot.
+        if prior_scroll_y:
+            self._grid_container.scroll_to(y=prior_scroll_y, animate=False)
+        # Lock focus onto a grid once mount completes so j / k / PgDn /
+        # PgUp dispatch correctly. Without this, on first paint the focus
+        # race can leave nothing focused and the catalog feels frozen
+        # until the user toggles to list view and back. When the previous
+        # paint had a focused grid, restore the cursor to the same
+        # section + highlighted index instead of jumping to the top.
+        if not self._grid_view or self._focused_grid() is not None:
+            return
+        if self._restore_focused_section(focus_anchor):
+            return
+        self._focus_first_grid()
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""
@@ -822,16 +908,12 @@ class CatalogScreen(Screen[None]):
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
-        ctas: list[Static | BrowseMoreCtaItem] = []
-        if not self._hf_fetched and not self._loading_more:
-            ctas.append(BrowseMoreCtaItem())
-        else:
-            ctas.append(
-                Static(
-                    self._grid_scroll_hint_text(hf_count),
-                    classes="grid-cta scroll-hint",
-                )
+        ctas: list[Static] = [
+            Static(
+                self._grid_scroll_hint_text(hf_count),
+                classes="grid-cta scroll-hint",
             )
+        ]
         search = self._get_search_text()
         if search:
             ctas.append(
@@ -871,30 +953,70 @@ class CatalogScreen(Screen[None]):
         """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
 
-    @on(BrowseMoreCtaItem.Selected)
-    def _on_browse_more_clicked(self) -> None:
-        """Fetch all models when the browse-more card is activated (click or Enter)."""
-        if not self._hf_fetched:
-            self._hf_fetched = True
-            self._loading_more = True
-            self._sync_loading_spinner()
-            self._fetch_all_hf_models()
+    @on(ModelGrid.Highlighted)
+    def _on_grid_highlighted(self, _event: ModelGrid.Highlighted) -> None:
+        """Run keyboard-driven prefetch on every grid cursor move and, when
+        the cursor lands on the last row of the last grid, scroll the parent
+        VerticalScroll to its end so the inline scroll-hint Static comes into
+        view (matches the natural overshoot mouse-scroll past the cards
+        already produces).
+        """
+        self._maybe_prefetch_on_grid_nav()
+        self._reveal_scroll_hint_at_catalog_end()
+
+    def _reveal_scroll_hint_at_catalog_end(self) -> None:
+        """Scroll the catalog container to the end when the keyboard cursor
+        is on the last row of the bottom-most grid; otherwise no-op so the
+        ``watch_highlighted`` cell-into-view scroll keeps tracking the cursor.
+
+        ``immediate=True`` so the overshoot lands in the same compositor
+        frame as the cell-into-view scroll above it; deferred would let a
+        subsequent ``parent.scroll_to_region`` re-pin scroll_y to the cell.
+        """
+        focused = self._focused_grid()
+        if not isinstance(focused, ModelGrid) or focused.highlighted is None:
+            return
+        grids = list(self._grid_container.query(ModelGrid))
+        if not grids or focused is not grids[-1]:
+            return
+        cols = max(1, focused.columns_per_row)
+        last_row = (len(focused.rows) - 1) // cols
+        if focused.highlighted // cols < last_row:
+            return
+        self._grid_container.scroll_end(animate=False, immediate=True)
 
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
-        """Move focus to the next grid widget, or fetch more if at the end."""
+        """Move focus to the next grid widget, or fetch more if at the end.
+
+        On the bottom-most grid we expose the inline scroll-hint Static
+        (mounted below the last grid via ``_mount_grid_ctas``) by scrolling
+        the parent VerticalScroll to its end. That mirrors the way mouse
+        wheel naturally overshoots past the last card to reveal the hint.
+        Cursor stays parked on the last cell.
+        """
         if isinstance(event, ModelGrid.LeaveDown):
             grids = list(self._grid_container.query(ModelGrid))
-            if grids and event.grid is grids[-1] and self._hf_has_more and not self._loading_more:
-                self._load_more()
+            if grids and event.grid is grids[-1]:
+                self._grid_container.scroll_end(animate=False, immediate=True)
+                if self._hf_has_more and not self._loading_more:
+                    self._load_more()
                 return
         self.focus_next()
 
     @on(GridSelect.LeaveUp)
     @on(ModelGrid.LeaveUp)
     def _on_grid_leave_up(self, event: Message) -> None:
-        """Move focus to the previous grid widget."""
+        """Move focus to the previous grid widget.
+
+        On the topmost grid, return without moving focus so the cursor
+        stays parked at the top row instead of leaking focus upward.
+        """
+        if isinstance(event, ModelGrid.LeaveUp):
+            grids = list(self._grid_container.query(ModelGrid))
+            if grids and event.grid is grids[0]:
+                return
         self.focus_previous()
 
     @on(GridSelect.Selected)
@@ -963,9 +1085,9 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
                 )
-            # Mirror the spinner into the in-grid scroll hint so users
-            # waiting at the bottom of the grid see the activity without
-            # glancing back up at the toolbar.
+            # Mirror the spinner into the inline scroll-hint so users
+            # waiting at the bottom of the grid see the activity in the
+            # same place mouse scroll surfaces it.
             if self._loading_more:
                 with contextlib.suppress(Exception):
                     hint = self.query_one("#catalog-grid > .scroll-hint", Static)
@@ -991,15 +1113,28 @@ class CatalogScreen(Screen[None]):
         with contextlib.suppress(Exception):
             spinner = self.query_one("#catalog-loading-spinner", Static)
             spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
-        with contextlib.suppress(Exception):
-            hint = self.query_one("#catalog-grid > .scroll-hint", Static)
-            hint.update(
-                msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
-            )
+        if self._loading_more:
+            with contextlib.suppress(Exception):
+                hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                hint.update(
+                    msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+                )
 
     def _update_sort_label(self) -> None:
-        """Update the sort indicator label, switching copy by active tab."""
-        label = self.query_one("#sort-label", Static)
+        """Update the sort indicator label, switching copy by active tab.
+
+        Wrapped in NoMatches suppression because the worker callbacks that
+        trigger an update (``_fetch_remote_models``, ``_fetch_frontier_models``)
+        can fire on the next loop tick after a screen switch, before the
+        new screen's ``compose`` has finished mounting ``#sort-label``.
+        On Windows that race lands often enough to fail CI.
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            label = self.query_one("#sort-label", Static)
+        except NoMatches:
+            return
         if self._active_tab_id() == _FRONTIER_TAB_ID:
             label.update(self._frontier_label_text())
             return
@@ -1151,6 +1286,37 @@ class CatalogScreen(Screen[None]):
         else:
             self._focus_list_item(0)
 
+    def action_show_info(self) -> None:
+        """Pop up an info modal for the highlighted catalog row."""
+        if isinstance(self.focused, Input):
+            return
+        row = self._highlighted_row()
+        if row is None:
+            self.notify(msg.CATALOG_SELECT_FOR_INFO, severity="warning")
+            return
+        if not isinstance(row, LocalCatalogRow):
+            self.notify(msg.CATALOG_FRONTIER_NO_INFO, severity="warning")
+            return
+        from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+        self.app.push_screen(ModelInfoModal(row))
+
+    def _highlighted_row(self) -> CatalogRow | None:
+        """Return the focused row in either grid or list view, or None."""
+        if not self._grid_view and self._list_widget.has_focus:
+            return self._list_widget.highlighted_row()
+        focused_grid = self._focused_grid()
+        if focused_grid is None or focused_grid.highlighted is None:
+            return None
+        if isinstance(focused_grid, ModelGrid):
+            rows = focused_grid.rows
+            index = focused_grid.highlighted
+            return rows[index] if 0 <= index < len(rows) else None
+        child = focused_grid.children[focused_grid.highlighted]
+        if isinstance(child, ModelCard):
+            return child.row
+        return None
+
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""
         if isinstance(self.focused, Input):
@@ -1262,6 +1428,34 @@ class CatalogScreen(Screen[None]):
         if idx >= self._list_widget.option_count - _HF_LOAD_MORE_TRIGGER:
             self._load_more()
 
+    def _maybe_prefetch_on_grid_nav(self) -> None:
+        """Fire ``_load_more`` when the keyboard cursor lands within the last
+        rows of the catalog. Mouse wheel triggers via ``_on_grid_scrolled`` at
+        the 85 % scroll threshold, but cell-by-cell keyboard nav advances
+        scroll_y too gradually to ever cross that threshold; this check
+        guarantees keyboard reaches the same prefetch trigger.
+        """
+        if not self._grid_view or not self._hf_has_more or self._loading_more:
+            return
+        grids = list(self._grid_container.query(ModelGrid))
+        if not grids:
+            return
+        focused = self._focused_grid()
+        if not isinstance(focused, ModelGrid) or focused.highlighted is None:
+            return
+        # Absolute cursor position = cards in earlier grids + cursor in this grid.
+        try:
+            grid_index = grids.index(focused)
+        except ValueError:
+            return
+        cards_before = sum(len(g.rows) for g in grids[:grid_index])
+        absolute = cards_before + focused.highlighted
+        total = sum(len(g.rows) for g in grids)
+        if total <= 0:
+            return
+        if absolute >= total - _HF_LOAD_MORE_TRIGGER:
+            self._load_more()
+
     _SCROLL_PREFETCH_RATIO = 0.85
     _SCROLL_PREFETCH_COOLDOWN = 0.8
 
@@ -1345,7 +1539,9 @@ class CatalogScreen(Screen[None]):
         if isinstance(self.focused, Input):
             return
         if self._grid_view:
-            if (grid := self._focused_grid()) is not None:
+            grid = self._focused_grid() or self._first_grid_or_none()
+            if grid is not None:
+                grid.focus()
                 grid.action_cursor_down()
         else:
             self._nudge_list(1)
@@ -1354,10 +1550,26 @@ class CatalogScreen(Screen[None]):
         if isinstance(self.focused, Input):
             return
         if self._grid_view:
-            if (grid := self._focused_grid()) is not None:
+            grid = self._focused_grid() or self._first_grid_or_none()
+            if grid is not None:
+                grid.focus()
                 grid.action_cursor_up()
         else:
             self._nudge_list(-1)
+
+    def _first_grid_or_none(self) -> ModelGrid | None:
+        """Return the first ModelGrid mounted on the screen, or None.
+
+        Lets ``cursor_down`` / ``cursor_up`` proceed even when nothing
+        is focused yet (e.g. the user pressed an arrow before focus
+        landed on a grid after a cold catalog mount).
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            return self.query_one(ModelGrid)
+        except NoMatches:
+            return None
 
     def action_jump_top(self) -> None:
         if isinstance(self.focused, Input):
@@ -1409,15 +1621,17 @@ def _group_frontier_rows(
 
 
 def _group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]:
-    """Group local rows into sections for the grid view."""
-    recommended: list[CatalogRow] = []
+    """Group local rows into sections for the grid view.
+
+    Layout: Installed first, then one section per task. Featured rows live
+    at the top of their task section (recognizable by the ``pick`` pill);
+    no separate "Our picks" bucket so the catalog reads as a single
+    task-organized list.
+    """
     installed: list[CatalogRow] = []
     by_task: dict[str, list[CatalogRow]] = {task: [] for task in _TASK_BUCKET_ORDER}
     extras: dict[str, list[CatalogRow]] = {}
     for row in local_rows:
-        if row.featured:
-            recommended.append(row)
-            continue
         if row.installed:
             installed.append(row)
             continue
@@ -1426,8 +1640,14 @@ def _group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]
             bucket.append(row)
         else:
             extras.setdefault(row.task, []).append(row)
+    # Within each task bucket: featured first (preserving their input order),
+    # then the rest in their incoming order. Stable so HF rank from the API
+    # is preserved among non-featured rows.
+    for bucket in by_task.values():
+        bucket.sort(key=lambda r: not getattr(r, "featured", False))
+    for bucket in extras.values():
+        bucket.sort(key=lambda r: not getattr(r, "featured", False))
     return [
-        GridSection(msg.HEADING_OUR_PICKS, recommended),
         GridSection(msg.HEADING_INSTALLED, installed),
         *[GridSection(task.capitalize(), by_task[task]) for task in _TASK_BUCKET_ORDER],
         *[GridSection(task.capitalize(), extras[task]) for task in extras],

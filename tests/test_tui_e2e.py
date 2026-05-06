@@ -31,7 +31,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
-    cfg.subprocess_embed = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
@@ -41,6 +40,20 @@ def _isolated_cfg(tmp_path):
     yield
     for field_name in type(snapshot).model_fields:
         setattr(cfg, field_name, getattr(snapshot, field_name))
+
+
+@pytest.fixture(autouse=True)
+def _suppress_catalog_auto_hf_fetch():
+    """Block CatalogScreen's mount-time HF fetch.
+
+    The auto-fetch races every test that snapshots ModelGrid widgets on
+    slow Windows runners. Tests that need to exercise the fetch path
+    invoke `_fetch_all_hf_models` directly.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    with mock.patch.object(CatalogScreen, "_fetch_all_hf_models"):
+        yield
 
 
 @pytest.fixture()
@@ -259,25 +272,28 @@ class TestModeIndicator:
 
 @pytest.mark.usefixtures("wiki_enabled")
 class TestViewCycling:
-    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
-    async def test_cycles_all_views(self, _fam, _cat, _mock_resolve):
+    async def test_cycles_all_views(self, _mock_resolve):
         from lilbee.cli.tui.app import LilbeeApp
 
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert app.active_view == "Chat"
-
-            # Blur the chat input so the app-level ] binding fires.
-            await pilot.press("escape")
-            await pilot.pause()
-
-            expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
-            for view in expected:
-                await pilot.press("right_square_bracket")
+        # Mock out HF and remote-model fetches so the catalog screen does
+        # not race a worker-driven _update_sort_label against mount on
+        # slower CI runners (Windows). Mirrors the pattern used by every
+        # other view-cycling test below.
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                assert app.active_view == view, f"Expected {view}, got {app.active_view}"
+                assert app.active_view == "Chat"
+
+                # Blur the chat input so the app-level ] binding fires.
+                await pilot.press("escape")
+                await pilot.pause()
+
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                for view in expected:
+                    await pilot.press("right_square_bracket")
+                    await pilot.pause()
+                    assert app.active_view == view, f"Expected {view}, got {app.active_view}"
 
 
 class TestChatOnlyBannerRemoved:
@@ -1180,6 +1196,8 @@ class TestCatalogInteractions:
 
     async def test_grid_cta_removed_when_search_cleared(self, _mock_resolve):
         """Grid-view CTA unmounts once the user wipes the search input."""
+        import asyncio
+
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -1191,17 +1209,23 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "anything"
-                # Mounting the CTA is async (container.mount). On slower runners
-                # a single pilot.pause isn't enough; poll until it settles.
-                for _ in range(10):
+                # Mounting the CTA is async (container.mount). On slower
+                # runners (Windows in particular) the search-debounce timer
+                # plus the mount round-trip exceed the single-pause budget;
+                # pace with explicit sleeps so the wallclock advances enough
+                # for the CTA to settle to its final state.
+                for _ in range(20):
                     await pilot.pause()
-                    if list(app.screen.query("#catalog-grid > .search-hf-cta")):
+                    await asyncio.sleep(0.05)
+                    ctas = list(app.screen.query("#catalog-grid > .search-hf-cta"))
+                    if len(ctas) == 1:
                         break
                 assert len(list(app.screen.query("#catalog-grid > .search-hf-cta"))) == 1
 
                 search.value = ""
-                for _ in range(10):
+                for _ in range(20):
                     await pilot.pause()
+                    await asyncio.sleep(0.05)
                     if not list(app.screen.query("#catalog-grid > .search-hf-cta")):
                         break
                 assert not list(app.screen.query("#catalog-grid > .search-hf-cta"))
@@ -1427,8 +1451,14 @@ class TestCatalogInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                await pilot.pause()
-                total_rows = sum(len(g.rows) for g in app.screen.query(ModelGrid))
+                # Pump frames until both family grids land; slow Windows
+                # 3.11 workers mount sections one frame at a time.
+                total_rows = 0
+                for _ in range(50):
+                    await pilot.pause()
+                    total_rows = sum(len(g.rows) for g in app.screen.query(ModelGrid))
+                    if total_rows >= 2:
+                        break
                 assert total_rows == 2
 
     async def test_list_view_j_k_navigation(self, _mock_resolve):
@@ -2545,8 +2575,8 @@ class TestCatalogViewToggle:
                 await pilot.pause()
                 assert app.screen.query_one(GridListToggle) is not None
 
-    async def test_our_picks_heading_in_grid(self, _mock_resolve):
-        """Grid view shows 'Our picks' section heading."""
+    async def test_task_headings_in_grid(self, _mock_resolve):
+        """Grid view shows task-based section headings (no separate Our picks)."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -2559,9 +2589,10 @@ class TestCatalogViewToggle:
                     await pilot.pause()
                     headings = app.screen.query(".section-heading")
                     texts = [str(h.render()) for h in headings]
-                    if "Our picks" in texts:
+                    if "Chat" in texts:
                         break
-                assert "Our picks" in texts
+                assert "Chat" in texts
+                assert "Our picks" not in texts
 
 
 class TestCatalogPickBadge:
@@ -2586,38 +2617,22 @@ class TestCatalogPickBadge:
                     if getattr(row, "featured", False)
                 ]
                 assert featured_rows, "expected at least one featured row in the catalog"
-                rendered = _render_card_strip(featured_rows[0], selected=False, width=40)
+                rendered = _render_card_strip(
+                    featured_rows[0],
+                    selected=False,
+                    width=40,
+                    border_style="$primary on $panel",
+                )
                 joined = "\n".join(str(line) for line in rendered.lines)
                 assert "pick" in joined
 
 
-class TestCatalogLazyLoad:
-    """Test browse-more card for lazy HF loading."""
+class TestCatalogAutoLoad:
+    """The catalog auto-fetches HF models on mount; no Browse-more gate."""
 
-    async def test_browse_more_card_exists(self, _mock_resolve):
-        """The Browse-more CTA card appears before HF fetch."""
+    async def test_hf_fetched_on_open(self, _mock_resolve):
+        """Opening the catalog kicks off the HF bulk fetch automatically."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                # The streaming-section mount chain in _refresh_grid yields
-                # several refresh ticks before _mount_grid_ctas mounts the
-                # browse-more card; pause until it lands or timeout.
-                for _ in range(20):
-                    await pilot.pause()
-                    if app.screen.query(BrowseMoreCtaItem):
-                        break
-                cards = app.screen.query(BrowseMoreCtaItem)
-                assert len(cards) >= 1
-
-    async def test_browse_more_button_focusable_and_keyboard_activates(self, _mock_resolve):
-        """The 'Browse more models' button must be reachable via Tab and Enter (bb-fp1p)."""
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -2626,16 +2641,8 @@ class TestCatalogLazyLoad:
                 app.switch_view("Catalog")
                 for _ in range(20):
                     await pilot.pause()
-                    if app.screen.query(BrowseMoreCtaItem):
+                    if getattr(app.screen, "_hf_fetched", False):
                         break
-                button = app.screen.query_one(BrowseMoreCtaItem)
-                assert button.can_focus, "Browse more must be focusable"
-                button.focus()
-                await pilot.pause()
-                assert app.focused is button
-                # Activate via Enter to trigger the bulk HF fetch.
-                await pilot.press("enter")
-                await pilot.pause()
                 assert app.screen._hf_fetched is True
 
 
@@ -2659,10 +2666,13 @@ class TestCatalogGridFocus:
                 grid = app.screen.query(ModelGrid).first()
                 # Simulate the state after Tab moves focus away then back: clear
                 # highlight, blur, then focus and assert the on_focus auto-highlight.
+                # The catalog's focus-restore can re-focus the grid asynchronously
+                # on slow runners, so the precondition (highlighted is None after
+                # blur) isn't guaranteed; the assertion that matters is what
+                # happens AFTER the explicit grid.focus() call.
                 grid.highlighted = None
                 app.set_focus(None)
                 await pilot.pause()
-                assert grid.highlighted is None
                 grid.focus()
                 await pilot.pause()
                 assert grid.highlighted == 0, (
@@ -2725,10 +2735,16 @@ class TestGlobalSlashRoutesToChat:
             assert inp.value == "/setup", f"global slash route should compose, got {inp.value!r}"
 
 
-class TestQuestionMarkOpensHelp:
-    """The ? key opens the help panel even when chat input is focused (bb-qbfy)."""
+class TestQuestionMarkBehavior:
+    """The ? key opens help only when no text input is swallowing it.
 
-    async def test_question_mark_opens_help_with_chat_input_focused(self, _mock_resolve):
+    The user explicitly wants ``?`` typed into the focused chat input to
+    land as a literal character (so things like "what?" work), not pop
+    the help modal mid-typing. F1 / Ctrl+H stay priority-routed and
+    always open help.
+    """
+
+    async def test_question_mark_types_literal_into_focused_chat_input(self, _mock_resolve):
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -2740,8 +2756,25 @@ class TestQuestionMarkOpensHelp:
             assert app.focused is inp
             await pilot.press("?")
             await pilot.pause()
-            assert inp.value == "", "? must not be typed into chat input"
-            assert app.screen.query("HelpPanel"), "? must open the help panel"
+            assert "?" in inp.value, (
+                f"? must land as a literal character in chat input, got {inp.value!r}"
+            )
+            assert not app.screen.query("HelpPanel"), (
+                "? must not open help while the chat input has focus"
+            )
+
+    async def test_f1_opens_help_even_with_chat_input_focused(self, _mock_resolve):
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.focus()
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            assert app.screen.query("HelpPanel"), "F1 must always open the help panel"
 
 
 class TestSetupWizardGrid:

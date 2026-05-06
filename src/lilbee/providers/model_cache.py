@@ -1,19 +1,11 @@
-"""Memory-aware LRU model cache for llama-cpp-python instances.
-
-Tracks loaded Llama models in an OrderedDict, evicting least-recently-used
-entries when memory is tight or keep-alive TTL expires. Thread-safe via Lock.
-"""
+"""Llama-cpp loader-mode constants and dynamic-context / GPU-memory helpers."""
 
 from __future__ import annotations
 
 import logging
 import platform
-import threading
-import time
-from collections import OrderedDict
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 log = logging.getLogger(__name__)
 
@@ -41,27 +33,6 @@ _DYNAMIC_CTX_QUANTUM = 256
 
 # KV cache element size for f16 (bytes). Quantized KV reduces this.
 _KV_ELEM_BYTES_F16 = 2
-
-
-@dataclass
-class _CacheEntry:
-    """A loaded model with metadata for eviction decisions."""
-
-    model: Any
-    path: Path
-    mode: LoaderMode
-    estimated_bytes: int
-    loaded_at: float = field(default_factory=time.monotonic)
-    last_used: float = field(default_factory=time.monotonic)
-
-    def touch(self) -> None:
-        """Update last-used timestamp."""
-        self.last_used = time.monotonic()
-
-    @property
-    def embedding(self) -> bool:
-        """True if the underlying Llama was opened with embedding=True."""
-        return self.mode in (MODE_EMBED, MODE_RERANK)
 
 
 def kv_bytes_per_token(meta: dict[str, str] | None, kv_elem_bytes: int = _KV_ELEM_BYTES_F16) -> int:
@@ -184,141 +155,3 @@ def _try_nvidia_memory() -> int | None:
         pass
 
     return None
-
-
-class MemoryAwareModelCache:
-    """LRU cache for Llama model instances with memory-aware eviction.
-    Models are evicted when:
-    - A new model won't fit in the memory budget (LRU evicted first)
-    - A model's keep-alive TTL has expired (checked on load and via evict_stale)
-    """
-
-    def __init__(
-        self,
-        max_memory_fraction: float = 0.75,
-        keep_alive_seconds: int = 300,
-        loader: Any = None,
-    ) -> None:
-        self._fraction = max_memory_fraction
-        self._keep_alive = keep_alive_seconds
-        self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
-        self._lock = threading.Lock()
-        self._loader = loader
-
-    def load_model(self, model_path: Path, mode: LoaderMode) -> Any:
-        """Load or return a cached Llama model instance.
-
-        Evicts stale entries first, then evicts LRU if memory is tight.
-        The cache key includes the mode so chat, embed, and rerank loaders
-        stay isolated (they construct Llama with different flags and must
-        not be aliased).
-        """
-        key = f"{model_path}:{mode}"
-
-        with self._lock:
-            self._evict_stale_locked()
-
-            if key in self._cache:
-                entry = self._cache[key]
-                entry.touch()
-                self._cache.move_to_end(key)
-                log.debug("Cache hit: %s (%s)", model_path.name, mode)
-                return entry.model
-
-            estimated = estimate_model_memory(model_path)
-            available = get_available_memory(self._fraction)
-            self._evict_for_space_locked(estimated, available)
-
-            log.info(
-                "Loading model %s in %s mode (est. %d MB, available %d MB)",
-                model_path.name,
-                mode,
-                estimated // (1024 * 1024),
-                available // (1024 * 1024),
-            )
-            model = self._loader(model_path, mode=mode)
-
-            self._cache[key] = _CacheEntry(
-                model=model,
-                path=model_path,
-                mode=mode,
-                estimated_bytes=estimated,
-            )
-            return model
-
-    def _evict_stale_locked(self) -> int:
-        """Remove models past keep_alive TTL. Must hold self._lock."""
-        if self._keep_alive <= 0:
-            return 0
-        now = time.monotonic()
-        stale_keys = [
-            k for k, entry in self._cache.items() if (now - entry.last_used) > self._keep_alive
-        ]
-        for k in stale_keys:
-            self._unload_entry(k)
-        return len(stale_keys)
-
-    def _evict_for_space_locked(self, needed: int, available: int) -> None:
-        """Evict LRU entries until *needed* bytes fit within *available*."""
-        current_usage = sum(e.estimated_bytes for e in self._cache.values())
-        while self._cache and (current_usage + needed) > available:
-            oldest_key = next(iter(self._cache))
-            oldest = self._cache[oldest_key]
-            current_usage -= oldest.estimated_bytes
-            log.info("Evicting LRU model %s to free memory", oldest.path.name)
-            self._unload_entry(oldest_key)
-
-    def _unload_entry(self, key: str) -> None:
-        """Remove and close a single cache entry. Must hold self._lock."""
-        entry = self._cache.pop(key, None)
-        if entry is not None:
-            try:
-                entry.model.close()
-            except AttributeError:
-                pass
-            except Exception:
-                log.debug("Error closing model %s", entry.path.name, exc_info=True)
-
-    def evict_stale(self) -> int:
-        """Remove models past keep_alive TTL. Returns count evicted."""
-        with self._lock:
-            return self._evict_stale_locked()
-
-    def unload_all(self) -> None:
-        """Clear entire cache, closing all models."""
-        with self._lock:
-            keys = list(self._cache.keys())
-            for k in keys:
-                self._unload_entry(k)
-
-    def unload_path(self, model_path: Path) -> int:
-        """Evict every cache entry for *model_path* (across all modes). Returns count."""
-        with self._lock:
-            keys = [k for k, entry in self._cache.items() if entry.path == model_path]
-            for k in keys:
-                self._unload_entry(k)
-            return len(keys)
-
-    def get_stats(self) -> dict[str, Any]:
-        """Return cache statistics for monitoring."""
-        with self._lock:
-            entries = []
-            for _key, entry in self._cache.items():
-                entries.append(
-                    {
-                        "path": str(entry.path),
-                        "mode": entry.mode,
-                        "embedding": entry.embedding,
-                        "estimated_mb": entry.estimated_bytes // (1024 * 1024),
-                        "age_seconds": int(time.monotonic() - entry.loaded_at),
-                        "idle_seconds": int(time.monotonic() - entry.last_used),
-                    }
-                )
-            return {
-                "loaded_models": len(self._cache),
-                "total_estimated_mb": sum(e.estimated_bytes for e in self._cache.values())
-                // (1024 * 1024),
-                "keep_alive_seconds": self._keep_alive,
-                "memory_fraction": self._fraction,
-                "models": entries,
-            }

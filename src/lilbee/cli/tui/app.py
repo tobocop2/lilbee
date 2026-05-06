@@ -20,7 +20,6 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
-from lilbee.providers.llama_cpp.abort_signal import request_abort
 
 log = logging.getLogger(__name__)
 
@@ -97,10 +96,18 @@ _MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model", "r
 
 def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
     """Drop loaded-model state when a load-affecting setting changes."""
-    from lilbee.providers.llama_cpp.provider import LOAD_AFFECTING_KEYS
+    from lilbee.providers.llama_cpp.provider import (
+        LOAD_AFFECTING_KEYS,
+        PER_CALL_RELOADABLE_KEYS,
+    )
 
     key, _value = payload
-    if key in LOAD_AFFECTING_KEYS:
+    if key in LOAD_AFFECTING_KEYS and key not in PER_CALL_RELOADABLE_KEYS:
+        # Roles that do NOT honor per-call request.model (embed, rerank, plus
+        # any role-agnostic key like num_ctx) need the pool to drop the worker
+        # so the next call respawns under the new cfg. Chat and vision workers
+        # observe the new path on the next request via _ensure_loaded and
+        # reload in place, saving the 1-3 s spawn cost.
         get_services().provider.invalidate_load_cache()
     if key in _MODEL_REF_KEYS:
         from lilbee.modelhub.model_info import invalidate_cache
@@ -119,7 +126,10 @@ class LilbeeApp(App[None]):
     _NAV_GROUP = Binding.Group("Navigate")
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=True, priority=True),
+        # ``?`` is non-priority so a focused TextArea (chat input in INSERT
+        # mode) can swallow it and type the literal character. F1 / Ctrl+H
+        # remain priority routes that always open help, even mid-typing.
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False, priority=True),
         Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
@@ -185,6 +195,7 @@ class LilbeeApp(App[None]):
 
         self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
+        self._wire_worker_pool_notifications()
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -194,8 +205,35 @@ class LilbeeApp(App[None]):
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
 
+    def _wire_worker_pool_notifications(self) -> None:
+        """Surface worker spawn lifecycle as Textual notifications.
+
+        Worker spawns happen on the pool runtime thread, not the TUI's main
+        loop, so the listeners marshal back via :meth:`call_from_thread`
+        before touching ``self.notify``. The notifications give the user
+        feedback during the 1-3 s cold-start window per role.
+        """
+
+        def _on_spawning(role: str) -> None:
+            self.call_from_thread(
+                self.notify,
+                msg.worker_starting(role),
+                severity="information",
+                timeout=2,
+            )
+
+        def _on_spawned(role: str) -> None:
+            self.call_from_thread(
+                self.notify,
+                msg.worker_ready(role),
+                severity="information",
+                timeout=1,
+            )
+
+        get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
+
     def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback for this session."""
+        """Swap stale persisted refs to a working fallback and log the swap at WARNING."""
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
@@ -209,12 +247,10 @@ class LilbeeApp(App[None]):
             if canon.status == ValidationResult.OK or canon.original == canon.effective:
                 continue
             setattr(cfg, field, canon.effective)
-            self.notify(
+            log.warning(
                 msg.MODEL_FALLBACK_NOTICE.format(
                     label=label, original=canon.original, effective=canon.effective
-                ),
-                severity="warning",
-                timeout=8,
+                )
             )
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
@@ -278,7 +314,7 @@ class LilbeeApp(App[None]):
 
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
-        request_abort()
+        get_services().cancel_inference()
 
         if not self.task_bar.queue.is_empty:
             active = self.task_bar.queue.active_task

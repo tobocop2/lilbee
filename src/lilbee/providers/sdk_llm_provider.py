@@ -152,6 +152,33 @@ class SdkLLMProvider(LLMProvider):
                 f"Chat failed: {exc}", provider=self._backend.provider_name
             ) from exc
 
+    def vision_ocr(
+        self,
+        png_bytes: bytes,
+        model: str,
+        prompt: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        """OCR via a multipart chat completion; ``timeout`` enforced via thread pool."""
+        from lilbee.vision import OCR_PROMPT, build_vision_messages
+
+        messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
+        if timeout and timeout > 0:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(self.chat, messages, stream=False, model=model)
+                result = future.result(timeout=timeout)
+        else:
+            result = self.chat(messages, stream=False, model=model)
+        if not isinstance(result, str):
+            raise ProviderError(
+                f"Vision OCR returned non-text response ({type(result).__name__}).",
+                provider=self._backend.provider_name,
+            )
+        return result
+
     def list_models(self) -> list[str]:
         """List models from the backend (empty list on SDK errors)."""
         try:

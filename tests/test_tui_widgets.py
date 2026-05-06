@@ -292,35 +292,40 @@ class _ThinkingHeaderApp(App):
 
 
 class TestThinkingHeader:
-    """The thinking header animates a snake + shimmering word until stopped."""
+    """The thinking header animates a Knight-Rider bouncing block until stopped."""
 
     def test_frame_content_shifts_filled_block_with_frame(self) -> None:
-        """Frame N renders the filled block at column N % snake-length."""
+        """Frame N renders exactly one filled block; consecutive frames differ."""
         from lilbee.cli.tui.widgets.thinking_header import (
             _BLOCK_EMPTY,
             _BLOCK_FILLED,
-            _SNAKE_CELLS,
+            _TRACK_CELLS,
             _frame_content,
         )
 
         rendered_frame_0 = str(_frame_content(0))
         rendered_frame_1 = str(_frame_content(1))
-        # The same set of cells appears, but the filled cell moved.
+        # Exactly one cell is lit per frame; the rest are dim.
         assert rendered_frame_0.count(_BLOCK_FILLED) == 1
         assert rendered_frame_1.count(_BLOCK_FILLED) == 1
-        assert rendered_frame_0.count(_BLOCK_EMPTY) == _SNAKE_CELLS - 1
+        assert rendered_frame_0.count(_BLOCK_EMPTY) == _TRACK_CELLS - 1
         assert rendered_frame_0 != rendered_frame_1
-        # Cycles back after _SNAKE_CELLS frames.
-        assert str(_frame_content(_SNAKE_CELLS)) == rendered_frame_0
 
-    def test_frame_content_shimmers_thinking_word(self) -> None:
-        """Each frame shifts the bright letter one slot through THINKING…."""
-        from lilbee.cli.tui.widgets.thinking_header import _THINKING_WORD, _frame_content
+    def test_frame_content_bounces_back_at_track_end(self) -> None:
+        """At the right edge the lit block reverses direction (Knight Rider)."""
+        from lilbee.cli.tui.widgets.thinking_header import _TRACK_CELLS, _bounce_position
 
-        rendered = str(_frame_content(0))
-        # Every letter of the word is in the rendered output.
-        for ch in _THINKING_WORD:
-            assert ch in rendered
+        # Forward sweep occupies frames 0..cells-1.
+        for f in range(_TRACK_CELLS):
+            assert _bounce_position(f) == f
+        # Backward sweep retraces cells-2..1 (skips both endpoints to
+        # avoid stalling for two ticks at the turnaround).
+        for offset in range(1, _TRACK_CELLS - 1):
+            f = _TRACK_CELLS - 1 + offset
+            assert _bounce_position(f) == _TRACK_CELLS - 1 - offset
+        # And the cycle restarts at the left edge.
+        cycle = 2 * (_TRACK_CELLS - 1)
+        assert _bounce_position(cycle) == 0
 
     async def test_tick_advances_frame_and_repaints(self) -> None:
         """Calling _tick increments the internal frame counter and repaints."""
@@ -3079,6 +3084,33 @@ class _ViewTabsApp(App):
         yield ViewTabs()
 
 
+class TestViewTabsWikiVisibility:
+    """ViewTabs hides Wiki tab live when cfg.wiki toggles."""
+
+    async def test_wiki_visibility_follows_cfg_signal(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        cfg.wiki = True
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
+            assert wiki_tab.display is True
+
+            cfg.wiki = False
+            app.settings_changed_signal.publish(("wiki", False))
+            for _ in range(3):
+                await pilot.pause()
+            assert wiki_tab.display is False
+
+            cfg.wiki = True
+            app.settings_changed_signal.publish(("wiki", True))
+            for _ in range(3):
+                await pilot.pause()
+            assert wiki_tab.display is True
+
+
 class TestViewTabs:
     async def test_compose_yields_static(self) -> None:
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -3267,8 +3299,8 @@ class TestLilbeeAppViewTabs:
             bar = app.screen.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
-    async def test_view_tabs_uses_pill_for_active(self) -> None:
-        """Active tab should render as a pill with half-block characters."""
+    async def test_view_tabs_marks_exactly_one_active(self) -> None:
+        """One and only one ViewTab carries the ``-active`` class."""
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
@@ -4968,50 +5000,6 @@ class TestSearchHFCtaItem:
             assert "phi-3" in str(label.render())
 
 
-class TestBrowseMoreCtaItem:
-    """Direct-construction tests for BrowseMoreCtaItem (bb-fp1p)."""
-
-    def test_action_select_posts_message(self) -> None:
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        item = BrowseMoreCtaItem()
-        received: list[BrowseMoreCtaItem.Selected] = []
-        item.post_message = received.append  # type: ignore[method-assign]
-        item.action_select()
-        assert len(received) == 1
-        assert received[0].control is item
-        assert received[0].item is item
-
-    def test_on_click_focuses_and_posts(self) -> None:
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        item = BrowseMoreCtaItem()
-        received: list[BrowseMoreCtaItem.Selected] = []
-        focus_calls: list[bool] = []
-        item.post_message = received.append  # type: ignore[method-assign]
-        item.focus = lambda: focus_calls.append(True)  # type: ignore[method-assign]
-        item.on_click(_make_click(item))
-        assert focus_calls == [True]
-        assert received and received[0].item is item
-
-    async def test_compose_renders_browse_label(self) -> None:
-        from textual.app import App
-        from textual.widgets import Static
-
-        from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.browse_more_cta_item import BrowseMoreCtaItem
-
-        class _App(App):
-            def compose(self) -> ComposeResult:
-                yield BrowseMoreCtaItem()
-
-        app = _App()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            label = app.query_one("#browse-more-label", Static)
-            assert msg.CATALOG_BROWSE_MORE in str(label.render())
-
-
 def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
     return LocalCatalogRow(
         name=name,
@@ -5069,15 +5057,16 @@ class TestModelGridOnClick:
         grid.on_click(click)
         assert grid.highlighted is None
 
-    def test_click_in_gutter_is_ignored(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+    def test_click_below_grid_rows_is_ignored(self) -> None:
+        """Clicks past the last data row land outside the grid and do nothing."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
 
-        rows = [_vgrid_row(f"m{i}") for i in range(4)]
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]  # one row of 2 cards
         grid = ModelGrid(rows)
         grid._cards_per_row = 2
         grid._size = mock.Mock(width=60, height=20)  # type: ignore[attr-defined]
-        # y=5 lands in the gutter row between grid row 0 and grid row 1.
-        click = self._click(0, 5)
+        # y just past the only mounted row of cards lands in empty space.
+        click = self._click(0, _ROW_HEIGHT + 1)
         grid.on_click(click)
         assert grid.highlighted is None
 
@@ -5120,6 +5109,9 @@ class TestModelGridScrollIntoView:
         )
 
     def test_cursor_move_calls_scroll_to_region(self) -> None:
+        """The grid delegates the scroll-into-view to its parent (the outer
+        VerticalScroll), translating the cell offset via ``virtual_region``.
+        """
         from textual.geometry import Region
 
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -5128,16 +5120,39 @@ class TestModelGridScrollIntoView:
         grid = ModelGrid(rows)
         grid._cards_per_row = 2
         captured: list[Region] = []
-        grid.scroll_to_region = lambda region, **_: captured.append(region)  # type: ignore[method-assign]
-        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        # Stub a parent widget exposing scroll_to_region. We intentionally
+        # build a minimal stand-in rather than mounting in an App because
+        # virtual_region resolves only when mounted; we patch it directly.
+        parent = mock.Mock()
+        parent.scroll_to_region = lambda region, **_: captured.append(region)
+        # `Widget` isinstance check guards parent; satisfy it via the mock spec.
+        from textual.widget import Widget
 
-        with self._patch_size(grid, 80):
+        parent_widget = mock.Mock(spec=Widget)
+        parent_widget.scroll_to_region = lambda region, **_: captured.append(region)
+        grid._parent = parent_widget  # type: ignore[attr-defined]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        # virtual_region defaults to Region() (empty) when unmounted; patch.
+        from unittest.mock import PropertyMock
+
+        with (
+            self._patch_size(grid, 80),
+            mock.patch.object(
+                type(grid),
+                "virtual_region",
+                new_callable=PropertyMock,
+                return_value=Region(0, 0, 80, 24),
+            ),
+        ):
             grid.watch_highlighted(None, 4)
 
-        assert captured, "scroll_to_region must run on cursor moves"
+        assert captured, "parent.scroll_to_region must run on cursor moves"
         region = captured[0]
-        assert region.y == (4 // 2) * (5 + 1)
-        assert region.height == 5
+        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _ROW_HEIGHT
+
+        # Cell at index 4 in 2-col grid -> row 2, col 0; offset is row*_ROW_HEIGHT.
+        assert region.y == (4 // 2) * _ROW_HEIGHT
+        assert region.height == _CARD_HEIGHT
 
     def test_highlight_set_to_none_does_not_scroll(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -5224,8 +5239,9 @@ class TestModelGridUtilityMethods:
         # Width 80 with the default _CARD_MIN_WIDTH lays out 2 cards per row.
         size = mock.Mock(width=80, height=24)
         height = grid.get_content_height(size, size, 80)
-        # 8 rows / 2 cols = 4 grid rows; 4 * _ROW_HEIGHT - 1 (no trailing gutter).
-        assert height == 4 * _ROW_HEIGHT - 1
+        # 8 rows / 2 cols = 4 grid rows; each row is _ROW_HEIGHT lines tall.
+        # No trailing gutter to subtract.
+        assert height == 4 * _ROW_HEIGHT
 
     def test_get_content_height_zero_when_empty(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -5493,19 +5509,28 @@ def _row_height_offset(grid_row: int) -> int:
     return grid_row * _ROW_HEIGHT
 
 
+def _dummy_border_style() -> str:
+    """A dummy theme-token string for unit tests that don't render via a theme."""
+    return "$primary on $panel"
+
+
 class TestModelGridCardRendering:
     """``_render_card_strip`` covers both row dataclasses and selection state."""
 
     def test_local_row_unselected_renders_full_height(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _render_card_strip
 
-        out = _render_card_strip(_vgrid_row("phi-3"), selected=False, width=40)
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=False, width=40, border_style=_dummy_border_style()
+        )
         assert len(out.lines) == _CARD_HEIGHT
 
     def test_local_row_selected_paints_install_hint(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _render_card_strip
 
-        out = _render_card_strip(_vgrid_row("phi-3"), selected=True, width=40)
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=True, width=40, border_style=_dummy_border_style()
+        )
         # The hint slot is the last line; rendered text contains the
         # SETUP_CARD_HINT copy when the local card is highlighted-but-not-installed.
         rendered = "\n".join(str(line) for line in out.lines)
@@ -5516,7 +5541,7 @@ class TestModelGridCardRendering:
 
         row = _vgrid_row("phi-3")
         row.installed = True
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "installed" in rendered
 
@@ -5531,7 +5556,7 @@ class TestModelGridCardRendering:
             provider_id="openai",
             key_status=KeyStatus.READY,
         )
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "OpenAI" in rendered
         assert "ready" in rendered
@@ -5547,7 +5572,7 @@ class TestModelGridCardRendering:
             provider_id="anthropic",
             key_status=KeyStatus.MISSING_KEY,
         )
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "needs key" in rendered
 
@@ -5557,7 +5582,7 @@ class TestModelGridCardRendering:
 
         row = _vgrid_row("noisy")
         # _vgrid_row defaults sort_downloads=0, so this branch is hit by default.
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "↓" not in rendered
 
@@ -5568,7 +5593,7 @@ class TestModelGridCardRendering:
         row = _vgrid_row("popular")
         row.sort_downloads = 12345
         row.downloads = "12K"
-        out = _render_card_strip(row, selected=False, width=40)
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
         rendered = "\n".join(str(line) for line in out.lines)
         assert "↓ 12K" in rendered
 
@@ -5578,10 +5603,357 @@ class TestModelGridCardRendering:
         # All-default-row specs produce the placeholder.
         assert str(_build_specs("--", "--", "--")) == "--"
 
-    def test_pad_line_is_a_no_op_when_content_already_full(self) -> None:
+    def test_pad_line_keeps_content_when_already_full(self) -> None:
+        """Content at the available width returns unmodified body."""
         from textual.content import Content
 
         from lilbee.cli.tui.widgets.model_grid import _pad_line
 
         content = Content("0123456789")
-        assert _pad_line(content, 5, "$primary") is content
+        assert _pad_line(content, 5) is content
+
+    def test_pad_line_pads_with_spaces_when_short(self) -> None:
+        """Short content gets right-padded with plain spaces to the requested width."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        out = _pad_line(Content("hi"), 6)
+        assert "hi    " in str(out)
+        assert out.cell_length == 6
+
+    def test_card_height_matches_body_line_count(self) -> None:
+        """``_CARD_HEIGHT`` must equal body line count + reserved border rows.
+
+        Locks the layout invariant: if someone adds a body line in
+        ``_local_lines`` without bumping ``_CARD_HEIGHT``, this test fails fast.
+        """
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_RESERVED_LINES,
+            _CARD_HEIGHT,
+            _local_lines,
+        )
+
+        body = _local_lines(_vgrid_row("phi-3"), selected=True)
+        assert len(body) + _BORDER_RESERVED_LINES == _CARD_HEIGHT
+
+    def test_unselected_card_draws_default_border(self) -> None:
+        """Every card draws a round border so the grid reads as discrete tiles.
+
+        The unselected card uses ``_DEFAULT_BORDER_STYLE`` (a dim tone); the
+        selected card swaps to ``border_style``. Both states emit the same
+        box-drawing characters so the layout doesn't shift on focus changes.
+        """
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_BOTTOM_LEFT,
+            _BORDER_HORIZONTAL,
+            _BORDER_TOP_LEFT,
+            _BORDER_VERTICAL,
+            _CARD_HEIGHT,
+            _render_card_strip,
+        )
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=False, width=40, border_style=_dummy_border_style()
+        )
+        assert len(out.lines) == _CARD_HEIGHT
+        rendered = [str(line) for line in out.lines]
+        assert _BORDER_TOP_LEFT in rendered[0]
+        assert _BORDER_HORIZONTAL in rendered[0]
+        assert _BORDER_BOTTOM_LEFT in rendered[-1]
+        for body_line in rendered[1:-1]:
+            assert _BORDER_VERTICAL in body_line
+
+    def test_selected_card_emits_round_border_chars(self) -> None:
+        """Focused cards draw the round border with box-drawing characters."""
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_BOTTOM_LEFT,
+            _BORDER_BOTTOM_RIGHT,
+            _BORDER_HORIZONTAL,
+            _BORDER_TOP_LEFT,
+            _BORDER_TOP_RIGHT,
+            _BORDER_VERTICAL,
+            _render_card_strip,
+        )
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=True, width=40, border_style=_dummy_border_style()
+        )
+        rendered = [str(line) for line in out.lines]
+        assert _BORDER_TOP_LEFT in rendered[0]
+        assert _BORDER_TOP_RIGHT in rendered[0]
+        assert _BORDER_HORIZONTAL in rendered[0]
+        assert _BORDER_BOTTOM_LEFT in rendered[-1]
+        assert _BORDER_BOTTOM_RIGHT in rendered[-1]
+        # Body lines have side bars on both edges.
+        for body_line in rendered[1:-1]:
+            assert _BORDER_VERTICAL in body_line
+
+
+class TestModelGridBorderStyleSelection:
+    """``render_line`` picks ``_FOCUSED_BORDER_STYLE`` vs ``_BLURRED_BORDER_STYLE``
+    via ``self.has_focus``; the two strings must resolve to different colors so
+    the user can tell which grid owns focus.
+    """
+
+    async def test_focused_grid_passes_primary_token_to_card_strip(self) -> None:
+        """When the grid has focus, render_line picks the $primary border token."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import (
+            _FOCUSED_BORDER_STYLE,
+            ModelGrid,
+        )
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows, id="mg-focus-token")
+
+        class _GridApp(App):
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        captured: list[str] = []
+        from lilbee.cli.tui.widgets import model_grid as _mg
+
+        original = _mg._render_card_strip
+
+        def _spy(*args, border_style: str, **kwargs):
+            captured.append(border_style)
+            return original(*args, border_style=border_style, **kwargs)
+
+        _mg._render_card_strip = _spy  # type: ignore[assignment]
+        try:
+            app = _GridApp()
+            async with app.run_test(size=(80, 20)) as pilot:
+                await pilot.pause()
+                grid.focus()
+                await pilot.pause()
+                # Force a repaint so render_line runs after focus.
+                grid.refresh()
+                await pilot.pause()
+                assert any(style == _FOCUSED_BORDER_STYLE for style in captured)
+        finally:
+            _mg._render_card_strip = original  # type: ignore[assignment]
+
+    async def test_blurred_grid_passes_blurred_token_to_card_strip(self) -> None:
+        """A grid that does NOT have focus picks the $border-blurred token."""
+        from textual.containers import VerticalScroll
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BLURRED_BORDER_STYLE,
+            ModelGrid,
+        )
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows, id="mg-blur-token")
+        focus_sink = Input(id="focus-sink")
+
+        class _GridApp(App):
+            def compose(self) -> ComposeResult:
+                yield focus_sink
+                yield VerticalScroll(grid)
+
+        captured: list[str] = []
+        from lilbee.cli.tui.widgets import model_grid as _mg
+
+        original = _mg._render_card_strip
+
+        def _spy(*args, border_style: str, **kwargs):
+            captured.append(border_style)
+            return original(*args, border_style=border_style, **kwargs)
+
+        _mg._render_card_strip = _spy  # type: ignore[assignment]
+        try:
+            app = _GridApp()
+            async with app.run_test(size=(80, 20)) as pilot:
+                await pilot.pause()
+                focus_sink.focus()
+                await pilot.pause()
+                grid.refresh()
+                await pilot.pause()
+                assert any(style == _BLURRED_BORDER_STYLE for style in captured)
+        finally:
+            _mg._render_card_strip = original  # type: ignore[assignment]
+
+
+class TestCardBodyStyleConstants:
+    """The body / focused / blurred string constants must reference $panel."""
+
+    def test_card_body_style_is_panel(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _CARD_BODY_STYLE
+
+        assert "$panel" in _CARD_BODY_STYLE
+
+    def test_focused_border_style_is_primary_on_panel(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _FOCUSED_BORDER_STYLE
+
+        assert "$primary" in _FOCUSED_BORDER_STYLE
+        assert "$panel" in _FOCUSED_BORDER_STYLE
+
+    def test_blurred_border_style_is_dim_on_panel(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _BLURRED_BORDER_STYLE
+
+        assert "$border-blurred" in _BLURRED_BORDER_STYLE
+        assert "$panel" in _BLURRED_BORDER_STYLE
+
+    def test_default_border_style_is_dim_on_panel(self) -> None:
+        """Every unselected card uses the default dim border tone."""
+        from lilbee.cli.tui.widgets.model_grid import _DEFAULT_BORDER_STYLE
+
+        assert "$panel" in _DEFAULT_BORDER_STYLE
+
+
+class TestModelGridBlurClearsHighlight:
+    """Cross-grid focus discipline: blurred grid drops its highlight."""
+
+    def test_on_blur_clears_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.on_blur()
+        assert grid.highlighted is None
+
+
+class TestModelGridGetContentHeight:
+    """Catalog screen relies on the height formula to lay out stacked sections."""
+
+    def test_height_uses_row_height_per_grid_row(self) -> None:
+        """Content height = grid_rows * _ROW_HEIGHT (no trailing-gutter math)."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(6)]
+        grid = ModelGrid(rows)
+        size = mock.Mock(width=80, height=24)
+        # 6 items / 2 cols = 3 grid rows.
+        height = grid.get_content_height(size, size, 80)
+        assert height == 3 * _ROW_HEIGHT
+
+
+class TestCatalogFocusEdgeGuards:
+    """LeaveUp/LeaveDown handlers in the catalog screen trap focus at the stack
+    edges so the user's cursor doesn't leak to the toolbar / dock."""
+
+    @staticmethod
+    async def _catalog_with_grids(rows_a: int, rows_b: int):
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        return app, rows_a, rows_b
+
+    async def test_leave_up_at_first_grid_keeps_focus(self) -> None:
+        """Pressing Up at the top row of the topmost grid keeps focus there."""
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+
+        class _StubScreen:
+            _grid_container = type(
+                "C", (), {"query": staticmethod(lambda _cls: [grid_a, grid_b])}
+            )()
+            _hf_has_more = False
+            _loading_more = False
+            focus_previous_called = False
+            focus_next_called = False
+
+            def focus_previous(self) -> None:
+                self.focus_previous_called = True
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+        screen = _StubScreen()
+        # Mimic the screen handler executing on the first grid's LeaveUp.
+        event = ModelGrid.LeaveUp(grid_a)
+        # Bind the catalog method to the stub; the real method only reads
+        # _grid_container and _hf_has_more / _loading_more, so the stub fits.
+        CatalogScreen._on_grid_leave_up(screen, event)  # type: ignore[arg-type]
+        assert screen.focus_previous_called is False
+
+        # Sanity: from a non-first grid, focus DOES move.
+        event2 = ModelGrid.LeaveUp(grid_b)
+        CatalogScreen._on_grid_leave_up(screen, event2)  # type: ignore[arg-type]
+        assert screen.focus_previous_called is True
+
+    async def test_leave_down_at_last_grid_with_no_more_keeps_focus(self) -> None:
+        """Pressing Down at the last row of the bottom grid (no load_more) parks."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        scroll_end_calls: list[bool] = []
+
+        class _StubScreen:
+            _grid_container = type(
+                "C",
+                (),
+                {
+                    "query": staticmethod(lambda _cls: [grid_a, grid_b]),
+                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
+                },
+            )()
+            _hf_has_more = False
+            _loading_more = False
+            focus_next_called = False
+            load_more_called = False
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+            def _load_more(self) -> None:
+                self.load_more_called = True
+
+        screen = _StubScreen()
+        event = ModelGrid.LeaveDown(grid_b)
+        CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
+        assert screen.focus_next_called is False
+        assert screen.load_more_called is False
+        assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
+
+        # From a non-last grid, focus DOES move (no scroll_end).
+        scroll_end_calls.clear()
+        event2 = ModelGrid.LeaveDown(grid_a)
+        CatalogScreen._on_grid_leave_down(screen, event2)  # type: ignore[arg-type]
+        assert screen.focus_next_called is True
+        assert not scroll_end_calls
+
+    async def test_leave_down_at_last_grid_with_more_loads_more(self) -> None:
+        """Last grid + _hf_has_more triggers load_more (existing behavior preserved)."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        scroll_end_calls: list[bool] = []
+
+        class _StubScreen:
+            _grid_container = type(
+                "C",
+                (),
+                {
+                    "query": staticmethod(lambda _cls: [grid_b]),
+                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
+                },
+            )()
+            _hf_has_more = True
+            _loading_more = False
+            focus_next_called = False
+            load_more_called = False
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+            def _load_more(self) -> None:
+                self.load_more_called = True
+
+        screen = _StubScreen()
+        event = ModelGrid.LeaveDown(grid_b)
+        CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
+        assert screen.load_more_called is True
+        assert screen.focus_next_called is False
+        assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
