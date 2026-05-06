@@ -353,6 +353,18 @@ class ChatScreen(Screen[None]):
         if not self._insert_mode:
             self._enter_insert_mode()
 
+    @on(events.Click, "#chat-input")
+    def _on_chat_input_clicked(self, event: events.Click) -> None:
+        """Click on the chat input bar promotes to INSERT.
+
+        ``can_focus = False`` while in NORMAL mode swallows focus from the
+        click, so DescendantFocus never fires. Hook the Click directly so
+        a mouse user lands in INSERT just like a keystroke (i / a / o).
+        """
+        if not self._insert_mode:
+            self._enter_insert_mode()
+            event.stop()
+
     @on(ChatInput.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
         if not self._insert_mode:

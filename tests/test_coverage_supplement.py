@@ -1374,6 +1374,31 @@ class TestChatScreenFocusBranches:
         screen._on_chat_input_focused(mock.MagicMock())
         screen._enter_insert_mode.assert_called_once()
 
+    def test_chat_input_click_in_normal_mode_enters_insert(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = False
+        screen._enter_insert_mode = mock.MagicMock()  # type: ignore[method-assign]
+        click = mock.MagicMock(spec=events.Click)
+        screen._on_chat_input_clicked(click)
+        screen._enter_insert_mode.assert_called_once()
+        click.stop.assert_called_once()
+
+    def test_chat_input_click_in_insert_mode_is_noop(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = True
+        screen._enter_insert_mode = mock.MagicMock()  # type: ignore[method-assign]
+        click = mock.MagicMock(spec=events.Click)
+        screen._on_chat_input_clicked(click)
+        screen._enter_insert_mode.assert_not_called()
+
 
 class TestChatModeToggleAction:
     """`ChatModePill.action_select` switches the parent toggle's mode."""
