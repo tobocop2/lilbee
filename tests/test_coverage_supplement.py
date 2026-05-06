@@ -1585,7 +1585,12 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             assert isinstance(screen, CatalogScreen)
             for grid in list(screen.query(ModelGrid)):
                 grid.remove()
-            await pilot.pause()
+            # Removal is async; pump frames until query reports zero grids
+            # so the NoMatches catch path runs deterministically.
+            for _ in range(20):
+                await pilot.pause()
+                if not list(screen.query(ModelGrid)):
+                    break
             assert screen._focused_grid() is None
             assert screen._first_grid_or_none() is None
 
@@ -1641,7 +1646,10 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             screen._loading_more = False
             for grid in list(screen.query(ModelGrid)):
                 grid.remove()
-            await pilot.pause()
+            for _ in range(20):
+                await pilot.pause()
+                if not list(screen.query(ModelGrid)):
+                    break
             screen._maybe_prefetch_on_grid_nav()
 
     async def test_prefetch_swallows_value_error_when_focused_not_in_grids(self) -> None:
@@ -1808,39 +1816,6 @@ class TestScopeChipPillSelect:
 
 class TestCatalogSmallEdgeBranches:
     """A handful of small catalog branches that flake out across xdist workers."""
-
-    async def _push_catalog(self, pilot: Any) -> Any:
-        """Push a CatalogScreen onto a minimal app and return it."""
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        screen = CatalogScreen()
-        pilot.app.push_screen(screen)
-        await pilot.pause()
-        return screen
-
-    async def test_focused_grid_returns_none_when_no_grid_in_dom(self) -> None:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Footer
-
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
-
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield Footer()
-
-            def on_mount(self) -> None:
-                self.push_screen(CatalogScreen())
-
-        async with _Probe().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = pilot.app.screen
-            assert isinstance(screen, CatalogScreen)
-            # Fall back to the NoMatches catch by removing every ModelGrid.
-            for grid in list(screen.query(ModelGrid)):
-                grid.remove()
-            await pilot.pause()
-            assert screen._focused_grid() is None
 
     async def test_action_toggle_view_to_list_triggers_first_hf_fetch(self) -> None:
         from textual.app import App, ComposeResult
