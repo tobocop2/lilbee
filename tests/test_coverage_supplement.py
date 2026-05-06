@@ -801,34 +801,27 @@ class TestModelInfoModal:
 class TestCatalogActionShowInfoEarlyReturns:
     """`action_show_info` early-return paths (Input-focused, no row)."""
 
-    async def test_input_focused_does_nothing(self) -> None:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Footer, Input
+    def test_input_focused_does_nothing(self) -> None:
+        """Direct call: when `self.focused` is an Input, action_show_info bails."""
+        from textual.widgets import Input
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield Footer()
-
-            def on_mount(self) -> None:
-                self.push_screen(CatalogScreen())
-
-        async with _Probe().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = pilot.app.screen
-            assert isinstance(screen, CatalogScreen)
-            search = screen.query_one("#catalog-search", Input)
-            search.remove_class("-hidden")
-            search.focus()
-            await pilot.pause()
-            with (
-                mock.patch.object(screen, "_highlighted_row") as mock_row,
-                mock.patch.object(screen, "notify") as mock_notify,
-            ):
-                screen.action_show_info()
-                mock_row.assert_not_called()
-                mock_notify.assert_not_called()
+        screen = CatalogScreen.__new__(CatalogScreen)
+        fake_input = mock.MagicMock(spec=Input)
+        with (
+            mock.patch.object(
+                CatalogScreen,
+                "focused",
+                new_callable=mock.PropertyMock,
+                return_value=fake_input,
+            ),
+            mock.patch.object(screen, "_highlighted_row") as mock_row,
+            mock.patch.object(screen, "notify") as mock_notify,
+        ):
+            screen.action_show_info()
+        mock_row.assert_not_called()
+        mock_notify.assert_not_called()
 
 
 class TestCatalogHighlightedRow:
