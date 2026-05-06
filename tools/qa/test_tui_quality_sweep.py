@@ -43,8 +43,7 @@ def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
         tui.send("")
         after = tui.text().lower()
         assert after != before, (
-            "F3 produced no visible change in the model bar. "
-            f"before:\n{before}\nafter:\n{after}"
+            f"F3 produced no visible change in the model bar. before:\n{before}\nafter:\n{after}"
         )
 
 
@@ -95,9 +94,7 @@ def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     for _ in range(deadline_attempts):
         if tui.text() != before:
             return
-    raise AssertionError(
-        "`v` did not change catalog Local view state. visible:\n" + tui.text()
-    )
+    raise AssertionError("`v` did not change catalog Local view state. visible:\n" + tui.text())
 
 
 @pytest.mark.tui
