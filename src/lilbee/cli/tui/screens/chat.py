@@ -160,24 +160,17 @@ class ChatScreen(Screen[None]):
         # inside the prompt still works via PgUp/PgDn/Home/End.
         Binding("up", "history_prev", "Up", show=False, priority=True),
         Binding("down", "history_next", "Down", show=False, priority=True),
-        # Esc dispatches to ``action_enter_normal_mode``, which cancels
-        # an active stream first and otherwise drops the screen back
-        # into normal mode. The footer label flips to "Cancel stream"
-        # while streaming via ``check_action`` parameter dispatch.
-        Binding(
-            "escape",
-            "esc_dispatch('cancel')",
-            "Cancel stream",
-            show=True,
-            priority=True,
-        ),
-        Binding(
-            "escape",
-            "esc_dispatch('normal')",
-            "Normal mode",
-            show=True,
-            priority=True,
-        ),
+        # Esc always drops back into NORMAL mode so the user can navigate
+        # the terminal. Cancel-while-streaming is on Ctrl+C below; the
+        # two roles used to share Esc and clobbered each other.
+        Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
+        # Ctrl+C cancels the active stream when streaming AND in INSERT
+        # mode so the user can interrupt without leaving the input. The
+        # screen-level priority binding overrides the App-level Quit;
+        # check_action below hides + disables it outside that exact
+        # context, so Ctrl+C still quits the app from NORMAL or when
+        # nothing is streaming.
+        Binding("ctrl+c", "cancel_stream", "Cancel stream", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
@@ -195,9 +188,6 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
-        # Mid-stream submissions are parked here; _exit_streaming_state
-        # fires the queued prompt once the current stream finishes.
-        self._queued_prompt: str | None = None
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -392,6 +382,13 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
+        if self.streaming:
+            # Only one chat message may be in flight at a time. Surface a
+            # toast so the user knows the prompt was rejected (rather
+            # than silently dropped) and ask them to cancel first if
+            # they want to redirect the model.
+            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+            return
         text = event.value.strip()
         if not text:
             return
@@ -401,14 +398,6 @@ class ChatScreen(Screen[None]):
 
         if text.startswith("/"):
             self._handle_slash(text)
-            return
-        if self.streaming:
-            # Park the prompt instead of silently dropping it; it fires
-            # automatically once the active stream finishes or is
-            # cancelled. A second submission overwrites the first --
-            # the most recent prompt wins.
-            self._queued_prompt = text
-            self.notify(msg.CHAT_PROMPT_QUEUED, timeout=2)
             return
         self._send_message(text)
 
@@ -441,11 +430,6 @@ class ChatScreen(Screen[None]):
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
         self.refresh_bindings()
-        # Drain any prompt the user submitted mid-stream so it doesn't
-        # get silently dropped on the floor.
-        if self._queued_prompt is not None:
-            text, self._queued_prompt = self._queued_prompt, None
-            self.call_later(self._send_message, text)
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -1073,22 +1057,14 @@ class ChatScreen(Screen[None]):
     def action_scroll_down(self) -> None:
         self._chat_log.scroll_page_down()
 
-    def action_esc_dispatch(self, _variant: str = "normal") -> None:
-        """Esc dispatch -- both the 'cancel' and 'normal' variants share logic."""
-        self.action_enter_normal_mode()
-
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Footer-binding gating: show 'Cancel stream' only while streaming."""
-        if action == "esc_dispatch":
-            wants_cancel = parameters == ("cancel",)
-            return self.streaming if wants_cancel else not self.streaming
+        """Footer-binding gating: show 'Cancel stream' only while streaming + INSERT."""
+        if action == "cancel_stream":
+            return self.streaming and self._insert_mode
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: cancel stream, return from model bar, or enter normal mode."""
-        if self.streaming:
-            self._cancel_inflight_stream()
-            return
+        """Escape: drop back into NORMAL mode (always). Stream cancel is on Ctrl+C."""
         if isinstance(self.focused, (Select, ModelPickerButton)):
             # Returning from a model picker should put us back in INSERT
             # so the user can type their next prompt; routing through the
@@ -1105,13 +1081,9 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
-        """Context-aware Escape: cancel stream -> blur input -> no-op."""
+        """Cancel an in-flight chat stream. Bound to Ctrl+C from INSERT mode."""
         if self.streaming:
             self._cancel_inflight_stream()
-            return
-        inp = self._chat_input
-        if inp.has_focus:
-            self._chat_log.focus()
 
     def _cancel_inflight_stream(self) -> None:
         """Stop the streaming Textual worker AND interrupt its inference call.

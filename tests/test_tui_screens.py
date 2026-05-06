@@ -5932,13 +5932,17 @@ async def test_chat_input_history_up_down():
         inp.focus()
         await pilot.pause()
 
-        # Patch _stream_response to prevent background worker threads
+        # Patch _stream_response to prevent background worker threads.
+        # Reset streaming between submits because the screen now refuses
+        # mid-stream submissions (only one chat in flight at a time).
         with patch.object(app.screen, "_stream_response"):
-            # Submit two messages
             inp.value = "hello"
             await pilot.press("enter")
+            app.screen.streaming = False
+            await pilot.pause()
             inp.value = "world"
             await pilot.press("enter")
+            app.screen.streaming = False
         await pilot.pause()
 
         assert app.screen._input_history == ["hello", "world"]
@@ -8671,15 +8675,18 @@ async def test_chat_login_with_token_error():
             mock_login.assert_called_once()
 
 
-async def test_chat_enter_normal_mode_while_streaming():
-    """action_enter_normal_mode cancels stream when streaming."""
+async def test_chat_enter_normal_mode_while_streaming_drops_to_normal():
+    """action_enter_normal_mode now always goes to NORMAL, even mid-stream.
+
+    Cancel-while-streaming moved to Ctrl+C (action_cancel_stream).
+    """
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)):
         app.screen.streaming = True
         app.screen.action_enter_normal_mode()
-        assert app.screen.streaming is False
-        # Should NOT have entered normal mode
-        assert app.screen._insert_mode is True
+        # Stream is left running so the user can navigate; Ctrl+C cancels.
+        assert app.screen.streaming is True
+        assert app.screen._insert_mode is False
 
 
 async def test_chat_on_chat_input_changed_completing():
@@ -9501,8 +9508,8 @@ def test_chat_has_help_attribute():
     assert "Chat" in ChatScreen.HELP
 
 
-async def test_chat_action_enter_normal_mode_streaming():
-    """action_enter_normal_mode cancels workers and stops streaming."""
+async def test_chat_action_cancel_stream_cancels_workers_and_stream():
+    """action_cancel_stream (Ctrl+C from INSERT) cancels workers and stops streaming."""
     import asyncio
 
     async def _slow_worker() -> None:
@@ -9516,7 +9523,7 @@ async def test_chat_action_enter_normal_mode_streaming():
         app.screen.run_worker(_slow_worker(), exclusive=False)
         await _pilot.pause()
         assert len(list(app.screen.workers)) > 0
-        app.screen.action_enter_normal_mode()
+        app.screen.action_cancel_stream()
         assert app.screen.streaming is False
 
 
@@ -10634,6 +10641,53 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
         screen._on_model_picker_dismissed("chat_model", None)
         screen._on_model_picker_dismissed("chat_model", "")
         mock_apply.assert_not_called()
+
+
+def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monkeypatch):
+    """Nullable fields treat ref='' as 'disable'; ref=None is still cancel."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+
+    def _raise(*_a, **_k):
+        raise RuntimeError("button absent in unit test")
+
+    screen.query_one = _raise
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
+    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+        screen._on_model_picker_dismissed("vision_model", None)
+        mock_apply.assert_not_called()
+        screen._on_model_picker_dismissed("vision_model", "")
+        mock_apply.assert_called_once()
+        args = mock_apply.call_args.args
+        assert args[1] == "vision_model"
+        assert args[2] == ""
+
+
+async def test_settings_push_model_picker_prepends_disable_option_for_nullable(monkeypatch):
+    """Nullable fields get a 'disabled' row prepended; non-nullable fields don't."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    monkeypatch.setattr(SettingsScreen, "is_mounted", property(lambda self: True))
+    pushed: list[list[ModelOption]] = []
+
+    class _FakeApp:
+        def push_screen(self, modal, *_args, **_kwargs):
+            pushed.append(list(modal._options.options))
+
+    fake_app = _FakeApp()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
+    real = [ModelOption(label="LightOnOCR 2 1B", ref="noctrex/lighton")]
+    screen._push_model_picker("vision_model", "vision", list(real))
+    screen._push_model_picker("chat_model", "chat", list(real))
+    assert pushed[0][0].label == "(disabled, no model)"
+    assert pushed[0][0].ref == ""
+    assert pushed[0][1].ref == "noctrex/lighton"
+    assert pushed[1][0].ref == "noctrex/lighton"
 
 
 async def test_status_mount_remaining_sections_bails_when_not_mounted(monkeypatch):

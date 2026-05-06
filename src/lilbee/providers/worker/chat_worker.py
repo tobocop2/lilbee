@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from typing import Any
 
@@ -16,6 +17,15 @@ from lilbee.providers.worker.wire_kinds import (
     STREAM_END_KIND,
 )
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
+
+_ABORT_BRIDGE_POLL_S = 0.025
+"""How often the abort bridge polls the parent's mp.Value flag.
+
+25 ms is the budget between the user pressing Esc and ggml's next
+abort_callback poll on a slow-token chat. Faster than this stops being
+visible to a human; slower than this leaves the user staring at an
+unresponsive UI for the duration of one stuck token.
+"""
 
 _STREAM_BATCH_MAX_CHUNKS = 16
 """Flush a streaming-chat batch once this many tokens have queued.
@@ -179,6 +189,57 @@ def _handle_chat_non_streaming(reply: Reply, response: Any) -> None:
     reply.send(RESULT_KIND, text)
 
 
+class _AbortBridge:
+    """Mirror the parent's mp.Value abort flag into ggml's threading.Event.
+
+    Without this, cancel only takes effect at Python-loop boundaries
+    between yielded tokens. A token that takes 30+ seconds inside the
+    ggml decode (full context, slow GPU, big buffer) keeps generating
+    because the Python loop never gets a chance to read the flag.
+    Calling ``request_abort()`` flips the threading.Event that the
+    loaded llama's ``abort_callback`` polls inside ggml, so cancel
+    takes effect at the next ggml poll point (every few tokens) instead
+    of waiting for the next Python yield.
+    """
+
+    def __init__(self, abort_flag: Any) -> None:
+        self._abort_flag = abort_flag
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> _AbortBridge:
+        from lilbee.providers.llama_cpp.abort_signal import clear_abort
+
+        # Reset both flags before the chat starts: a stale parent-side
+        # cancel from a prior call must not abort the new request.
+        clear_abort()
+        self._abort_flag.value = 0
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._poll, name="chat-abort-bridge", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc_info: Any) -> None:
+        from lilbee.providers.llama_cpp.abort_signal import clear_abort
+
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=1.0)
+        # Reset for the next request so a cancelled prior call doesn't
+        # latch onto the next inference.
+        clear_abort()
+        self._abort_flag.value = 0
+
+    def _poll(self) -> None:
+        from lilbee.providers.llama_cpp.abort_signal import request_abort
+
+        while not self._stop.wait(_ABORT_BRIDGE_POLL_S):
+            if self._abort_flag.value:
+                request_abort()
+                return
+
+
 def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
     """Run one chat request and dispatch to the streaming/non-streaming handler."""
     if not isinstance(payload, ChatRequest):
@@ -188,23 +249,24 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             reply.send(ERROR_KIND, _serialize_exception(exc))
         return
     session: _ChatSession = state.session
-    try:
-        response = session.chat(
-            messages=payload.messages,
-            stream=payload.stream,
-            options=payload.options,
-            model=payload.model,
-        )
-    except Exception as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
-        return
-    try:
-        if payload.stream:
-            _handle_chat_streaming(reply, response, state)
-        else:
-            _handle_chat_non_streaming(reply, response)
-    except Exception as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+    with _AbortBridge(session._abort_flag):
+        try:
+            response = session.chat(
+                messages=payload.messages,
+                stream=payload.stream,
+                options=payload.options,
+                model=payload.model,
+            )
+        except Exception as exc:
+            reply.send(ERROR_KIND, _serialize_exception(exc))
+            return
+        try:
+            if payload.stream:
+                _handle_chat_streaming(reply, response, state)
+            else:
+                _handle_chat_non_streaming(reply, response)
+        except Exception as exc:
+            reply.send(ERROR_KIND, _serialize_exception(exc))
 
 
 def chat_worker_main(
