@@ -122,6 +122,144 @@ flowchart TD
 
 ---
 
+## Inference Worker Pool
+
+`LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.
+
+```mermaid
+flowchart LR
+    subgraph TUIProc["TUI process (asyncio + Textual)"]
+        UI[Chat / Search / Ingest screens]
+        Provider[LlamaCppProvider]
+        Pool[WorkerPool<br/>per-role accessors]
+        Health[health_ticker<br/>30 s ping + idle reap]
+        UI --> Provider --> Pool
+        Health --> Pool
+    end
+
+    subgraph EmbedProc["embed subprocess"]
+        EW[embed_worker]
+    end
+    subgraph RerankProc["rerank subprocess"]
+        RW[rerank_worker]
+    end
+    subgraph ChatProc["chat subprocess"]
+        CW[chat_worker]
+    end
+    subgraph VisionProc["vision subprocess"]
+        VW[vision_worker]
+    end
+
+    Pool <-- PipeChannel --> EW
+    Pool <-- PipeChannel --> RW
+    Pool <-- PipeChannel --> CW
+    Pool <-- PipeChannel --> VW
+
+    Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -->|flip shared abort flag| EW & RW & CW & VW
+```
+
+Every byte across a pipe is a `(call_id, kind, payload)` tuple. The parent assigns a monotonic `call_id` per request; the worker echoes it on every response frame. The parent's reader silently discards any frame whose `call_id` does not match the current expected id, so leftover stream_chunk / result frames from a cancelled prior call cannot poison the next request. Control frames (`shutdown`, `ack`, `ping`, `pong`) use `call_id = 0`.
+
+Three patterns cover all traffic:
+
+```mermaid
+sequenceDiagram
+    participant Parent as TUI (PipeChannel)
+    participant Worker as worker subprocess
+
+    Note over Parent,Worker: Call / response (embed, rerank, vision)
+    Parent->>Worker: (42, embed, texts)
+    Worker-->>Parent: (42, result, vectors)
+
+    Note over Parent,Worker: Streaming (chat) — token batching
+    Parent->>Worker: (43, chat, prompt)
+    Worker-->>Parent: (43, stream_chunk, "first token")
+    loop batched: 16 tokens or 50ms whichever comes first
+        Worker-->>Parent: (43, stream_chunk, "batched tokens")
+    end
+    Worker-->>Parent: (43, stream_end, None)
+
+    Note over Parent,Worker: Liveness (dedicated thread)
+    Parent->>Worker: (0, ping, None)
+    Worker-->>Parent: (0, pong, None)
+```
+
+`WorkerPool` (in `providers/worker/pool.py`) owns lifecycle. `Services` constructs it once at startup with a `default_spawner()` from `providers/worker/transport.py`. The pool talks to workers exclusively through the `WorkerChannel` and `WorkerSpawner` Protocols; the only concrete impl today is `transport_pipe.PipeChannel` / `PipeSpawner`, backed by `multiprocessing.Pipe`.
+
+### Lifecycle contract
+
+1. `WorkerPool(spawner=..., max_idle_s=...)` builds the pool object with no subprocesses spawned. Roles are registered with `pool.register(role, worker_main, config_factory)`.
+2. `await pool.start_eager()` spawns one process per registered role concurrently. Optional, gated on `cfg.worker_pool_eager_start`. Most callers rely on lazy spawn instead.
+3. `await pool.<role>.call(...)` lazy-spawns the role's worker on first call and reuses the live channel afterwards.
+4. `await pool.shutdown(timeout=5.0)` sends shutdown to every live worker, awaits graceful exit, terminates stragglers. Idempotent.
+5. Per-role accessors raise `PoolShutdownError` after `shutdown`.
+
+The pool is async-safe: per-role accessor lookups and lazy spawn serialize on a per-role `asyncio.Lock` so two concurrent first-callers do not race to spawn two workers.
+
+### Restart-on-crash policy
+
+A channel that raises `WorkerCrashError` (or reports `is_alive == False`) is dropped via `_on_crash`; the next call spawns a fresh worker. The pool tracks each role's crash timestamps in a deque and refuses to spawn past `_RESTART_BUDGET` (3) crashes within `_RESTART_WINDOW_S` (60s). Past that, consumers see `RoleDegradedError` until the user calls `reset_role_failures` (typically a TUI "retry" affordance) or restarts the process.
+
+### Idle reaping
+
+If `cfg.worker_pool_max_idle_s > 0`, every successful round-trip stamps the role's `last_used` timestamp. `reap_idle()` (driven by the `health_ticker` at 30s intervals) closes any role whose `last_used` is older than the budget and whose `in_flight` counter is zero. The next request respawns the role transparently.
+
+### Health pings
+
+`ping_role()` issues one ping/pong round-trip against a live channel and propagates timeout/crash as `WorkerCrashError`. The `health_ticker` invokes this on the same 30s cadence as `reap_idle`. Cap is `_HEALTH_TIMEOUT_S` (5s).
+
+### Health pipe isolation
+
+Health pings travel on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream/shutdown. Pings cannot interleave with stream chunks by-construction; the parent reader on each pipe never sees frames meant for the other.
+
+The worker dedicates a daemon thread to the health pipe. The thread blocks in `health_conn.recv()`, answers `ping` with `pong`, and exits on `EOFError` when the parent closes the pipe at shutdown. This means a long-running data-frame handler (a chat stream that spends seconds inside `_handle_chat_streaming`, an embed batch chewing through a multi-thousand-vector payload) cannot starve the heartbeat, so the supervisor never declares a busy worker dead and force-terminates it.
+
+### Cross-boundary cancel
+
+`Services.cancel_inference()` is the canonical entry point used by Ctrl+C and the chat-stream cancel action. It calls `accessor.cancel()` on every registered role, which sets the worker's shared `mp.Value` abort flag. The chat worker's llama-cpp `abort_callback` reads that flag at every token tick and unwinds inference.
+
+### Token batching
+
+Per-token `conn.send()` was the largest non-inference cost in the chat worker (9.14% of py-spy samples on a 10-minute streaming session, vs. ~1.5% spent in actual ggml decode + sample). `_handle_chat_streaming` now batches: the very first token flushes immediately so the user sees output without delay, and subsequent tokens accumulate in a buffer that flushes when it hits 16 chunks or 50 ms since the last flush, whichever comes first. The pipe sees roughly one syscall per batch instead of one per token. A `try/finally` flushes any buffered tail before the outer error handler emits an error frame, so the user still sees partial output before a mid-stream LLM exception.
+
+### IPC discipline rules (pipe transport)
+
+The pipe transport (`transport_pipe.py`) enforces eight rules that keep the parent and worker in lockstep:
+
+1. **Pull-based backpressure.** Pipe buffers are ~64 KiB on Linux; `conn.send()` blocks once full. The streaming consumer is the only awaiter on `recv` for that channel and yields chunks directly off the pipe. Slow consumers cannot starve the recv loop because the recv loop only fires when the consumer awaits the next chunk.
+2. **Pickle size cap.** `Connection.send()` raises `ValueError` past about 32 MiB on POSIX. `call` and `stream` enforce the cap (`_PICKLE_MAX_BYTES`) with a clear `PayloadTooLarge` error before the pickle round-trip.
+3. **Bounded poll.** Worker main loops use `conn.poll(timeout=...)` not bare `recv` so SIGTERM and shutdown timeouts fire (bare `recv` ignores signals). Lives in `worker_runtime.run_worker`.
+4. **Picklable error wire.** Exceptions are serialized through `_serialize_exception` to a `(type_name, message, traceback)` triple, which falls back gracefully when the live exception is not picklable (`_thread.RLock` references in tracebacks, several `OSError` subclasses, structlog wrappers).
+5. **In-flight counter for idle reaping.** Idle reaping checks `PipeChannel.in_flight` is zero, not "no recent message". A pending `recv` in the middle of a request stays in-flight until the terminator arrives.
+6. **xdist isolation.** `pytest-xdist` parallelism nests with our spawn; integration tests that exercise the pool annotate themselves with `pytest.mark.xdist_group(...)` so two pool tests do not race.
+7. **Daemon flag.** `daemon=True` workers cannot spawn children. `PipeSpawner` defaults to `daemon=True`; vision/mtmd workers that ever shell out to ffmpeg etc. must override via `PipeSpawner(daemon=False)` and rely on the pool's `atexit` shutdown.
+8. **Best-effort abort.** Once the parent flips the abort flag, in-flight `stream_chunk` messages already in the pipe still drain (a few extra tokens). The user-facing toast should say "Cancelling..." until the worker emits its terminator.
+
+### Spawn context must be spawn
+
+`PipeSpawner` always uses `multiprocessing.get_context("spawn")`. Two reasons:
+
+- **Native context isolation.** Metal/CUDA contexts that the worker initializes are isolated. Fork inheritance crashes them (see vllm#8893 for the reference report).
+- **Forward compatibility.** Python 3.14 deprecates fork as the POSIX default; relying on the per-OS default is forward-incompatible.
+
+The cost is that spawn re-imports Python in the child, adding ~1-3s cold start per worker. The pool's lazy spawn and idle reaping keep that cost rare.
+
+### Future zmq transport
+
+The `WorkerChannel` and `WorkerSpawner` Protocols make the IPC primitive swappable. A future `transport_zmq.py` (pyzmq) would only need to add a new factory call site; consumer code never imports `multiprocessing` directly.
+
+### Per-call model override
+
+Two of the four worker roles let the parent swap models without respawning the subprocess: `chat_worker` and `vision_worker` accept a `model` field on every request and check it against the currently-loaded path inside `_ensure_loaded`; if it differs they close the old `Llama` and load the new one in place. `LOAD_AFFECTING_KEYS` lists every config key that requires reloading; the subset `PER_CALL_RELOADABLE_KEYS = {"chat_model", "vision_model"}` is the slice that the parent skips when calling `invalidate_load_cache`, because the worker will pick up the change on the next request automatically. `embed_worker` and `rerank_worker` do not have per-call model overrides — those models change at config time, not per-call, so the simpler "release the role + lazy respawn" path is correct there.
+
+### Resource budget
+
+Each active role spawns a subprocess. Memory cost: ~50 MB Python overhead per worker plus the loaded model's resident size. Typical sizes are embed 100–500 MB, rerank 100–300 MB, chat 1–8 GB depending on quantization, vision 2–4 GB. With all four roles warm, total resident memory is usually 4–8 GB, dominated by chat and vision. Idle reaping (`cfg.worker_pool_max_idle_s > 0`) shrinks the working set when a role goes quiet.
+
+First-call latency per role is the spawn + model-load cost: 1–3 s on Apple Silicon, longer on cold disk. The TUI surfaces this via spawn notifications wired through `Services.add_pool_listener` (see `cli/tui/app.py`), and `cfg.worker_pool_eager_start` opts into amortizing the cost at TUI startup.
+
+---
+
 ## Search Pipeline
 
 This is the core of lilbee's retrieval quality. The pipeline applies techniques progressively: expensive operations are skipped when simpler ones produce confident results.

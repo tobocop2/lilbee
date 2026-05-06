@@ -33,7 +33,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
-    cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -161,8 +160,14 @@ async def test_bracket_keys_typed_literally_when_catalog_search_focused():
         await pilot.pause()
 
         search = app.screen.query_one("#catalog-search", Input)
-        search.focus()
-        await pilot.pause()
+        # Catalog kicks off async HF fetches on mount that can steal focus
+        # on slow Windows runners; pump frames until the search input
+        # actually retains focus before exercising the bracket keys.
+        for _ in range(50):
+            search.focus()
+            await pilot.pause()
+            if search.has_focus:
+                break
         assert search.has_focus
 
         await pilot.press("left_square_bracket")
@@ -250,8 +255,15 @@ async def test_footer_present_on_screens():
         views = ["Chat", "Catalog", "Status", "Settings", "Tasks"]
         for view in views:
             app.switch_view(view)
-            await pilot.pause()
-            footers = app.screen.query(Footer)
+            # Some screens defer mounting via call_after_refresh, so a
+            # single pilot.pause() can race the compose tick on slower
+            # Windows runners. Poll until the Footer lands.
+            footers = ()
+            for _ in range(20):
+                await pilot.pause()
+                footers = app.screen.query(Footer)
+                if len(footers) > 0:
+                    break
             assert len(footers) > 0, f"{view} screen has no Footer"
 
 
@@ -419,3 +431,42 @@ async def test_switching_guard_blocks_concurrent_switch():
 
         # Clean up guard so teardown works
         app._switching = False
+
+
+async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
+    """``on_mount`` calls ``Services.add_pool_listener`` so spawn lifecycle
+    surfaces as Textual notifications. Verified by replacing the Services
+    singleton with a recording pool, then firing the captured callbacks
+    from a worker thread (call_from_thread requires a different thread)
+    so their notify() bodies execute against the live app."""
+    import threading
+
+    from lilbee.core import services as services_mod
+    from tests.conftest import make_mock_services
+
+    captured: dict[str, object] = {}
+
+    class _RecordingPool:
+        registered_roles: tuple[str, ...] = ()
+
+        def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
+            captured["on_spawning"] = on_spawning
+            captured["on_spawned"] = on_spawned
+
+    services_mod.set_services(make_mock_services(worker_pool=_RecordingPool()))
+    try:
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            on_spawning = captured.get("on_spawning")
+            on_spawned = captured.get("on_spawned")
+            assert callable(on_spawning)
+            assert callable(on_spawned)
+            # call_from_thread refuses to run on the app's own thread; fire
+            # the listeners from a worker thread to mimic the real pool's
+            # spawn callback site (the pool runtime thread).
+            threading.Thread(target=on_spawning, args=("chat",)).start()
+            threading.Thread(target=on_spawned, args=("chat",)).start()
+            await pilot.pause()
+    finally:
+        services_mod.set_services(None)

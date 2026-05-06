@@ -11,22 +11,9 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 
-# macOS CI runners use CPU-only inference (no Metal GPU passthrough).
-# SmolLM2-135M is fast enough; Qwen3-0.6B is too slow.
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
-# Back-compat alias: existing integration test modules import this name.
 _CI_CHAT_MODEL = _CI_CHAT_REPO
-
-# Assertions that depend on the LLM producing specific factual content are
-# unreliable on 135M-param models, which collapse into repetition even with
-# correct retrieval context. Used to skip those content-assertions on macOS
-# CI while still exercising the full pipeline on Ubuntu + Windows.
-_SMALL_CHAT_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
-skip_if_small_chat_model = pytest.mark.skipif(
-    _CI_CHAT_REPO == _SMALL_CHAT_REPO,
-    reason=f"{_SMALL_CHAT_REPO} too small for reliable factual RAG answers",
-)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"

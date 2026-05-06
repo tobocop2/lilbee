@@ -1,6 +1,7 @@
 ModelBar {
     height: auto;
     padding: 0;
+    margin: 1 0 0 0;
     background: transparent;
 }
 
@@ -80,15 +81,36 @@ ModelBar #chat-mode-toggle {
     width: auto;
     height: 1;
     margin: 0 1 0 0;
-    padding: 0 1;
+    padding: 0;
+    background: transparent;
+}
+
+ModelBar .chat-mode-pill:focus {
     text-style: bold;
+    background: $accent;
+    color: $text;
 }
 
-ModelBar #chat-mode-toggle:focus {
-    text-style: bold reverse;
+ModelBar #chat-mode-toggle Horizontal {
+    height: 1;
+    width: auto;
 }
 
-ModelBar #chat-mode-toggle.-disabled {
+ModelBar .chat-mode-pill {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    margin: 0 1 0 0;
+    background: $boost;
+    color: $text-muted;
+}
+
+ModelBar .chat-mode-pill.-active {
+    background: $success;
+    color: $text;
+}
+
+ModelBar .chat-mode-pill.-disabled {
     color: $text 40%;
     text-style: dim;
 }

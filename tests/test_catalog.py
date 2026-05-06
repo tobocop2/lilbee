@@ -707,9 +707,11 @@ class TestFindCatalogEntry:
         """A featured entry with a concrete (non-glob) filename is reachable
         via the full ``hf_repo/filename`` ref.
         """
+        from lilbee.modelhub.registry import format_native_gguf_ref
+
         # Pick a featured entry whose gguf_filename is NOT a glob.
         concrete = next(m for m in FEATURED_ALL if "*" not in m.gguf_filename)
-        full_ref = f"{concrete.hf_repo}/{concrete.gguf_filename}"
+        full_ref = format_native_gguf_ref(concrete.hf_repo, concrete.gguf_filename)
         result = find_catalog_entry(full_ref)
         assert result is not None
         assert result.hf_repo == concrete.hf_repo
@@ -1764,13 +1766,27 @@ class TestCleanDisplayName:
         result = clean_display_name("mistralai/Mistral-7B-Instruct-v0.3-GGUF")
         assert result == "Mistral 7B v0.3"
 
+    def test_strips_qat_marker(self) -> None:
+        assert clean_display_name("unsloth/embeddinggemma-300M-qat-GGUF") == "embeddinggemma 300M"
+
+    def test_strips_embedding_suffix(self) -> None:
+        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Embedding-GGUF") == "all MiniLM L6 v2"
+
+    def test_strips_trailing_quant(self) -> None:
+        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Q8_0") == "all MiniLM L6 v2"
+
+    def test_strips_combined_quant_and_qat(self) -> None:
+        assert (
+            clean_display_name("unsloth/embeddinggemma-300M-qat-Q8_0-GGUF") == "embeddinggemma 300M"
+        )
+
 
 class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
         from lilbee.catalog import display_label_for_ref
 
-        ref = "bartowski/SmolLM2-135M-Instruct-GGUF/SmolLM2-135M-Instruct-Q3_K_S.gguf"
-        assert display_label_for_ref(ref) == "SmolLM2 135M"
+        ref = "Qwen/Qwen2.5-7B-Instruct-GGUF/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+        assert display_label_for_ref(ref) == "Qwen2.5 7B"
 
     def test_ollama_prefix_drops_only_the_prefix(self) -> None:
         from lilbee.catalog import display_label_for_ref

@@ -1,53 +1,27 @@
 ModelCard {
     height: auto;
-    border: tall $surface-lighten-2;
+    border: tall $secondary 50%;
     padding: 0 1;
     pointer: pointer;
 
     &:hover {
         background: $surface;
+        border: tall $accent;
     }
 
+    /* Mirror the list-view highlight: background fill plus accent border
+     * so the focused card reads as a clearly separated, selected tile. */
     &.-highlight {
-        border: tall $primary;
+        background: $primary 30%;
+        border: tall $accent;
     }
 
-    #card-name {
+    &:focus, &:focus-within {
+        background: $primary 30%;
+        border: tall $accent;
+    }
+
+    .card-body {
         width: 1fr;
-        text-style: bold;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-        overflow: hidden;
-    }
-
-    #card-pills {
-        height: auto;
-        width: 1fr;
-    }
-
-    #card-pills > Label {
-        width: auto;
-        margin: 0 1 0 0;
-    }
-
-    #card-info {
-        color: $text-muted;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-        overflow: hidden;
-    }
-
-    #card-status {
-        color: $text-muted;
-    }
-
-    #card-hint {
-        color: $text-muted 40%;
-        text-style: italic;
-        display: none;
-    }
-
-    &.-highlight #card-hint {
-        display: block;
     }
 }

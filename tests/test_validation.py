@@ -153,10 +153,16 @@ def test_validate_known_provider_no_key_returns_no_key():
 
 def test_canonicalize_chat_falls_back_to_api_when_keyed():
     """When discover_api_models returns a model and no local is installed,
-    canonicalize uses the first API entry as the effective ref."""
+    canonicalize uses the first API entry as the effective ref.
+
+    The SDK backend exposes bare model names (``gpt-4-test``); the helper
+    must prefix them with the provider so the result round-trips through
+    Config's model-ref validator (which rejects bare names).
+    """
     cfg.chat_model = "missing/model"
     fake_remote = mock.MagicMock()
-    fake_remote.name = "openai/gpt-4-test"
+    fake_remote.name = "gpt-4-test"
+    fake_remote.provider = "OpenAI"
     with (
         mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
         mock.patch(
@@ -167,6 +173,32 @@ def test_canonicalize_chat_falls_back_to_api_when_keyed():
         registry_cls.return_value.list_installed.return_value = []
         canon = canonicalize_chat_model()
     assert canon.effective == "openai/gpt-4-test"
+
+
+def test_canonicalize_chat_prefixes_bare_provider_name():
+    """The SDK backend reports models as bare names (``chatgpt-4o-latest``).
+
+    Without prefixing, ``setattr(cfg, 'chat_model', name)`` would crash on
+    Config's model-ref validator at app startup, taking down the TUI.
+    """
+    cfg.chat_model = "missing/model"
+    bare = mock.MagicMock()
+    bare.name = "chatgpt-4o-latest"
+    bare.provider = "OpenAI"
+    with (
+        mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
+        mock.patch(
+            "lilbee.modelhub.model_manager.validation.discover_api_models",
+            return_value={"OpenAI": [bare]},
+        ),
+    ):
+        registry_cls.return_value.list_installed.return_value = []
+        canon = canonicalize_chat_model()
+    # The canonicalized ref must round-trip through Config's validator.
+    from lilbee.providers.model_ref import parse_model_ref
+
+    parse_model_ref(canon.effective)  # would raise on a bare name
+    assert canon.effective == "openai/chatgpt-4o-latest"
 
 
 def test_canonicalize_chat_handles_discover_failure():

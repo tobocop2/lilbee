@@ -12,13 +12,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from textual import getters, on, work
+from textual import events, getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.dom import DOMNode
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Select, Static
@@ -35,7 +36,6 @@ from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
-from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -43,7 +43,7 @@ from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
-from lilbee.core.services import get_services, reset_services
+from lilbee.core.services import get_services, reset_services, reset_store
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
 from lilbee.providers.base import ClosableIterator
@@ -160,9 +160,27 @@ class ChatScreen(Screen[None]):
         # inside the prompt still works via PgUp/PgDn/Home/End.
         Binding("up", "history_prev", "Up", show=False, priority=True),
         Binding("down", "history_next", "Down", show=False, priority=True),
-        Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
+        # Esc dispatches to ``action_enter_normal_mode``, which cancels
+        # an active stream first and otherwise drops the screen back
+        # into normal mode. The footer label flips to "Cancel stream"
+        # while streaming via ``check_action`` parameter dispatch.
+        Binding(
+            "escape",
+            "esc_dispatch('cancel')",
+            "Cancel stream",
+            show=True,
+            priority=True,
+        ),
+        Binding(
+            "escape",
+            "esc_dispatch('normal')",
+            "Normal mode",
+            show=True,
+            priority=True,
+        ),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
+        Binding("s", "cycle_scope", "Scope", show=False),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -177,6 +195,9 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
+        # Mid-stream submissions are parked here; _exit_streaming_state
+        # fires the queued prompt once the current stream finishes.
+        self._queued_prompt: str | None = None
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -185,11 +206,11 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.cli.tui.widgets.top_bars import TopBars
 
         with TopBars():
             yield ViewTabs()
-            yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(
             ChatWelcome(id="chat-welcome"),
             id="chat-log",
@@ -197,6 +218,7 @@ class ChatScreen(Screen[None]):
         yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
+                yield ScopeChip(id="scope-chip")
                 yield ChatInput(
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
@@ -207,7 +229,6 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_input_style()
-        self._refresh_mode_banner()
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -223,10 +244,16 @@ class ChatScreen(Screen[None]):
 
         dismiss()
         self.refresh_model_bar()
-        # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
-        # via [/] navigation needs an explicit focus restore.
+        # AUTO_FOCUS only fires once on initial mount. Re-entering the
+        # screen via view-nav needs an explicit focus restore. In INSERT
+        # mode we send focus to the chat input; in NORMAL mode we send
+        # focus to the chat log (the input is intentionally unfocusable
+        # so global bindings keep firing).
         with contextlib.suppress(Exception):
-            self.set_focus(self._chat_input)
+            if self._insert_mode:
+                self._enter_insert_mode()
+            else:
+                self._chat_log.focus()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
@@ -258,28 +285,12 @@ class ChatScreen(Screen[None]):
         """Called when wizard completes or is skipped."""
         if self._embedding_ready() and self._auto_sync:
             self._run_sync()
-        self._refresh_mode_banner()
         self.refresh_model_bar()
-
-    def _refresh_mode_banner(self) -> None:
-        """Show the right banner for the current embedding+mode state."""
-        try:
-            banner = self.query_one("#chat-only-banner", Static)
-        except NoMatches:
-            return
-        if not self._embedding_ready():
-            banner.update(msg.CHAT_ONLY_BANNER)
-            banner.display = True
-        elif cfg.chat_mode == ChatMode.CHAT.value:
-            banner.update(msg.CHAT_MODE_BANNER_CHAT)
-            banner.display = True
-        else:
-            banner.display = False
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _value = payload
         if key in {"chat_mode", "embedding_model"}:
-            self._refresh_mode_banner()
+            self.refresh_model_bar()
 
     def action_open_setup(self) -> None:
         """Open the setup wizard."""
@@ -288,6 +299,7 @@ class ChatScreen(Screen[None]):
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
+        self._chat_input.can_focus = True
         self._chat_input.focus()
         self._update_input_style()
 
@@ -329,6 +341,50 @@ class ChatScreen(Screen[None]):
             event.stop()
             return
 
+    @on(events.DescendantFocus, "#chat-input")
+    def _on_chat_input_focused(self, event: events.DescendantFocus) -> None:
+        """Mark INSERT mode whenever the chat input takes focus.
+
+        With ``can_focus = False`` while in NORMAL mode, the only way the
+        input gains focus is via an explicit user action (click, or the
+        :meth:`_enter_insert_mode` helper that sets ``can_focus = True``
+        and focuses the input). Either path implies INSERT, so we sync
+        the screen mode here.
+        """
+        if not self._insert_mode:
+            self._enter_insert_mode()
+
+    @on(events.Click, "#chat-input")
+    def _on_chat_input_clicked(self, event: events.Click) -> None:
+        """Click on the chat input bar promotes to INSERT.
+
+        ``can_focus = False`` while in NORMAL mode swallows focus from the
+        click, so DescendantFocus never fires. Hook the Click directly so
+        a mouse user lands in INSERT just like a keystroke (i / a / o).
+        """
+        if not self._insert_mode:
+            self._enter_insert_mode()
+            event.stop()
+
+    def on_click(self, event: events.Click) -> None:
+        """Click outside the chat input bar drops back to NORMAL.
+
+        The chat-input click handler above promotes to INSERT; the
+        symmetric exit happens here so a mouse user gets the same
+        click-to-blur behavior they expect from any other text editor.
+        """
+        if not self._insert_mode:
+            return
+        if event.widget is None:
+            return
+        chat_input = self._chat_input
+        node: DOMNode | None = event.widget
+        while node is not None:
+            if node is chat_input:
+                return
+            node = node.parent
+        self.action_enter_normal_mode()
+
     @on(ChatInput.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
         if not self._insert_mode:
@@ -347,6 +403,12 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         if self.streaming:
+            # Park the prompt instead of silently dropping it; it fires
+            # automatically once the active stream finishes or is
+            # cancelled. A second submission overwrites the first --
+            # the most recent prompt wins.
+            self._queued_prompt = text
+            self.notify(msg.CHAT_PROMPT_QUEUED, timeout=2)
             return
         self._send_message(text)
 
@@ -372,25 +434,18 @@ class ChatScreen(Screen[None]):
 
     def _enter_streaming_state(self) -> None:
         self.add_class("streaming")
-        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_STREAMING
-        # Both cancel paths and the natural finalize write streaming=False;
-        # reactive dedupe makes the watcher a no-op on equal values, so the
-        # button mount happens exactly once per streaming session.
-        with contextlib.suppress(Exception):
-            self.query_one("#chat-prompt-area", PromptArea).mount(
-                ChatStopButton(button_id="chat-stop")
-            )
+        # Cancel + finalize both write streaming=False; reactive dedupe
+        # keeps the watcher a no-op on equal values.
+        self.refresh_bindings()
 
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
-        self._chat_input.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
-        for w in self.query("#chat-stop"):
-            w.remove()
-
-    @on(ChatStopButton.Pressed)
-    def _on_chat_stop_pressed(self, event: ChatStopButton.Pressed) -> None:
-        event.stop()
-        self.action_cancel_stream()
+        self.refresh_bindings()
+        # Drain any prompt the user submitted mid-stream so it doesn't
+        # get silently dropped on the floor.
+        if self._queued_prompt is not None:
+            text, self._queued_prompt = self._queued_prompt, None
+            self.call_later(self._send_message, text)
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -451,7 +506,7 @@ class ChatScreen(Screen[None]):
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import FileStartEvent
+        from lilbee.runtime.progress import BatchProgressEvent, FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
         copy_result = copy_files([path], force=force)
@@ -466,6 +521,13 @@ class ChatScreen(Screen[None]):
             reporter.check_cancelled()
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
+            elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
+                pct = (data.current / data.total * 100.0) if data.total else 0.0
+                reporter.update(
+                    pct,
+                    f"{data.status.capitalize()} page {data.current} of {data.total}",
+                    indeterminate=False,
+                )
 
         try:
             sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
@@ -480,6 +542,9 @@ class ChatScreen(Screen[None]):
         if sync_result.failed:
             _remove_copied_files(copied)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
+        if sync_result.skipped:
+            _remove_copied_files(copied)
+            raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -762,16 +827,21 @@ class ChatScreen(Screen[None]):
 
             try:
                 result = perform_reset()
-                if result.skipped:
-                    self.notify(
-                        msg.CMD_RESET_PARTIAL.format(skipped=len(result.skipped)),
-                        severity="warning",
-                    )
-                else:
-                    self.notify(msg.CMD_RESET_SUCCESS)
             except Exception as exc:
                 log.warning("Reset failed", exc_info=True)
                 self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")
+                return
+
+            # Reopen LanceDB against the now-empty data dir; keep providers loaded.
+            reset_store()
+
+            if result.skipped:
+                self.notify(
+                    msg.CMD_RESET_PARTIAL.format(skipped=len(result.skipped)),
+                    severity="warning",
+                )
+            else:
+                self.notify(msg.CMD_RESET_SUCCESS)
 
         self.app.push_screen(
             ConfirmDialog("Reset Knowledge Base", "This will permanently delete all data."),
@@ -857,6 +927,8 @@ class ChatScreen(Screen[None]):
             log.query_one("#chat-welcome", ChatWelcome).remove()
         log.mount(UserMessage(text))
 
+        # The assistant bubble owns its own ThinkingHeader animator until
+        # the first reasoning or content token swaps it out.
         assistant_msg = AssistantMessage()
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
@@ -867,19 +939,21 @@ class ChatScreen(Screen[None]):
         self._stream_response(text, assistant_msg, self._current_chunk_type())
 
     def _current_chunk_type(self) -> str | None:
-        """Translate the ModelBar scope selection into a ``chunk_type`` arg.
+        """Translate the ScopeChip selection into a ``chunk_type`` arg.
 
         Returns ``None`` for "both" (no filter) and the raw/wiki string
-        otherwise. Defaults to ``None`` when the ModelBar isn't mounted
-        (e.g. test apps).
+        otherwise. Defaults to ``None`` when the ScopeChip isn't mounted
+        (e.g. test apps that compose the screen without it).
         """
         from textual.css.query import NoMatches
 
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
         try:
-            bar = self.query_one("#model-bar", ModelBar)
+            chip = self.query_one("#scope-chip", ScopeChip)
         except NoMatches:
             return None
-        return scope_to_chunk_type(bar.scope)
+        return scope_to_chunk_type(chip.scope)
 
     @work(thread=True)
     def _stream_response(
@@ -979,7 +1053,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self._notify_no_results)
 
     def _notify_no_results(self) -> None:
-        self.notify(msg.CHAT_MODE_BANNER_SEARCH_NO_RESULTS, severity="warning")
+        self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
 
     def _trim_history(self) -> None:
         """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
@@ -999,30 +1073,58 @@ class ChatScreen(Screen[None]):
     def action_scroll_down(self) -> None:
         self._chat_log.scroll_page_down()
 
+    def action_esc_dispatch(self, _variant: str = "normal") -> None:
+        """Esc dispatch -- both the 'cancel' and 'normal' variants share logic."""
+        self.action_enter_normal_mode()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Footer-binding gating: show 'Cancel stream' only while streaming."""
+        if action == "esc_dispatch":
+            wants_cancel = parameters == ("cancel",)
+            return self.streaming if wants_cancel else not self.streaming
+        return super().check_action(action, parameters)
+
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
         if self.streaming:
-            for worker in self.workers:
-                worker.cancel()
-            self.streaming = False
+            self._cancel_inflight_stream()
             return
         if isinstance(self.focused, (Select, ModelPickerButton)):
-            self._chat_input.focus()
+            # Returning from a model picker should put us back in INSERT
+            # so the user can type their next prompt; routing through the
+            # helper makes sure can_focus is re-enabled.
+            self._enter_insert_mode()
             return
         self._insert_mode = False
+        # Make the chat input unfocusable in NORMAL mode so Tab traversal
+        # skips past it AND a programmatic focus restore (modal close,
+        # screen pop) cannot land on it. The user re-enters INSERT
+        # explicitly via i/a/o/Enter or by clicking the input.
+        self._chat_input.can_focus = False
         self._chat_log.focus()
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
         """Context-aware Escape: cancel stream -> blur input -> no-op."""
         if self.streaming:
-            for worker in self.workers:
-                worker.cancel()
-            self.streaming = False
+            self._cancel_inflight_stream()
             return
         inp = self._chat_input
         if inp.has_focus:
             self._chat_log.focus()
+
+    def _cancel_inflight_stream(self) -> None:
+        """Stop the streaming Textual worker AND interrupt its inference call.
+
+        Cancelling the Textual worker alone unwinds the producer task but
+        does not reach into the chat subprocess; the worker subprocess
+        keeps generating until ``Services.cancel_inference()`` flips its
+        abort flag (or sets the in-process Event in fallback mode).
+        """
+        get_services().cancel_inference()
+        for worker in self.workers:
+            worker.cancel()
+        self.streaming = False
 
     def apply_model_change(self) -> None:
         """Cancel active stream (if any) and reset services for the new model."""
@@ -1107,11 +1209,21 @@ class ChatScreen(Screen[None]):
             raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
         if result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
+        if result.skipped:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.sync_skipped_message(", ".join(result.skipped)),
+                severity="warning",
+            )
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
+        # Route through the helper so can_focus is re-enabled when this
+        # action fires from NORMAL mode; bare ``inp.focus()`` would
+        # silently no-op while the input is intentionally unfocusable.
+        self._enter_insert_mode()
         inp = self._chat_input
-        inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/"
             inp.action_end()
@@ -1137,6 +1249,18 @@ class ChatScreen(Screen[None]):
             else msg.CHAT_MODE_CHAT_LABEL
         )
         self.notify(msg.CHAT_MODE_SET.format(label=label))
+
+    def action_cycle_scope(self) -> None:
+        """``s``: cycle the scope chip when it is currently visible."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        try:
+            chip = self.query_one("#scope-chip", ScopeChip)
+        except NoMatches:
+            return
+        if chip.has_class("-hidden"):
+            return
+        chip.cycle_scope()
 
     def action_complete(self) -> None:
         """Tab: cycle autocomplete, insert a literal tab, or advance focus.

@@ -99,7 +99,9 @@ class TestAssistantMessage:
     def test_compose_yields_widgets(self) -> None:
         msg = AssistantMessage()
         children = list(msg.compose())
-        assert len(children) == 4  # speaker label, reasoning, markdown, citation
+        # Compose-time children are speaker label, content, citation. The
+        # ThinkingHeader and reasoning Collapsible are mounted lazily.
+        assert len(children) == 3
 
     def test_append_content(self) -> None:
         msg = AssistantMessage()
@@ -577,6 +579,91 @@ class TestThemes:
             assert app.theme == "dracula"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_dismiss_help_if_open_skips_when_no_panel(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Esc raises SkipAction when the HelpPanel is not mounted, so screens
+        keep receiving Esc as before."""
+        from textual.actions import SkipAction
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        mock_catalog.return_value = _EMPTY_CATALOG
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with pytest.raises(SkipAction):
+                app.action_dismiss_help_if_open()
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_dismiss_help_if_open_hides_when_panel_mounted(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Esc dismisses the panel and does NOT raise when the panel is open."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        mock_catalog.return_value = _EMPTY_CATALOG
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_help_panel()
+            await pilot.pause()
+            assert len(app.screen.query("HelpPanel")) == 1
+            app.action_dismiss_help_if_open()
+            await pilot.pause()
+            assert len(app.screen.query("HelpPanel")) == 0
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_theme_applies_live(self, mock_catalog: mock.MagicMock) -> None:
+        """Settings → theme dropdown must update app.theme, not just cfg.theme.
+
+        Regression: bb-akqw. Without this, picking a theme in Settings
+        only persisted to disk; the visual theme stayed the same until
+        next launch.
+        """
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            target = "dracula" if app.theme != "dracula" else "gruvbox"
+            app.set_setting("theme", target)
+            assert app.theme == target
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_stringifies_none_for_toml(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Nullable settings must serialize as empty string, not None, for TOML."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set:
+                app.set_setting("seed", None)
+            mock_set.assert_called_once()
+            assert mock_set.call_args.args[2] == ""
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_stringifies_list_for_toml(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """List settings must serialize as newline-joined for TOML."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set:
+                app.set_setting("crawl_exclude_patterns", ["foo", "bar"])
+            mock_set.assert_called_once()
+            assert mock_set.call_args.args[2] == "foo\nbar"
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_invalid_theme_noop(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
@@ -815,8 +902,10 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
-        # Tab is shown so keyboard users can discover model dropdown navigation.
-        assert len(visible) <= 4
+        # Footer shows the small discoverable set: slash commands, Tab
+        # completion, the dual-purpose Esc dispatch, and Models. Hidden
+        # helpers (history, scope cycle, F-keys) stay show=False.
+        assert len(visible) <= 5
 
     def test_catalog_tab_bindings_removed(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -832,7 +921,8 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         assert any("Search" in d for d in visible)
         assert any("Delete" in d for d in visible)
-        assert len(visible) <= 5
+        assert any("Info" in d for d in visible)
+        assert len(visible) <= 6
 
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen

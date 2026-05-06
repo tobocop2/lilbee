@@ -1,0 +1,40 @@
+ModelInfoModal {
+    align: center middle;
+    background: black 50%;
+}
+
+#info-root {
+    width: 80%;
+    height: 80%;
+    max-width: 90;
+    max-height: 28;
+    background: $surface;
+    border: thick $primary;
+    padding: 1 2;
+}
+
+#info-title {
+    text-style: bold;
+    color: $primary;
+}
+
+#info-ref {
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
+
+#info-body {
+    height: 1fr;
+    min-height: 0;
+    padding: 0 0 1 0;
+}
+
+#info-md {
+    background: $surface;
+    padding: 0;
+}
+
+#info-hint {
+    color: $text-muted;
+    text-align: center;
+}

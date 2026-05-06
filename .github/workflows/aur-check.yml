@@ -1,0 +1,39 @@
+name: AUR Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packaging/aur/**
+      - packaging/tools/render_pkgbuild.sh
+      - .github/workflows/aur-check.yml
+  pull_request:
+    paths:
+      - packaging/aur/**
+      - packaging/tools/render_pkgbuild.sh
+      - .github/workflows/aur-check.yml
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: shellcheck + namcap + .SRCINFO sync
+        run: |
+          docker run --rm --security-opt seccomp=unconfined \
+            -v "$PWD/packaging:/pkg" -w /pkg archlinux:latest bash -euc '
+              echo DisableSandbox >> /etc/pacman.conf
+              pacman -Syu --noconfirm namcap shellcheck pacman-contrib diffutils >/dev/null
+              useradd -m b
+              chown -R b /pkg
+              shellcheck -s bash -e SC2034,SC2154 aur/lilbee/PKGBUILD
+              shellcheck tools/render_pkgbuild.sh
+              out=$(namcap aur/lilbee/PKGBUILD)
+              if [ -n "$out" ]; then
+                echo "$out"
+                exit 1
+              fi
+              cd aur/lilbee
+              su b -c "makepkg --printsrcinfo" > /tmp/new.SRCINFO
+              diff -u .SRCINFO /tmp/new.SRCINFO
+            '

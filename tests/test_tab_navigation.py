@@ -36,7 +36,6 @@ def _isolated_cfg(tmp_path) -> Any:
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
-    cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -140,31 +139,55 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
         assert app.focused is inp, "Focus moved away from chat input on Tab"
 
 
-async def test_settings_tab_chain_visits_tabs_widget_and_reset_button() -> None:
-    """Tab from SettingsScreen visits the reset-all button and the group Tabs."""
+async def test_settings_tab_chain_visits_group_tabs_widget() -> None:
+    """Tab from SettingsScreen visits the group Tabs strip."""
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause(0.2)
         chain = await _walk_tab_chain(app, pilot, max_presses=80)
-        # Reset-all button is reachable from the Settings screen.
-        assert "reset-all-defaults" in chain, f"reset-all-defaults missing from {chain}"
-        # ContentTabs (TabbedContent's tab strip) is reachable. Textual
-        # gives it a stable id like 'tabs' inside ContentTabs; checking
-        # by class name keeps the test resilient to internal renames.
         assert any(name in chain for name in ("ContentTabs", "Tabs")), (
             f"Tabs widget missing from {chain}"
         )
 
 
-async def test_catalog_tab_chain_visits_search() -> None:
-    """Tab walk on CatalogScreen visits the search input.
+async def test_settings_tab_rolls_over_to_next_pane() -> None:
+    """Tab past the last editor in a pane activates the next group tab."""
+    from textual.widgets import TabbedContent
 
-    The catalog auto-focus is the first GridSelect, but data fetches
-    are async so on the first frame nothing may be focused yet. The
-    test pins the start to a known-stable view tab so the chain has
-    a deterministic origin.
+    from lilbee.cli.tui.screens.settings import SettingsScreen, _LazyGroupBody
+
+    app = LilbeeApp()
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause()
+        app.switch_view("Settings")
+        await pilot.pause(0.2)
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        screen.populate_all_panes()
+        await pilot.pause()
+        tabs = screen.query_one(TabbedContent)
+        starting_pane = tabs.active
+        body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
+        focusables = [w for w in body.query("*") if w.focusable]
+        assert focusables, "active pane should expose at least one focusable"
+        focusables[-1].focus()
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause(0.3)
+        assert tabs.active != starting_pane, (
+            f"Tab from last field should activate the next pane (still {tabs.active})"
+        )
+
+
+async def test_catalog_tab_chain_visits_search() -> None:
+    """Pressing / on CatalogScreen reveals + focuses the search input.
+
+    The search input is hidden by default; the catalog footer surfaces
+    the / binding so the user can opt in. Once revealed, the Tab walk
+    must visit it so screen-reader and keyboard-only users can route
+    out of the search box without touching the mouse.
     """
     from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
@@ -176,5 +199,11 @@ async def test_catalog_tab_chain_visits_search() -> None:
         view_tabs = app.screen.query_one(ViewTabs)
         view_tabs.query_one("#view-tab-catalog").focus()
         await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        focused_id = app.focused.id if app.focused else None
+        assert focused_id == "catalog-search", (
+            f"slash should focus catalog-search, focused={focused_id!r}"
+        )
         chain = await _walk_tab_chain(app, pilot, max_presses=40)
         assert "catalog-search" in chain, f"catalog-search missing from {chain}"

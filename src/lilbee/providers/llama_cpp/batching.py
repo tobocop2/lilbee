@@ -1,46 +1,18 @@
-"""Embedding and rerank batching primitives for the llama.cpp provider.
-
-Holds the request dataclasses, batching/timeout constants, and the
-single-text inference helpers that the worker threads in
-:mod:`lilbee.providers.llama_cpp.provider` drain queues into.
-"""
+"""Single-text llama-cpp embed and rerank helpers used inside worker subprocesses."""
 
 from __future__ import annotations
 
-from concurrent.futures import Future
-from dataclasses import dataclass
 from typing import Any
 
 from lilbee.providers.base import ProviderError
-from lilbee.providers.llama_cpp.log_dispatch import suppress_native_stderr
-
-BATCH_WINDOW_S = 0.01  # 10ms: collect concurrent requests before dispatching
-EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
-RERANK_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for rerank result
 
 _RERANK_PAIR_SEPARATOR = "</s></s>"
 
 
-@dataclass
-class EmbedRequest:
-    """A single embedding request submitted to the batch queue."""
-
-    texts: list[str]
-    future: Future[list[list[float]]]
-
-
-@dataclass
-class RerankRequest:
-    """A single rerank request submitted to the batch queue."""
-
-    query: str
-    candidates: list[str]
-    future: Future[list[float]]
-
-
 def embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text with llama.cpp stderr noise suppressed."""
-    response = suppress_native_stderr(llm.create_embedding, input=[text])
+    """Embed a single text. Caller must run inside a worker subprocess where
+    ``redirect_stdio_to_devnull()`` ran at startup so fd 2 is already redirected."""
+    response = llm.create_embedding(input=[text])
     result: list[float] = response["data"][0]["embedding"]
     return result
 
@@ -51,22 +23,20 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
     ``pooling_type=LLAMA_POOLING_TYPE_RANK`` requires the pair pre-joined
     as ``query</s></s>candidate``; passing them as two inputs makes
     ``llama_decode`` fail with ``-1``.
+
+    Caller must run with fd 2 already redirected (see :func:`embed_one`).
     """
     scores: list[float] = []
     for candidate in candidates:
         pair = f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}"
-        response = suppress_native_stderr(llm.create_embedding, input=pair)
+        response = llm.create_embedding(input=pair)
         score = _extract_rerank_score(response)
         scores.append(score)
     return scores
 
 
 def _extract_rerank_score(response: dict[str, Any]) -> float:
-    """Extract a single relevance score from a pooling_type=RANK response.
-
-    Raises ``ProviderError`` with the observed shape for anything other
-    than a non-empty ``list[float]`` so upstream format changes surface.
-    """
+    """Extract a single relevance score from a pooling_type=RANK response."""
     data = response.get("data") or []
     if not data:
         raise ProviderError("Reranker returned no data", provider="llama-cpp")

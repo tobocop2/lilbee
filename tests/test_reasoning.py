@@ -251,7 +251,7 @@ class TestReasoningTruncation:
         assert closed["value"], "filter_reasoning must close upstream iterator"
 
     def test_close_called_on_stream_wrapper_early_exit(self):
-        """A stream-wrapper iterator (e.g. _LockedStreamIterator) gets close()."""
+        """A stream-wrapper iterator with a ``close()`` method has it called."""
         from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS, filter_reasoning
 
         class FakeStream:

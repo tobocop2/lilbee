@@ -26,7 +26,7 @@ from lilbee.data.ingest.types import (
 )
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.data.store import CHUNK_TYPE_RAW
-from lilbee.vision import extract_pdf_vision
+from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +136,137 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
+async def _cleanup_pdf_subprocess(
+    proc: asyncio.subprocess.Process, progress_task: asyncio.Task[None]
+) -> None:
+    """Kill a PDF-extract subprocess and cancel its stderr-progress task."""
+    progress_task.cancel()
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    await proc.wait()
+    with contextlib.suppress(asyncio.CancelledError):
+        await progress_task
+
+
+async def _extract_pdf_vision_in_subprocess(
+    path: Path,
+    vision_model: str,
+    *,
+    timeout: float | None,
+    quiet: bool,
+    on_progress: DetailedProgressCallback,
+) -> list[PageText]:
+    """Run ``extract_pdf_vision`` in a child process via ``-m lilbee.runtime.pdf_extract``.
+
+    pdfium's JPEG-2000 decoder spawns its own internal thread pool; running
+    it in-process saturated CPU and starved the asyncio main thread on
+    macOS. The child writes per-page progress to stderr so the parent can
+    surface it via ``on_progress``. JSON args go in via stdin; the result
+    (or an error string) comes back as JSON on stdout.
+
+    NOTE: this per-PDF subprocess pre-dates the persistent worker pool.
+    The vision pool worker (lilbee.providers.worker.vision_worker) only
+    handles single-image OCR today; routing PDF rasterize + per-page
+    OCR through the same pool worker is tracked as a follow-up so the
+    pdfium decoder still runs in its own process here. Until that
+    lands, this path remains the canonical multi-page OCR entry point.
+    """
+    import json
+    import sys
+
+    from lilbee.vision import pdf_page_count
+
+    pages = pdf_page_count(path)
+    # Outer wall-clock budget = vision_load_budget_s + per-page work. The
+    # per-page budget honours both cfg.vision_per_page_budget_s and the
+    # caller's timeout (whichever is larger) so a user-set ocr_timeout above
+    # the default doesn't trip the wrapper before the child's per-page wait.
+    per_page_cap = max(cfg.vision_per_page_budget_s, timeout or 0.0)
+    wall_clock_budget = cfg.vision_load_budget_s + per_page_cap * max(pages, 1)
+
+    payload = json.dumps(
+        {
+            "path": str(path),
+            "vision_model": vision_model,
+            "timeout": timeout,
+            "quiet": quiet,
+        }
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "lilbee.runtime.pdf_extract",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    proc.stdin.write(payload.encode("utf-8"))
+    await proc.stdin.drain()
+    proc.stdin.close()
+
+    # Read stdout and stderr with separate tasks. proc.communicate() would
+    # attach its own stderr reader and collide with _pump_pdf_progress,
+    # raising "read() called while another coroutine is already waiting
+    # for incoming data" at the first stderr line.
+    progress_task = asyncio.create_task(_pump_pdf_progress(proc.stderr, on_progress, path))
+    try:
+        stdout_bytes = await asyncio.wait_for(proc.stdout.read(), timeout=wall_clock_budget)
+    except TimeoutError:
+        await _cleanup_pdf_subprocess(proc, progress_task)
+        raise RuntimeError(
+            f"PDF extraction timed out after {wall_clock_budget:.0f}s "
+            f"({pages} pages)"
+        ) from None
+    except BaseException:
+        await _cleanup_pdf_subprocess(proc, progress_task)
+        raise
+    await proc.wait()
+    progress_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await progress_task
+
+    try:
+        result = json.loads(stdout_bytes.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"PDF extraction returned invalid JSON: {exc}") from exc
+    if "error" in result:
+        raise RuntimeError(result["error"])
+    raw = result.get("page_texts", [])
+    return [PageText(int(p), str(t)) for p, t in raw]
+
+
+async def _pump_pdf_progress(
+    stream: asyncio.StreamReader,
+    on_progress: DetailedProgressCallback,
+    path: Path,
+) -> None:
+    """Forward ``progress: page=N total=M`` lines from the subprocess to ``on_progress``."""
+    from lilbee.runtime.progress import BatchProgressEvent, EventType
+
+    while True:
+        line = await stream.readline()
+        if not line:
+            return
+        text = line.decode("utf-8", errors="replace").strip()
+        if not text.startswith("progress: "):
+            continue
+        try:
+            parts = dict(part.split("=") for part in text[len("progress: ") :].split())
+            page = int(parts["page"])
+            total = int(parts["total"])
+        except (KeyError, ValueError):
+            continue
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(
+                file=str(path), status="rasterizing", current=page, total=total
+            ),
+        )
+
+
 async def _vision_fallback(
     path: Path,
     source_name: str,
@@ -154,12 +285,11 @@ async def _vision_fallback(
     if not cfg.vision_model:
         return []
     try:
-        page_texts = await asyncio.to_thread(
-            extract_pdf_vision,
+        page_texts = await _extract_pdf_vision_in_subprocess(
             path,
             cfg.vision_model,
-            quiet=quiet,
             timeout=cfg.ocr_timeout,
+            quiet=quiet,
             on_progress=on_progress,
         )
     except Exception:

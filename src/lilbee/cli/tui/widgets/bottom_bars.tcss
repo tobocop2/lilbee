@@ -3,3 +3,8 @@ BottomBars {
     height: auto;
     width: 100%;
 }
+
+BottomBars > Footer {
+    dock: none;
+    height: 1;
+}

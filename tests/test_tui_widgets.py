@@ -64,15 +64,49 @@ class TestUserMessage:
 
 
 class TestAssistantMessageAsync:
-    async def test_append_reasoning_expands_collapsible(self) -> None:
+    async def test_compose_yields_speaker_content_citation(self) -> None:
+        """Compose yields three children: speaker label, content, citation. No
+        Collapsible up front; the reasoning fold is mounted lazily inside
+        ``on_mount``/``append_reasoning``.
+        """
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        am = AssistantMessage()
+        children = list(am.compose())
+        assert len(children) == 3
+        # First child carries the lilbee speaker label markup.
+        assert "lilbee" in str(children[0].render())
+        assert am._reasoning_widget is None
+        assert am._content_widget is not None
+        assert am._citation_widget is not None
+
+    async def test_on_mount_attaches_thinking_header(self) -> None:
+        """Mounting the message inserts a sibling ``ThinkingHeader`` above content."""
+        from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
+
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            assert am._thinking_header is not None
+            assert isinstance(am._thinking_header, ThinkingHeader)
+            assert am._thinking_header.is_mounted
+
+    async def test_first_reasoning_token_mounts_streaming_collapsible(self) -> None:
+        """The Collapsible appears only when the first reasoning token arrives,
+        carrying the ``-streaming`` modifier so the toggle row is hidden by CSS.
+        """
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am._reasoning_widget is None
             am.append_reasoning("step 1")
-            assert am._reasoning_parts == ["step 1"]
+            await pilot.pause()
             assert am._reasoning_widget is not None
             assert am._reasoning_widget.collapsed is False
+            assert "reasoning-block" in am._reasoning_widget.classes
+            assert "-streaming" in am._reasoning_widget.classes
 
     async def test_append_reasoning_debounces_static_updates(self) -> None:
         """Reasoning bursts collapse to one ``Static.update``; ``finish`` flushes the tail."""
@@ -80,17 +114,17 @@ class TestAssistantMessageAsync:
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            am.append_reasoning("a ")
             assert am._reasoning_static is not None
             with mock.patch.object(am._reasoning_static, "update") as mock_update:
-                am.append_reasoning("a ")
                 am.append_reasoning("b ")
                 am.append_reasoning("c ")
-                # All three append in well under the 0.1s debounce window,
-                # so only the first should have triggered an update.
-                assert mock_update.call_count == 1
+                # The first append fired an update on its own; subsequent
+                # bursts inside the 0.1 s debounce window do not.
+                assert mock_update.call_count == 0
                 am.finish(sources=None)
                 # finish() flushes the buffered tail.
-                assert mock_update.call_count == 2
+                assert mock_update.call_count == 1
                 last_call_text = mock_update.call_args_list[-1].args[0]
                 assert last_call_text == "a b c "
 
@@ -102,6 +136,46 @@ class TestAssistantMessageAsync:
             am.append_content("token1")
             am.append_content("token2")
             assert am._content_parts == ["token1", "token2"]
+
+    async def test_first_content_token_dismisses_thinking_header(self) -> None:
+        """Without any reasoning, the first content token retires the header."""
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am._thinking_header is not None
+            am.append_content("hi")
+            await pilot.pause()
+            assert am._thinking_header is None
+
+    async def test_first_content_token_after_reasoning_keeps_header(self) -> None:
+        """When reasoning has already fired, the header stays until ``finish``."""
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_reasoning("step 1")
+            am.append_content("answer")
+            await pilot.pause()
+            assert am._thinking_header is not None
+
+    async def test_reasoning_after_content_mounts_collapsible_before_content(self) -> None:
+        """Late reasoning (after content already dismissed the header) mounts the
+        Collapsible relative to the existing content widget, not the missing header.
+        """
+        from textual.widgets import Collapsible
+
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("answer first")
+            await pilot.pause()
+            assert am._thinking_header is None, "content should have dismissed the header"
+            am.append_reasoning("late thought")
+            await pilot.pause()
+            assert isinstance(am._reasoning_widget, Collapsible)
+            assert am._reasoning_widget.is_mounted
 
     async def test_finish_with_sources_shows_citations(self) -> None:
         app = _MsgApp()
@@ -115,16 +189,21 @@ class TestAssistantMessageAsync:
             assert am._reasoning_widget is not None
             assert "reasoning" in am._reasoning_widget.title
             assert "token" in am._reasoning_widget.title
+            assert am._reasoning_widget.collapsed is True
+            assert "-streaming" not in am._reasoning_widget.classes
+            assert am._thinking_header is None
 
-    async def test_finish_without_reasoning_hides_widget(self) -> None:
+    async def test_finish_without_reasoning_leaves_widget_unmounted(self) -> None:
+        """No reasoning emitted => no Collapsible was ever mounted."""
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            am.append_content("hi")
             am.finish(sources=None)
             assert am._finished is True
-            assert am._reasoning_widget is not None
-            assert am._reasoning_widget.display is False
+            assert am._reasoning_widget is None
+            assert am._thinking_header is None
 
     async def test_finish_without_sources_hides_citation(self) -> None:
         app = _MsgApp()
@@ -191,6 +270,107 @@ class TestAssistantMessageAsync:
             am._content_widget = None
             await am.rebuild_content_widget(use_markdown=False)
             assert am._content_widget is None
+
+    async def test_on_mount_noop_when_content_widget_missing(self) -> None:
+        """on_mount returns early if compose was bypassed (defensive guard)."""
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        app = _MsgApp()
+        async with app.run_test():
+            am = AssistantMessage()
+            am._content_widget = None
+            am.on_mount()
+            assert am._thinking_header is None
+
+
+class _ThinkingHeaderApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
+
+        self._header = ThinkingHeader()
+        yield self._header
+
+
+class TestThinkingHeader:
+    """The thinking header animates a Knight-Rider bouncing block until stopped."""
+
+    def test_frame_content_shifts_filled_block_with_frame(self) -> None:
+        """Frame N renders exactly one filled block; consecutive frames differ."""
+        from lilbee.cli.tui.widgets.thinking_header import (
+            _BLOCK_EMPTY,
+            _BLOCK_FILLED,
+            _TRACK_CELLS,
+            _frame_content,
+        )
+
+        rendered_frame_0 = str(_frame_content(0))
+        rendered_frame_1 = str(_frame_content(1))
+        # Exactly one cell is lit per frame; the rest are dim.
+        assert rendered_frame_0.count(_BLOCK_FILLED) == 1
+        assert rendered_frame_1.count(_BLOCK_FILLED) == 1
+        assert rendered_frame_0.count(_BLOCK_EMPTY) == _TRACK_CELLS - 1
+        assert rendered_frame_0 != rendered_frame_1
+
+    def test_frame_content_bounces_back_at_track_end(self) -> None:
+        """At the right edge the lit block reverses direction (Knight Rider)."""
+        from lilbee.cli.tui.widgets.thinking_header import _TRACK_CELLS, _bounce_position
+
+        # Forward sweep occupies frames 0..cells-1.
+        for f in range(_TRACK_CELLS):
+            assert _bounce_position(f) == f
+        # Backward sweep retraces cells-2..1 (skips both endpoints to
+        # avoid stalling for two ticks at the turnaround).
+        for offset in range(1, _TRACK_CELLS - 1):
+            f = _TRACK_CELLS - 1 + offset
+            assert _bounce_position(f) == _TRACK_CELLS - 1 - offset
+        # And the cycle restarts at the left edge.
+        cycle = 2 * (_TRACK_CELLS - 1)
+        assert _bounce_position(cycle) == 0
+
+    async def test_tick_advances_frame_and_repaints(self) -> None:
+        """Calling _tick increments the internal frame counter and repaints."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            start = header._frame
+            with mock.patch.object(header, "update") as update_mock:
+                header._tick()
+                assert header._frame == start + 1
+                update_mock.assert_called_once()
+
+    async def test_redirect_to_routes_frames_to_target(self) -> None:
+        """``redirect_to`` swaps the render target so callers can intercept frames."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            sink = mock.Mock()
+            header.redirect_to(sink)
+            with mock.patch.object(header, "update") as update_mock:
+                header._tick()
+                update_mock.assert_not_called()
+                sink.assert_called_once()
+
+    async def test_on_unmount_stops_timer(self) -> None:
+        """Unmounting the header cancels the running interval."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            assert header._timer is not None
+            header.on_unmount()
+            assert header._timer is None
+
+    async def test_stop_is_idempotent(self) -> None:
+        """``stop`` can be called repeatedly without raising."""
+        app = _ThinkingHeaderApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app._header
+            header.stop()
+            header.stop()
+            assert header._timer is None
 
 
 class _HelpApp(App):
@@ -394,7 +574,8 @@ class TestModelBar:
         ):
             yield
 
-    async def test_renders_picker_buttons_and_scope_select(self) -> None:
+    async def test_renders_picker_buttons_and_no_scope_select(self) -> None:
+        """ModelBar mounts only the two model pickers; scope lives in ScopeChip."""
         from textual.widgets import Select
 
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -406,7 +587,7 @@ class TestModelBar:
             await pilot.pause()
             buttons = list(app.query(ModelPickerButton))
             assert len(buttons) == 2
-            assert len(list(app.query(Select))) == 1  # scope only
+            assert list(app.query(Select)) == []
 
     async def test_button_ids_are_present(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -420,12 +601,7 @@ class TestModelBar:
             assert app.query_one("#embed-model-button", ModelPickerButton) is not None
 
     async def test_labels_rendered(self) -> None:
-        """Chat/Embed/Scope labels render as pills, not plain text.
-
-        Each pill is a Static carrying a pill() Content with half-block
-        ends around the label text. Assert the text survives, wrapped
-        by the PILL_LEFT/RIGHT half-block glyphs.
-        """
+        """Chat/Embed labels render as pills, not plain text."""
         from textual.widgets import Static
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -436,56 +612,6 @@ class TestModelBar:
             pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
             assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
             assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
-            assert any("Scope" in p and "▌" in p and "▐" in p for p in pills)
-
-    async def test_scope_defaults_to_both(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-        from lilbee.data.store import SearchScope
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            assert bar.scope is SearchScope.BOTH
-
-    async def test_scope_change_updates_bar_state(self) -> None:
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-        from lilbee.data.store import SearchScope
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            scope_sel = app.query_one("#scope-select", Select)
-            scope_sel.value = SearchScope.WIKI.value
-            await pilot.pause()
-            assert app.query_one(ModelBar).scope is SearchScope.WIKI
-
-    async def test_on_unmount_collapses_open_scope_dropdown(self) -> None:
-        """An open scope SelectOverlay must be torn down on unmount so its
-        border cells don't bleed into the next screen during navigation."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            scope_sel = app.query_one("#scope-select", Select)
-            scope_sel.expanded = True
-            await pilot.pause()
-            assert scope_sel.expanded is True
-
-            bar = app.query_one(ModelBar)
-            bar.on_unmount()
-            assert scope_sel.expanded is False
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -499,7 +625,8 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 assert "-disabled" not in toggle.classes
-                assert "-search" in toggle.classes
+                search_pill = toggle.query_one("#chat-mode-search", Static)
+                assert "-active" in search_pill.classes
 
     async def test_chat_mode_toggle_disabled_without_embedding(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -513,7 +640,8 @@ class TestModelBar:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 assert "-disabled" in toggle.classes
-                assert "-chat" in toggle.classes
+                chat_pill = toggle.query_one("#chat-mode-chat", Static)
+                assert "-active" in chat_pill.classes
 
     async def test_chat_mode_toggle_flips_on_click(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -578,27 +706,118 @@ class TestModelBar:
                 await pilot.pause()
                 assert "-disabled" not in toggle.classes
 
-    async def test_scope_hidden_when_wiki_disabled(self) -> None:
-        """With ``cfg.wiki=False`` the scope pill+select are omitted entirely.
+    async def test_chat_mode_toggle_left_selects_search(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
-        With wiki off the chunks table has only raw rows, so the choice
-        would imply a capability the user hasn't opted into.
-        """
-        from textual.css.query import NoMatches
-        from textual.widgets import Select
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_select_search()
+                assert cfg.chat_mode == "search"
 
+    async def test_chat_mode_toggle_right_selects_chat(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_select_chat()
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_select_chat_when_already_chat_is_noop(self) -> None:
+        """Selecting the already-active half is a no-op; cfg is not rewritten."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                # already in chat mode; selecting chat returns False
+                assert toggle._set_mode("chat") is False
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_select_search_no_op_when_disabled(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                toggle.action_select_search()
+                assert cfg.chat_mode == "chat"
+
+    async def test_chat_mode_toggle_renders_two_pill_children(self) -> None:
+        """Active half wears ``-active``; the search half disables when embedding is missing."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "search"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                search = toggle.query_one("#chat-mode-search", Static)
+                chat = toggle.query_one("#chat-mode-chat", Static)
+                assert "Search" in str(search.render())
+                assert "Chat" in str(chat.render())
+                assert "-active" in search.classes
+                assert "-active" not in chat.classes
+                assert "-disabled" not in search.classes
+                assert "chat-mode-pill" in search.classes
+                assert "chat-mode-pill" in chat.classes
+
+    async def test_chat_mode_toggle_disabled_class_lives_on_search_pill(self) -> None:
+        """When embedding is missing, the search pill alone gets the disabled mark."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=False):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                search = toggle.query_one("#chat-mode-search", Static)
+                chat = toggle.query_one("#chat-mode-chat", Static)
+                assert "-disabled" in search.classes
+                assert "-disabled" not in chat.classes
+                assert "-active" in chat.classes
+
+    async def test_picker_buttons_have_tooltips(self) -> None:
+        """Chat and Embed pickers expose hover tooltips like the scope chip does."""
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
-        cfg.wiki = False
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one("#chat-model-button", ModelPickerButton) is not None
-            assert app.query_one("#embed-model-button", ModelPickerButton) is not None
-            with pytest.raises(NoMatches):
-                app.query_one("#scope-select", Select)
+            chat_btn = app.query_one("#chat-model-button", ModelPickerButton)
+            embed_btn = app.query_one("#embed-model-button", ModelPickerButton)
+            assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
+            assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
 
     async def test_cloud_warning_hidden_for_local_model(self) -> None:
         cfg.chat_model = TEST_LOCAL_REF
@@ -796,24 +1015,264 @@ class TestModelPickerButton:
                 await pilot.pause()
                 assert cfg.chat_mode == "chat"
 
-    async def test_scope_select_blank_event_is_dropped(self) -> None:
-        from textual.widgets import Select
+    async def test_chat_mode_pill_click_routes_per_id(self) -> None:
+        """Click on the search/chat pill calls ``_set_mode`` for that side only."""
+        from textual import events
 
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                    search = toggle.query_one("#chat-mode-search", Static)
+                    click = mock.MagicMock(spec=events.Click)
+                    click.widget = search
+                    toggle.on_click(click)
+                    set_mode.assert_called_once_with("search")
+                with mock.patch.object(toggle, "_set_mode") as set_mode:
+                    chat = toggle.query_one("#chat-mode-chat", Static)
+                    click = mock.MagicMock(spec=events.Click)
+                    click.widget = chat
+                    toggle.on_click(click)
+                    set_mode.assert_called_once_with("chat")
+
+
+class _ScopeChipApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        yield ScopeChip(id="scope-chip")
+
+
+@pytest.mark.usefixtures("wiki_enabled")
+class TestScopeChip:
+    """ScopeChip is the search-only filter; only visible when wiki is on AND chat_mode == search."""
+
+    async def test_visible_when_search_mode_and_wiki_on(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            scope_sel = app.query_one("#scope-select", Select)
-            event = mock.MagicMock(spec=Select.Changed)
-            event.value = Select.BLANK
-            event.select = scope_sel
-            before = bar.scope
-            bar._on_scope_changed(event)
-            assert bar.scope is before
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" not in chip.classes
+
+    async def test_hidden_in_chat_mode(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "chat"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" in chip.classes
+
+    async def test_hidden_when_wiki_disabled(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = False
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" in chip.classes
+
+    async def test_scope_property_defaults_to_both(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_active_pill_tracks_scope(self) -> None:
+        """At rest, the BOTH pill carries -active; the others do not."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            both = chip.query_one("#scope-pill-both", Static)
+            wiki = chip.query_one("#scope-pill-wiki", Static)
+            raw = chip.query_one("#scope-pill-raw", Static)
+            assert "-active" in both.classes
+            assert "-active" not in wiki.classes
+            assert "-active" not in raw.classes
+            assert "scope-pill" in both.classes
+            assert "scope-pill" in wiki.classes
+            assert "scope-pill" in raw.classes
+
+    async def test_cycle_walks_both_wiki_raw_and_back(self) -> None:
+        """cycle_scope() advances Both -> Wiki -> Raw -> Both and repaints each step."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            wiki_pill = chip.query_one("#scope-pill-wiki", Static)
+            raw_pill = chip.query_one("#scope-pill-raw", Static)
+            both_pill = chip.query_one("#scope-pill-both", Static)
+            assert chip.scope is SearchScope.BOTH
+            assert chip.cycle_scope() is SearchScope.WIKI
+            assert "-active" in wiki_pill.classes
+            assert "-active" not in both_pill.classes
+            assert chip.cycle_scope() is SearchScope.RAW
+            assert "-active" in raw_pill.classes
+            assert "-active" not in wiki_pill.classes
+            assert chip.cycle_scope() is SearchScope.BOTH
+            assert "-active" in both_pill.classes
+            assert "-active" not in raw_pill.classes
+
+    async def test_pill_click_routes_to_matching_scope(self) -> None:
+        """A click on a child pill sets the scope to the value that pill represents."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            wiki_pill = chip.query_one("#scope-pill-wiki", Static)
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = wiki_pill
+            chip.on_click(click)
+            click.stop.assert_called_once()
+            assert chip.scope is SearchScope.WIKI
+            raw_pill = chip.query_one("#scope-pill-raw", Static)
+            click2 = mock.MagicMock(spec=events.Click)
+            click2.widget = raw_pill
+            chip.on_click(click2)
+            assert chip.scope is SearchScope.RAW
+
+    async def test_pill_click_on_unknown_widget_is_a_noop(self) -> None:
+        """Clicks routed through an unknown id leave the scope untouched."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            stranger = mock.Mock()
+            stranger.id = "not-a-pill"
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = stranger
+            chip.on_click(click)
+            click.stop.assert_not_called()
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_pill_click_with_no_widget_is_a_noop(self) -> None:
+        """A click without a widget reference is dropped without raising."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = None
+            chip.on_click(click)
+            click.stop.assert_not_called()
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_set_scope_to_current_is_a_noop(self) -> None:
+        """Re-clicking the active pill keeps the scope and avoids redundant repaints."""
+        from textual import events
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+        from lilbee.data.store import SearchScope
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            both_pill = chip.query_one("#scope-pill-both", Static)
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = both_pill
+            chip.on_click(click)
+            assert chip.scope is SearchScope.BOTH
+
+    async def test_on_settings_changed_chat_mode_recomputes_visibility(self) -> None:
+        """A chat_mode flip in the signal payload toggles the chip visibility."""
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert "-hidden" not in chip.classes
+            cfg.chat_mode = "chat"
+            chip._on_settings_changed(("chat_mode", "chat"))
+            assert "-hidden" in chip.classes
+
+    async def test_on_settings_changed_unrelated_key_is_a_noop(self) -> None:
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            chip._on_settings_changed(("temperature", 0.5))
+            assert "-hidden" not in chip.classes
+
+    async def test_pills_render_label_constants(self) -> None:
+        """Each child pill renders the label constant from messages.py."""
+        from lilbee.cli.tui import messages as msg_mod
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert (
+                str(chip.query_one("#scope-pill-both", Static).render()) == msg_mod.SCOPE_PILL_BOTH
+            )
+            assert (
+                str(chip.query_one("#scope-pill-wiki", Static).render()) == msg_mod.SCOPE_PILL_WIKI
+            )
+            assert str(chip.query_one("#scope-pill-raw", Static).render()) == msg_mod.SCOPE_PILL_RAW
 
 
 def _make_local_row(name: str = "Local Model", installed: bool = False) -> LocalCatalogRow:
@@ -2452,6 +2911,16 @@ class TestSetupWizard:
         assert row.featured is False
         assert row.backend == ""
 
+    def test_installed_name_to_row_cleans_native_gguf_ref(self) -> None:
+        """Native GGUF refs should render as a clean label, not the raw filename."""
+        from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+        ref = "unsloth/embeddinggemma-300M-qat-GGUF/embeddinggemma-300M-qat-Q8_0.gguf"
+        row = _installed_name_to_row(ref, "embedding")
+        assert row.name == "embeddinggemma 300M"
+        assert row.quant == "Q8_0"
+        assert row.ref == ref
+
     def test_model_card_from_table_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -2613,6 +3082,33 @@ class _ViewTabsApp(App):
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield ViewTabs()
+
+
+class TestViewTabsWikiVisibility:
+    """ViewTabs hides Wiki tab live when cfg.wiki toggles."""
+
+    async def test_wiki_visibility_follows_cfg_signal(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        cfg.wiki = True
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
+            assert wiki_tab.display is True
+
+            cfg.wiki = False
+            app.settings_changed_signal.publish(("wiki", False))
+            for _ in range(3):
+                await pilot.pause()
+            assert wiki_tab.display is False
+
+            cfg.wiki = True
+            app.settings_changed_signal.publish(("wiki", True))
+            for _ in range(3):
+                await pilot.pause()
+            assert wiki_tab.display is True
 
 
 class TestViewTabs:
@@ -2803,8 +3299,8 @@ class TestLilbeeAppViewTabs:
             bar = app.screen.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
-    async def test_view_tabs_uses_pill_for_active(self) -> None:
-        """Active tab should render as a pill with half-block characters."""
+    async def test_view_tabs_marks_exactly_one_active(self) -> None:
+        """One and only one ViewTab carries the ``-active`` class."""
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         from lilbee.cli.tui.app import LilbeeApp
@@ -3564,8 +4060,11 @@ class TestModelCardBuildHelpers:
         async with _Probe().run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             card = pilot.app.query_one(ModelCard)
-            assert card.query_one("#card-name") is not None
-            assert card.query_one("#card-status") is not None
+            body = card.query_one(".card-body")
+            text = str(body.content)
+            assert "gpt-4o" in text
+            assert "OpenAI" in text
+            assert "needs key" in text
 
 
 # ---------------------------------------------------------------------------
@@ -4088,9 +4587,7 @@ class TestConfirmDialog:
 
         assert results == [True]
 
-    async def test_yes_button_click(self) -> None:
-        from textual.widgets import Button
-
+    async def test_yes_pill_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -4102,15 +4599,12 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            btn = app.screen.query_one("#confirm-yes", Button)
-            btn.press()
+            await pilot.click("#confirm-yes")
             await pilot.pause()
 
         assert results == [True]
 
-    async def test_no_button_click(self) -> None:
-        from textual.widgets import Button
-
+    async def test_no_pill_click(self) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -4122,8 +4616,7 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            btn = app.screen.query_one("#confirm-no", Button)
-            btn.press()
+            await pilot.click("#confirm-no")
             await pilot.pause()
 
         assert results == [False]
@@ -4464,46 +4957,6 @@ def _make_click(widget: Any, button: int = 1) -> Any:
     )
 
 
-class TestChatStopButton:
-    """Direct-construction tests for ChatStopButton."""
-
-    def test_action_press_posts_pressed_message(self) -> None:
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        btn = ChatStopButton()
-        received: list[ChatStopButton.Pressed] = []
-        btn.post_message = received.append  # type: ignore[method-assign]
-        btn.action_press()
-        assert len(received) == 1
-        assert isinstance(received[0], ChatStopButton.Pressed)
-
-    def test_on_click_stops_event_and_posts(self) -> None:
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        btn = ChatStopButton()
-        received: list[ChatStopButton.Pressed] = []
-        btn.post_message = received.append  # type: ignore[method-assign]
-        evt = _make_click(btn)
-        btn.on_click(evt)
-        assert received and isinstance(received[0], ChatStopButton.Pressed)
-
-    async def test_renders_message_key_label(self) -> None:
-        from textual.app import App
-
-        from lilbee.cli.tui import messages as msg_module
-        from lilbee.cli.tui.widgets.chat_stop_button import ChatStopButton
-
-        class _App(App):
-            def compose(self) -> ComposeResult:
-                yield ChatStopButton()
-
-        app = _App()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            btn = app.query_one(ChatStopButton)
-            assert msg_module.CHAT_STOP_BUTTON_LABEL in str(btn.render())
-
-
 class TestSearchHFCtaItem:
     """Direct-construction tests for SearchHFCtaItem."""
 
@@ -4545,3 +4998,962 @@ class TestSearchHFCtaItem:
             await pilot.pause()
             label = app.query_one("#cta-label", Static)
             assert "phi-3" in str(label.render())
+
+
+def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:
+    return LocalCatalogRow(
+        name=name,
+        task="chat",
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=False,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref=name,
+        backend="native",
+    )
+
+
+class TestModelGridOnClick:
+    """Click hit-test math: first click highlights, second click posts Selected."""
+
+    @staticmethod
+    def _click(x: int, y: int) -> object:
+        click = mock.Mock()
+        click.x = x
+        click.y = y
+        return click
+
+    def test_first_click_highlights_second_click_selects(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.focus = lambda: None  # type: ignore[method-assign]
+        # Stub the size so _cell_at gets non-zero width without an app.
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        click = self._click(60, 1)  # second column, first card line
+        grid.on_click(click)
+        assert grid.highlighted == 1
+        assert received == []
+        grid.on_click(click)
+        assert received and isinstance(received[0], ModelGrid.Selected)
+        assert received[0].row is rows[1]
+
+    def test_click_outside_dataset_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 4
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        click = self._click(70, 1)  # column 3 with only 1 row -> out of range
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+    def test_click_below_grid_rows_is_ignored(self) -> None:
+        """Clicks past the last data row land outside the grid and do nothing."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]  # one row of 2 cards
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        grid._size = mock.Mock(width=60, height=20)  # type: ignore[attr-defined]
+        # y just past the only mounted row of cards lands in empty space.
+        click = self._click(0, _ROW_HEIGHT + 1)
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+    def test_click_on_empty_grid_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([])
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        click = self._click(10, 1)
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+    def test_click_at_negative_y_is_ignored(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 1
+        grid._size = mock.Mock(width=80, height=20)  # type: ignore[attr-defined]
+        click = self._click(10, -1)
+        grid.on_click(click)
+        assert grid.highlighted is None
+
+
+class TestModelGridScrollIntoView:
+    """watch_highlighted must scroll the highlighted cell into view so that
+    cursor moves wake the outer container's scroll watcher (the trigger that
+    drives pagination)."""
+
+    @staticmethod
+    def _patch_size(grid: object, width: int, height: int = 20):
+        from unittest.mock import PropertyMock
+
+        from textual.geometry import Size
+
+        return mock.patch.object(
+            type(grid),
+            "size",
+            new_callable=PropertyMock,
+            return_value=Size(width, height),
+        )
+
+    def test_cursor_move_calls_scroll_to_region(self) -> None:
+        """The grid delegates the scroll-into-view to its parent (the outer
+        VerticalScroll), translating the cell offset via ``virtual_region``.
+        """
+        from textual.geometry import Region
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 2
+        captured: list[Region] = []
+        # Stub a parent widget exposing scroll_to_region. We intentionally
+        # build a minimal stand-in rather than mounting in an App because
+        # virtual_region resolves only when mounted; we patch it directly.
+        parent = mock.Mock()
+        parent.scroll_to_region = lambda region, **_: captured.append(region)
+        # `Widget` isinstance check guards parent; satisfy it via the mock spec.
+        from textual.widget import Widget
+
+        parent_widget = mock.Mock(spec=Widget)
+        parent_widget.scroll_to_region = lambda region, **_: captured.append(region)
+        grid._parent = parent_widget  # type: ignore[attr-defined]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        # virtual_region defaults to Region() (empty) when unmounted; patch.
+        from unittest.mock import PropertyMock
+
+        with (
+            self._patch_size(grid, 80),
+            mock.patch.object(
+                type(grid),
+                "virtual_region",
+                new_callable=PropertyMock,
+                return_value=Region(0, 0, 80, 24),
+            ),
+        ):
+            grid.watch_highlighted(None, 4)
+
+        assert captured, "parent.scroll_to_region must run on cursor moves"
+        region = captured[0]
+        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _ROW_HEIGHT
+
+        # Cell at index 4 in 2-col grid -> row 2, col 0; offset is row*_ROW_HEIGHT.
+        assert region.y == (4 // 2) * _ROW_HEIGHT
+        assert region.height == _CARD_HEIGHT
+
+    def test_highlight_set_to_none_does_not_scroll(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 2
+        captured: list[object] = []
+        grid.scroll_to_region = lambda region, **_: captured.append(region)  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+        with self._patch_size(grid, 80):
+            grid.watch_highlighted(0, None)
+
+        assert captured == []
+
+    def test_zero_width_skips_scroll(self) -> None:
+        """At initial mount the size is (0, 0); guard prevents a bogus Region."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 1
+        captured: list[object] = []
+        grid.scroll_to_region = lambda region, **_: captured.append(region)  # type: ignore[method-assign]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+        with self._patch_size(grid, 0, 0):
+            grid.watch_highlighted(None, 0)
+
+        assert captured == []
+
+
+class TestModelPickerScopeTitles:
+    """Cover the vision and rerank title branches of _picker_title."""
+
+    def test_vision_title(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.model_picker import _picker_title
+
+        assert _picker_title("vision") == msg.MODEL_PICKER_TITLE_VISION
+
+    def test_rerank_title(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.model_picker import _picker_title
+
+        assert _picker_title("rerank") == msg.MODEL_PICKER_TITLE_RERANK
+
+
+class TestModelGridUtilityMethods:
+    """Direct unit coverage of ModelGrid helpers + simple message wrappers."""
+
+    def test_selected_carries_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row("a")]
+        grid = ModelGrid(rows)
+        message = ModelGrid.Selected(grid, rows[0])
+        assert message.control is grid
+        assert message.row is rows[0]
+
+    def test_columns_for_width_zero_returns_default(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _DEFAULT_COLUMNS, ModelGrid
+
+        assert ModelGrid._columns_for_width(0) == _DEFAULT_COLUMNS
+        assert ModelGrid._columns_for_width(-5) == _DEFAULT_COLUMNS
+
+    def test_total_rows_zero_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        assert ModelGrid([])._total_rows() == 0
+
+    def test_total_rows_when_columns_zero(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        grid._cards_per_row = 0
+        assert grid._total_rows() == 0
+
+    def test_get_content_height_scales_with_dataset(self) -> None:
+        """Height grows linearly in the number of grid rows the dataset needs."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        # Width 80 with the default _CARD_MIN_WIDTH lays out 2 cards per row.
+        size = mock.Mock(width=80, height=24)
+        height = grid.get_content_height(size, size, 80)
+        # 8 rows / 2 cols = 4 grid rows; each row is _ROW_HEIGHT lines tall.
+        # No trailing gutter to subtract.
+        assert height == 4 * _ROW_HEIGHT
+
+    def test_get_content_height_zero_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        size = mock.Mock(width=80, height=24)
+        assert ModelGrid([]).get_content_height(size, size, 80) == 0
+
+    def test_get_content_width_returns_container_width(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        size = mock.Mock(width=42, height=24)
+        assert grid.get_content_width(size, size) == 42
+
+    def test_action_select_no_op_when_unset(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a")])
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_select()
+        assert received == []
+
+    def test_action_select_no_op_when_dataset_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 0  # set despite empty dataset to exercise the guard
+        received: list[ModelGrid.Selected] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_select()
+        assert received == []
+
+
+class TestModelGridCursorEdges:
+    """Cover the LeaveDown / LeaveUp and bound-clip branches of cursor actions."""
+
+    def test_action_cursor_down_at_last_row_emits_leave_down(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(3)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 4  # next_index from any cell falls past the end
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 2
+        received: list[ModelGrid.LeaveDown] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_cursor_down()
+        assert received and isinstance(received[0], ModelGrid.LeaveDown)
+
+    def test_action_cursor_up_emits_leave_up_at_first_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 4
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        received: list[ModelGrid.LeaveUp] = []
+        grid.post_message = received.append  # type: ignore[method-assign]
+        grid.action_cursor_up()
+        assert received and isinstance(received[0], ModelGrid.LeaveUp)
+
+    def test_action_cursor_left_clamps_to_zero(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 0
+        grid.action_cursor_left()
+        assert grid.highlighted == 0
+
+    def test_action_cursor_right_clamps_to_last_index(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows)
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.action_cursor_right()
+        assert grid.highlighted == 1
+
+    def test_cursor_actions_initialize_highlight_when_unset(self) -> None:
+        """First cursor action lands on index 0 instead of moving from None."""
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row(f"m{i}") for i in range(4)])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        for action in (
+            grid.action_cursor_up,
+            grid.action_cursor_down,
+            grid.action_cursor_left,
+            grid.action_cursor_right,
+        ):
+            grid.highlighted = None
+            action()
+            assert grid.highlighted == 0
+
+
+class TestModelGridLayoutEdges:
+    """Cover render_line edge cases and the on_resize column recompute."""
+
+    async def test_render_line_blank_above_dataset(self) -> None:
+        """A negative y request returns a blank strip rather than crashing."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(4)]
+        grid = ModelGrid(rows, id="mg-render-test")
+
+        class _GridApp(App):
+            CSS = "ModelGrid { height: 12; width: 80; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            strip = grid.render_line(-1)
+            # Strip cell length cleanly maps onto the configured grid width.
+            assert strip.cell_length == grid.size.width
+
+    async def test_render_line_blank_past_dataset(self) -> None:
+        """Rendering a line past the last grid row returns blank padding."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows, id="mg-render-past")
+
+        class _GridApp(App):
+            CSS = "ModelGrid { height: 12; width: 80; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            strip = grid.render_line(grid.size.height * 4)
+            assert strip.cell_length == grid.size.width
+
+    async def test_render_line_paints_blank_cells_for_short_last_row(self) -> None:
+        """When the last row has fewer cards than columns, blank padding fills the gap."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(3)]  # 3 rows, 2-cols => one short
+        grid = ModelGrid(rows, id="mg-short-row")
+
+        class _GridApp(App):
+            CSS = "ModelGrid { height: 12; width: 60; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.pause()
+            grid._cards_per_row = 2
+            # Second grid row, first card line.
+            strip = grid.render_line(_row_height_offset(1))
+            assert strip.cell_length == grid.size.width
+
+    async def test_on_resize_recomputes_columns(self) -> None:
+        """Resizing the container shrinks/grows the column count."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows, id="mg-resize")
+
+        class _GridApp(App):
+            CSS = "ModelGrid { height: 12; width: 30; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        app = _GridApp()
+        async with app.run_test(size=(30, 20)) as pilot:
+            await pilot.pause()
+            assert grid.columns_per_row == 1
+
+
+class TestModelGridHighlightHelpers:
+    """Cover highlight_first / highlight_last and the cursor-step branches."""
+
+    def test_highlight_first_sets_index_zero_when_rows_present(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = None
+        grid.highlight_first()
+        assert grid.highlighted == 0
+
+    def test_highlight_first_no_op_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([])
+        grid.highlight_first()
+        assert grid.highlighted is None
+
+    def test_highlight_last_lands_on_final_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b"), _vgrid_row("c")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlight_last()
+        assert grid.highlighted == 2
+
+    def test_highlight_last_no_op_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([])
+        grid.highlight_last()
+        assert grid.highlighted is None
+
+    def test_action_cursor_up_steps_one_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 4
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 5
+        grid.action_cursor_up()
+        # 5 - 4 = 1
+        assert grid.highlighted == 1
+
+    def test_action_cursor_down_steps_one_row(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(8)]
+        grid = ModelGrid(rows)
+        grid._cards_per_row = 4
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.action_cursor_down()
+        # 1 + 4 = 5
+        assert grid.highlighted == 5
+
+    def test_set_rows_replaces_dataset_and_resets_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        new_rows = [_vgrid_row("c"), _vgrid_row("d"), _vgrid_row("e")]
+        grid.refresh = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.set_rows(new_rows)
+        assert grid.rows == new_rows
+        assert grid.highlighted is None
+
+
+def _row_height_offset(grid_row: int) -> int:
+    from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT
+
+    return grid_row * _ROW_HEIGHT
+
+
+def _dummy_border_style() -> str:
+    """A dummy theme-token string for unit tests that don't render via a theme."""
+    return "$primary on $panel"
+
+
+class TestModelGridCardRendering:
+    """``_render_card_strip`` covers both row dataclasses and selection state."""
+
+    def test_local_row_unselected_renders_full_height(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _render_card_strip
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=False, width=40, border_style=_dummy_border_style()
+        )
+        assert len(out.lines) == _CARD_HEIGHT
+
+    def test_local_row_selected_paints_install_hint(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=True, width=40, border_style=_dummy_border_style()
+        )
+        # The hint slot is the last line; rendered text contains the
+        # SETUP_CARD_HINT copy when the local card is highlighted-but-not-installed.
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "Enter to install" in rendered
+
+    def test_installed_row_renders_status_pill(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("phi-3")
+        row.installed = True
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "installed" in rendered
+
+    def test_frontier_row_renders_provider_and_key_status(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = FrontierCatalogRow(
+            name="gpt-4o",
+            ref="openai/gpt-4o",
+            task="chat",
+            provider="OpenAI",
+            provider_id="openai",
+            key_status=KeyStatus.READY,
+        )
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "OpenAI" in rendered
+        assert "ready" in rendered
+
+    def test_frontier_row_missing_key_renders_warning_pill(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = FrontierCatalogRow(
+            name="claude",
+            ref="anthropic/claude",
+            task="chat",
+            provider="Anthropic",
+            provider_id="anthropic",
+            key_status=KeyStatus.MISSING_KEY,
+        )
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "needs key" in rendered
+
+    def test_local_row_with_zero_downloads_skips_status_line(self) -> None:
+        """Local rows with no downloads omit the download-count line entirely."""
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("noisy")
+        # _vgrid_row defaults sort_downloads=0, so this branch is hit by default.
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "↓" not in rendered
+
+    def test_local_row_with_downloads_renders_download_count(self) -> None:
+        """A non-zero sort_downloads value renders the ``↓ ...`` muted glyph."""
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("popular")
+        row.sort_downloads = 12345
+        row.downloads = "12K"
+        out = _render_card_strip(row, selected=False, width=40, border_style=_dummy_border_style())
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "↓ 12K" in rendered
+
+    def test_local_row_pads_short_specs_with_double_dash(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _build_specs
+
+        # All-default-row specs produce the placeholder.
+        assert str(_build_specs("--", "--", "--")) == "--"
+
+    def test_pad_line_keeps_content_when_already_full(self) -> None:
+        """Content at the available width returns unmodified body."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        content = Content("0123456789")
+        assert _pad_line(content, 5) is content
+
+    def test_pad_line_pads_with_spaces_when_short(self) -> None:
+        """Short content gets right-padded with plain spaces to the requested width."""
+        from textual.content import Content
+
+        from lilbee.cli.tui.widgets.model_grid import _pad_line
+
+        out = _pad_line(Content("hi"), 6)
+        assert "hi    " in str(out)
+        assert out.cell_length == 6
+
+    def test_card_height_matches_body_line_count(self) -> None:
+        """``_CARD_HEIGHT`` must equal body line count + reserved border rows.
+
+        Locks the layout invariant: if someone adds a body line in
+        ``_local_lines`` without bumping ``_CARD_HEIGHT``, this test fails fast.
+        """
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_RESERVED_LINES,
+            _CARD_HEIGHT,
+            _local_lines,
+        )
+
+        body = _local_lines(_vgrid_row("phi-3"), selected=True)
+        assert len(body) + _BORDER_RESERVED_LINES == _CARD_HEIGHT
+
+    def test_unselected_card_draws_default_border(self) -> None:
+        """Every card draws a round border so the grid reads as discrete tiles.
+
+        The unselected card uses ``_DEFAULT_BORDER_STYLE`` (a dim tone); the
+        selected card swaps to ``border_style``. Both states emit the same
+        box-drawing characters so the layout doesn't shift on focus changes.
+        """
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_BOTTOM_LEFT,
+            _BORDER_HORIZONTAL,
+            _BORDER_TOP_LEFT,
+            _BORDER_VERTICAL,
+            _CARD_HEIGHT,
+            _render_card_strip,
+        )
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=False, width=40, border_style=_dummy_border_style()
+        )
+        assert len(out.lines) == _CARD_HEIGHT
+        rendered = [str(line) for line in out.lines]
+        assert _BORDER_TOP_LEFT in rendered[0]
+        assert _BORDER_HORIZONTAL in rendered[0]
+        assert _BORDER_BOTTOM_LEFT in rendered[-1]
+        for body_line in rendered[1:-1]:
+            assert _BORDER_VERTICAL in body_line
+
+    def test_selected_card_emits_round_border_chars(self) -> None:
+        """Focused cards draw the round border with box-drawing characters."""
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BORDER_BOTTOM_LEFT,
+            _BORDER_BOTTOM_RIGHT,
+            _BORDER_HORIZONTAL,
+            _BORDER_TOP_LEFT,
+            _BORDER_TOP_RIGHT,
+            _BORDER_VERTICAL,
+            _render_card_strip,
+        )
+
+        out = _render_card_strip(
+            _vgrid_row("phi-3"), selected=True, width=40, border_style=_dummy_border_style()
+        )
+        rendered = [str(line) for line in out.lines]
+        assert _BORDER_TOP_LEFT in rendered[0]
+        assert _BORDER_TOP_RIGHT in rendered[0]
+        assert _BORDER_HORIZONTAL in rendered[0]
+        assert _BORDER_BOTTOM_LEFT in rendered[-1]
+        assert _BORDER_BOTTOM_RIGHT in rendered[-1]
+        # Body lines have side bars on both edges.
+        for body_line in rendered[1:-1]:
+            assert _BORDER_VERTICAL in body_line
+
+
+class TestModelGridBorderStyleSelection:
+    """``render_line`` picks ``_FOCUSED_BORDER_STYLE`` vs ``_BLURRED_BORDER_STYLE``
+    via ``self.has_focus``; the two strings must resolve to different colors so
+    the user can tell which grid owns focus.
+    """
+
+    async def test_focused_grid_passes_primary_token_to_card_strip(self) -> None:
+        """When the grid has focus, render_line picks the $primary border token."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import (
+            _FOCUSED_BORDER_STYLE,
+            ModelGrid,
+        )
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows, id="mg-focus-token")
+
+        class _GridApp(App):
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        captured: list[str] = []
+        from lilbee.cli.tui.widgets import model_grid as _mg
+
+        original = _mg._render_card_strip
+
+        def _spy(*args, border_style: str, **kwargs):
+            captured.append(border_style)
+            return original(*args, border_style=border_style, **kwargs)
+
+        _mg._render_card_strip = _spy  # type: ignore[assignment]
+        try:
+            app = _GridApp()
+            async with app.run_test(size=(80, 20)) as pilot:
+                await pilot.pause()
+                grid.focus()
+                await pilot.pause()
+                # Force a repaint so render_line runs after focus.
+                grid.refresh()
+                await pilot.pause()
+                assert any(style == _FOCUSED_BORDER_STYLE for style in captured)
+        finally:
+            _mg._render_card_strip = original  # type: ignore[assignment]
+
+    async def test_blurred_grid_passes_blurred_token_to_card_strip(self) -> None:
+        """A grid that does NOT have focus picks the $border-blurred token."""
+        from textual.containers import VerticalScroll
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.widgets.model_grid import (
+            _BLURRED_BORDER_STYLE,
+            ModelGrid,
+        )
+
+        rows = [_vgrid_row(f"m{i}") for i in range(2)]
+        grid = ModelGrid(rows, id="mg-blur-token")
+        focus_sink = Input(id="focus-sink")
+
+        class _GridApp(App):
+            def compose(self) -> ComposeResult:
+                yield focus_sink
+                yield VerticalScroll(grid)
+
+        captured: list[str] = []
+        from lilbee.cli.tui.widgets import model_grid as _mg
+
+        original = _mg._render_card_strip
+
+        def _spy(*args, border_style: str, **kwargs):
+            captured.append(border_style)
+            return original(*args, border_style=border_style, **kwargs)
+
+        _mg._render_card_strip = _spy  # type: ignore[assignment]
+        try:
+            app = _GridApp()
+            async with app.run_test(size=(80, 20)) as pilot:
+                await pilot.pause()
+                focus_sink.focus()
+                await pilot.pause()
+                grid.refresh()
+                await pilot.pause()
+                assert any(style == _BLURRED_BORDER_STYLE for style in captured)
+        finally:
+            _mg._render_card_strip = original  # type: ignore[assignment]
+
+
+class TestCardBodyStyleConstants:
+    """The body / focused / blurred string constants must reference $panel."""
+
+    def test_card_body_style_is_panel(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _CARD_BODY_STYLE
+
+        assert "$panel" in _CARD_BODY_STYLE
+
+    def test_focused_border_style_is_primary_on_panel(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _FOCUSED_BORDER_STYLE
+
+        assert "$primary" in _FOCUSED_BORDER_STYLE
+        assert "$panel" in _FOCUSED_BORDER_STYLE
+
+    def test_blurred_border_style_is_dim_on_panel(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import _BLURRED_BORDER_STYLE
+
+        assert "$border-blurred" in _BLURRED_BORDER_STYLE
+        assert "$panel" in _BLURRED_BORDER_STYLE
+
+    def test_default_border_style_is_dim_on_panel(self) -> None:
+        """Every unselected card uses the default dim border tone."""
+        from lilbee.cli.tui.widgets.model_grid import _DEFAULT_BORDER_STYLE
+
+        assert "$panel" in _DEFAULT_BORDER_STYLE
+
+
+class TestModelGridBlurClearsHighlight:
+    """Cross-grid focus discipline: blurred grid drops its highlight."""
+
+    def test_on_blur_clears_highlight(self) -> None:
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row("a"), _vgrid_row("b")])
+        grid.watch_highlighted = lambda *_a, **_k: None  # type: ignore[method-assign]
+        grid.highlighted = 1
+        grid.on_blur()
+        assert grid.highlighted is None
+
+
+class TestModelGridGetContentHeight:
+    """Catalog screen relies on the height formula to lay out stacked sections."""
+
+    def test_height_uses_row_height_per_grid_row(self) -> None:
+        """Content height = grid_rows * _ROW_HEIGHT (no trailing-gutter math)."""
+        from lilbee.cli.tui.widgets.model_grid import _ROW_HEIGHT, ModelGrid
+
+        rows = [_vgrid_row(f"m{i}") for i in range(6)]
+        grid = ModelGrid(rows)
+        size = mock.Mock(width=80, height=24)
+        # 6 items / 2 cols = 3 grid rows.
+        height = grid.get_content_height(size, size, 80)
+        assert height == 3 * _ROW_HEIGHT
+
+
+class TestCatalogFocusEdgeGuards:
+    """LeaveUp/LeaveDown handlers in the catalog screen trap focus at the stack
+    edges so the user's cursor doesn't leak to the toolbar / dock."""
+
+    @staticmethod
+    async def _catalog_with_grids(rows_a: int, rows_b: int):
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        return app, rows_a, rows_b
+
+    async def test_leave_up_at_first_grid_keeps_focus(self) -> None:
+        """Pressing Up at the top row of the topmost grid keeps focus there."""
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+
+        class _StubScreen:
+            _grid_container = type(
+                "C", (), {"query": staticmethod(lambda _cls: [grid_a, grid_b])}
+            )()
+            _hf_has_more = False
+            _loading_more = False
+            focus_previous_called = False
+            focus_next_called = False
+
+            def focus_previous(self) -> None:
+                self.focus_previous_called = True
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+        screen = _StubScreen()
+        # Mimic the screen handler executing on the first grid's LeaveUp.
+        event = ModelGrid.LeaveUp(grid_a)
+        # Bind the catalog method to the stub; the real method only reads
+        # _grid_container and _hf_has_more / _loading_more, so the stub fits.
+        CatalogScreen._on_grid_leave_up(screen, event)  # type: ignore[arg-type]
+        assert screen.focus_previous_called is False
+
+        # Sanity: from a non-first grid, focus DOES move.
+        event2 = ModelGrid.LeaveUp(grid_b)
+        CatalogScreen._on_grid_leave_up(screen, event2)  # type: ignore[arg-type]
+        assert screen.focus_previous_called is True
+
+    async def test_leave_down_at_last_grid_with_no_more_keeps_focus(self) -> None:
+        """Pressing Down at the last row of the bottom grid (no load_more) parks."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        scroll_end_calls: list[bool] = []
+
+        class _StubScreen:
+            _grid_container = type(
+                "C",
+                (),
+                {
+                    "query": staticmethod(lambda _cls: [grid_a, grid_b]),
+                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
+                },
+            )()
+            _hf_has_more = False
+            _loading_more = False
+            focus_next_called = False
+            load_more_called = False
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+            def _load_more(self) -> None:
+                self.load_more_called = True
+
+        screen = _StubScreen()
+        event = ModelGrid.LeaveDown(grid_b)
+        CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
+        assert screen.focus_next_called is False
+        assert screen.load_more_called is False
+        assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
+
+        # From a non-last grid, focus DOES move (no scroll_end).
+        scroll_end_calls.clear()
+        event2 = ModelGrid.LeaveDown(grid_a)
+        CatalogScreen._on_grid_leave_down(screen, event2)  # type: ignore[arg-type]
+        assert screen.focus_next_called is True
+        assert not scroll_end_calls
+
+    async def test_leave_down_at_last_grid_with_more_loads_more(self) -> None:
+        """Last grid + _hf_has_more triggers load_more (existing behavior preserved)."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        scroll_end_calls: list[bool] = []
+
+        class _StubScreen:
+            _grid_container = type(
+                "C",
+                (),
+                {
+                    "query": staticmethod(lambda _cls: [grid_b]),
+                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
+                },
+            )()
+            _hf_has_more = True
+            _loading_more = False
+            focus_next_called = False
+            load_more_called = False
+
+            def focus_next(self) -> None:
+                self.focus_next_called = True
+
+            def _load_more(self) -> None:
+                self.load_more_called = True
+
+        screen = _StubScreen()
+        event = ModelGrid.LeaveDown(grid_b)
+        CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
+        assert screen.load_more_called is True
+        assert screen.focus_next_called is False
+        assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"

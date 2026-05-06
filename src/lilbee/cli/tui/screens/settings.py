@@ -8,9 +8,9 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
@@ -35,6 +35,11 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.model_picker import PickerScope
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+    from lilbee.modelhub.models import ModelTask
 
 _ROW_ID_PREFIX = "row-"
 _EDITOR_ID_PREFIX = "ed-"
@@ -63,6 +68,45 @@ _API_KEYS_WARNING_CLASS = "api-keys-warning"
 _CONFIG_TOML_FILENAME = "config.toml"
 
 
+def _model_field_to_picker_scope() -> dict[str, PickerScope]:
+    """Single source of truth for the picker scope each model field uses.
+
+    Lazy-built so the ``PickerScope`` import doesn't drag the modal
+    module into every import path that hits ``settings.py``.
+    """
+    mapping: dict[str, PickerScope] = {
+        "chat_model": "chat",
+        "embedding_model": "embed",
+        "vision_model": "vision",
+        "reranker_model": "rerank",
+    }
+    return mapping
+
+
+def _picker_scope_to_task(scope: PickerScope) -> ModelTask:
+    """Map a picker scope to the ``ModelTask`` bucket it discovers from."""
+    from lilbee.modelhub.models import ModelTask as _ModelTask
+
+    return {
+        "chat": _ModelTask.CHAT,
+        "embed": _ModelTask.EMBEDDING,
+        "vision": _ModelTask.VISION,
+        "rerank": _ModelTask.RERANK,
+    }[scope]
+
+
+_MODEL_PICKER_BUTTON_PREFIX = "model-pick-"
+
+
+def _model_picker_label(key: str) -> str:
+    """Render the picker button label as the human-friendly model name."""
+    from lilbee.catalog.formatting import display_label_for_ref
+
+    ref = getattr(cfg, key, None) or ""
+    label = display_label_for_ref(str(ref))
+    return label or msg.MODEL_VALUE_NONE
+
+
 @dataclass(frozen=True)
 class _PaneGroup:
     """One settings tab: pane id, group label, ordered settings."""
@@ -72,8 +116,8 @@ class _PaneGroup:
     items: list[tuple[str, SettingDef]]
 
 
-class _LazyGroupBody(VerticalGroup):
-    """Pane-body container that mounts its rows on first activation."""
+class _LazyGroupBody(VerticalScroll, can_focus=False):
+    """Pane-body that mounts rows on first activation; scrolls when taller than viewport."""
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -208,7 +252,26 @@ def _make_editor(key: str, defn: SettingDef) -> Widget:
         return _make_select(key, defn, value)
     if defn.type is bool:
         return _make_checkbox(key, value)
+    if defn.render is RenderStyle.MULTILINE:
+        return _make_multiline_editor(key, value)
     return _make_input(key, value)
+
+
+def _make_multiline_editor(key: str, value: str) -> ListTextArea:
+    """Create a multi-line editor for string settings (system prompts, etc.).
+
+    Reuses ListTextArea so we get the same blur-saves-on-focus-out behavior
+    as list-of-strings settings without re-implementing the message bridge.
+    """
+    display = "" if value == "None" else value
+    return ListTextArea(
+        text=display,
+        show_line_numbers=False,
+        name=key,
+        id=f"{_EDITOR_ID_PREFIX}{key}",
+        classes="setting-editor setting-multiline-editor",
+        soft_wrap=True,
+    )
 
 
 def _make_list_editor(key: str) -> Collapsible:
@@ -279,12 +342,14 @@ class SettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
-        # Tab walks every focusable on the screen (reset-all button,
-        # the group Tabs strip, then editors inside the active
-        # TabPane). Use ←/→ to switch tabs while focus is on the strip.
-        Binding("tab", "app.focus_next", "Next field", show=True),
-        Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
-        Binding("ctrl+r", "reset_focused", "Reset", show=False),
+        # Tab cycles editors inside the active pane and rolls over to the
+        # next group tab when you Tab past the last editor (and the
+        # previous group tab on shift+Tab past the first editor). Use
+        # ←/→ to switch tabs while focus is on the strip.
+        Binding("tab", "next_field_or_pane", "Next field", show=True),
+        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True),
+        Binding("ctrl+r", "reset_focused", "Reset field", show=False),
+        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -311,12 +376,6 @@ class SettingsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-            with Horizontal(id="settings-top-row"):
-                yield Button(
-                    msg.SETTINGS_RESET_ALL_LABEL,
-                    id="reset-all-defaults",
-                    classes="reset-all-button",
-                )
         with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
             yield from self._compose_group_tabs()
         with BottomBars():
@@ -393,7 +452,9 @@ class SettingsScreen(Screen[None]):
         title = Static(_title_content(key, defn), classes="setting-title")
         help_widget = Static(_help_content(key, defn), classes="setting-help")
         children: list[Widget] = [title, help_widget]
-        if defn.writable:
+        if key in _model_field_to_picker_scope():
+            children.append(self._build_model_picker_row(key))
+        elif defn.writable:
             editor_row = Horizontal(
                 _make_editor(key, defn),
                 Button(
@@ -411,6 +472,17 @@ class SettingsScreen(Screen[None]):
             id=f"{_ROW_ID_PREFIX}{key}",
         )
 
+    def _build_model_picker_row(self, key: str) -> Horizontal:
+        """A button-style row that opens the same ModelPickerModal as the chat bar."""
+        return Horizontal(
+            Button(
+                _model_picker_label(key),
+                id=f"{_MODEL_PICKER_BUTTON_PREFIX}{key}",
+                classes="setting-model-picker-button",
+            ),
+            classes="setting-editor-row",
+        )
+
     @on(Input.Submitted, ".setting-editor")
     @on(Input.Blurred, ".setting-editor")
     def _on_input_save(self, event: Input.Submitted | Input.Blurred) -> None:
@@ -422,6 +494,22 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         raw = event.value.strip()
+        current = str(getattr(cfg, name, ""))
+        if raw == current:
+            return
+        self._persist_value(name, defn, raw)
+
+    @on(ListTextArea.Blurred, ".setting-multiline-editor")
+    def _on_multiline_save(self, event: ListTextArea.Blurred) -> None:
+        """Save multi-line string settings (system prompts) on blur."""
+        ta = event.control
+        name = ta.name
+        if name is None:
+            return
+        defn = SETTINGS_MAP.get(name)
+        if defn is None:
+            return
+        raw = ta.text
         current = str(getattr(cfg, name, ""))
         if raw == current:
             return
@@ -457,16 +545,19 @@ class SettingsScreen(Screen[None]):
         """Parse, apply, and persist a setting value."""
         try:
             parsed = self._parse_value(defn, raw)
-            setattr(cfg, key, parsed)
-            persisted = self._stringify_for_toml(parsed)
-            settings.set_value(cfg.data_root, key, persisted)
+            from lilbee.cli.tui.app import LilbeeApp
+
+            if isinstance(self.app, LilbeeApp):
+                # set_setting handles theme live-apply, signal publish, etc.
+                self.app.set_setting(key, parsed)
+            else:
+                # Test harnesses where self.app isn't a LilbeeApp.
+                setattr(cfg, key, parsed)
+                persisted = self._stringify_for_toml(parsed)
+                settings.set_value(cfg.data_root, key, persisted)
             if not quiet:
                 self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
-            from lilbee.cli.tui.app import LilbeeApp
-
-            if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-                self.app.settings_changed_signal.publish((key, parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
 
@@ -570,9 +661,67 @@ class SettingsScreen(Screen[None]):
         key = button_id[len(_RESET_BUTTON_ID_PREFIX) :]
         self._reset_to_default(key)
 
-    @on(Button.Pressed, "#reset-all-defaults")
-    def _on_reset_all_pressed(self) -> None:
-        """Open a destructive-confirm dialog before resetting every writable field."""
+    @on(Button.Pressed, ".setting-model-picker-button")
+    def _on_model_picker_pressed(self, event: Button.Pressed) -> None:
+        """Open ModelPickerModal for the model field this button represents."""
+        button_id = event.button.id
+        if button_id is None or not button_id.startswith(_MODEL_PICKER_BUTTON_PREFIX):
+            return
+        key = button_id[len(_MODEL_PICKER_BUTTON_PREFIX) :]
+        scope = _model_field_to_picker_scope().get(key)
+        if scope is None:
+            return
+        self._discover_then_open_picker(key, scope)
+
+    @work(thread=True, exit_on_error=False)
+    def _discover_then_open_picker(self, key: str, scope: PickerScope) -> None:
+        """Discover installed models off the UI thread, then push the picker.
+
+        ``classify_installed_models_full`` probes the native registry,
+        Ollama (HTTP), and litellm provider lists. Running it on the
+        event loop blocks paint for hundreds of ms; the chat-bar uses
+        the same worker pattern.
+        """
+        from lilbee.cli.tui.thread_safe import call_from_thread
+        from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+
+        task = _picker_scope_to_task(scope)
+        buckets = classify_installed_models_full()
+        options = list(buckets.get(task, []))
+        call_from_thread(self, self._push_model_picker, key, scope, options)
+
+    def _push_model_picker(self, key: str, scope: PickerScope, options: list[ModelOption]) -> None:
+        """Push ModelPickerModal once the worker has resolved options."""
+        from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+        from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+        # Bail out if the user navigated away from Settings while the
+        # discovery worker was still running; otherwise we'd push the
+        # modal onto whatever screen is now on top.
+        if not self.is_mounted:
+            return
+        if not options:
+            options = [ModelOption(label=msg.MODEL_VALUE_NONE, ref="")]
+        self.app.push_screen(
+            ModelPickerModal(scope=scope, options=options),
+            lambda ref: self._on_model_picker_dismissed(key, ref),
+        )
+
+    def _on_model_picker_dismissed(self, key: str, ref: str | None) -> None:
+        """Persist the picker selection and refresh the button label."""
+        if ref is None or not ref:
+            return
+        from lilbee.cli.tui.app import apply_active_model
+
+        apply_active_model(self.app, key, ref)
+        try:
+            button = self.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}{key}", Button)
+            button.label = _model_picker_label(key)
+        except Exception:
+            log.debug("Failed to refresh model picker label for %s", key, exc_info=True)
+
+    def action_reset_all(self) -> None:
+        """Bound to Ctrl+Shift+R; opens the destructive-confirm dialog."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         self.app.push_screen(
@@ -734,3 +883,51 @@ class SettingsScreen(Screen[None]):
 
     def action_scroll_end(self) -> None:
         self.query_one("#settings-scroll", VerticalScroll).scroll_end()
+
+    def action_next_field_or_pane(self) -> None:
+        """Tab inside a pane; on overflow advance to the next group tab."""
+        self._move_focus_within_pane(direction=1)
+
+    def action_prev_field_or_pane(self) -> None:
+        """Shift+Tab inside a pane; on underflow retreat to the previous group tab."""
+        self._move_focus_within_pane(direction=-1)
+
+    def _move_focus_within_pane(self, *, direction: int) -> None:
+        focused = self.app.focused
+        tabs = self.query_one("#settings-tabs", TabbedContent)
+        active_pane_id = tabs.active
+        try:
+            body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
+        except Exception:
+            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            return
+        focusables = [w for w in body.query("*") if w.focusable]
+        if not focusables or focused is None or focused not in focusables:
+            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            return
+        index = focusables.index(focused)
+        next_index = index + direction
+        if 0 <= next_index < len(focusables):
+            focusables[next_index].focus()
+            return
+        # At the boundary: advance to the next/previous pane.
+        pane_ids = list(self._pane_groups.keys())
+        if active_pane_id not in pane_ids:
+            return
+        target_index = (pane_ids.index(active_pane_id) + direction) % len(pane_ids)
+        target_pane = pane_ids[target_index]
+        tabs.active = target_pane
+        self._populate_pane(target_pane)
+        # Park focus on the first/last field of the new pane so the next
+        # Tab keeps moving in the same direction.
+        self.call_after_refresh(self._focus_pane_edge, target_pane, direction)
+
+    def _focus_pane_edge(self, pane_id: str, direction: int) -> None:
+        try:
+            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+        except Exception:
+            return
+        focusables = [w for w in body.query("*") if w.focusable]
+        if not focusables:
+            return
+        focusables[0 if direction == 1 else -1].focus()

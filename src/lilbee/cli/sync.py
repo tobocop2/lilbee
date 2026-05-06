@@ -22,9 +22,17 @@ if TYPE_CHECKING:
     from lilbee.runtime.progress import DetailedProgressCallback
 
 
-def _format_sync_summary(added: int, updated: int, removed: int, failed: int) -> str | None:
+def _format_sync_summary(
+    added: int, updated: int, removed: int, failed: int, skipped: int = 0
+) -> str | None:
     """Format sync counts into a human-readable summary, or None if nothing changed."""
-    counts = {"added": added, "updated": updated, "removed": removed, "failed": failed}
+    counts = {
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "skipped": skipped,
+        "failed": failed,
+    }
     parts = [f"{n} {label}" for label, n in counts.items() if n]
     return ", ".join(parts) if parts else None
 
@@ -41,7 +49,9 @@ def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
         elif event_type == EventType.DONE:
             if not isinstance(data, SyncDoneEvent):
                 raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
-            summary = _format_sync_summary(data.added, data.updated, data.removed, data.failed)
+            summary = _format_sync_summary(
+                data.added, data.updated, data.removed, data.failed, data.skipped
+            )
             if summary:
                 con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
 
@@ -127,7 +137,9 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
             status.clear()
             if not isinstance(data, SyncDoneEvent):
                 raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
-            summary = _format_sync_summary(data.added, data.updated, data.removed, data.failed)
+            summary = _format_sync_summary(
+                data.added, data.updated, data.removed, data.failed, data.skipped
+            )
             if summary:
                 print(f"✓ Synced: {summary}")
 

@@ -1,10 +1,4 @@
-"""Playwright Chromium bootstrap.
-
-Backend-neutral in the sense that it only manages the browser
-binary: any fetcher that drives Chromium via Playwright benefits
-from the same detection + install flow. The crawl4ai adapter
-currently calls ``chromium_installed()`` before opening a crawler.
-"""
+"""Playwright Chromium detection and install."""
 
 from __future__ import annotations
 
@@ -176,17 +170,10 @@ _PLAYWRIGHT_MISSING_HINT = (
 def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
     """Return ``(argv_prefix, env)`` for invoking ``playwright install chromium``.
 
-    Playwright ships a Node.js driver (``playwright/driver/node`` +
-    ``playwright/driver/package/cli.js``) inside its Python package; that's
-    what ``python -m playwright`` ultimately spawns. We invoke it
-    directly so the call works identically under a pip install,
-    ``uv tool install``, and a PyInstaller frozen binary - no system
-    Python interpreter required.
-
-    Falls back to ``[sys.executable, '-m', 'playwright']`` if the driver
-    can't be resolved (defensive against unusual playwright builds);
-    raises :class:`CrawlerBrowserError` only if even that lookup
-    fails.
+    Spawns Playwright's bundled Node driver directly so the call works under a
+    pip install, ``uv tool install``, or a PyInstaller frozen binary. Falls back
+    to ``[sys.executable, '-m', 'playwright']`` for unfrozen builds when the
+    driver lookup fails; re-raises for frozen builds.
     """
     try:
         from playwright._impl._driver import compute_driver_executable, get_driver_env
@@ -207,15 +194,10 @@ async def bootstrap_chromium(
     """Run ``playwright install chromium`` as a subprocess, emitting events.
 
     Short-circuits when ``chromium_installed()`` is already True. Emits
-    ``setup_start`` before spawning, ``setup_progress`` for each
-    recognizable progress line on stdout, and ``setup_done`` on exit
-    (``success=False`` + the subprocess stderr tail on failure). Raises
-    :class:`CrawlerBrowserError` with the tail so task workers route
-    to FAILED cleanly.
-
-    Invokes Playwright's bundled Node driver directly so the call works
-    identically under a pip install, ``uv tool install``, or a
-    PyInstaller frozen binary (no system Python needed). (bb-sxsz)
+    ``setup_start`` before spawning, ``setup_progress`` for each recognizable
+    progress line on stdout, and ``setup_done`` on exit (``success=False`` plus
+    the subprocess stderr tail on failure). Raises :class:`CrawlerBrowserError`
+    with the tail so task workers route to FAILED cleanly.
     """
     if chromium_installed():
         _emit_setup_done(on_progress, success=True, error=None)
