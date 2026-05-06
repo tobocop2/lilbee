@@ -217,8 +217,7 @@ async def _extract_pdf_vision_in_subprocess(
     except TimeoutError:
         await _cleanup_pdf_subprocess(proc, progress_task)
         raise RuntimeError(
-            f"PDF extraction timed out after {wall_clock_budget:.0f}s "
-            f"({pages} pages)"
+            f"PDF extraction timed out after {wall_clock_budget:.0f}s ({pages} pages)"
         ) from None
     except BaseException:
         await _cleanup_pdf_subprocess(proc, progress_task)
@@ -261,9 +260,7 @@ async def _pump_pdf_progress(
             continue
         on_progress(
             EventType.BATCH_PROGRESS,
-            BatchProgressEvent(
-                file=str(path), status="rasterizing", current=page, total=total
-            ),
+            BatchProgressEvent(file=str(path), status="rasterizing", current=page, total=total),
         )
 
 

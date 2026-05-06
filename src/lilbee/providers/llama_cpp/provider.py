@@ -392,11 +392,18 @@ class LlamaCppProvider(LLMProvider):
             self._registered_roles.clear()
         if not roles:
             return
+        from lilbee.providers.worker.pool import PoolShutdownError
+
         services = get_services()
         runtime = services.pool_runtime
         for role in roles:
             try:
                 runtime.run_sync(services.worker_pool.release(role), timeout=10.0)
+            except PoolShutdownError:
+                # Pool already shut down (atexit ordering during a CLI exit
+                # tears down the pool runtime before this provider). Nothing
+                # to release; silent no-op.
+                pass
             except (TimeoutError, RuntimeError, OSError) as exc:
                 log.warning("Pool release of role=%s raised %s", role, exc)
 

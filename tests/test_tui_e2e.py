@@ -866,13 +866,19 @@ class TestChatInteractions:
             await pilot.pause()
             assert app.screen.is_current
 
-    async def test_escape_cancels_stream_when_streaming(self, _mock_resolve):
-        """Escape cancels streaming if active."""
+    async def test_ctrl_c_cancels_stream_in_insert_mode(self, _mock_resolve):
+        """Ctrl+C cancels an in-flight stream while in INSERT mode.
+
+        Esc no longer doubles as cancel; it always drops to NORMAL so
+        the user can navigate the terminal. Ctrl+C from INSERT mode is
+        the explicit cancel path.
+        """
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            app.screen._insert_mode = True
             app.screen.streaming = True
-            await pilot.press("escape")
+            await pilot.press("ctrl+c")
             await pilot.pause()
             assert app.screen.streaming is False
 
@@ -3006,8 +3012,13 @@ class TestChatStreaming:
 
         return mock.patch.object(ChatScreen, "_stream_response", new=lambda self, *a, **kw: None)
 
-    async def test_second_submit_while_streaming_is_dropped(self, _mock_resolve, _mock_services):
-        """A second Enter while streaming must not spawn another assistant turn."""
+    async def test_second_submit_while_streaming_is_rejected(self, _mock_resolve, _mock_services):
+        """A second Enter while streaming surfaces a 'busy' toast and is dropped.
+
+        Only one chat message may be in flight at a time; mid-stream submissions
+        used to queue but the queue racing the cancel path made stream state
+        unpredictable, so the policy is now: reject + tell the user to cancel.
+        """
         from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 
         with self._patch_stream_response():
@@ -3020,27 +3031,27 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming
                 inp.value = "second message"
-                await pilot.press("enter")
-                await pilot.pause()
-                # First message is mid-stream; second submission was queued
-                # rather than dropped, so still only one user/assistant pair
-                # is visible until the queue drains.
+                with mock.patch.object(app.screen, "notify") as notify_mock:
+                    await pilot.press("enter")
+                    await pilot.pause()
+                # First message is mid-stream; second submission was rejected.
                 assert len(list(app.screen.query(UserMessage))) == 1
                 assert len(list(app.screen.query(AssistantMessage))) == 1
-                assert app.screen._queued_prompt == "second message"
+                assert notify_mock.called
 
-    async def test_esc_cancels_active_stream(self, _mock_resolve, _mock_services):
-        """Esc keystroke cancels the worker (regression for action_enter_normal_mode path)."""
+    async def test_ctrl_c_cancels_active_stream_in_insert_mode(self, _mock_resolve, _mock_services):
+        """Ctrl+C from INSERT mode cancels the active stream."""
         with self._patch_stream_response():
             app = ChatTestApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 inp = app.screen.query_one("#chat-input", ChatInput)
-                inp.value = "esc me"
+                inp.value = "cancel me"
                 await pilot.press("enter")
                 await pilot.pause()
                 assert app.screen.streaming
-                app.screen.action_enter_normal_mode()
+                assert app.screen._insert_mode
+                app.screen.action_cancel_stream()
                 await pilot.pause()
                 assert app.screen.streaming is False
 
@@ -3077,19 +3088,22 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming is False
 
-    async def test_exit_streaming_drains_queued_prompt(self, _mock_resolve, _mock_services):
-        """Once the active stream settles, the queued prompt fires through ``_send_message``."""
+    async def test_exit_streaming_does_not_auto_send(self, _mock_resolve, _mock_services):
+        """Stream exit does not auto-fire a follow-up prompt.
+
+        The mid-stream queue was removed: a second submission while
+        streaming is rejected outright, not parked, so there's nothing
+        to drain when the stream ends.
+        """
         with self._patch_stream_response():
             app = ChatTestApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 screen = app.screen
-                screen._queued_prompt = "follow-up"
                 with mock.patch.object(screen, "_send_message") as send_mock:
                     screen._exit_streaming_state()
                     await pilot.pause()
-                    send_mock.assert_called_once_with("follow-up")
-                assert screen._queued_prompt is None
+                    send_mock.assert_not_called()
 
     async def test_chat_submit_in_normal_mode_flips_to_insert(self, _mock_resolve, _mock_services):
         """Enter while in normal mode flips back to insert without spawning a turn."""

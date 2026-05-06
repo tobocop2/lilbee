@@ -5932,13 +5932,17 @@ async def test_chat_input_history_up_down():
         inp.focus()
         await pilot.pause()
 
-        # Patch _stream_response to prevent background worker threads
+        # Patch _stream_response to prevent background worker threads.
+        # Reset streaming between submits because the screen now refuses
+        # mid-stream submissions (only one chat in flight at a time).
         with patch.object(app.screen, "_stream_response"):
-            # Submit two messages
             inp.value = "hello"
             await pilot.press("enter")
+            app.screen.streaming = False
+            await pilot.pause()
             inp.value = "world"
             await pilot.press("enter")
+            app.screen.streaming = False
         await pilot.pause()
 
         assert app.screen._input_history == ["hello", "world"]
@@ -8671,15 +8675,18 @@ async def test_chat_login_with_token_error():
             mock_login.assert_called_once()
 
 
-async def test_chat_enter_normal_mode_while_streaming():
-    """action_enter_normal_mode cancels stream when streaming."""
+async def test_chat_enter_normal_mode_while_streaming_drops_to_normal():
+    """action_enter_normal_mode now always goes to NORMAL, even mid-stream.
+
+    Cancel-while-streaming moved to Ctrl+C (action_cancel_stream).
+    """
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)):
         app.screen.streaming = True
         app.screen.action_enter_normal_mode()
-        assert app.screen.streaming is False
-        # Should NOT have entered normal mode
-        assert app.screen._insert_mode is True
+        # Stream is left running so the user can navigate; Ctrl+C cancels.
+        assert app.screen.streaming is True
+        assert app.screen._insert_mode is False
 
 
 async def test_chat_on_chat_input_changed_completing():
@@ -9501,8 +9508,8 @@ def test_chat_has_help_attribute():
     assert "Chat" in ChatScreen.HELP
 
 
-async def test_chat_action_enter_normal_mode_streaming():
-    """action_enter_normal_mode cancels workers and stops streaming."""
+async def test_chat_action_cancel_stream_cancels_workers_and_stream():
+    """action_cancel_stream (Ctrl+C from INSERT) cancels workers and stops streaming."""
     import asyncio
 
     async def _slow_worker() -> None:
@@ -9516,7 +9523,7 @@ async def test_chat_action_enter_normal_mode_streaming():
         app.screen.run_worker(_slow_worker(), exclusive=False)
         await _pilot.pause()
         assert len(list(app.screen.workers)) > 0
-        app.screen.action_enter_normal_mode()
+        app.screen.action_cancel_stream()
         assert app.screen.streaming is False
 
 
