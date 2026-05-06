@@ -3501,30 +3501,22 @@ async def test_catalog_keyboard_nav_near_end_triggers_load_more():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-            grids = list(screen.query(ModelGrid))
-            if not grids:
-                pytest.skip("test requires at least one mounted grid")
-            last = grids[-1]
-            last.focus()
-            await pilot.pause()
-            last.highlighted = max(0, len(last.rows) - 1)
-            screen._hf_has_more = True
-            screen._loading_more = False
-            # Pin _focused_grid to the snapshot last so a slow worker that
-            # hasn't yet propagated focus state to the screen doesn't make
-            # _maybe_prefetch_on_grid_nav early-return.
-            with (
-                patch.object(screen, "_focused_grid", return_value=last),
-                patch.object(screen, "_load_more") as load_more,
-            ):
-                screen._maybe_prefetch_on_grid_nav()
-                assert load_more.called, "cursor near end must trigger _load_more"
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._grid_view = True
+    screen._hf_has_more = True
+    screen._loading_more = False
+    target = MagicMock(spec=ModelGrid)
+    target.highlighted = 0
+    target.rows = [object()]
+    fake_container = MagicMock()
+    fake_container.query.return_value = [target]
+    with (
+        patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        patch.object(screen, "_focused_grid", return_value=target),
+        patch.object(screen, "_load_more") as load_more,
+    ):
+        screen._maybe_prefetch_on_grid_nav()
+        assert load_more.called, "cursor near end must trigger _load_more"
 
 
 async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
@@ -3534,53 +3526,34 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        with (
-            _patch_catalog()[0],
-            _patch_catalog()[1],
-            _patch_catalog()[2],
-            patch.object(CatalogScreen, "_fetch_all_hf_models"),
-        ):
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-            grids = list(screen.query(ModelGrid))
-            if not grids:
-                pytest.skip("test requires at least one mounted grid")
-            last = grids[-1]
-            last.focus()
-            await pilot.pause()
-            last.highlighted = max(0, len(last.rows) - 1)
-            with (
-                patch.object(screen, "_focused_grid", return_value=last),
-                patch.object(screen._grid_container, "scroll_end") as scroll_end,
-            ):
-                screen._reveal_scroll_hint_at_catalog_end()
-                assert scroll_end.called, "last-cell highlight must reveal inline hint"
+    screen = CatalogScreen.__new__(CatalogScreen)
+    target = MagicMock(spec=ModelGrid)
+    target.highlighted = 0
+    target.columns_per_row = 1
+    target.rows = [object()]
+    fake_container = MagicMock()
+    fake_container.query.return_value = [target]
+    with (
+        patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        patch.object(screen, "_focused_grid", return_value=target),
+    ):
+        screen._reveal_scroll_hint_at_catalog_end()
+    fake_container.scroll_end.assert_called_once()
 
     # Cursor mid-grid (not last row) does NOT scroll to end.
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        with (
-            _patch_catalog()[0],
-            _patch_catalog()[1],
-            _patch_catalog()[2],
-            patch.object(CatalogScreen, "_fetch_all_hf_models"),
-        ):
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-            grids = list(screen.query(ModelGrid))
-            if not grids:
-                pytest.skip("test requires at least one mounted grid")
-            first = grids[0]
-            first.focus()
-            await pilot.pause()
-            first.highlighted = 0
-            with patch.object(screen._grid_container, "scroll_end") as scroll_end:
-                screen._reveal_scroll_hint_at_catalog_end()
-                assert not scroll_end.called, "non-last-grid cursor must not scroll to end"
+    screen2 = CatalogScreen.__new__(CatalogScreen)
+    target2 = MagicMock(spec=ModelGrid)
+    target2.highlighted = 0
+    target2.columns_per_row = 1
+    target2.rows = [object(), object(), object()]  # last_row index = 2
+    fake_container2 = MagicMock()
+    fake_container2.query.return_value = [target2]
+    with (
+        patch.object(CatalogScreen, "_grid_container", new=fake_container2),
+        patch.object(screen2, "_focused_grid", return_value=target2),
+    ):
+        screen2._reveal_scroll_hint_at_catalog_end()
+    fake_container2.scroll_end.assert_not_called()
 
 
 async def test_catalog_load_more_noop_when_exhausted():
@@ -8446,9 +8419,13 @@ async def test_catalog_get_highlighted_variant_name():
             items_count = list_container.option_count
             assert items_count
             screen._list_widget.highlighted = 0
-            screen._list_widget.focus()
-            await _pilot.pause()
-            name = screen._get_highlighted_model_name()
+            with patch.object(
+                type(screen._list_widget),
+                "has_focus",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                name = screen._get_highlighted_model_name()
             assert name == "org/model-GGUF"
 
 
