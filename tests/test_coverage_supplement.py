@@ -704,3 +704,472 @@ class TestServicesPoolListener:
         services.add_pool_listener(on_spawning=lambda _r: None)
         assert captured["on_spawning"] is not None
         assert captured["on_spawned"] is None
+
+
+class TestModelInfoModal:
+    """`ModelInfoModal` renders a markdown body with what we know about a row."""
+
+    def _row(self, **kw: Any) -> Any:
+        from lilbee.catalog import CatalogModel
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+
+        defaults: dict[str, Any] = {
+            "name": "Acme 1B",
+            "task": "chat",
+            "params": "1B",
+            "size": "700 MB",
+            "quant": "Q8_0",
+            "downloads": "42",
+            "featured": False,
+            "installed": False,
+            "sort_downloads": 42,
+            "sort_size": 0.7,
+            "ref": "acme/acme-1b-gguf",
+            "catalog_model": CatalogModel(
+                hf_repo="acme/acme-1b-gguf",
+                gguf_filename="acme-1b-q8.gguf",
+                size_gb=0.7,
+                min_ram_gb=2.0,
+                description="A small chat model.",
+                featured=False,
+                downloads=42,
+                task="chat",
+            ),
+        }
+        defaults.update(kw)
+        return LocalCatalogRow(**defaults)
+
+    async def test_modal_compose_and_markdown_includes_known_fields(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+        row = self._row(installed=True)
+        modal = ModelInfoModal(row)
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(modal)
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            md = modal._build_markdown()
+            for needle in (
+                "A small chat model.",
+                "**Task:** chat",
+                "**Parameters:** 1B",
+                "**Download size:** 700 MB",
+                "**Recommended RAM:** 2 GB",
+                "**Quantization:** Q8_0",
+                "**Downloads:** 42",
+                "**Status:** installed",
+                "**GGUF file:** `acme-1b-q8.gguf`",
+                "huggingface.co/acme/acme-1b-gguf",
+            ):
+                assert needle in md, f"missing {needle!r}: {md}"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert pilot.app.screen is not modal, "escape should dismiss modal"
+
+    def test_markdown_drops_optional_lines_when_fields_empty(self) -> None:
+        from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+        row = self._row(
+            params="",
+            size="",
+            quant="",
+            downloads="",
+            installed=False,
+            catalog_model=None,
+        )
+        md = ModelInfoModal(row)._build_markdown()
+        assert "**Task:** chat" in md
+        assert "**Parameters:**" not in md
+        assert "**Download size:**" not in md
+        assert "**Quantization:**" not in md
+        assert "**Downloads:**" not in md
+        assert "**Status:**" not in md
+        assert "**Recommended RAM:**" not in md
+        assert "**GGUF file:**" not in md
+        assert "huggingface.co/acme/acme-1b-gguf" in md
+
+
+class TestCatalogActionShowInfoEarlyReturns:
+    """`action_show_info` early-return paths (Input-focused, no row)."""
+
+    async def test_input_focused_does_nothing(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer, Input
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            search = screen.query_one("#catalog-search", Input)
+            search.remove_class("-hidden")
+            search.focus()
+            await pilot.pause()
+            with (
+                mock.patch.object(screen, "_highlighted_row") as mock_row,
+                mock.patch.object(screen, "notify") as mock_notify,
+            ):
+                screen.action_show_info()
+                mock_row.assert_not_called()
+                mock_notify.assert_not_called()
+
+
+class TestCatalogHighlightedRow:
+    """`_highlighted_row` covers list-view, no-grid, ModelGrid, GridSelect paths."""
+
+    async def test_list_view_with_focused_list_returns_highlighted_row(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            screen._grid_view = False
+            sentinel = mock.Mock(name="row")
+            with (
+                mock.patch.object(
+                    type(screen._list_widget),
+                    "has_focus",
+                    new_callable=mock.PropertyMock,
+                    return_value=True,
+                ),
+                mock.patch.object(screen._list_widget, "highlighted_row", return_value=sentinel),
+            ):
+                assert screen._highlighted_row() is sentinel
+
+    async def test_grid_view_no_focused_grid_returns_none(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            with mock.patch.object(screen, "_focused_grid", return_value=None):
+                assert screen._highlighted_row() is None
+
+    async def test_model_grid_returns_row_at_index(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        row = LocalCatalogRow(
+            name="X",
+            task="chat",
+            params="1B",
+            size="500 MB",
+            quant="Q4",
+            downloads="1",
+            featured=False,
+            installed=False,
+            sort_downloads=1,
+            sort_size=0.5,
+            ref="x/x",
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            fake_grid = mock.MagicMock(spec=ModelGrid)
+            fake_grid.highlighted = 0
+            fake_grid.rows = [row]
+            with mock.patch.object(screen, "_focused_grid", return_value=fake_grid):
+                assert screen._highlighted_row() is row
+            # Out-of-bounds index returns None.
+            fake_grid.highlighted = 7
+            with mock.patch.object(screen, "_focused_grid", return_value=fake_grid):
+                assert screen._highlighted_row() is None
+
+    async def test_grid_select_returns_row_when_child_is_model_card(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        row = LocalCatalogRow(
+            name="Y",
+            task="chat",
+            params="1B",
+            size="500 MB",
+            quant="Q4",
+            downloads="1",
+            featured=False,
+            installed=False,
+            sort_downloads=1,
+            sort_size=0.5,
+            ref="y/y",
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            fake_card = mock.MagicMock(spec=ModelCard)
+            fake_card.row = row
+            fake_grid = mock.MagicMock()
+            fake_grid.highlighted = 0
+            fake_grid.children = [fake_card]
+            # Force isinstance(focused_grid, ModelGrid) → False so the
+            # GridSelect branch runs.
+            with mock.patch.object(screen, "_focused_grid", return_value=fake_grid):
+                assert screen._highlighted_row() is row
+
+    async def test_grid_select_non_model_card_returns_none(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            non_card = mock.MagicMock()
+            fake_grid = mock.MagicMock()
+            fake_grid.highlighted = 0
+            fake_grid.children = [non_card]
+            with mock.patch.object(screen, "_focused_grid", return_value=fake_grid):
+                assert screen._highlighted_row() is None
+
+
+class TestCatalogActionShowInfoFrontierWarn:
+    """`action_show_info` warns when the highlighted row is a frontier row."""
+
+    async def test_frontier_row_emits_warning_toast(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.catalog_utils import (
+            FrontierCatalogRow,
+            KeyStatus,
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            row = FrontierCatalogRow(
+                name="Gemini 2.5 Pro",
+                ref="gemini/2.5-pro",
+                task="chat",
+                provider="Gemini",
+                provider_id="gemini",
+                key_status=KeyStatus.READY,
+            )
+            with (
+                mock.patch.object(screen, "_highlighted_row", return_value=row),
+                mock.patch.object(screen, "notify") as mock_notify,
+            ):
+                screen.action_show_info()
+                mock_notify.assert_called_once()
+                assert "downloadable" in mock_notify.call_args[0][0]
+
+
+class TestSettingsTabNavFallbacks:
+    """`_move_focus_within_pane` and `_focus_pane_edge` fallback branches."""
+
+    async def test_move_focus_falls_back_when_body_missing(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer, TabbedContent
+
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, SettingsScreen)
+            # Pretend the active pane id has no body widget.
+            tabs = screen.query_one(TabbedContent)
+            tabs.active = ""
+            with mock.patch.object(screen.app, "action_focus_next") as mock_next:
+                screen.action_next_field_or_pane()
+                mock_next.assert_called_once()
+            with mock.patch.object(screen.app, "action_focus_previous") as mock_prev:
+                screen.action_prev_field_or_pane()
+                mock_prev.assert_called_once()
+
+    async def test_move_focus_falls_back_when_focused_outside_pane(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, SettingsScreen)
+            screen.populate_all_panes()
+            await pilot.pause()
+            with mock.patch.object(screen.app, "action_focus_next") as mock_next:
+                # focused is None at this point: walks the fallback path.
+                screen.action_next_field_or_pane()
+                mock_next.assert_called_once()
+
+    async def test_move_focus_returns_when_active_pane_unknown(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer, TabbedContent
+
+        from lilbee.cli.tui.screens.settings import (
+            SettingsScreen,
+            _LazyGroupBody,
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, SettingsScreen)
+            screen.populate_all_panes()
+            await pilot.pause()
+            tabs = screen.query_one(TabbedContent)
+            active_pane_id = tabs.active
+            body = screen.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
+            focusables = [w for w in body.query("*") if w.focusable]
+            assert focusables
+            focusables[-1].focus()
+            await pilot.pause()
+            # Drop the active pane from the screen's bookkeeping so the
+            # boundary path hits the early-return guard.
+            screen._pane_groups = {}
+            screen.action_next_field_or_pane()
+            await pilot.pause()
+            # Active pane stays put because the boundary guard returned early.
+            assert tabs.active == active_pane_id
+
+    async def test_focus_pane_edge_handles_missing_body(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, SettingsScreen)
+            # Unknown pane id: query_one raises NoMatches, swallowed.
+            screen._focus_pane_edge("settings-tab-does-not-exist", direction=1)
+
+    async def test_focus_pane_edge_no_focusables_returns(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.settings import (
+            SettingsScreen,
+            _LazyGroupBody,
+        )
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, SettingsScreen)
+            # Mount a fresh empty body that lives in the DOM but has no
+            # focusable descendants, then exercise the edge focus helper.
+            empty_body = _LazyGroupBody(id="settings-tab-empty-body")
+            screen.mount(empty_body)
+            await pilot.pause()
+            screen._focus_pane_edge("settings-tab-empty", direction=-1)
