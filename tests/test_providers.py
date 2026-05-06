@@ -1056,6 +1056,42 @@ class TestRoutingProvider:
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
 
+    def test_routes_vision_ocr_to_llama_cpp_for_native_ref(self) -> None:
+        """Native GGUF vision refs reach the llama-cpp vision worker pool."""
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.vision_ocr.return_value = "page text"
+        mock_litellm = mock.MagicMock()
+        rp._llama_cpp = mock_llama
+        rp._sdk_provider = mock_litellm
+
+        result = rp.vision_ocr(
+            b"\x89PNG", "noctrex/LightOnOCR-2-1B-GGUF/LightOnOCR-2-1B-Q4_K_M.gguf", "ocr"
+        )
+        assert result == "page text"
+        mock_llama.vision_ocr.assert_called_once_with(
+            b"\x89PNG",
+            "noctrex/LightOnOCR-2-1B-GGUF/LightOnOCR-2-1B-Q4_K_M.gguf",
+            "ocr",
+            timeout=None,
+        )
+        mock_litellm.vision_ocr.assert_not_called()
+
+    def test_routes_vision_ocr_to_litellm_for_ollama_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.vision_ocr.return_value = "remote text"
+        rp._llama_cpp = mock_llama
+        rp._sdk_provider = mock_litellm
+
+        result = rp.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0)
+        assert result == "remote text"
+        mock_litellm.vision_ocr.assert_called_once_with(
+            b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0
+        )
+        mock_llama.vision_ocr.assert_not_called()
+
     def test_routes_chat_to_llama_cpp_for_local_ref(self) -> None:
         """Local HF refs dispatch to llama-cpp regardless of registry contents.
 
@@ -2321,6 +2357,86 @@ class TestLiteLLMListModelsRouting:
 
         headers = mock_get.call_args[1].get("headers", {})
         assert headers.get("Authorization") == "Bearer sk-secret"
+
+
+class TestSdkLLMProviderVisionOcr:
+    """``SdkLLMProvider.vision_ocr`` translates to a multipart chat call."""
+
+    def _make_provider(self) -> SdkLLMProvider:
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        return SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
+
+    def test_builds_multipart_message_and_routes_to_chat(self) -> None:
+        provider = self._make_provider()
+        with mock.patch.object(provider, "chat", return_value="page text") as mock_chat:
+            result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr please")
+
+        assert result == "page text"
+        mock_chat.assert_called_once()
+        messages = mock_chat.call_args[0][0]
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[1]["type"] == "text"
+        assert content[1]["text"] == "ocr please"
+        assert mock_chat.call_args[1]["model"] == "ollama/llava:7b"
+        assert mock_chat.call_args[1]["stream"] is False
+
+    def test_empty_prompt_uses_default_ocr_prompt(self) -> None:
+        from lilbee.vision import OCR_PROMPT
+
+        provider = self._make_provider()
+        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+            provider.vision_ocr(b"\x89PNG", "ollama/llava:7b")
+
+        text_part = mock_chat.call_args[0][0][0]["content"][1]
+        assert text_part["text"] == OCR_PROMPT
+
+    def test_positive_timeout_returns_chat_result(self) -> None:
+        """A non-expiring positive timeout returns the chat response unchanged."""
+        provider = self._make_provider()
+        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+            result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=5.0)
+
+        assert result == "ok"
+        mock_chat.assert_called_once()
+
+    def test_timeout_expiry_raises_timeout_error(self) -> None:
+        import time
+
+        provider = self._make_provider()
+
+        def slow_chat(*args, **kwargs):
+            time.sleep(5)
+            return "too late"
+
+        with (
+            mock.patch.object(provider, "chat", side_effect=slow_chat),
+            pytest.raises(TimeoutError),
+        ):
+            provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.01)
+
+    def test_zero_timeout_returns_chat_result(self) -> None:
+        """``timeout=0`` skips the thread pool and returns chat's result."""
+        provider = self._make_provider()
+        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+            result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0)
+
+        assert result == "ok"
+        mock_chat.assert_called_once()
+
+    def test_non_string_response_raises_provider_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        provider = self._make_provider()
+        with (
+            mock.patch.object(provider, "chat", return_value=iter(["streamed"])),
+            pytest.raises(ProviderError, match="non-text response"),
+        ):
+            provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p")
 
 
 class TestNeedsApiBase:

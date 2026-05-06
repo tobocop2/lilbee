@@ -72,6 +72,18 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(model or cfg.chat_model)
         return self._pick_backend(ref).chat(messages, stream=stream, options=options, model=model)
 
+    def vision_ocr(
+        self,
+        png_bytes: bytes,
+        model: str,
+        prompt: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        """Dispatch by ``model``'s ref prefix, same rules as :meth:`chat`."""
+        ref = parse_model_ref(model)
+        return self._pick_backend(ref).vision_ocr(png_bytes, model, prompt, timeout=timeout)
+
     def list_models(self) -> list[str]:
         """Return the union of native and SDK-visible models.
 
