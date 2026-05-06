@@ -160,8 +160,14 @@ async def test_bracket_keys_typed_literally_when_catalog_search_focused():
         await pilot.pause()
 
         search = app.screen.query_one("#catalog-search", Input)
-        search.focus()
-        await pilot.pause()
+        # Catalog kicks off async HF fetches on mount that can steal focus
+        # on slow Windows runners; pump frames until the search input
+        # actually retains focus before exercising the bracket keys.
+        for _ in range(50):
+            search.focus()
+            await pilot.pause()
+            if search.has_focus:
+                break
         assert search.has_focus
 
         await pilot.press("left_square_bracket")

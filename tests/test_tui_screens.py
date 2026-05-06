@@ -3516,7 +3516,12 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+        with (
+            _patch_catalog()[0],
+            _patch_catalog()[1],
+            _patch_catalog()[2],
+            patch.object(CatalogScreen, "_fetch_all_hf_models"),
+        ):
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
@@ -3534,7 +3539,12 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
     # Cursor mid-grid (not last row) does NOT scroll to end.
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+        with (
+            _patch_catalog()[0],
+            _patch_catalog()[1],
+            _patch_catalog()[2],
+            patch.object(CatalogScreen, "_fetch_all_hf_models"),
+        ):
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
