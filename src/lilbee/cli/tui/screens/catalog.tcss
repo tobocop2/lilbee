@@ -1,5 +1,11 @@
 /* Catalog screen — grid and list views */
 
+#catalog-tabs-wrap {
+    height: 1fr;
+    min-height: 0;
+    overflow: hidden;
+}
+
 #catalog-tabs {
     height: 1fr;
     min-height: 0;
@@ -29,7 +35,7 @@
 
 ModelGrid {
     height: auto;
-    min-height: 6;
+    min-height: 7;
     border: none;
     background: transparent;
     padding: 0;
@@ -38,7 +44,7 @@ ModelGrid {
 
 ModelGrid:focus {
     border: none;
-    background: $surface 30%;
+    background: transparent;
 }
 
 #catalog-list {
@@ -71,11 +77,6 @@ ModelGrid:focus {
     display: none;
 }
 
-#model-detail {
-    height: 6;
-    padding: 1;
-    border-top: solid $surface-lighten-2;
-}
 
 .section-heading {
     text-style: bold;
@@ -86,7 +87,6 @@ ModelGrid:focus {
 
 CatalogScreen.-grid-view #catalog-list { display: none; }
 CatalogScreen.-grid-view #sort-label { display: none; }
-CatalogScreen.-grid-view #model-detail { display: none; }
 CatalogScreen.-list-view #catalog-grid { display: none; }
 
 GridSelect {

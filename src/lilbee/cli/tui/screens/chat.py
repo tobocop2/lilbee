@@ -19,6 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.dom import DOMNode
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Select, Static
@@ -243,10 +244,16 @@ class ChatScreen(Screen[None]):
 
         dismiss()
         self.refresh_model_bar()
-        # AUTO_FOCUS only fires once on initial mount. Re-entering the screen
-        # via [/] navigation needs an explicit focus restore.
+        # AUTO_FOCUS only fires once on initial mount. Re-entering the
+        # screen via view-nav needs an explicit focus restore. In INSERT
+        # mode we send focus to the chat input; in NORMAL mode we send
+        # focus to the chat log (the input is intentionally unfocusable
+        # so global bindings keep firing).
         with contextlib.suppress(Exception):
-            self.set_focus(self._chat_input)
+            if self._insert_mode:
+                self._enter_insert_mode()
+            else:
+                self._chat_log.focus()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
@@ -292,6 +299,7 @@ class ChatScreen(Screen[None]):
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
+        self._chat_input.can_focus = True
         self._chat_input.focus()
         self._update_input_style()
 
@@ -335,15 +343,47 @@ class ChatScreen(Screen[None]):
 
     @on(events.DescendantFocus, "#chat-input")
     def _on_chat_input_focused(self, event: events.DescendantFocus) -> None:
-        """Focusing the chat input always implies insert mode.
+        """Mark INSERT mode whenever the chat input takes focus.
 
-        Without this, a normal-mode user who clicks back into the input
-        (or whose focus is restored after a screen pop) keeps typing
-        even though the screen still thinks it's in normal mode -- which
-        bypasses the vim-style guards everywhere else.
+        With ``can_focus = False`` while in NORMAL mode, the only way the
+        input gains focus is via an explicit user action (click, or the
+        :meth:`_enter_insert_mode` helper that sets ``can_focus = True``
+        and focuses the input). Either path implies INSERT, so we sync
+        the screen mode here.
         """
         if not self._insert_mode:
             self._enter_insert_mode()
+
+    @on(events.Click, "#chat-input")
+    def _on_chat_input_clicked(self, event: events.Click) -> None:
+        """Click on the chat input bar promotes to INSERT.
+
+        ``can_focus = False`` while in NORMAL mode swallows focus from the
+        click, so DescendantFocus never fires. Hook the Click directly so
+        a mouse user lands in INSERT just like a keystroke (i / a / o).
+        """
+        if not self._insert_mode:
+            self._enter_insert_mode()
+            event.stop()
+
+    def on_click(self, event: events.Click) -> None:
+        """Click outside the chat input bar drops back to NORMAL.
+
+        The chat-input click handler above promotes to INSERT; the
+        symmetric exit happens here so a mouse user gets the same
+        click-to-blur behavior they expect from any other text editor.
+        """
+        if not self._insert_mode:
+            return
+        if event.widget is None:
+            return
+        chat_input = self._chat_input
+        node: DOMNode | None = event.widget
+        while node is not None:
+            if node is chat_input:
+                return
+            node = node.parent
+        self.action_enter_normal_mode()
 
     @on(ChatInput.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
@@ -504,7 +544,7 @@ class ChatScreen(Screen[None]):
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
             _remove_copied_files(copied)
-            raise RuntimeError(msg.SYNC_SKIPPED_FILES.format(files=", ".join(sync_result.skipped)))
+            raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
@@ -1047,27 +1087,44 @@ class ChatScreen(Screen[None]):
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
         if self.streaming:
-            for worker in self.workers:
-                worker.cancel()
-            self.streaming = False
+            self._cancel_inflight_stream()
             return
         if isinstance(self.focused, (Select, ModelPickerButton)):
-            self._chat_input.focus()
+            # Returning from a model picker should put us back in INSERT
+            # so the user can type their next prompt; routing through the
+            # helper makes sure can_focus is re-enabled.
+            self._enter_insert_mode()
             return
         self._insert_mode = False
+        # Make the chat input unfocusable in NORMAL mode so Tab traversal
+        # skips past it AND a programmatic focus restore (modal close,
+        # screen pop) cannot land on it. The user re-enters INSERT
+        # explicitly via i/a/o/Enter or by clicking the input.
+        self._chat_input.can_focus = False
         self._chat_log.focus()
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
         """Context-aware Escape: cancel stream -> blur input -> no-op."""
         if self.streaming:
-            for worker in self.workers:
-                worker.cancel()
-            self.streaming = False
+            self._cancel_inflight_stream()
             return
         inp = self._chat_input
         if inp.has_focus:
             self._chat_log.focus()
+
+    def _cancel_inflight_stream(self) -> None:
+        """Stop the streaming Textual worker AND interrupt its inference call.
+
+        Cancelling the Textual worker alone unwinds the producer task but
+        does not reach into the chat subprocess; the worker subprocess
+        keeps generating until ``Services.cancel_inference()`` flips its
+        abort flag (or sets the in-process Event in fallback mode).
+        """
+        get_services().cancel_inference()
+        for worker in self.workers:
+            worker.cancel()
+        self.streaming = False
 
     def apply_model_change(self) -> None:
         """Cancel active stream (if any) and reset services for the new model."""
@@ -1156,14 +1213,17 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self,
                 self.notify,
-                msg.SYNC_SKIPPED_FILES.format(files=", ".join(result.skipped)),
+                msg.sync_skipped_message(", ".join(result.skipped)),
                 severity="warning",
             )
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
+        # Route through the helper so can_focus is re-enabled when this
+        # action fires from NORMAL mode; bare ``inp.focus()`` would
+        # silently no-op while the input is intentionally unfocusable.
+        self._enter_insert_mode()
         inp = self._chat_input
-        inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/"
             inp.action_end()

@@ -20,6 +20,7 @@ def isolated_cfg():
 class TestServicesDataclass:
     def test_fields_are_immutable(self):
         from lilbee.core.services import CrawlerSyncState, Services
+        from lilbee.providers.worker.health_ticker import HealthTickerHandle
 
         services = Services(
             provider=MagicMock(),
@@ -35,9 +36,138 @@ class TestServicesDataclass:
             model_manager=MagicMock(),
             crawler_semaphore=None,
             crawler_sync_state=CrawlerSyncState(),
+            worker_pool=MagicMock(),
+            pool_runtime=MagicMock(),
+            pool_health_ticker=HealthTickerHandle(),
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]
+
+
+class TestCancelInference:
+    def test_flips_abort_flag_on_every_registered_role(self):
+        """``cancel_inference`` reaches every registered role's accessor."""
+        called: list[str] = []
+
+        class _FakeAccessor:
+            def __init__(self, role: str) -> None:
+                self.role = role
+
+            def cancel(self) -> None:
+                called.append(self.role)
+
+        class _FakePool:
+            registered_roles = ("embed", "chat")
+
+            def accessor(self, role: str) -> _FakeAccessor:
+                return _FakeAccessor(role)
+
+        from tests.conftest import make_mock_services
+
+        services = make_mock_services(worker_pool=_FakePool())
+        services.cancel_inference()
+        assert called == ["embed", "chat"]
+
+
+class TestEagerStartBranch:
+    """``get_services`` triggers ``pool_runtime.start`` + ``start_eager`` when
+    ``cfg.worker_pool_eager_start`` is True."""
+
+    def test_eager_start_runs_when_flag_set(self, monkeypatch):
+        """Flag set: pool_runtime.start + start_eager run; suppress catches errors."""
+        cfg.worker_pool_eager_start = True
+
+        from lilbee.core import services as services_mod
+
+        services_mod.set_services(None)
+        # Stub the heavy collaborators so get_services builds without spawning anything.
+        # Imports inside get_services() resolve to the source modules; patch at those
+        # source paths so the lazy bindings inside the function pick up the stubs.
+        monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
+        monkeypatch.setattr(
+            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
+        )
+
+        called: list[str] = []
+
+        async def _start_eager_records():
+            called.append("start_eager")
+
+        class _RecordingRuntime:
+            def __init__(self):
+                self._started = False
+
+            def start(self):
+                called.append("start")
+                self._started = True
+
+            def run_sync(self, coro, *, timeout):
+                called.append("run_sync")
+                # Close the coroutine so pytest does not warn "never awaited".
+                coro.close()
+
+            def shutdown(self, *, timeout=5.0):
+                pass
+
+        # Patch PoolRuntime where get_services imports it. The function does
+        # ``from lilbee.providers.worker.pool import PoolRuntime`` so patch on
+        # that source module.
+        monkeypatch.setattr(
+            "lilbee.providers.worker.pool.PoolRuntime",
+            lambda: _RecordingRuntime(),
+        )
+        from lilbee.providers.worker.health_ticker import HealthTickerHandle
+
+        monkeypatch.setattr(
+            "lilbee.providers.worker.health_ticker.start_health_ticker",
+            lambda *_args, **_kw: HealthTickerHandle(),
+        )
+
+        # Patch WorkerPool.start_eager to a recording awaitable so run_sync sees a coro.
+        from lilbee.providers.worker.pool import WorkerPool
+
+        monkeypatch.setattr(WorkerPool, "start_eager", lambda self: _start_eager_records())
+
+        try:
+            services_mod.get_services()
+        finally:
+            services_mod.set_services(None)
+        assert "start" in called
+        assert "run_sync" in called
+
+    def test_eager_start_swallows_runtime_failure(self, monkeypatch):
+        """Suppress(Exception) keeps get_services() resilient if eager start raises."""
+        cfg.worker_pool_eager_start = True
+
+        from lilbee.core import services as services_mod
+
+        services_mod.set_services(None)
+        monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
+        monkeypatch.setattr(
+            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
+        )
+
+        class _BoomRuntime:
+            def start(self):
+                raise RuntimeError("simulated start failure")
+
+            def shutdown(self, *, timeout=5.0):
+                pass
+
+        monkeypatch.setattr("lilbee.providers.worker.pool.PoolRuntime", lambda: _BoomRuntime())
+        from lilbee.providers.worker.health_ticker import HealthTickerHandle
+
+        monkeypatch.setattr(
+            "lilbee.providers.worker.health_ticker.start_health_ticker",
+            lambda *_args, **_kw: HealthTickerHandle(),
+        )
+
+        try:
+            # Must not raise even though start() blew up.
+            svc = services_mod.get_services()
+            assert svc is not None
+        finally:
+            services_mod.set_services(None)
 
 
 class TestResetStore:

@@ -1,9 +1,9 @@
 """Typed service container: single point of access for all singletons.
 
 All runtime dependencies (provider, store, embedder, reranker, concepts,
-clusterer, searcher) are created lazily on first call to ``get_services()``
-and cached for the process lifetime. Tests call ``reset_services()``
-between runs.
+clusterer, searcher, worker pool) are created lazily on first call to
+``get_services()`` and cached for the process lifetime. Tests call
+``reset_services()`` between runs.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.worker.health_ticker import HealthTickerHandle
+    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -38,7 +41,14 @@ class CrawlerSyncState:
 
 @dataclass(frozen=True)
 class Services:
-    """Holds all runtime service instances."""
+    """Holds all runtime service instances.
+
+    The worker pool sits on Services (not on the provider) so any
+    subsystem can reach it for cancellation, health checks, or
+    diagnostics without crossing into ``LlamaCppProvider``'s private
+    API. ``cancel_inference()`` is the canonical entry point used by
+    Ctrl+C and the chat-stream cancel action.
+    """
 
     provider: LLMProvider
     store: Store
@@ -53,6 +63,28 @@ class Services:
     model_manager: ModelManager
     crawler_semaphore: asyncio.Semaphore | None
     crawler_sync_state: CrawlerSyncState
+    worker_pool: WorkerPool
+    pool_runtime: PoolRuntime
+    pool_health_ticker: HealthTickerHandle
+
+    def cancel_inference(self) -> None:
+        """Flip the abort flag on every registered worker pool role. Idempotent."""
+        for role_name in self.worker_pool.registered_roles:
+            self.worker_pool.accessor(role_name).cancel()
+
+    def add_pool_listener(
+        self,
+        *,
+        on_spawning: Callable[[str], None] | None = None,
+        on_spawned: Callable[[str], None] | None = None,
+    ) -> None:
+        """Subscribe to worker spawn lifecycle events.
+
+        Forwards directly to :meth:`WorkerPool.add_listener`. The TUI uses this
+        to surface "Starting <role> worker..." / "<role> worker ready"
+        notifications during the cold-start window.
+        """
+        self.worker_pool.add_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
 _svc: Services | None = None
@@ -78,13 +110,22 @@ def get_services() -> Services:
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
+    from lilbee.providers.worker.health_ticker import start_health_ticker
+    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
+    from lilbee.providers.worker.transport import default_spawner
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
+    from lilbee.runtime.asyncio_loop import get_loop
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
+    worker_pool = WorkerPool(
+        spawner=default_spawner(),
+        max_idle_s=cfg.worker_pool_max_idle_s,
+    )
+    pool_runtime = PoolRuntime()
     provider = create_provider(cfg)
     store = Store(cfg)
     embedder = Embedder(cfg, provider)
@@ -100,6 +141,9 @@ def get_services() -> Services:
         asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
     )
     crawler_sync_state = CrawlerSyncState()
+    pool_health_ticker: HealthTickerHandle = start_health_ticker(
+        worker_pool, pool_runtime, get_loop()
+    )
     _svc = Services(
         provider=provider,
         store=store,
@@ -114,7 +158,22 @@ def get_services() -> Services:
         model_manager=model_manager,
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
+        worker_pool=worker_pool,
+        pool_runtime=pool_runtime,
+        pool_health_ticker=pool_health_ticker,
     )
+    # Eager start is the default: pay 1-3 s per worker at TUI mount so the
+    # first user action lands on a warm pool. Roles whose model is unset are
+    # skipped, so a setup with only chat + embed never spawns rerank or
+    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless
+    # scripts where mount time matters more than first-call latency.
+    if cfg.worker_pool_eager_start:
+        from contextlib import suppress
+
+        with suppress(Exception):
+            provider.warm_up_pool()
+            pool_runtime.start()
+            pool_runtime.run_sync(worker_pool.start_eager(), timeout=30.0)
     return _svc
 
 
@@ -126,8 +185,11 @@ def set_services(services: Services | None) -> None:
 
 def reset_services() -> None:
     """Shut down and discard all cached instances."""
+    from lilbee.providers.worker.pool import shutdown_pool_runtime
+
     global _svc
     if _svc is not None:
+        shutdown_pool_runtime(_svc.worker_pool, _svc.pool_runtime, _svc.pool_health_ticker)
         _svc.provider.shutdown()
         _svc.store.close()
     _svc = None

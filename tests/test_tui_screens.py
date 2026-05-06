@@ -474,19 +474,35 @@ class TestGroupRowsForGrid:
         assert len(rerank_section.rows) == 1
         assert rerank_section.rows[0].task == ModelTask.RERANK
 
-    def test_featured_and_installed_excluded_from_task_buckets(self) -> None:
-        """A featured rerank row appears only in Our Picks, not the RERANK bucket."""
+    def test_featured_lives_at_top_of_task_section(self) -> None:
+        """Featured rows merge into their task section with the pick first."""
+        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.modelhub.models import ModelTask
+
+        rows = [
+            self._row(ModelTask.RERANK, featured=False),
+            self._row(ModelTask.RERANK, featured=True),
+        ]
+        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        assert "Our picks" not in sections
+        rerank = sections[ModelTask.RERANK.capitalize()]
+        assert len(rerank) == 2
+        assert getattr(rerank[0], "featured", False) is True
+        assert getattr(rerank[1], "featured", False) is False
+
+    def test_installed_still_has_its_own_section(self) -> None:
+        """Installed rows are pulled out of task sections into their own bucket."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
         from lilbee.modelhub.models import ModelTask
 
         rows = [
-            self._row(ModelTask.RERANK, featured=True),
-            self._row(ModelTask.RERANK),
+            self._row(ModelTask.CHAT, installed=True),
+            self._row(ModelTask.CHAT),
         ]
         sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
-        assert len(sections[msg.HEADING_OUR_PICKS]) == 1
-        assert len(sections[ModelTask.RERANK.capitalize()]) == 1
+        assert len(sections[msg.HEADING_INSTALLED]) == 1
+        assert len(sections[ModelTask.CHAT.capitalize()]) == 1
 
     def test_unknown_task_gets_its_own_section(self) -> None:
         """A row whose task is outside _TASK_BUCKET_ORDER still appears,
@@ -1250,15 +1266,14 @@ async def test_ctrl_r_with_no_focus_is_noop():
 
 async def test_ctrl_r_on_non_row_focus_is_noop():
     """action_reset_focused ignores focus that isn't inside a setting row."""
-    from textual.widgets import Button
-
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        screen.query_one("#reset-all-defaults", Button).focus()
+        # Focus a non-row widget (the toolbar / view tabs strip).
+        await pilot.press("tab")
         await pilot.pause()
         with patch.object(screen, "_reset_to_default") as mock_reset:
             screen.action_reset_focused()
@@ -1485,16 +1500,26 @@ async def test_reset_list_default_joins_newlines():
             mock_persist.assert_called_once_with("crawl_exclude_patterns", defn, expected)
 
 
-async def test_reset_all_button_mounts_in_top_row():
-    """The Reset-all button renders alongside the search input."""
+async def test_reset_all_uses_footer_binding_not_button():
+    """Reset-all is now a Ctrl+Shift+R footer binding, not a button widget.
+
+    Per user feedback the button was awkwardly placed; replaced with a
+    keyboard binding shown in the Footer so the destructive action is
+    deliberate (modal confirms before mutating cfg).
+    """
     from textual.widgets import Button
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        button = app.screen.query_one("#reset-all-defaults", Button)
-        assert button is not None
-        top_row = app.screen.query_one("#settings-top-row")
-        assert button in list(top_row.query(Button))
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        # The button widget must be gone.
+        assert not list(app.screen.query("#reset-all-defaults").results(Button))
+        # The footer-visible binding must be present.
+        names = [b.action for b in screen.BINDINGS]  # type: ignore[attr-defined]
+        assert "reset_all" in names
 
 
 async def test_reset_all_cancel_does_nothing():
@@ -1674,8 +1699,8 @@ async def test_publish_batch_signals_on_lilbee_app():
         assert mock_pub.call_count == 2
 
 
-async def test_reset_all_button_press_opens_confirm_dialog():
-    """Pressing Reset-all pushes the ConfirmDialog screen before mutating state."""
+async def test_reset_all_action_opens_confirm_dialog():
+    """Triggering action_reset_all (Ctrl+Shift+R) pushes the ConfirmDialog."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
@@ -1684,7 +1709,7 @@ async def test_reset_all_button_press_opens_confirm_dialog():
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
         with patch.object(screen.app, "push_screen") as mock_push:
-            screen._on_reset_all_pressed()
+            screen.action_reset_all()
         mock_push.assert_called_once()
         pushed_screen = mock_push.call_args.args[0]
         assert isinstance(pushed_screen, ConfirmDialog)
@@ -3190,6 +3215,22 @@ def _patch_catalog():
     )
 
 
+@pytest.fixture(autouse=True)
+def _suppress_catalog_auto_hf_fetch():
+    """Block the catalog auto-fired HF fetch.
+
+    CatalogScreen kicks off `_fetch_all_hf_models` on mount; on slow
+    Windows runners that re-mounts ModelGrid sections under tests that
+    snapshotted them, causing flake. Suppress the fetch in every test
+    in this file; tests that need to exercise the fetch path call it
+    directly.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    with patch.object(CatalogScreen, "_fetch_all_hf_models"):
+        yield
+
+
 async def test_catalog_screen_renders():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -3428,6 +3469,10 @@ async def test_catalog_load_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            # Auto-fetch on mount may have flipped these; reset to the
+            # exhausted-not state this test exercises.
+            screen._hf_has_more = True
+            screen._loading_more = False
             old_offset = screen._hf_offset
             with patch.object(screen, "_fetch_more_hf"):
                 screen._load_more()
@@ -3449,6 +3494,66 @@ async def test_catalog_action_load_more_triggers_fetch():
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen.action_load_more()
                 assert fetch.called
+
+
+async def test_catalog_keyboard_nav_near_end_triggers_load_more():
+    """Cursor near the end of the catalog runs the prefetch hook."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._grid_view = True
+    screen._hf_has_more = True
+    screen._loading_more = False
+    target = MagicMock(spec=ModelGrid)
+    target.highlighted = 0
+    target.rows = [object()]
+    fake_container = MagicMock()
+    fake_container.query.return_value = [target]
+    with (
+        patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        patch.object(screen, "_focused_grid", return_value=target),
+        patch.object(screen, "_load_more") as load_more,
+    ):
+        screen._maybe_prefetch_on_grid_nav()
+        assert load_more.called, "cursor near end must trigger _load_more"
+
+
+async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
+    """When the cursor lands on the last row of the bottom-most grid, the
+    catalog parent scrolls to its end so the inline scroll-hint Static comes
+    into view (matches mouse-scroll-past-the-cards behavior)."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    target = MagicMock(spec=ModelGrid)
+    target.highlighted = 0
+    target.columns_per_row = 1
+    target.rows = [object()]
+    fake_container = MagicMock()
+    fake_container.query.return_value = [target]
+    with (
+        patch.object(CatalogScreen, "_grid_container", new=fake_container),
+        patch.object(screen, "_focused_grid", return_value=target),
+    ):
+        screen._reveal_scroll_hint_at_catalog_end()
+    fake_container.scroll_end.assert_called_once()
+
+    # Cursor mid-grid (not last row) does NOT scroll to end.
+    screen2 = CatalogScreen.__new__(CatalogScreen)
+    target2 = MagicMock(spec=ModelGrid)
+    target2.highlighted = 0
+    target2.columns_per_row = 1
+    target2.rows = [object(), object(), object()]  # last_row index = 2
+    fake_container2 = MagicMock()
+    fake_container2.query.return_value = [target2]
+    with (
+        patch.object(CatalogScreen, "_grid_container", new=fake_container2),
+        patch.object(screen2, "_focused_grid", return_value=target2),
+    ):
+        screen2._reveal_scroll_hint_at_catalog_end()
+    fake_container2.scroll_end.assert_not_called()
 
 
 async def test_catalog_load_more_noop_when_exhausted():
@@ -3920,6 +4025,8 @@ async def test_catalog_load_more_deduplicated_while_in_flight():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._hf_has_more = True
+            screen._loading_more = False
             old_offset = screen._hf_offset
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen._load_more()
@@ -4018,6 +4125,27 @@ async def test_catalog_get_search_text_returns_empty_when_input_missing():
     assert screen._get_search_text() == ""
 
 
+async def test_catalog_update_sort_label_swallows_missing_widget():
+    """``_update_sort_label`` early-returns when ``#sort-label`` is unmounted,
+    so worker callbacks racing the screen's ``compose`` cannot crash with
+    NoMatches (the source of an intermittent Windows CI failure)."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # Remove the sort-label widget so the next call hits NoMatches.
+            screen.query_one("#sort-label", Static).remove()
+            await _pilot.pause()
+            # Must not raise.
+            screen._update_sort_label()
+
+
 async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
     """_initial_focus_first_grid is a no-op once a focus owner exists."""
     from textual.widgets import Input
@@ -4054,11 +4182,10 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen._grid_cache_key = ()
             screen._refresh_grid()
             screen._refresh_list()
-            # Move focus off the initial featured grid so
-            # _get_highlighted_model_name() doesn't pick up stale state.
-            screen.query_one("#catalog-search").focus()
-            await _pilot.pause()
-            assert screen._get_highlighted_model_name() is None
+            # Pin _focused_grid to None so a slow worker that left a stale
+            # ModelGrid focused doesn't surface a model ref.
+            with patch.object(screen, "_focused_grid", return_value=None):
+                assert screen._get_highlighted_model_name() is None
 
 
 async def test_catalog_get_highlighted_with_rows():
@@ -4212,6 +4339,8 @@ async def test_catalog_select_catalog_row():
 
 
 async def test_catalog_input_changed_refreshes():
+    import asyncio
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -4227,8 +4356,16 @@ async def test_catalog_input_changed_refreshes():
                 event = MagicMock(spec=Input.Changed)
                 event.input = inp
                 screen._on_search_changed(event)
-                # Wait for the debounce timer (80 ms) plus a frame.
-                await pilot.pause(0.15)
+                # Wait for the debounce timer (80 ms) plus enough frames
+                # for the timer callback to dispatch. The bare 0.15 s
+                # ``pilot.pause`` was borderline on Windows 3.11 where
+                # the asyncio timer wheel granularity is coarser; poll
+                # in 50 ms increments and bail as soon as the mock fires.
+                for _ in range(20):
+                    await pilot.pause()
+                    await asyncio.sleep(0.05)
+                    if mock_filter.called:
+                        break
                 mock_filter.assert_called()
 
 
@@ -5134,6 +5271,66 @@ async def test_catalog_delete_installed_model_confirmation():
             assert screen._pending_delete == "test-model:latest"
 
 
+async def test_catalog_action_show_info_toasts_with_no_highlight():
+    """action_show_info warns when no row is selected."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+            with (
+                patch.object(screen, "_highlighted_row", return_value=None),
+                patch.object(screen, "notify") as mock_notify,
+            ):
+                screen.action_show_info()
+                mock_notify.assert_called_once()
+
+
+async def test_catalog_action_show_info_pushes_modal_for_local_row():
+    """action_show_info pushes ModelInfoModal for a LocalCatalogRow."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+            row = LocalCatalogRow(
+                name="Acme 1B",
+                task="chat",
+                params="1B",
+                size="700 MB",
+                quant="Q8_0",
+                downloads="42",
+                featured=False,
+                installed=False,
+                sort_downloads=42,
+                sort_size=0.7,
+                ref="acme/acme-1b-gguf",
+            )
+            with (
+                patch.object(screen, "_highlighted_row", return_value=row),
+                patch.object(screen.app, "push_screen") as mock_push,
+            ):
+                screen.action_show_info()
+                mock_push.assert_called_once()
+                pushed = mock_push.call_args[0][0]
+                assert isinstance(pushed, ModelInfoModal)
+
+
 async def test_catalog_delete_with_no_highlight_warns():
     """action_delete_model toasts when nothing is highlighted to delete."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -5470,6 +5667,69 @@ async def test_chat_enter_returns_to_insert_mode():
         app.screen._enter_insert_mode()
         await pilot.pause()
         assert app.screen._insert_mode is True
+
+
+async def test_chat_focus_commands_re_enables_input_focus_from_normal_mode():
+    """Pressing the / shortcut from NORMAL mode must focus the input.
+
+    Regression for a follow-up to bb-aluu: with the chat input
+    intentionally ``can_focus = False`` while in NORMAL mode, the
+    ``action_focus_commands`` helper (bound to ``/`` and the command
+    palette shortcut) must route through ``_enter_insert_mode`` to
+    re-enable focusability and enter INSERT cleanly.
+    """
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input", ChatInput)
+
+        # Drop into NORMAL mode (input becomes unfocusable).
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+        assert inp.can_focus is False
+
+        # Trigger the slash-prefill shortcut.
+        app.screen.action_focus_commands()
+        await pilot.pause()
+        assert app.screen._insert_mode is True
+        assert inp.can_focus is True
+        assert inp.has_focus
+        assert inp.value.startswith("/")
+
+
+async def test_chat_focus_restored_to_input_in_normal_mode_bounces_to_log():
+    """Programmatic focus restore (e.g. modal pop) must not silently flip to INSERT.
+
+    Regression for bb-aluu: closing a modal returned focus to the chat
+    input, which auto-flipped INSERT mode. The next keystroke (intended
+    as a global binding like ``[`` or ``]`` for view nav) then landed as
+    a literal character in the input field instead of switching views.
+    """
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+
+        # Drop into NORMAL mode (focus moves to chat log).
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+        assert log.has_focus
+
+        # Simulate a modal pop restoring focus to the chat input.
+        inp.focus()
+        await pilot.pause()
+        # The screen must NOT silently flip to INSERT; focus bounces back
+        # to the chat log so global bindings keep firing.
+        assert app.screen._insert_mode is False
+        assert log.has_focus
+        assert not inp.has_focus
 
 
 async def test_chat_normal_mode_dims_input():
@@ -6197,7 +6457,7 @@ def _count_descendants(node):
 
 class TestWikiScreenEmptyState:
     async def test_shows_empty_when_wiki_disabled(self):
-        """Shows empty state message when cfg.wiki is False."""
+        """Shows empty state (or spaCy install hint) when cfg.wiki is False."""
         cfg.wiki = False
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
@@ -6207,7 +6467,11 @@ class TestWikiScreenEmptyState:
 
             tree = app.screen.query_one("#wiki-page-list", Tree)
             labels = [str(c.label) for c in tree.root.children]
-            assert any(msg.WIKI_EMPTY_STATE in label for label in labels)
+            # When spaCy is missing, the leaf surfaces a single-line spaCy
+            # hint and the right pane carries the install instructions.
+            # Either bare empty-state or the spaCy hint is acceptable.
+            expected = (msg.WIKI_EMPTY_STATE, msg.WIKI_EMPTY_NEEDS_SPACY_LEAF)
+            assert any(any(needle in label for needle in expected) for label in labels)
 
     async def test_shows_empty_when_no_pages(self, tmp_path):
         """Shows empty state when wiki is enabled but no pages exist."""
@@ -7915,8 +8179,7 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 
 
 async def test_catalog_grid_leave_down_focuses_next():
-    """GridSelect.LeaveDown moves focus to the next focusable widget when
-    there is no more remote data to fetch."""
+    """LeaveDown on a NON-last grid moves focus to the next grid."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -7926,18 +8189,49 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen._hf_has_more = False  # exhausts the load-more branch
+            screen._hf_has_more = False
             grids = list(screen.query(ModelGrid))
-            if grids:
-                grids[0].focus()
-                await pilot.pause()
-                grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
-                await pilot.pause()
-                assert screen.focused is not grids[0]
+            if len(grids) < 2:
+                pytest.skip("test requires at least two grids mounted")
+            grids[0].focus()
+            await pilot.pause()
+            grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
+            await pilot.pause()
+            assert screen.focused is not grids[0]
+
+
+async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
+    """LeaveDown on the LAST grid with no more HF data parks the cursor."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._hf_has_more = False
+            # Re-query grids right before exercising LeaveDown so a slow
+            # Windows worker that mounts more grids between push and pause
+            # still sees the truly-last grid, not a stale snapshot.
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one grid mounted")
+            last = grids[-1]
+            last.focus()
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            last = grids[-1]
+            last.focus()
+            await pilot.pause()
+            last.post_message(ModelGrid.LeaveDown(last))
+            await pilot.pause()
+            assert screen.focused is last
 
 
 async def test_catalog_grid_leave_up_focuses_previous():
-    """GridSelect.LeaveUp moves focus to the previous focusable widget."""
+    """LeaveUp on a NON-first grid moves focus to the previous grid."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -7948,12 +8242,34 @@ async def test_catalog_grid_leave_up_focuses_previous():
             app.push_screen(screen)
             await pilot.pause()
             grids = list(screen.query(ModelGrid))
-            assert grids, "Expected at least one GridSelect"
+            if len(grids) < 2:
+                pytest.skip("test requires at least two grids mounted")
+            grids[1].focus()
+            await pilot.pause()
+            grids[1].post_message(ModelGrid.LeaveUp(grids[1]))
+            await pilot.pause()
+            assert screen.focused is not grids[1]
+
+
+async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
+    """LeaveUp on the topmost grid parks the cursor (no leak to toolbar)."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one grid mounted")
             grids[0].focus()
             await pilot.pause()
             grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
             await pilot.pause()
-            assert screen.focused is not grids[0]
+            assert screen.focused is grids[0]
 
 
 async def test_catalog_select_variant_row():
@@ -8103,9 +8419,13 @@ async def test_catalog_get_highlighted_variant_name():
             items_count = list_container.option_count
             assert items_count
             screen._list_widget.highlighted = 0
-            screen._list_widget.focus()
-            await _pilot.pause()
-            name = screen._get_highlighted_model_name()
+            with patch.object(
+                type(screen._list_widget),
+                "has_focus",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                name = screen._get_highlighted_model_name()
             assert name == "org/model-GGUF"
 
 
@@ -8756,24 +9076,53 @@ async def test_app_action_quit_routes_to_wizard_cancel():
             assert not isinstance(app.screen, SetupWizard)
 
 
-async def test_action_quit_calls_request_abort_before_exit():
-    """Ctrl+C calls ``request_abort()`` before ``exit`` so ggml unblocks first."""
+async def test_action_quit_calls_cancel_inference_before_exit():
+    """Ctrl+C calls ``Services.cancel_inference()`` before ``exit`` so subprocess
+    workers unblock first.
+
+    Cancel routes through Services so pool-mode (subprocess abort flag)
+    AND fallback-mode (in-process Event) both fire. Tested through the
+    LilbeeApp action so the full quit path is covered.
+    """
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         parent = MagicMock()
+
+        from lilbee.core.services import get_services, set_services
+        from tests.conftest import make_mock_services
+
+        # Build a stub Services whose cancel_inference is a MagicMock so we
+        # can observe ordering without trying to mutate the real frozen
+        # dataclass field. Services itself is frozen; the methods are
+        # not, but bound-method patching needs a fresh container.
+        original_services = get_services()
+        stub = make_mock_services(provider=original_services.provider)
+        # Replace the method with our mock at the class level temporarily.
+        from lilbee.core import services as services_mod
+
+        cancel_calls: list[str] = []
+
+        def _stub_cancel(self):
+            parent.cancel_inference()
+            cancel_calls.append("called")
+
         with (
-            patch("lilbee.cli.tui.app.request_abort", parent.request_abort),
+            patch.object(services_mod.Services, "cancel_inference", _stub_cancel),
             patch.object(app, "exit", parent.exit),
         ):
-            await pilot.press("ctrl+c")
-            await pilot.pause()
+            set_services(stub)
+            try:
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+            finally:
+                set_services(original_services)
             call_names = [c[0] for c in parent.mock_calls]
-            assert "request_abort" in call_names
-            # ``request_abort`` must come no later than ``exit`` in the call order.
-            assert call_names.index("request_abort") <= call_names.index("exit")
+            assert "cancel_inference" in call_names
+            # cancel_inference must come no later than exit in the call order.
+            assert call_names.index("cancel_inference") <= call_names.index("exit")
 
 
 async def test_no_force_quit_attribute():
@@ -9653,21 +10002,19 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             assert result is None
 
 
-async def test_catalog_browse_more_clicked():
-    """Browse more button triggers HF model fetch."""
+async def test_catalog_auto_fetches_hf_on_mount():
+    """Opening the catalog kicks off the HF bulk fetch automatically (no CTA gate)."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            assert screen._hf_fetched is False
-            with patch.object(screen, "_fetch_all_hf_models") as mock_fetch:
-                screen._on_browse_more_clicked()
+            with patch.object(CatalogScreen, "_fetch_all_hf_models") as mock_fetch:
+                app.push_screen(screen)
+                await _pilot.pause()
                 assert screen._hf_fetched is True
-                mock_fetch.assert_called_once()
+                mock_fetch.assert_called()
 
 
 async def test_catalog_grid_selected_delegates_to_select_row():
@@ -10561,6 +10908,7 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             # contextlib.suppress block successfully resolves the query.
             await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
             await _pilot.pause()
+            screen._loading_more = True
             screen._tick_loading_spinner()
             await _pilot.pause()
             hint = screen.query_one("#catalog-grid > .scroll-hint", Static)

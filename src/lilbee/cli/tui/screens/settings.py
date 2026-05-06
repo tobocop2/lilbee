@@ -116,8 +116,8 @@ class _PaneGroup:
     items: list[tuple[str, SettingDef]]
 
 
-class _LazyGroupBody(VerticalGroup):
-    """Pane-body container that mounts its rows on first activation."""
+class _LazyGroupBody(VerticalScroll, can_focus=False):
+    """Pane-body that mounts rows on first activation; scrolls when taller than viewport."""
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -342,12 +342,14 @@ class SettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
-        # Tab walks every focusable on the screen (reset-all button,
-        # the group Tabs strip, then editors inside the active
-        # TabPane). Use ←/→ to switch tabs while focus is on the strip.
-        Binding("tab", "app.focus_next", "Next field", show=True),
-        Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
-        Binding("ctrl+r", "reset_focused", "Reset", show=False),
+        # Tab cycles editors inside the active pane and rolls over to the
+        # next group tab when you Tab past the last editor (and the
+        # previous group tab on shift+Tab past the first editor). Use
+        # ←/→ to switch tabs while focus is on the strip.
+        Binding("tab", "next_field_or_pane", "Next field", show=True),
+        Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True),
+        Binding("ctrl+r", "reset_focused", "Reset field", show=False),
+        Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -374,12 +376,6 @@ class SettingsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-            with Horizontal(id="settings-top-row"):
-                yield Button(
-                    msg.SETTINGS_RESET_ALL_LABEL,
-                    id="reset-all-defaults",
-                    classes="reset-all-button",
-                )
         with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
             yield from self._compose_group_tabs()
         with BottomBars():
@@ -724,9 +720,8 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh model picker label for %s", key, exc_info=True)
 
-    @on(Button.Pressed, "#reset-all-defaults")
-    def _on_reset_all_pressed(self) -> None:
-        """Open a destructive-confirm dialog before resetting every writable field."""
+    def action_reset_all(self) -> None:
+        """Bound to Ctrl+Shift+R; opens the destructive-confirm dialog."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         self.app.push_screen(
@@ -888,3 +883,51 @@ class SettingsScreen(Screen[None]):
 
     def action_scroll_end(self) -> None:
         self.query_one("#settings-scroll", VerticalScroll).scroll_end()
+
+    def action_next_field_or_pane(self) -> None:
+        """Tab inside a pane; on overflow advance to the next group tab."""
+        self._move_focus_within_pane(direction=1)
+
+    def action_prev_field_or_pane(self) -> None:
+        """Shift+Tab inside a pane; on underflow retreat to the previous group tab."""
+        self._move_focus_within_pane(direction=-1)
+
+    def _move_focus_within_pane(self, *, direction: int) -> None:
+        focused = self.app.focused
+        tabs = self.query_one("#settings-tabs", TabbedContent)
+        active_pane_id = tabs.active
+        try:
+            body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
+        except Exception:
+            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            return
+        focusables = [w for w in body.query("*") if w.focusable]
+        if not focusables or focused is None or focused not in focusables:
+            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            return
+        index = focusables.index(focused)
+        next_index = index + direction
+        if 0 <= next_index < len(focusables):
+            focusables[next_index].focus()
+            return
+        # At the boundary: advance to the next/previous pane.
+        pane_ids = list(self._pane_groups.keys())
+        if active_pane_id not in pane_ids:
+            return
+        target_index = (pane_ids.index(active_pane_id) + direction) % len(pane_ids)
+        target_pane = pane_ids[target_index]
+        tabs.active = target_pane
+        self._populate_pane(target_pane)
+        # Park focus on the first/last field of the new pane so the next
+        # Tab keeps moving in the same direction.
+        self.call_after_refresh(self._focus_pane_edge, target_pane, direction)
+
+    def _focus_pane_edge(self, pane_id: str, direction: int) -> None:
+        try:
+            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+        except Exception:
+            return
+        focusables = [w for w in body.query("*") if w.focusable]
+        if not focusables:
+            return
+        focusables[0 if direction == 1 else -1].focus()

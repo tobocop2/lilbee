@@ -34,10 +34,30 @@ SETUP_CHROMIUM_DETAIL = "chromium: {done}/{total} MB"
 SETUP_CHROMIUM_DETAIL_UNKNOWN = "chromium: {done} MB"
 SETUP_CHROMIUM_CLI_PROGRESS = "  chromium: {pct}%"
 SYNC_FAILED_FILES = "Sync failed for {files}"
-SYNC_SKIPPED_FILES = (
+SYNC_SKIPPED_NO_VISION = (
     "Skipped (no text extracted): {files}. "
-    "Set vision_model in settings or check that the PDF is readable."
+    "Configure a vision_model in Settings to OCR scanned PDFs."
 )
+SYNC_SKIPPED_VISION_FAILED = (
+    "Skipped (vision OCR returned no text): {files}. "
+    "See ~/Library/Application Support/lilbee/logs/worker-vision.log "
+    "for the underlying error."
+)
+
+
+def sync_skipped_message(files: str) -> str:
+    """Pick the right skipped-files message based on whether vision_model is set.
+
+    When the user has no vision_model configured the actionable advice is
+    'go set one'; when one IS configured the OCR failed at runtime, so the
+    message points the user at the worker log instead of telling them to
+    do something they have already done.
+    """
+    if cfg.vision_model:
+        return SYNC_SKIPPED_VISION_FAILED.format(files=files)
+    return SYNC_SKIPPED_NO_VISION.format(files=files)
+
+
 CMD_DELETE_NO_DOCS = "No documents indexed"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
@@ -87,7 +107,6 @@ EMBEDDING_MISSING = (
     "Run /pull to install one, or: lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 )
 THEME_SET = "Theme: {name}"
-HEADING_OUR_PICKS = "Our picks"
 HEADING_INSTALLED = "Installed"
 CATALOG_TAB_LOCAL = "Local"
 CATALOG_TAB_FRONTIER = "Frontier"
@@ -105,6 +124,10 @@ CATALOG_QUEUED_DOWNLOAD = "Queued download: {name}"
 CATALOG_INSTALLED_OK = "{name} installed"
 CATALOG_GATED_REPO = "{name} requires login, run /login or lilbee login"
 CATALOG_DOWNLOAD_FAILED = "{name}: download failed"
+CATALOG_SELECT_FOR_INFO = "Select a model to view info"
+CATALOG_FRONTIER_NO_INFO = "Info modal is for downloadable models only"
+MODEL_INFO_HINT = "Esc / i / q to close"
+MODEL_INFO_HF_LINK = "View on HuggingFace: https://huggingface.co/{repo}"
 CATALOG_SELECT_TO_DELETE = "Select a model to delete"
 CATALOG_NOT_INSTALLED = "{name} is not installed"
 CATALOG_CONFIRM_DELETE = "Delete {name}? Press d again to confirm"
@@ -116,7 +139,6 @@ CATALOG_VIEW_TOGGLE_GRID = "Press v for full list view · / to search"
 CATALOG_VIEW_TOGGLE_LIST = "Press v for card view · s to sort"
 CATALOG_VIEW_GRID = "Grid"
 CATALOG_VIEW_LIST = "List"
-CATALOG_BROWSE_MORE = "Browse more models →"
 CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
@@ -148,6 +170,43 @@ SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
 SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
 SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
 WIKI_EMPTY_STATE = "No wiki pages found"
+WIKI_EMPTY_NEEDS_SPACY_LEAF = "spaCy not installed (see right pane)"
+WIKI_EMPTY_NEEDS_SPACY_DETAIL = (
+    "## Wiki entity extraction needs spaCy\n\n"
+    "Install it then re-ingest documents:\n\n"
+    "```sh\n"
+    "uv pip install spacy\n"
+    "python -m spacy download en_core_web_sm\n"
+    "```"
+)
+
+
+def wiki_empty_state_leaf() -> str:
+    """Single-line sidebar tree leaf for the empty-wiki state."""
+    if not _spacy_available():
+        return WIKI_EMPTY_NEEDS_SPACY_LEAF
+    return WIKI_EMPTY_STATE
+
+
+def wiki_empty_state_detail() -> str:
+    """Right-pane markdown body for the empty-wiki state."""
+    if not _spacy_available():
+        return WIKI_EMPTY_NEEDS_SPACY_DETAIL
+    return WIKI_NO_CONTENT
+
+
+def _spacy_available() -> bool:
+    try:
+        from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
+
+        load_spacy_pipeline()
+    except (ImportError, OSError):
+        return False
+    except Exception:
+        return True
+    return True
+
+
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
 WIKI_INDEX_LABEL = "Index"
@@ -211,7 +270,6 @@ MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
 TASKBAR_HINT = "Press t for Tasks"
 TASKBAR_HINT_INPUT = "Esc then t for Tasks"
-CHAT_REASONING_STREAMING = "thinking..."
 CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
 CHAT_SOURCES_LABEL = "sources"
 
@@ -260,3 +318,13 @@ MODEL_PICKER_EMBED_TOOLTIP = (
 )
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
+
+
+def worker_starting(role: str) -> str:
+    """User-facing notification text fired immediately before a worker spawn."""
+    return f"Starting {role.replace('_', ' ').title()} worker..."
+
+
+def worker_ready(role: str) -> str:
+    """User-facing notification text fired once the spawned worker is live."""
+    return f"{role.replace('_', ' ').title()} worker ready"

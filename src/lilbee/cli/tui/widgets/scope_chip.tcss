@@ -28,3 +28,9 @@ ScopeChip .scope-pill.-active {
     background: $success;
     color: $text;
 }
+
+ScopeChip .scope-pill:focus {
+    text-style: bold;
+    background: $accent;
+    color: $text;
+}

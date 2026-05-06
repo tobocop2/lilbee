@@ -1,14 +1,4 @@
 SettingsScreen {
-    #settings-top-row {
-        height: auto;
-        margin: 0 1;
-    }
-
-    .reset-all-button {
-        width: auto;
-        margin-left: 1;
-        color: $text-muted;
-    }
 
     #settings-scroll {
         height: 1fr;
@@ -19,6 +9,7 @@ SettingsScreen {
     #settings-tabs {
         height: 1fr;
         min-height: 0;
+        margin-top: 1;
     }
 
     /* TabbedContent's inner ContentSwitcher and TabPane default to

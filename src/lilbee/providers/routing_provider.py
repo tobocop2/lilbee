@@ -17,6 +17,9 @@ from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
 log = logging.getLogger(__name__)
 
+_NATIVE_GGUF_REF_MIN_SLASHES = 2
+"""``<org>/<repo>/<filename>.gguf`` has at least two slashes."""
+
 
 class RoutingProvider(LLMProvider):
     """Dispatches calls based on the model ref prefix.
@@ -68,6 +71,18 @@ class RoutingProvider(LLMProvider):
     ) -> str | ClosableIterator[str]:
         ref = parse_model_ref(model or cfg.chat_model)
         return self._pick_backend(ref).chat(messages, stream=stream, options=options, model=model)
+
+    def vision_ocr(
+        self,
+        png_bytes: bytes,
+        model: str,
+        prompt: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        """Dispatch by ``model``'s ref prefix, same rules as :meth:`chat`."""
+        ref = parse_model_ref(model)
+        return self._pick_backend(ref).vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
     def list_models(self) -> list[str]:
         """Return the union of native and SDK-visible models.
@@ -160,7 +175,32 @@ class RoutingProvider(LLMProvider):
         if self._llama_cpp is not None:
             self._llama_cpp.invalidate_load_cache(model_path)
 
+    def warm_up_pool(self) -> None:
+        """Forward to the native side; the SDK side has no worker pool.
+
+        Lazily constructs the llama-cpp provider if it isn't already up so
+        eager-start during ``Services`` boot still warms the configured
+        native roles, even when the user hasn't issued a chat call yet.
+        """
+        self._get_llama_cpp().warm_up_pool()
+
 
 def _is_native_rerank_ref(model: str) -> bool:
-    """Return True if *model* resolves to a featured rerank catalog entry."""
-    return is_rerank_ref(model)
+    """Return True iff *model* should route to the native llama-cpp rerank worker.
+
+    Two acceptance paths:
+
+    1. The ref resolves to a featured rerank catalog entry (the historical
+       fast path).
+    2. The ref has the native HuggingFace GGUF shape
+       ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix). This
+       lets users point ``cfg.reranker_model`` at any installed native GGUF
+       reranker instead of only the ones that ship in ``FEATURED_ALL``.
+       Non-GGUF refs without a known SDK prefix still raise downstream
+       through ``parse_model_ref``.
+    """
+    if not model:
+        return False
+    if is_rerank_ref(model):
+        return True
+    return model.lower().endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES
