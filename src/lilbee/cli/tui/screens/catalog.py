@@ -1076,17 +1076,28 @@ class CatalogScreen(Screen[None]):
             self._sync_load_bar(active=False)
 
     def _sync_load_bar(self, *, active: bool) -> None:
-        """Show or hide the bottom-docked HF pagination indicator."""
+        """Update the bottom-docked HF pagination indicator.
+
+        When ``active`` is True (a fetch is in flight), the bar shows the
+        spinner and the "loading more models..." copy. When idle, it
+        falls back to the same hint mouse-scrollers see at the bottom of
+        the content ("X loaded - keep scrolling" or "all X loaded").
+        """
         with contextlib.suppress(Exception):
             bar = self.query_one("#catalog-load-bar", Static)
+            if not self._grid_view or not self._hf_fetched:
+                bar.update("")
+                bar.styles.display = "none"
+                return
             if active:
                 bar.update(
                     msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
                 )
                 bar.styles.display = "block"
-            else:
-                bar.update("")
-                bar.styles.display = "none"
+                return
+            hf_count = len(self._build_hf_rows(self._get_search_text()))
+            bar.update(self._grid_scroll_hint_text(hf_count))
+            bar.styles.display = "block"
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""
