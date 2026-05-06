@@ -42,6 +42,20 @@ def _isolated_cfg(tmp_path):
         setattr(cfg, field_name, getattr(snapshot, field_name))
 
 
+@pytest.fixture(autouse=True)
+def _suppress_catalog_auto_hf_fetch():
+    """Block CatalogScreen's mount-time HF fetch.
+
+    The auto-fetch races every test that snapshots ModelGrid widgets on
+    slow Windows runners. Tests that need to exercise the fetch path
+    invoke `_fetch_all_hf_models` directly.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    with mock.patch.object(CatalogScreen, "_fetch_all_hf_models"):
+        yield
+
+
 @pytest.fixture()
 def _mock_resolve():
     """Mock model resolution to succeed without real files."""

@@ -3513,12 +3513,16 @@ async def test_catalog_keyboard_nav_near_end_triggers_load_more():
             last = grids[-1]
             last.focus()
             await pilot.pause()
-            # Park the cursor near the end and re-arm has_more (the auto-fetch
-            # may have flipped it to False with the patched data).
             last.highlighted = max(0, len(last.rows) - 1)
             screen._hf_has_more = True
             screen._loading_more = False
-            with patch.object(screen, "_load_more") as load_more:
+            # Pin _focused_grid to the snapshot last so a slow worker that
+            # hasn't yet propagated focus state to the screen doesn't make
+            # _maybe_prefetch_on_grid_nav early-return.
+            with (
+                patch.object(screen, "_focused_grid", return_value=last),
+                patch.object(screen, "_load_more") as load_more,
+            ):
                 screen._maybe_prefetch_on_grid_nav()
                 assert load_more.called, "cursor near end must trigger _load_more"
 
@@ -3548,7 +3552,10 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
             last.focus()
             await pilot.pause()
             last.highlighted = max(0, len(last.rows) - 1)
-            with patch.object(screen._grid_container, "scroll_end") as scroll_end:
+            with (
+                patch.object(screen, "_focused_grid", return_value=last),
+                patch.object(screen._grid_container, "scroll_end") as scroll_end,
+            ):
                 screen._reveal_scroll_hint_at_catalog_end()
                 assert scroll_end.called, "last-cell highlight must reveal inline hint"
 
@@ -4202,11 +4209,10 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen._grid_cache_key = ()
             screen._refresh_grid()
             screen._refresh_list()
-            # Move focus off the initial featured grid so
-            # _get_highlighted_model_name() doesn't pick up stale state.
-            screen.query_one("#catalog-search").focus()
-            await _pilot.pause()
-            assert screen._get_highlighted_model_name() is None
+            # Pin _focused_grid to None so a slow worker that left a stale
+            # ModelGrid focused doesn't surface a model ref.
+            with patch.object(screen, "_focused_grid", return_value=None):
+                assert screen._get_highlighted_model_name() is None
 
 
 async def test_catalog_get_highlighted_with_rows():
