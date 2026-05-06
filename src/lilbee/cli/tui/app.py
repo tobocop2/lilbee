@@ -233,7 +233,7 @@ class LilbeeApp(App[None]):
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
     def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback for this session."""
+        """Swap stale persisted refs to a working fallback and log the swap at WARNING."""
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
@@ -247,12 +247,10 @@ class LilbeeApp(App[None]):
             if canon.status == ValidationResult.OK or canon.original == canon.effective:
                 continue
             setattr(cfg, field, canon.effective)
-            self.notify(
+            log.warning(
                 msg.MODEL_FALLBACK_NOTICE.format(
                     label=label, original=canon.original, effective=canon.effective
-                ),
-                severity="warning",
-                timeout=8,
+                )
             )
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:

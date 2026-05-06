@@ -9,6 +9,7 @@ see why it exists.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest import mock
 
@@ -427,18 +428,18 @@ class TestStatusArchWorkerError:
 
 class TestAppCanonicalizeFallbackNotice:
     """`LilbeeApp._canonicalize_persisted_models` setattrs a fallback
-    when canonicalize returns a different effective ref (lines 210-211)."""
+    when canonicalize returns a different effective ref."""
 
-    async def test_fallback_notice_fires_when_effective_differs(self) -> None:
+    async def test_fallback_writes_cfg_and_logs_silently(self, caplog) -> None:
+        """Fallback writes cfg.<field> = effective, logs a WARNING, and does not toast the user."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.core.config import cfg
         from lilbee.modelhub.model_manager import (
             CanonicalRef,
             ValidationResult,
         )
 
         app = LilbeeApp()
-        # Stub canonicalize_*_model so canon.original != canon.effective
-        # and status != OK -- triggers the setattr branch.
         chat_canon = CanonicalRef(
             original="missing/model",
             effective="fallback/model",
@@ -450,23 +451,30 @@ class TestAppCanonicalizeFallbackNotice:
             status=ValidationResult.OK,
         )
         notifications: list[Any] = []
-        # Patch where the symbols actually live; the app imports them
-        # function-locally so we cannot patch on lilbee.cli.tui.app.
-        with (
-            mock.patch(
-                "lilbee.modelhub.model_manager.canonicalize_chat_model",
-                return_value=chat_canon,
-            ),
-            mock.patch(
-                "lilbee.modelhub.model_manager.canonicalize_embedding_model",
-                return_value=embed_canon,
-            ),
-            mock.patch.object(app, "notify", side_effect=lambda *a, **kw: notifications.append(a)),
-        ):
-            app._canonicalize_persisted_models()
-        # The chat canon's effective gets written to cfg; notify was called
-        # with the fallback message.
-        assert notifications, "expected a fallback notification"
+        snapshot_chat = cfg.chat_model
+        try:
+            with (
+                mock.patch(
+                    "lilbee.modelhub.model_manager.canonicalize_chat_model",
+                    return_value=chat_canon,
+                ),
+                mock.patch(
+                    "lilbee.modelhub.model_manager.canonicalize_embedding_model",
+                    return_value=embed_canon,
+                ),
+                mock.patch.object(
+                    app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
+                ),
+                caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
+            ):
+                app._canonicalize_persisted_models()
+            assert cfg.chat_model == "fallback/model"
+            assert not notifications, "fallback must not toast the user"
+            assert any("fallback/model" in record.getMessage() for record in caplog.records), (
+                "fallback must be logged at WARNING for diagnosis"
+            )
+        finally:
+            cfg.chat_model = snapshot_chat
 
 
 class TestCatalogToggleViewWhileSwitching:

@@ -116,8 +116,8 @@ class _PaneGroup:
     items: list[tuple[str, SettingDef]]
 
 
-class _LazyGroupBody(VerticalGroup):
-    """Pane-body container that mounts its rows on first activation."""
+class _LazyGroupBody(VerticalScroll):
+    """Pane-body that mounts rows on first activation; scrolls when taller than viewport."""
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
