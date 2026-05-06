@@ -19,6 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.dom import DOMNode
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Select, Static
@@ -374,15 +375,14 @@ class ChatScreen(Screen[None]):
         """
         if not self._insert_mode:
             return
-        target = getattr(event, "widget", None)
-        if target is None:
+        if event.widget is None:
             return
         chat_input = self._chat_input
-        node = target
+        node: DOMNode | None = event.widget
         while node is not None:
             if node is chat_input:
                 return
-            node = getattr(node, "parent", None)
+            node = node.parent
         self.action_enter_normal_mode()
 
     @on(ChatInput.Submitted, "#chat-input")
