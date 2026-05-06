@@ -795,7 +795,16 @@ class CatalogScreen(Screen[None]):
         existing_headings = [
             w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
         ]
-        if existing_grids and len(existing_grids) == len(sections):
+        # Heading + grid mounts are sequential but each runs its own compose
+        # tick, so a partially-mounted state can land here with grids ahead
+        # of (or behind) headings. Only take the in-place branch when all
+        # three lists agree; fall through to the teardown+remount path
+        # otherwise.
+        if (
+            existing_grids
+            and len(existing_grids) == len(sections)
+            and len(existing_headings) == len(sections)
+        ):
             for grid, heading, section in zip(
                 existing_grids, existing_headings, sections, strict=True
             ):
