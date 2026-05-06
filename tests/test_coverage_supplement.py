@@ -1397,6 +1397,83 @@ class TestChatScreenFocusBranches:
         screen._on_chat_input_clicked(click)
         screen._enter_insert_mode.assert_not_called()
 
+    def test_click_outside_chat_input_in_insert_mode_returns_to_normal(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = True
+        chat_input = mock.MagicMock()
+        chat_input.parent = None
+        outside = mock.MagicMock()
+        outside.parent = None
+        with (
+            mock.patch.object(
+                ChatScreen,
+                "_chat_input",
+                new_callable=mock.PropertyMock,
+                return_value=chat_input,
+            ),
+            mock.patch.object(screen, "action_enter_normal_mode") as mock_normal,
+        ):
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = outside
+            screen.on_click(click)
+        mock_normal.assert_called_once()
+
+    def test_click_inside_chat_input_in_insert_mode_stays_insert(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = True
+        chat_input = mock.MagicMock()
+        chat_input.parent = None
+        # Click target is a descendant of chat_input.
+        descendant = mock.MagicMock()
+        descendant.parent = chat_input
+        with (
+            mock.patch.object(
+                ChatScreen,
+                "_chat_input",
+                new_callable=mock.PropertyMock,
+                return_value=chat_input,
+            ),
+            mock.patch.object(screen, "action_enter_normal_mode") as mock_normal,
+        ):
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = descendant
+            screen.on_click(click)
+        mock_normal.assert_not_called()
+
+    def test_click_in_normal_mode_is_noop(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = False
+        with mock.patch.object(screen, "action_enter_normal_mode") as mock_normal:
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = mock.MagicMock()
+            screen.on_click(click)
+        mock_normal.assert_not_called()
+
+    def test_click_with_no_widget_target_is_noop(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._insert_mode = True
+        with mock.patch.object(screen, "action_enter_normal_mode") as mock_normal:
+            click = mock.MagicMock(spec=events.Click)
+            click.widget = None
+            screen.on_click(click)
+        mock_normal.assert_not_called()
+
 
 class TestChatModeToggleAction:
     """`ChatModePill.action_select` switches the parent toggle's mode."""

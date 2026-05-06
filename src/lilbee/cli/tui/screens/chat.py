@@ -365,6 +365,26 @@ class ChatScreen(Screen[None]):
             self._enter_insert_mode()
             event.stop()
 
+    def on_click(self, event: events.Click) -> None:
+        """Click outside the chat input bar drops back to NORMAL.
+
+        The chat-input click handler above promotes to INSERT; the
+        symmetric exit happens here so a mouse user gets the same
+        click-to-blur behavior they expect from any other text editor.
+        """
+        if not self._insert_mode:
+            return
+        target = getattr(event, "widget", None)
+        if target is None:
+            return
+        chat_input = self._chat_input
+        node = target
+        while node is not None:
+            if node is chat_input:
+                return
+            node = getattr(node, "parent", None)
+        self.action_enter_normal_mode()
+
     @on(ChatInput.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: ChatInput.Submitted) -> None:
         if not self._insert_mode:
