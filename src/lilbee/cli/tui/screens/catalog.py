@@ -182,8 +182,6 @@ class CatalogScreen(Screen[None]):
         self._spinner_frame: int = 0
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import Footer
-
         from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
 
         with TopBars():
@@ -199,8 +197,7 @@ class CatalogScreen(Screen[None]):
             yield Static("", id="catalog-loading-spinner")
         # Wrap TabbedContent in a Container with strict 1fr / overflow:hidden
         # so its inner TabPane / VerticalScroll cascade respects the screen
-        # height bound. Without this the catalog-tabs grew to its full
-        # content height and pushed the dock-bottom Footer off-screen.
+        # height bound.
         with (
             Container(id="catalog-tabs-wrap"),
             TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
@@ -208,14 +205,8 @@ class CatalogScreen(Screen[None]):
         ):
             yield VerticalScroll(id="catalog-grid")
             yield ModelList(id="catalog-list")
-            # Bottom-docked load indicator; visible whenever an HF
-            # pagination fetch is in flight regardless of view or scroll
-            # position so keyboard nav gets the same in-viewport feedback
-            # mouse scrolling already provides.
-            yield Static("", id="catalog-load-bar")
         with BottomBars():
             yield TaskBar()
-            yield Footer()
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
@@ -903,12 +894,9 @@ class CatalogScreen(Screen[None]):
         self._focus_first_grid()
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
-        """Pick the bottom scroll-hint text based on fetch state.
-
-        Active-load feedback now lives in the docked ``#catalog-load-bar``;
-        this inline hint only conveys the post-load state so it never
-        duplicates the spinner shown by the load bar.
-        """
+        """Pick the bottom scroll-hint text based on fetch state."""
+        if self._loading_more:
+            return msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
         if self._hf_has_more:
             return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
@@ -961,21 +949,51 @@ class CatalogScreen(Screen[None]):
 
     @on(ModelGrid.Highlighted)
     def _on_grid_highlighted(self, _event: ModelGrid.Highlighted) -> None:
-        """Run keyboard-driven prefetch on every grid cursor move."""
+        """Run keyboard-driven prefetch on every grid cursor move and, when
+        the cursor lands on the last row of the last grid, scroll the parent
+        VerticalScroll to its end so the inline scroll-hint Static comes into
+        view (matches the natural overshoot mouse-scroll past the cards
+        already produces).
+        """
         self._maybe_prefetch_on_grid_nav()
+        self._reveal_scroll_hint_at_catalog_end()
+
+    def _reveal_scroll_hint_at_catalog_end(self) -> None:
+        """Scroll the catalog container to the end when the keyboard cursor
+        is on the last row of the bottom-most grid; otherwise no-op so the
+        ``watch_highlighted`` cell-into-view scroll keeps tracking the cursor.
+
+        ``immediate=True`` so the overshoot lands in the same compositor
+        frame as the cell-into-view scroll above it; deferred would let a
+        subsequent ``parent.scroll_to_region`` re-pin scroll_y to the cell.
+        """
+        focused = self._focused_grid()
+        if not isinstance(focused, ModelGrid) or focused.highlighted is None:
+            return
+        grids = list(self._grid_container.query(ModelGrid))
+        if not grids or focused is not grids[-1]:
+            return
+        cols = max(1, focused.columns_per_row)
+        last_row = (len(focused.rows) - 1) // cols
+        if focused.highlighted // cols < last_row:
+            return
+        self._grid_container.scroll_end(animate=False, immediate=True)
 
     @on(GridSelect.LeaveDown)
     @on(ModelGrid.LeaveDown)
     def _on_grid_leave_down(self, event: Message) -> None:
         """Move focus to the next grid widget, or fetch more if at the end.
 
-        On the bottom-most grid with no more HF results to load, return
-        without moving focus so the cursor stays parked instead of leaking
-        focus to the toolbar / dock.
+        On the bottom-most grid we expose the inline scroll-hint Static
+        (mounted below the last grid via ``_mount_grid_ctas``) by scrolling
+        the parent VerticalScroll to its end. That mirrors the way mouse
+        wheel naturally overshoots past the last card to reveal the hint.
+        Cursor stays parked on the last cell.
         """
         if isinstance(event, ModelGrid.LeaveDown):
             grids = list(self._grid_container.query(ModelGrid))
             if grids and event.grid is grids[-1]:
+                self._grid_container.scroll_end(animate=False, immediate=True)
                 if self._hf_has_more and not self._loading_more:
                     self._load_more()
                 return
@@ -1061,8 +1079,17 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = self.set_interval(
                     _SPINNER_INTERVAL_S, self._tick_loading_spinner
                 )
+            # Mirror the spinner into the inline scroll-hint so users
+            # waiting at the bottom of the grid see the activity in the
+            # same place mouse scroll surfaces it.
             if self._loading_more:
-                self._sync_load_bar(active=True)
+                with contextlib.suppress(Exception):
+                    hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                    hint.update(
+                        msg.CATALOG_GRID_LOADING_MORE.format(
+                            frame=_SPINNER_FRAMES[self._spinner_frame]
+                        )
+                    )
         else:
             spinner.update("")
             spinner.styles.display = "none"
@@ -1073,31 +1100,6 @@ class CatalogScreen(Screen[None]):
             # Restore the post-load CTA text now that the fetch settled.
             hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched else []
             self._refresh_grid_ctas(hf_count=len(hf_rows))
-            self._sync_load_bar(active=False)
-
-    def _sync_load_bar(self, *, active: bool) -> None:
-        """Update the bottom-docked HF pagination indicator.
-
-        When ``active`` is True (a fetch is in flight), the bar shows the
-        spinner and the "loading more models..." copy. When idle, it
-        falls back to the same hint mouse-scrollers see at the bottom of
-        the content ("X loaded - keep scrolling" or "all X loaded").
-        """
-        with contextlib.suppress(Exception):
-            bar = self.query_one("#catalog-load-bar", Static)
-            if not self._grid_view or not self._hf_fetched:
-                bar.update("")
-                bar.styles.display = "none"
-                return
-            if active:
-                bar.update(
-                    msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
-                )
-                bar.styles.display = "block"
-                return
-            hf_count = len(self._build_hf_rows(self._get_search_text()))
-            bar.update(self._grid_scroll_hint_text(hf_count))
-            bar.styles.display = "block"
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""
@@ -1106,7 +1108,11 @@ class CatalogScreen(Screen[None]):
             spinner = self.query_one("#catalog-loading-spinner", Static)
             spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
         if self._loading_more:
-            self._sync_load_bar(active=True)
+            with contextlib.suppress(Exception):
+                hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                hint.update(
+                    msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+                )
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label, switching copy by active tab.

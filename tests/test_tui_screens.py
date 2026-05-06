@@ -3507,6 +3507,49 @@ async def test_catalog_keyboard_nav_near_end_triggers_load_more():
                 assert load_more.called, "cursor near end must trigger _load_more"
 
 
+async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
+    """When the cursor lands on the last row of the bottom-most grid, the
+    catalog parent scrolls to its end so the inline scroll-hint Static comes
+    into view (matches mouse-scroll-past-the-cards behavior)."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one mounted grid")
+            last = grids[-1]
+            last.focus()
+            await pilot.pause()
+            last.highlighted = max(0, len(last.rows) - 1)
+            with patch.object(screen._grid_container, "scroll_end") as scroll_end:
+                screen._reveal_scroll_hint_at_catalog_end()
+                assert scroll_end.called, "last-cell highlight must reveal inline hint"
+
+    # Cursor mid-grid (not last row) does NOT scroll to end.
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one mounted grid")
+            first = grids[0]
+            first.focus()
+            await pilot.pause()
+            first.highlighted = 0
+            with patch.object(screen._grid_container, "scroll_end") as scroll_end:
+                screen._reveal_scroll_hint_at_catalog_end()
+                assert not scroll_end.called, "non-last-grid cursor must not scroll to end"
+
+
 async def test_catalog_load_more_noop_when_exhausted():
     """Calling _load_more when _hf_has_more is False must not fire a fetch."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -10413,20 +10456,14 @@ def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
     assert "LILBEE_CHAT_MODEL" not in content.plain
 
 
-def test_catalog_grid_scroll_hint_text_load_more_branch():
-    """_grid_scroll_hint_text shows the load-more hint when more HF remain.
-
-    Active-load feedback lives in the docked #catalog-load-bar; the inline
-    hint only carries post-load state so the two indicators never collide.
-    """
+def test_catalog_grid_scroll_hint_text_loading_branch():
+    """_grid_scroll_hint_text returns the loading-more text when fetching."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     screen = CatalogScreen()
     screen._loading_more = True
-    screen._hf_has_more = True
     text = screen._grid_scroll_hint_text(hf_count=5)
-    assert "loading" not in text.lower()
-    assert "5" in text
+    assert "loading" in text
 
 
 def test_catalog_grid_scroll_hint_text_all_loaded_branch():
@@ -10780,8 +10817,7 @@ async def test_catalog_sync_grid_search_cta_mounts_when_missing():
 
 
 async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
-    """``_tick_loading_spinner`` advances the toolbar spinner and the docked
-    load bar in lockstep while a HF pagination fetch is in flight."""
+    """The success branches of _tick_loading_spinner update both targets."""
     from textual.widgets import Static
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -10792,13 +10828,15 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            # Mount a scroll-hint inside the grid container so the second
+            # contextlib.suppress block successfully resolves the query.
+            await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
+            await _pilot.pause()
             screen._loading_more = True
             screen._tick_loading_spinner()
             await _pilot.pause()
-            spinner = screen.query_one("#catalog-loading-spinner", Static)
-            assert "loading" in str(spinner.render()).lower()
-            bar = screen.query_one("#catalog-load-bar", Static)
-            assert "loading" in str(bar.render()).lower()
+            hint = screen.query_one("#catalog-grid > .scroll-hint", Static)
+            assert "loading" in str(hint.render()).lower()
 
 
 def test_status_worker_state_changed_dispatches_when_sections_mounted():

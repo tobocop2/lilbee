@@ -69,18 +69,6 @@ ModelGrid:focus {
     display: none;
 }
 
-#catalog-load-bar {
-    dock: bottom;
-    height: 1;
-    width: 100%;
-    padding: 0 2;
-    background: $panel;
-    color: $primary;
-    text-align: center;
-    text-style: bold;
-    display: none;
-}
-
 #catalog-search {
     margin: 0 1;
 }

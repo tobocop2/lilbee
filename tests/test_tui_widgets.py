@@ -5860,10 +5860,16 @@ class TestCatalogFocusEdgeGuards:
 
         grid_a = ModelGrid([_vgrid_row(f"a{i}") for i in range(2)], id="mg-a")
         grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        scroll_end_calls: list[bool] = []
 
         class _StubScreen:
             _grid_container = type(
-                "C", (), {"query": staticmethod(lambda _cls: [grid_a, grid_b])}
+                "C",
+                (),
+                {
+                    "query": staticmethod(lambda _cls: [grid_a, grid_b]),
+                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
+                },
             )()
             _hf_has_more = False
             _loading_more = False
@@ -5881,11 +5887,14 @@ class TestCatalogFocusEdgeGuards:
         CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
         assert screen.focus_next_called is False
         assert screen.load_more_called is False
+        assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
 
-        # From a non-last grid, focus DOES move.
+        # From a non-last grid, focus DOES move (no scroll_end).
+        scroll_end_calls.clear()
         event2 = ModelGrid.LeaveDown(grid_a)
         CatalogScreen._on_grid_leave_down(screen, event2)  # type: ignore[arg-type]
         assert screen.focus_next_called is True
+        assert not scroll_end_calls
 
     async def test_leave_down_at_last_grid_with_more_loads_more(self) -> None:
         """Last grid + _hf_has_more triggers load_more (existing behavior preserved)."""
@@ -5893,9 +5902,17 @@ class TestCatalogFocusEdgeGuards:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         grid_b = ModelGrid([_vgrid_row(f"b{i}") for i in range(2)], id="mg-b")
+        scroll_end_calls: list[bool] = []
 
         class _StubScreen:
-            _grid_container = type("C", (), {"query": staticmethod(lambda _cls: [grid_b])})()
+            _grid_container = type(
+                "C",
+                (),
+                {
+                    "query": staticmethod(lambda _cls: [grid_b]),
+                    "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
+                },
+            )()
             _hf_has_more = True
             _loading_more = False
             focus_next_called = False
@@ -5912,3 +5929,4 @@ class TestCatalogFocusEdgeGuards:
         CatalogScreen._on_grid_leave_down(screen, event)  # type: ignore[arg-type]
         assert screen.load_more_called is True
         assert screen.focus_next_called is False
+        assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
