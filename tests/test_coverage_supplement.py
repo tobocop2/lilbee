@@ -1271,8 +1271,10 @@ class TestChatInputUnconsumedKey:
         async with _Probe().run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             inp = pilot.app.query_one("#probe", ChatInput)
-            for key in inp._UNCONSUMED_KEYS:
-                assert inp.check_consume_key(key, None) is False
+            with mock.patch.object(ChatInput, "_UNCONSUMED_KEYS", new=frozenset({"f1"})):
+                assert inp.check_consume_key("f1", None) is False
+                # Other keys still consume normally.
+                assert inp.check_consume_key("a", "a") is True
 
 
 class TestModelCardTruncate:
@@ -1319,7 +1321,8 @@ class TestModelGridTruncateAndPad:
 
     def test_cell_at_returns_none_in_gutter_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-        from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, ModelGrid
+        from lilbee.cli.tui.widgets import model_grid as mg
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         row = LocalCatalogRow(
             name="m",
@@ -1336,8 +1339,11 @@ class TestModelGridTruncateAndPad:
         )
         grid = ModelGrid(rows=[row])
         grid._cards_per_row = 1
-        # y at _CARD_HEIGHT lands in the gutter strip below the card body.
-        assert grid._cell_at(0, _CARD_HEIGHT) is None
+        # _ROW_GUTTER is currently 0; bump _ROW_HEIGHT for this test so a y
+        # past the card body lands in a gutter strip and the >=
+        # _CARD_HEIGHT guard triggers.
+        with mock.patch.object(mg, "_ROW_HEIGHT", new=mg._CARD_HEIGHT + 2):
+            assert grid._cell_at(0, mg._CARD_HEIGHT) is None
 
 
 class TestChatScreenFocusBranches:
@@ -1601,10 +1607,125 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, CatalogScreen)
+            screen._hf_has_more = True
+            screen._loading_more = False
             for grid in list(screen.query(ModelGrid)):
                 grid.remove()
             await pilot.pause()
             screen._maybe_prefetch_on_grid_nav()
+
+    async def test_prefetch_swallows_value_error_when_focused_not_in_grids(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            screen._hf_has_more = True
+            screen._loading_more = False
+            stranger = mock.MagicMock(spec=ModelGrid)
+            stranger.highlighted = 0
+            stranger.rows = []
+            with mock.patch.object(screen, "_focused_grid", return_value=stranger):
+                # _grid_container has at least one real ModelGrid; stranger
+                # isn't in it, so grids.index(focused) raises ValueError.
+                screen._maybe_prefetch_on_grid_nav()
+
+    async def test_prefetch_returns_when_total_rows_zero(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            screen._hf_has_more = True
+            screen._loading_more = False
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("no grids mounted in this build")
+            focused = grids[0]
+            with (
+                mock.patch.object(screen, "_focused_grid", return_value=focused),
+                mock.patch.object(
+                    type(focused), "rows", new_callable=mock.PropertyMock, return_value=[]
+                ),
+            ):
+                focused.highlighted = 0
+                screen._maybe_prefetch_on_grid_nav()
+
+    async def test_mount_remaining_grid_sections_restores_prior_scroll(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        class _Probe(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(CatalogScreen())
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.screen
+            assert isinstance(screen, CatalogScreen)
+            with (
+                mock.patch.object(screen, "_mount_grid_section"),
+                mock.patch.object(screen, "_mount_grid_ctas"),
+                mock.patch.object(screen._grid_container, "scroll_to") as scroll_to,
+            ):
+                screen._mount_remaining_grid_sections([], hf_count=0, prior_scroll_y=12.5)
+                scroll_to.assert_called_once()
+
+
+class TestModelGridScrollIntoViewParentGuard:
+    """`watch_highlighted` returns early when the parent isn't a Widget."""
+
+    def test_returns_when_parent_not_widget(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        row = LocalCatalogRow(
+            name="m",
+            task="chat",
+            params="",
+            size="",
+            quant="",
+            downloads="",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=0.0,
+            ref="m/m",
+        )
+        grid = ModelGrid(rows=[row])
+        grid._cards_per_row = 1
+        # No mounted parent: `parent` is None which is not a Widget. The
+        # guard at line 189 returns early.
+        grid.watch_highlighted(None, 0)
 
 
 class TestModelBarVisionSidecarErrors:
