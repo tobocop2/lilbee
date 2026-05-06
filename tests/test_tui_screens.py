@@ -3480,6 +3480,33 @@ async def test_catalog_action_load_more_triggers_fetch():
                 assert fetch.called
 
 
+async def test_catalog_keyboard_nav_near_end_triggers_load_more():
+    """Cursor near the end of the catalog runs the prefetch hook."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(ModelGrid))
+            if not grids:
+                pytest.skip("test requires at least one mounted grid")
+            last = grids[-1]
+            last.focus()
+            await pilot.pause()
+            # Park the cursor near the end and re-arm has_more (the auto-fetch
+            # may have flipped it to False with the patched data).
+            last.highlighted = max(0, len(last.rows) - 1)
+            screen._hf_has_more = True
+            screen._loading_more = False
+            with patch.object(screen, "_load_more") as load_more:
+                screen._maybe_prefetch_on_grid_nav()
+                assert load_more.called, "cursor near end must trigger _load_more"
+
+
 async def test_catalog_load_more_noop_when_exhausted():
     """Calling _load_more when _hf_has_more is False must not fire a fetch."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
