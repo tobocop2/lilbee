@@ -1451,8 +1451,14 @@ class TestCatalogInteractions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 app.switch_view("Catalog")
-                await pilot.pause()
-                total_rows = sum(len(g.rows) for g in app.screen.query(ModelGrid))
+                # Pump frames until both family grids land; slow Windows
+                # 3.11 workers mount sections one frame at a time.
+                total_rows = 0
+                for _ in range(50):
+                    await pilot.pause()
+                    total_rows = sum(len(g.rows) for g in app.screen.query(ModelGrid))
+                    if total_rows >= 2:
+                        break
                 assert total_rows == 2
 
     async def test_list_view_j_k_navigation(self, _mock_resolve):
