@@ -136,7 +136,6 @@ CATALOG_VIEW_TOGGLE_LIST = "Press v for card view · s to sort"
 CATALOG_VIEW_GRID = "Grid"
 CATALOG_VIEW_LIST = "List"
 CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
-CATALOG_LOADING_MORE_TOAST = "Loading more models…"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
 CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask a question or type / for commands"

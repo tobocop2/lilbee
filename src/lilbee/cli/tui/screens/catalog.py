@@ -208,6 +208,11 @@ class CatalogScreen(Screen[None]):
         ):
             yield VerticalScroll(id="catalog-grid")
             yield ModelList(id="catalog-list")
+            # Bottom-docked load indicator; visible whenever an HF
+            # pagination fetch is in flight regardless of view or scroll
+            # position so keyboard nav gets the same in-viewport feedback
+            # mouse scrolling already provides.
+            yield Static("", id="catalog-load-bar")
         with BottomBars():
             yield TaskBar()
             yield Footer()
@@ -1065,6 +1070,7 @@ class CatalogScreen(Screen[None]):
                             frame=_SPINNER_FRAMES[self._spinner_frame]
                         )
                     )
+                self._sync_load_bar(active=True)
         else:
             spinner.update("")
             spinner.styles.display = "none"
@@ -1075,6 +1081,20 @@ class CatalogScreen(Screen[None]):
             # Restore the post-load CTA text now that the fetch settled.
             hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched else []
             self._refresh_grid_ctas(hf_count=len(hf_rows))
+            self._sync_load_bar(active=False)
+
+    def _sync_load_bar(self, *, active: bool) -> None:
+        """Show or hide the bottom-docked HF pagination indicator."""
+        with contextlib.suppress(Exception):
+            bar = self.query_one("#catalog-load-bar", Static)
+            if active:
+                bar.update(
+                    msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
+                )
+                bar.styles.display = "block"
+            else:
+                bar.update("")
+                bar.styles.display = "none"
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""
@@ -1087,6 +1107,8 @@ class CatalogScreen(Screen[None]):
             hint.update(
                 msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
             )
+        if self._loading_more:
+            self._sync_load_bar(active=True)
 
     def _update_sort_label(self) -> None:
         """Update the sort indicator label, switching copy by active tab.
@@ -1177,10 +1199,6 @@ class CatalogScreen(Screen[None]):
             return
         self._loading_more = True
         self._sync_loading_spinner()
-        # Brief toast so the user gets in-viewport feedback even when their
-        # cursor is mid-content and the toolbar spinner / bottom CTA are
-        # both off-screen.
-        self.notify(msg.CATALOG_LOADING_MORE_TOAST, timeout=2)
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
 
