@@ -1793,6 +1793,37 @@ class TestScopeChipPillSelect:
 class TestCatalogSmallEdgeBranches:
     """A handful of small catalog branches that flake out across xdist workers."""
 
+    def test_restore_focused_section_skips_non_matching_grids(self) -> None:
+        """`_restore_focused_section` skips grids whose name != target_heading."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        non_match = mock.MagicMock(spec=ModelGrid)
+        non_match.name = "OtherName"
+        match = mock.MagicMock(spec=ModelGrid)
+        match.name = "Chat"
+        match.rows = [object(), object()]
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = [non_match, match]
+        with mock.patch.object(CatalogScreen, "_grid_container", new=fake_container):
+            assert screen._restore_focused_section(("Chat", 5)) is True
+        match.focus.assert_called_once()
+        non_match.focus.assert_not_called()
+
+    def test_restore_focused_section_returns_false_when_no_match(self) -> None:
+        """`_restore_focused_section` returns False when no grid matches."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        screen = CatalogScreen.__new__(CatalogScreen)
+        non_match = mock.MagicMock(spec=ModelGrid)
+        non_match.name = "Other"
+        fake_container = mock.MagicMock()
+        fake_container.query.return_value = [non_match]
+        with mock.patch.object(CatalogScreen, "_grid_container", new=fake_container):
+            assert screen._restore_focused_section(("Missing", None)) is False
+
     async def test_action_toggle_view_to_list_triggers_first_hf_fetch(self) -> None:
         from textual.app import App, ComposeResult
         from textual.widgets import Footer
