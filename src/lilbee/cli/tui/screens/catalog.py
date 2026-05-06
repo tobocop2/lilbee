@@ -1297,7 +1297,7 @@ class CatalogScreen(Screen[None]):
 
         self.app.push_screen(ModelInfoModal(row))
 
-    def _highlighted_row(self):
+    def _highlighted_row(self) -> CatalogRow | None:
         """Return the focused row in either grid or list view, or None."""
         if not self._grid_view and self._list_widget.has_focus:
             return self._list_widget.highlighted_row()
