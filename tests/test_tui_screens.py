@@ -8397,10 +8397,10 @@ async def test_catalog_grid_leave_up_focuses_previous():
 
 async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
     """LeaveUp on the topmost grid parks the cursor (no leak to toolbar)."""
+    from textual.containers import VerticalScroll
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
-
-    from textual.containers import VerticalScroll
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
