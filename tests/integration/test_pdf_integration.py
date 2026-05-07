@@ -179,15 +179,15 @@ class TestVisionOcrFallback:
     )
     async def test_vision_extracts_text(self):
         """Vision model OCR produces non-empty text from the scanned PDF fixture."""
-        from lilbee.vision import extract_pdf_vision
+        from lilbee.core.services import get_services
 
-        page_texts = extract_pdf_vision(
+        page_texts = get_services().provider.pdf_ocr(
             SCANNED_PDF,
-            cfg.chat_model,
-            quiet=True,
-            timeout=cfg.ocr_timeout,
+            backend="vision",
+            model=cfg.chat_model,
+            per_page_timeout_s=cfg.ocr_timeout,
         )
-        all_text = " ".join(page_texts)
+        all_text = " ".join(text for _, text in page_texts)
         assert len(all_text.strip()) > 0, "Vision OCR produced empty text"
 
     @pytest.mark.skipif(
@@ -196,15 +196,15 @@ class TestVisionOcrFallback:
     )
     async def test_vision_extracts_known_phrases(self):
         """Vision model OCR captures key phrases from the scanned document."""
-        from lilbee.vision import extract_pdf_vision
+        from lilbee.core.services import get_services
 
-        page_texts = extract_pdf_vision(
+        page_texts = get_services().provider.pdf_ocr(
             SCANNED_PDF,
-            cfg.chat_model,
-            quiet=True,
-            timeout=cfg.ocr_timeout,
+            backend="vision",
+            model=cfg.chat_model,
+            per_page_timeout_s=cfg.ocr_timeout,
         )
-        all_text = " ".join(page_texts).lower()
+        all_text = " ".join(text for _, text in page_texts).lower()
         recognized = any(
             phrase in all_text for phrase in ["oil", "maintenance", "filter", "quarts", "engine"]
         )

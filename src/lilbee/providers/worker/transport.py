@@ -8,7 +8,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+
+OcrBackend = Literal["vision"]
+"""Backends supported by the PDF-OCR worker. Tesseract runs inline, not pooled."""
 
 WorkerEntrypoint = Callable[..., None]
 """Signature of a worker subprocess main function.
@@ -72,6 +75,22 @@ class VisionRequest:
     png_bytes: bytes
     prompt: str = ""
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class PdfOcrRequest:
+    """Pickle-friendly multi-page PDF-OCR request.
+
+    ``path`` is a string so it pickles cheaply across the parent->worker
+    pipe; the worker re-wraps it as a :class:`pathlib.Path`. ``model``
+    overrides ``cfg.vision_model`` for the call when non-empty. The
+    parent enforces wall-clock budgets via the stream-drain timeout;
+    the worker only validates the payload shape.
+    """
+
+    path: str
+    backend: OcrBackend
+    model: str = ""
 
 
 @dataclass(frozen=True)
@@ -207,6 +226,8 @@ def default_spawner() -> WorkerSpawner:
 
 __all__ = [
     "ChatRequest",
+    "OcrBackend",
+    "PdfOcrRequest",
     "RerankPayload",
     "RoleConfig",
     "VisionRequest",

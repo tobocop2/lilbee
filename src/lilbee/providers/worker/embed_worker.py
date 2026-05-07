@@ -38,9 +38,12 @@ class _EmbedSession:
 
     @staticmethod
     def _embed_batch(llm: Any, texts: list[str]) -> list[list[float]]:
-        from lilbee.providers.llama_cpp.batching import embed_one
+        # circular: lilbee.providers.llama_cpp.__init__ eagerly imports
+        # provider.py, which imports this worker module. Function-local
+        # import keeps that cycle from firing at module-load time.
+        from lilbee.providers.llama_cpp.batching import embed_batch
 
-        return [embed_one(llm, text) for text in texts]
+        return embed_batch(llm, texts)
 
     def close(self) -> None:
         """Release the loaded model, if any. Idempotent."""
