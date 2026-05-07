@@ -148,7 +148,7 @@ class CatalogScreen(Screen[None]):
         "## Fit chip\n"
         "- Green 'fits +N GB': model fits with at least 1 GB headroom.\n"
         "- Amber 'tight +N GB': model fits but within the 0..1 GB band.\n"
-        "- Red \"won't N GB\": model overflows available memory by N GB.\n\n"
+        '- Red "won\'t N GB": model overflows available memory by N GB.\n\n'
         "## Other\n"
         "- q / Esc: back."
     )
