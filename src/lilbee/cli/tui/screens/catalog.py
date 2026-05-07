@@ -53,6 +53,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -155,6 +156,7 @@ class CatalogScreen(Screen[None]):
         # to the user instead.
         Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
+        Binding("ctrl+b", "toggle_drawer", "Detail", show=False, group=_ACTION_GROUP),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -271,41 +273,48 @@ class CatalogScreen(Screen[None]):
             yield GridListToggle()
             yield Static("", id="sort-label", shrink=True)
             yield Static("", id="catalog-loading-spinner")
-        # Wrap TabbedContent in a Container with strict 1fr / overflow:hidden
-        # so its inner TabPane / VerticalScroll cascade respects the screen
-        # height bound. Each per-task tab has its own VerticalScroll + ModelList
-        # so prefetch only extends the active tab's grid; the single mega-grid
-        # was the source of cross-section viewport jumps on pagination.
-        with Container(id="catalog-tabs-wrap"), TabbedContent(initial=TAB_CHAT, id="catalog-tabs"):
-            with TabPane(msg.CATALOG_TAB_DISCOVER, id=TAB_DISCOVER):
-                yield Static(
-                    "Discover landing — coming soon",
-                    id="discover-placeholder",
-                    classes="catalog-placeholder",
-                )
-            with TabPane(msg.CATALOG_TAB_CHAT, id=TAB_CHAT):
-                yield VerticalScroll(id=f"{_GRID_ID_PREFIX}{TAB_CHAT}", classes="catalog-grid-pane")
-                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_CHAT}")
-            with TabPane(msg.CATALOG_TAB_EMBED, id=TAB_EMBED):
-                yield VerticalScroll(
-                    id=f"{_GRID_ID_PREFIX}{TAB_EMBED}", classes="catalog-grid-pane"
-                )
-                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_EMBED}")
-            with TabPane(msg.CATALOG_TAB_VISION, id=TAB_VISION):
-                yield VerticalScroll(
-                    id=f"{_GRID_ID_PREFIX}{TAB_VISION}", classes="catalog-grid-pane"
-                )
-                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_VISION}")
-            with TabPane(msg.CATALOG_TAB_RERANK, id=TAB_RERANK):
-                yield VerticalScroll(
-                    id=f"{_GRID_ID_PREFIX}{TAB_RERANK}", classes="catalog-grid-pane"
-                )
-                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_RERANK}")
-            with TabPane(msg.CATALOG_TAB_LIBRARY, id=TAB_LIBRARY):
-                yield VerticalScroll(
-                    id=f"{_GRID_ID_PREFIX}{TAB_LIBRARY}", classes="catalog-grid-pane"
-                )
-                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_LIBRARY}")
+        # Horizontal split: TabbedContent fills, CatalogDetailDrawer docks
+        # right at fixed width and toggles via the -collapsed class. Each
+        # per-task tab has its own VerticalScroll + ModelList so prefetch
+        # only extends the active tab's grid; the single mega-grid was the
+        # source of cross-section viewport jumps on pagination.
+        with Horizontal(id="catalog-body"):
+            with (
+                Container(id="catalog-tabs-wrap"),
+                TabbedContent(initial=TAB_CHAT, id="catalog-tabs"),
+            ):
+                with TabPane(msg.CATALOG_TAB_DISCOVER, id=TAB_DISCOVER):
+                    yield Static(
+                        "Discover landing — coming soon",
+                        id="discover-placeholder",
+                        classes="catalog-placeholder",
+                    )
+                with TabPane(msg.CATALOG_TAB_CHAT, id=TAB_CHAT):
+                    yield VerticalScroll(
+                        id=f"{_GRID_ID_PREFIX}{TAB_CHAT}", classes="catalog-grid-pane"
+                    )
+                    yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_CHAT}")
+                with TabPane(msg.CATALOG_TAB_EMBED, id=TAB_EMBED):
+                    yield VerticalScroll(
+                        id=f"{_GRID_ID_PREFIX}{TAB_EMBED}", classes="catalog-grid-pane"
+                    )
+                    yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_EMBED}")
+                with TabPane(msg.CATALOG_TAB_VISION, id=TAB_VISION):
+                    yield VerticalScroll(
+                        id=f"{_GRID_ID_PREFIX}{TAB_VISION}", classes="catalog-grid-pane"
+                    )
+                    yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_VISION}")
+                with TabPane(msg.CATALOG_TAB_RERANK, id=TAB_RERANK):
+                    yield VerticalScroll(
+                        id=f"{_GRID_ID_PREFIX}{TAB_RERANK}", classes="catalog-grid-pane"
+                    )
+                    yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_RERANK}")
+                with TabPane(msg.CATALOG_TAB_LIBRARY, id=TAB_LIBRARY):
+                    yield VerticalScroll(
+                        id=f"{_GRID_ID_PREFIX}{TAB_LIBRARY}", classes="catalog-grid-pane"
+                    )
+                    yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_LIBRARY}")
+            yield CatalogDetailDrawer(id="catalog-detail-drawer", classes="-collapsed")
         with BottomBars():
             yield TaskBar()
             yield Footer()
@@ -1087,15 +1096,40 @@ class CatalogScreen(Screen[None]):
         self._refresh_grid()
 
     @on(ModelGrid.Highlighted)
-    def _on_grid_highlighted(self, _event: ModelGrid.Highlighted) -> None:
+    def _on_grid_highlighted(self, event: ModelGrid.Highlighted) -> None:
         """Run keyboard-driven prefetch on every grid cursor move and, when
         the cursor lands on the last row of the last grid, scroll the parent
         VerticalScroll to its end so the inline scroll-hint Static comes into
         view (matches the natural overshoot mouse-scroll past the cards
-        already produces).
+        already produces). Also re-renders the detail drawer for the newly
+        highlighted row.
         """
         self._maybe_prefetch_on_grid_nav()
         self._reveal_scroll_hint_at_catalog_end()
+        self._update_drawer_for_grid(event.grid, event.index)
+
+    def _update_drawer_for_grid(self, grid: ModelGrid, index: int) -> None:
+        """Push the focused row into the drawer; no-op if drawer is detached."""
+        try:
+            drawer = self.query_one("#catalog-detail-drawer", CatalogDetailDrawer)
+        except Exception:
+            return
+        rows = grid.rows
+        row = rows[index] if 0 <= index < len(rows) else None
+        drawer.update_for_row(row)
+
+    def action_toggle_drawer(self) -> None:
+        """Toggle the detail drawer's visibility via the -collapsed class.
+
+        Default state is collapsed; users opt in. Class toggle is a single
+        layout pass; we don't dynamically mount/unmount the drawer because
+        rendering it offscreen costs zero (display: none).
+        """
+        try:
+            drawer = self.query_one("#catalog-detail-drawer", CatalogDetailDrawer)
+        except Exception:
+            return
+        drawer.toggle_class("-collapsed")
 
     def _reveal_scroll_hint_at_catalog_end(self) -> None:
         """Scroll the catalog container to the end when the keyboard cursor

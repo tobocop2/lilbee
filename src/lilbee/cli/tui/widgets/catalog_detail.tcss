@@ -1,0 +1,35 @@
+CatalogDetailDrawer {
+    width: 36;
+    background: $panel;
+    border-left: thick $accent;
+    padding: 1 1 0 1;
+    overflow-y: auto;
+}
+
+CatalogDetailDrawer.-collapsed {
+    display: none;
+}
+
+.catalog-detail-name {
+    color: $text;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.catalog-detail-fit {
+    margin-bottom: 1;
+}
+
+.catalog-detail-sizes {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.catalog-detail-license {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.catalog-detail-description {
+    color: $text-muted;
+}
