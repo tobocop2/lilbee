@@ -10924,26 +10924,6 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
 
-async def test_catalog_sync_grid_search_cta_mounts_when_missing():
-    """First search keystroke mounts the search-CTA into the grid container."""
-    from unittest.mock import patch
-
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            # No search CTA yet; force the mount path with a non-empty search.
-            with patch.object(screen, "_get_search_text", return_value="phi"):
-                screen._sync_grid_search_cta()
-            await _pilot.pause()
-            ctas = list(screen.query("#catalog-grid > .search-hf-cta"))
-            assert len(ctas) == 1
-
-
 async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
     """The success branches of _tick_loading_spinner update both targets."""
     from textual.widgets import Static

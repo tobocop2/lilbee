@@ -57,9 +57,7 @@ jobs:
           - os: macos-latest
             asset_name: lilbee-macos-arm64
             backend: metal
-          - os: macos-13
-            asset_name: lilbee-macos-x86_64
-            backend: metal
+          # Intel Mac dropped: macos-13 hosted runners stay queued; pip wheel covers them.
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             backend: vulkan
