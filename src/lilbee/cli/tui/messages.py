@@ -287,6 +287,9 @@ TASKBAR_FAILED = "[b]{count} task failed[/b]"
 TASKBAR_FAILED_PLURAL = "[b]{count} tasks failed[/b]"
 SYNC_EMBEDDING = "Embedding {file}"
 SYNC_FILE_DONE = "Done: {file}"
+ADD_SYNCING_FILE = "Syncing {file}..."
+ADD_PAGE_PROGRESS = "{status} page {current} of {total}"
+ADD_FILE_DONE = "Done {file}"
 
 SETTINGS_API_KEYS_WARNING = (
     "These keys are stored in plain text at {path}. "

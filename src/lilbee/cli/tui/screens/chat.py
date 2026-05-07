@@ -51,7 +51,15 @@ from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.progress import EventType, ProgressEvent
+from lilbee.runtime.progress import (
+    BatchProgressEvent,
+    BatchStatus,
+    DetailedProgressCallback,
+    EventType,
+    FileDoneEvent,
+    FileStartEvent,
+    ProgressEvent,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -80,6 +88,53 @@ def _close_stream(stream: Any) -> None:
     if isinstance(stream, ClosableIterator):
         with contextlib.suppress(Exception):
             stream.close()
+
+
+def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
+    """Pick the user-facing detail label for a BATCH_PROGRESS tick.
+
+    Per-page rasterization (vision OCR) is the only producer that uses
+    BatchStatus.RASTERIZING; it emits an absolute path in data.file
+    which never matches the relative source name kept in in_flight, so
+    identity-based detection would never fire. Status-based dispatch is
+    the reliable discriminator between per-page and per-file ticks.
+    """
+    if data.status == BatchStatus.RASTERIZING:
+        return msg.ADD_PAGE_PROGRESS.format(
+            status=data.status.capitalize(), current=data.current, total=data.total
+        )
+    if in_flight:
+        return msg.ADD_SYNCING_FILE.format(file=in_flight[0])
+    return msg.ADD_FILE_DONE.format(file=data.file)
+
+
+def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
+    """Build the on_progress callback used by /add.
+
+    Tracks files in flight in start order so the displayed filename pins
+    to the oldest unfinished file. The pipeline runs files concurrently
+    and reports completions via asyncio.as_completed; without this, the
+    label flips to whatever just completed and flickers around the queue.
+    """
+    in_flight: list[str] = []
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        # Polling point so /c in Task Center can stop a long ingest
+        # between file boundaries without having to kill the thread.
+        reporter.check_cancelled()
+        # isinstance guards type-narrow the ProgressEvent union for mypy.
+        # The EventType tag is the discriminator; isinstance is the runtime check.
+        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+            in_flight.append(data.file)
+            reporter.update(0, msg.ADD_SYNCING_FILE.format(file=in_flight[0]), indeterminate=True)
+        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
+            with contextlib.suppress(ValueError):
+                in_flight.remove(data.file)
+        elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
+            pct = (data.current / data.total * 100.0) if data.total else 0.0
+            reporter.update(pct, _detail_for_batch_progress(data, in_flight), indeterminate=False)
+
+    return on_progress
 
 
 def _remove_copied_files(names: list[str]) -> None:
@@ -490,7 +545,6 @@ class ChatScreen(Screen[None]):
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import BatchProgressEvent, FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
         copy_result = copy_files([path], force=force)
@@ -499,22 +553,10 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
-        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            # Polling point so /c in Task Center can stop a long ingest
-            # between file boundaries without having to kill the thread.
-            reporter.check_cancelled()
-            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-                reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
-            elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
-                pct = (data.current / data.total * 100.0) if data.total else 0.0
-                reporter.update(
-                    pct,
-                    f"{data.status.capitalize()} page {data.current} of {data.total}",
-                    indeterminate=False,
-                )
-
         try:
-            sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
+            sync_result = asyncio_loop.run(
+                sync(quiet=True, on_progress=_build_add_progress_callback(reporter))
+            )
         except BaseException:
             # On cancel or any failure, remove the files we copied into
             # documents/ so the next sync doesn't silently re-ingest the

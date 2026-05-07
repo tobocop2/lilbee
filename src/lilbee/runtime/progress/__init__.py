@@ -9,6 +9,7 @@ from lilbee.runtime.progress.callbacks import (
 from lilbee.runtime.progress.types import (
     CRAWL_TOTAL_UNKNOWN,
     BatchProgressEvent,
+    BatchStatus,
     CrawlDoneEvent,
     CrawlPageEvent,
     CrawlStartEvent,
@@ -27,6 +28,7 @@ from lilbee.runtime.progress.types import (
 __all__ = [
     "CRAWL_TOTAL_UNKNOWN",
     "BatchProgressEvent",
+    "BatchStatus",
     "CrawlDoneEvent",
     "CrawlPageEvent",
     "CrawlStartEvent",

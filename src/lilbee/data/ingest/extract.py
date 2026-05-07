@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
-from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
+from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.types import (
     _MARKDOWN_OUTPUT,
     _MIN_MEANINGFUL_CHARS,
@@ -24,8 +24,8 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.data.store import CHUNK_TYPE_RAW
+from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
@@ -200,9 +200,10 @@ async def _extract_pdf_vision_in_subprocess(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
-    assert proc.stderr is not None
+    if proc.stdin is None or proc.stdout is None or proc.stderr is None:  # pragma: no cover
+        # asyncio.create_subprocess_exec with PIPE for all three streams always
+        # populates them at runtime, but the type annotations are Optional.
+        raise RuntimeError("PDF extraction subprocess did not open stdio pipes")
     proc.stdin.write(payload.encode("utf-8"))
     await proc.stdin.drain()
     proc.stdin.close()
@@ -243,7 +244,7 @@ async def _pump_pdf_progress(
     path: Path,
 ) -> None:
     """Forward ``progress: page=N total=M`` lines from the subprocess to ``on_progress``."""
-    from lilbee.runtime.progress import BatchProgressEvent, EventType
+    from lilbee.runtime.progress import BatchProgressEvent, BatchStatus, EventType
 
     while True:
         line = await stream.readline()
@@ -260,7 +261,9 @@ async def _pump_pdf_progress(
             continue
         on_progress(
             EventType.BATCH_PROGRESS,
-            BatchProgressEvent(file=str(path), status="rasterizing", current=page, total=total),
+            BatchProgressEvent(
+                file=str(path), status=BatchStatus.RASTERIZING, current=page, total=total
+            ),
         )
 
 
