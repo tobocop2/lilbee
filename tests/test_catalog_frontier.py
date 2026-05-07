@@ -454,7 +454,14 @@ class TestLibraryTab:
             # option_count > 0 means the row landed in the list widget.
             assert ml.option_count > 0
 
-    async def test_populate_library_with_empty_rows_clears_list(self) -> None:
+    async def test_populate_library_with_empty_rows_clears_frontier_section(self) -> None:
+        """Frontier section disappears when frontier_rows clears.
+
+        Library now also surfaces installed local rows, so option_count
+        isn't necessarily 0 — but the cleared frontier rows must drop
+        their provider section. We assert the frontier provider name no
+        longer appears in any option label.
+        """
         from textual.app import App, ComposeResult
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -467,14 +474,15 @@ class TestLibraryTab:
         async with _App().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
-            screen._frontier_rows = [_frontier("gemini-2.0-flash")]
+            screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
             screen._populate_library_list()
             await pilot.pause()
             screen._frontier_rows = []
             screen._populate_library_list()
             await pilot.pause()
             ml = screen.query_one("#list-library", ModelList)
-            assert ml.option_count == 0
+            labels = " ".join(str(opt.prompt) for opt in ml._options if hasattr(opt, "prompt"))
+            assert "gemini-2.0-flash" not in labels
 
 
 class TestBuildFrontierRows:

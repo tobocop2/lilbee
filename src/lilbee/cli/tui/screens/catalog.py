@@ -716,17 +716,33 @@ class CatalogScreen(Screen[None]):
         return True
 
     def _populate_library_list(self) -> None:
-        """Render the Library tab list: frontier rows now; installed local later.
+        """Render the Library tab: installed local + activated cloud APIs.
 
-        Library is statically mounted in compose, so this is a pure data
-        render — no dynamic add_pane choreography. The ModelList lookup
-        is memoized via ``_list_for_tab``.
+        Library is the personal-encyclopedia view: every model the user
+        has on disk plus every cloud provider they've activated. Static
+        in compose (no dynamic add_pane choreography). The ModelList
+        lookup is memoized via ``_list_for_tab``.
         """
         try:
             ml = self._list_for_tab(TAB_LIBRARY)
         except Exception:
             return
-        ml.set_rows(_group_frontier_rows(self._build_frontier_rows(self._get_search_text())))
+        search = self._get_search_text()
+        # Installed local rows: surface every variant/HF model the user
+        # has pulled. Filter both source caches by .installed so the
+        # Library reads as 'what I own', not 'what's available'.
+        installed_rows = [r for r in self._all_family_rows() if r.installed]
+        installed_rows.extend(r for r in self._all_hf_rows() if r.installed)
+        installed_rows.extend(r for r in self._all_remote_rows() if r.installed)
+        if search:
+            installed_rows = [r for r in installed_rows if matches_search(r, search)]
+        sections: list[ModelListSection] = []
+        if installed_rows:
+            sections.append(
+                ModelListSection(heading=msg.HEADING_INSTALLED, rows=list(installed_rows))
+            )
+        sections.extend(_group_frontier_rows(self._build_frontier_rows(search)))
+        ml.set_rows(sections)
 
     def _get_search_text(self) -> str:
         # Deferred refresh callbacks can land while the screen is between
