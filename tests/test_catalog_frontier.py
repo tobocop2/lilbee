@@ -458,7 +458,7 @@ class TestLibraryTab:
         """Frontier section disappears when frontier_rows clears.
 
         Library now also surfaces installed local rows, so option_count
-        isn't necessarily 0 — but the cleared frontier rows must drop
+        isn't necessarily 0; the cleared frontier rows must still drop
         their provider section. We assert the frontier provider name no
         longer appears in any option label.
         """

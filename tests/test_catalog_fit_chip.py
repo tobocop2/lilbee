@@ -25,7 +25,7 @@ def test_fits_pill_renders_positive_headroom() -> None:
 
 
 def test_tight_pill_clamps_headroom_at_zero_for_display() -> None:
-    """Tight at exact 0 GB headroom shows '+0.0 GB', not negative — the
+    """Tight at exact 0 GB headroom shows '+0.0 GB', not negative; the
     headroom math may produce -0.0 from float arithmetic but the chip
     still reads as nonnegative."""
     chip = FitChip(level=FitLevel.TIGHT, headroom_gb=0.0)
