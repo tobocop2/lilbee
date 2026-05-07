@@ -743,7 +743,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.data.ingest.types import SyncResult
-    from lilbee.runtime.progress import BatchProgressEvent, EventType
+    from lilbee.runtime.progress import BatchProgressEvent, EventType, FileStartEvent
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
@@ -755,9 +755,25 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
     copy_result = CopyResult(copied=[str(src)], skipped=[])
 
     async def fake_sync(*, quiet, on_progress):
+        # Per-page rasterization progress fires while the file is being
+        # processed (FILE_START has already named it via the relative source
+        # name); the BATCH_PROGRESS event itself is emitted by the OCR
+        # subprocess pump with the *absolute* path in data.file (see
+        # data/ingest/extract.py:_pump_pdf_progress), so the two strings
+        # do not match and identity-based dispatch would skip the per-page
+        # branch entirely. The realistic shape catches that regression.
+        on_progress(
+            EventType.FILE_START,
+            FileStartEvent(file="a.pdf", current_file=1, total_files=1),
+        )
         on_progress(
             EventType.BATCH_PROGRESS,
-            BatchProgressEvent(file="a.pdf", status="rasterizing", current=2, total=10),
+            BatchProgressEvent(
+                file="/abs/path/to/documents/a.pdf",
+                status="rasterizing",
+                current=2,
+                total=10,
+            ),
         )
         return SyncResult()
 
@@ -777,6 +793,94 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
     t.join(timeout=5)
     page_updates = [call for call in reporter.update.call_args_list if "page 2 of 10" in str(call)]
     assert page_updates
+
+
+def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> None:
+    """With concurrent file ingestion, the progress label pins to the oldest
+    file still in flight rather than tracking the just-completed file."""
+    import asyncio
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest.types import SyncResult
+    from lilbee.runtime.progress import (
+        BatchProgressEvent,
+        EventType,
+        FileDoneEvent,
+        FileStartEvent,
+    )
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    from lilbee.app.ingest import CopyResult
+
+    copy_result = CopyResult(copied=[str(src)], skipped=[])
+
+    async def fake_sync(*, quiet, on_progress):
+        # Three files start concurrently. The pipeline emits FILE_START for each.
+        on_progress(
+            EventType.FILE_START, FileStartEvent(file="a.pdf", current_file=1, total_files=3)
+        )
+        on_progress(
+            EventType.FILE_START, FileStartEvent(file="b.pdf", current_file=2, total_files=3)
+        )
+        on_progress(
+            EventType.FILE_START, FileStartEvent(file="c.pdf", current_file=3, total_files=3)
+        )
+        # b finishes first (out of order). Pipeline fires FILE_DONE then BATCH_PROGRESS.
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file="b.pdf", status="ok", chunks=2))
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(file="b.pdf", status="ingested", current=1, total=3),
+        )
+        # a finishes next.
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file="a.pdf", status="ok", chunks=4))
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(file="a.pdf", status="ingested", current=2, total=3),
+        )
+        # c finishes last (in-flight is now empty).
+        on_progress(EventType.FILE_DONE, FileDoneEvent(file="c.pdf", status="ok", chunks=1))
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(file="c.pdf", status="ingested", current=3, total=3),
+        )
+        return SyncResult()
+
+    def _worker() -> None:
+        screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+        with (
+            patch("lilbee.app.ingest.copy_files", return_value=copy_result),
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
+        ):
+            screen._do_add(src, reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+
+    # Reduce the call list to the detail strings reporter.update saw, in order.
+    details = [call.args[1] for call in reporter.update.call_args_list]
+
+    # All three FILE_STARTs reported "Syncing a.pdf...". Label never advanced
+    # to b or c just because they started, because a is the oldest.
+    sync_labels = [d for d in details if d.startswith("Syncing ")]
+    assert "Syncing a.pdf..." in sync_labels
+    assert "Syncing b.pdf..." not in sync_labels  # b never became oldest
+    assert "Syncing c.pdf..." in sync_labels  # c becomes oldest after a finishes
+
+    # b's BATCH_PROGRESS came in while a was still oldest, so the detail
+    # at that point must still point at a, not b.
+    a_still_oldest_idx = details.index("Syncing a.pdf...")
+    c_becomes_oldest_idx = details.index("Syncing c.pdf...")
+    assert a_still_oldest_idx < c_becomes_oldest_idx
+
+    # The very last batch tick (c done, in-flight empty) shows "Done c.pdf".
+    assert details[-1] == "Done c.pdf"
 
 
 def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:

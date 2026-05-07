@@ -26,6 +26,9 @@ from lilbee.data.ingest.discovery import classify_file, discover_files, file_has
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
 from lilbee.runtime.progress import (
+    BATCH_STATUS_FAILED,
+    BATCH_STATUS_INGESTED,
+    BATCH_STATUS_SKIPPED,
     BatchProgressEvent,
     DetailedProgressCallback,
     EventType,
@@ -426,11 +429,11 @@ async def _collect_results(
             progress.update(ptask, description=desc)
             progress.advance(ptask)
         if result.error is not None:
-            progress_status = "failed"
+            progress_status = BATCH_STATUS_FAILED
         elif result.chunk_count == 0:
-            progress_status = "skipped"
+            progress_status = BATCH_STATUS_SKIPPED
         else:
-            progress_status = "ingested"
+            progress_status = BATCH_STATUS_INGESTED
         on_progress(
             EventType.BATCH_PROGRESS,
             BatchProgressEvent(

@@ -7,6 +7,10 @@ from lilbee.runtime.progress.callbacks import (
     shared_progress,
 )
 from lilbee.runtime.progress.types import (
+    BATCH_STATUS_FAILED,
+    BATCH_STATUS_INGESTED,
+    BATCH_STATUS_RASTERIZING,
+    BATCH_STATUS_SKIPPED,
     CRAWL_TOTAL_UNKNOWN,
     BatchProgressEvent,
     CrawlDoneEvent,
@@ -25,6 +29,10 @@ from lilbee.runtime.progress.types import (
 )
 
 __all__ = [
+    "BATCH_STATUS_FAILED",
+    "BATCH_STATUS_INGESTED",
+    "BATCH_STATUS_RASTERIZING",
+    "BATCH_STATUS_SKIPPED",
     "CRAWL_TOTAL_UNKNOWN",
     "BatchProgressEvent",
     "CrawlDoneEvent",
