@@ -857,7 +857,11 @@ class CatalogScreen(Screen[None]):
             self._update_sort_label()
             return
         self._grid_cache_keys[active_tab] = row_key
-        sections = [s for s in _group_rows_for_grid(tab_rows) if s.rows]
+        if active_tab in TASK_TAB_IDS:
+            task_label = TAB_ID_TO_TASK[active_tab].value.capitalize()
+            sections = [s for s in _group_task_rows_with_picks(tab_rows, task_label) if s.rows]
+        else:
+            sections = [s for s in _group_rows_for_grid(tab_rows) if s.rows]
         if not sections:
             container = self._grid_container
             container.remove_children()
@@ -1698,6 +1702,40 @@ def _group_frontier_rows(
         rows = sorted(per_provider[provider], key=lambda r: r.name.lower())
         sections.append(ModelListSection(heading=provider, rows=list(rows)))
     return sections
+
+
+_PICKS_SECTION_HEADING = "★ Picks"
+
+
+def _group_task_rows_with_picks(
+    task_rows: list[LocalCatalogRow], task_label: str
+) -> list[GridSection]:
+    """Per-tab grouping: ★ Picks pinned, then Installed, then the rest.
+
+    Lifts featured rows out of their task bucket into a dedicated pinned
+    section at the top of the tab. Today's behavior interleaved them at
+    the top of the task bucket; the redesign treats curation as its own
+    layer so the eye lands on Picks first instead of having to scan past
+    them to find non-featured rows.
+
+    Pre-condition: caller has already filtered ``task_rows`` to a single
+    task (the active per-task tab).
+    """
+    picks: list[CatalogRow] = []
+    installed: list[CatalogRow] = []
+    others: list[CatalogRow] = []
+    for row in task_rows:
+        if row.featured:
+            picks.append(row)
+        elif row.installed:
+            installed.append(row)
+        else:
+            others.append(row)
+    return [
+        GridSection(_PICKS_SECTION_HEADING, picks),
+        GridSection(msg.HEADING_INSTALLED, installed),
+        GridSection(task_label, others),
+    ]
 
 
 def _group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]:
