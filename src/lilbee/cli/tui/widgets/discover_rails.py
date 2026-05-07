@@ -2,7 +2,7 @@
 
 Each rail is a small ModelGrid bound to a curated row slice the catalog
 screen passes in via ``set_rails``. The widget owns layout (heading +
-ModelGrid stack) and nothing else — row construction stays in the
+ModelGrid stack) and nothing else; row construction stays in the
 catalog screen so the rails inherit every cache, fit-stamp, and routing
 behavior the per-task tabs already have.
 """
