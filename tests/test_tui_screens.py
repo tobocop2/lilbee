@@ -4046,14 +4046,19 @@ async def test_catalog_row_highlighted_prefetches_near_bottom():
                 _make_catalog_model(name=f"m-{i}B", hf_repo=f"org/m-{i}", featured=False)
                 for i in range(30)
             ]
+            screen._data_version += 1
+            screen._hf_rows_cache = None
             screen._refresh_list()
             await _pilot.pause()
             items_count = screen._list_widget.option_count
             assert items_count == 30
             # Focus the last item so prefetch trigger fires.
-            screen._list_widget.highlighted = screen._list_widget.option_count + -1
             screen._list_widget.focus()
             await _pilot.pause()
+            screen._list_widget.highlighted = screen._list_widget.option_count - 1
+            # Per-tab scroll watches may fire _load_more during the initial
+            # pause; reset _loading_more so the prefetch path isn't gated.
+            screen._loading_more = False
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen._maybe_prefetch_on_nav()
                 assert fetch.called
@@ -4172,7 +4177,7 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen._hf_models = []
             screen._remote_models = []
             # Invalidate the grid cache so _refresh_grid() rebuilds from scratch.
-            screen._grid_cache_key = ()
+            screen._grid_cache_keys["chat"] = ()
             screen._refresh_grid()
             screen._refresh_list()
             # Pin _focused_grid to None so a slow worker that left a stale
@@ -4407,13 +4412,13 @@ async def test_catalog_grid_cache_skips_rebuild():
             await _pilot.pause()
 
             screen._refresh_grid()
-            first_key = screen._grid_cache_key
+            first_key = screen._grid_cache_keys.get("chat")
             assert first_key != ()
 
-            with patch.object(screen.query_one("#catalog-grid"), "remove_children") as mock_remove:
+            with patch.object(screen.query_one("#grid-chat"), "remove_children") as mock_remove:
                 screen._refresh_grid()
                 mock_remove.assert_not_called()
-            assert screen._grid_cache_key == first_key
+            assert screen._grid_cache_keys.get("chat") == first_key
 
 
 async def test_chat_stream_response_worker(mock_svc):
@@ -4757,7 +4762,7 @@ async def test_catalog_refresh_list_empty():
             screen._hf_models = []
             screen._remote_models = []
             screen._refresh_list()
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             assert list_container.option_count == 0
 
 
@@ -4778,7 +4783,7 @@ async def test_catalog_refresh_list_with_models():
             ]
             screen._hf_has_more = True
             screen._refresh_list()
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             assert list_container.option_count >= 5
 
 
@@ -5198,9 +5203,9 @@ async def test_catalog_delete_installed_model_confirmation():
             # Focus the last list item (remote model)
             items_count = screen._list_widget.option_count
             assert items_count
-            screen._list_widget.highlighted = screen._list_widget.option_count + -1
             screen._list_widget.focus()
             await _pilot.pause()
+            screen._list_widget.highlighted = screen._list_widget.option_count - 1
 
             screen.action_delete_model()
             assert screen._pending_delete == "test-model:latest"
@@ -5325,7 +5330,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
             await screen.workers.wait_for_complete()
             screen._hf_fetched = True
             screen._families = []
-            screen._grid_cache_key = ()
+            screen._grid_cache_keys["chat"] = ()
             with patch.object(
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):
@@ -5335,7 +5340,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
                 # the CTA that surfaces the "{count} loaded" hint.
                 await _pilot.pause()
                 await _pilot.pause()
-            grid_text = " ".join(str(s.render()) for s in screen.query("#catalog-grid > Static"))
+            grid_text = " ".join(str(s.render()) for s in screen.query("#grid-chat > Static"))
             assert any(c.isdigit() for c in grid_text)
 
 
@@ -5365,9 +5370,9 @@ async def test_catalog_delete_second_press_confirms():
 
             items_count = screen._list_widget.option_count
             assert items_count
-            screen._list_widget.highlighted = screen._list_widget.option_count + -1
             screen._list_widget.focus()
             await _pilot.pause()
+            screen._list_widget.highlighted = screen._list_widget.option_count - 1
 
             # First press sets pending
             screen.action_delete_model()
@@ -5402,9 +5407,9 @@ async def test_catalog_delete_not_installed():
 
             items_count = screen._list_widget.option_count
             assert items_count
-            screen._list_widget.highlighted = screen._list_widget.option_count + -1
             screen._list_widget.focus()
             await _pilot.pause()
+            screen._list_widget.highlighted = screen._list_widget.option_count - 1
 
             screen.action_delete_model()
             assert screen._pending_delete is None
@@ -8458,7 +8463,7 @@ async def test_catalog_get_highlighted_variant_name():
             screen._grid_view = False
             # Mount a single ModelListItem and focus it so
             # _get_highlighted_model_name() picks up row.ref via screen.focused.
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
             items_count = list_container.option_count
@@ -8489,7 +8494,7 @@ async def test_catalog_get_highlighted_remote_name():
             row = remote_to_row(rm)
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
             items_count = list_container.option_count
@@ -8516,7 +8521,7 @@ async def test_catalog_get_highlighted_catalog_name():
             row = catalog_to_row(m, installed=False)
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
             items_count = list_container.option_count
@@ -9957,7 +9962,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             )
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
             items_count = list_container.option_count
@@ -9995,7 +10000,7 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             )
             screen._rows = [row]
             screen._grid_view = False
-            list_container = screen.query_one("#catalog-list", ModelList)
+            list_container = screen.query_one("#list-chat", ModelList)
             list_container.set_rows([ModelListSection(heading=None, rows=[row])])
             await _pilot.pause()
             items_count = list_container.option_count
@@ -10943,7 +10948,7 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             screen._loading_more = True
             screen._tick_loading_spinner()
             await _pilot.pause()
-            hint = screen.query_one("#catalog-grid > .scroll-hint", Static)
+            hint = screen.query_one("#grid-chat > .scroll-hint", Static)
             assert "loading" in str(hint.render()).lower()
 
 
