@@ -148,6 +148,13 @@ class TestSync:
         assert "file_start" in event_types
         assert "file_done" in event_types
         assert "done" in event_types
+        # ExtractEvent fires once per file before the embed phase so subscribers
+        # can show "extracted N pages" before the bar starts to tick at chunk
+        # granularity. Without this a 44MB PDF sat silently for many minutes.
+        assert "extract" in event_types
+        extract = next(d for t, d in events if t == "extract")
+        assert extract.file == "cb.txt"
+        assert extract.total_pages >= 1
         file_done = next(d for t, d in events if t == "file_done")
         assert file_done.file == "cb.txt"
         assert file_done.status == "ok"

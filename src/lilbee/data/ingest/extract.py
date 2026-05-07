@@ -455,6 +455,8 @@ async def ingest_document(
     """
     from kreuzberg import extract_file_sync
 
+    from lilbee.runtime.progress import EventType, ExtractEvent
+
     config = extraction_config(content_type_to_mode(content_type))
     result = await asyncio.to_thread(extract_file_sync, str(path), config=config)
 
@@ -474,6 +476,17 @@ async def ingest_document(
 
     if not result.chunks:
         return []
+
+    # Fire one EXTRACT event per file so subscribers (chat /add, /sync,
+    # CLI Rich progress) can show "extracted N pages" before the embed
+    # phase starts; otherwise a 44MB PDF sits at file-level 0% for
+    # minutes. get_page_count is the canonical PDF page count; for
+    # non-paginated formats we fall back to the chunk count.
+    page_count = result.get_page_count() or len(result.chunks)
+    on_progress(
+        EventType.EXTRACT,
+        ExtractEvent(file=source_name, page=page_count, total_pages=page_count),
+    )
 
     texts = [chunk.content for chunk in result.chunks]
     vectors = await asyncio.to_thread(

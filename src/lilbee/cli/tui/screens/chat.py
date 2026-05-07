@@ -101,6 +101,68 @@ def _remove_copied_files(names: list[str]) -> None:
             log.debug("Could not remove copied file %s", target, exc_info=True)
 
 
+_ADD_EMBED_THROTTLE_SECONDS = 0.15
+"""Throttle EMBED reporter updates to avoid TaskBar update storms.
+
+The embed worker fires one EmbedEvent per sub-batch, which on a fast
+laptop can be dozens per second. The Task Center only repaints at 10 Hz
+anyway, so we coalesce here at the same cadence.
+"""
+
+
+def _build_add_progress_callback(
+    reporter: ProgressReporter,
+) -> Callable[[EventType, ProgressEvent], None]:
+    """Return the on_progress shim used by /add.
+
+    Hoisted out of ``_do_add`` so the dispatch table doesn't bloat
+    ``_do_add``'s cyclomatic complexity. Mirrors ``_do_sync``'s EMBED
+    branch so /add gets chunk-level visibility too. ExtractEvent is
+    new in this commit and surfaces "extracted N pages" once per file
+    before the embed phase starts ticking.
+    """
+    from lilbee.runtime.progress import (
+        BatchProgressEvent,
+        EmbedEvent,
+        ExtractEvent,
+        FileStartEvent,
+    )
+
+    last_embed_update = 0.0
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        # Polling point so /c in Task Center can stop a long ingest
+        # between file boundaries without having to kill the thread.
+        nonlocal last_embed_update
+        reporter.check_cancelled()
+        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+            reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
+        elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
+            pct = (data.current / data.total * 100.0) if data.total else 0.0
+            reporter.update(
+                pct,
+                f"{data.status.capitalize()} page {data.current} of {data.total}",
+                indeterminate=False,
+            )
+        elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
+            reporter.update(
+                0,
+                msg.SYNC_FILE_PROGRESS.format(
+                    current=data.page, total=data.total_pages, file=data.file
+                ),
+                indeterminate=True,
+            )
+        elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+            now = time.monotonic()
+            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
+                return
+            last_embed_update = now
+            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+
+    return on_progress
+
+
 class ChatWelcome(Static):
     """Empty-state welcome posted into the chat log; removed on first message."""
 
@@ -490,7 +552,6 @@ class ChatScreen(Screen[None]):
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import BatchProgressEvent, FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
         copy_result = copy_files([path], force=force)
@@ -499,19 +560,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
-        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            # Polling point so /c in Task Center can stop a long ingest
-            # between file boundaries without having to kill the thread.
-            reporter.check_cancelled()
-            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-                reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
-            elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
-                pct = (data.current / data.total * 100.0) if data.total else 0.0
-                reporter.update(
-                    pct,
-                    f"{data.status.capitalize()} page {data.current} of {data.total}",
-                    indeterminate=False,
-                )
+        on_progress = _build_add_progress_callback(reporter)
 
         try:
             sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))

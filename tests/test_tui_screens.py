@@ -5578,6 +5578,66 @@ async def test_cmd_add_error_in_background(tmp_path):
             assert app.screen._sync_active is False
 
 
+async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
+    """_do_add must surface EMBED chunk progress and EXTRACT page totals.
+
+    Without this, /add stayed silent through the entire ingest of a 44MB
+    PDF because the callback only handled FILE_START + BATCH_PROGRESS;
+    EmbedEvent already fired from the embedder, but nothing in /add
+    listened for it. Mirrors the EMBED branch already present in
+    _do_sync.
+    """
+    import threading
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.data.ingest import SyncResult
+    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "scan.pdf"
+        test_file.write_bytes(b"fake")
+
+        fake_result = SyncResult(added=["scan.pdf"])
+
+        async def fake_sync(quiet=False, on_progress=None, cancel=None, **kw):
+            assert on_progress is not None
+            on_progress(
+                EventType.EXTRACT,
+                ExtractEvent(file="scan.pdf", page=12, total_pages=12),
+            )
+            on_progress(
+                EventType.EMBED,
+                EmbedEvent(file="scan.pdf", chunk=3, total_chunks=10),
+            )
+            return fake_result
+
+        reporter = MagicMock(spec=ProgressReporter)
+
+        with (
+            patch("lilbee.app.ingest.copy_files") as mock_copy,
+            patch("lilbee.data.ingest.sync", new=fake_sync),
+        ):
+            mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
+
+            def _run_worker() -> None:
+                app.screen._do_add(test_file, reporter)
+
+            thread = threading.Thread(target=_run_worker)
+            thread.start()
+            thread.join(timeout=5)
+
+        # Three reporter.update calls in order: copy banner, EXTRACT,
+        # EMBED. Assert at least the EMBED + EXTRACT messages reached
+        # the reporter.
+        update_calls = [c for c in reporter.update.call_args_list]
+        rendered = " | ".join(str(c) for c in update_calls)
+        assert msg.SYNC_FILE_PROGRESS.format(current=12, total=12, file="scan.pdf") in rendered
+        assert msg.SYNC_EMBEDDING.format(file="scan.pdf") in rendered
+
+
 async def test_do_add_raises_on_sync_failed(tmp_path):
     """bb-vb28: _do_add raises when sync returns SyncResult with failed files.
 
