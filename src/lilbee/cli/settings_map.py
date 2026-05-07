@@ -497,12 +497,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Ingest",
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
-    "vision_concurrency": SettingDef(
-        int,
-        nullable=False,
-        group="Ingest",
-        help_text="Concurrent vision-OCR pages per document (1 keeps memory predictable)",
-    ),
     "worker_pool_call_timeout_s": SettingDef(
         float,
         nullable=False,
