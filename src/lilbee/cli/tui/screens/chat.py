@@ -52,9 +52,12 @@ from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
-    BATCH_STATUS_RASTERIZING,
+    BatchProgressEvent,
+    BatchStatus,
     DetailedProgressCallback,
     EventType,
+    FileDoneEvent,
+    FileStartEvent,
     ProgressEvent,
 )
 
@@ -87,6 +90,24 @@ def _close_stream(stream: Any) -> None:
             stream.close()
 
 
+def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
+    """Pick the user-facing detail label for a BATCH_PROGRESS tick.
+
+    Per-page rasterization (vision OCR) is the only producer that uses
+    BatchStatus.RASTERIZING; it emits an absolute path in data.file
+    which never matches the relative source name kept in in_flight, so
+    identity-based detection would never fire. Status-based dispatch is
+    the reliable discriminator between per-page and per-file ticks.
+    """
+    if data.status == BatchStatus.RASTERIZING:
+        return msg.ADD_PAGE_PROGRESS.format(
+            status=data.status.capitalize(), current=data.current, total=data.total
+        )
+    if in_flight:
+        return msg.ADD_SYNCING_FILE.format(file=in_flight[0])
+    return msg.ADD_FILE_DONE.format(file=data.file)
+
+
 def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
     """Build the on_progress callback used by /add.
 
@@ -95,34 +116,23 @@ def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgress
     and reports completions via asyncio.as_completed; without this, the
     label flips to whatever just completed and flickers around the queue.
     """
-    from lilbee.runtime.progress import BatchProgressEvent, FileDoneEvent, FileStartEvent
-
     in_flight: list[str] = []
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
         # Polling point so /c in Task Center can stop a long ingest
         # between file boundaries without having to kill the thread.
         reporter.check_cancelled()
+        # isinstance guards type-narrow the ProgressEvent union for mypy.
+        # The EventType tag is the discriminator; isinstance is the runtime check.
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
             in_flight.append(data.file)
-            reporter.update(0, f"Syncing {in_flight[0]}...", indeterminate=True)
+            reporter.update(0, msg.ADD_SYNCING_FILE.format(file=in_flight[0]), indeterminate=True)
         elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
             with contextlib.suppress(ValueError):
                 in_flight.remove(data.file)
         elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
             pct = (data.current / data.total * 100.0) if data.total else 0.0
-            # Per-page rasterization (vision OCR) is the only producer that
-            # uses BATCH_STATUS_RASTERIZING; it emits an absolute path in
-            # data.file which never matches the relative source name kept
-            # in in_flight, so identity-based detection would never fire.
-            if data.status == BATCH_STATUS_RASTERIZING:
-                detail = f"{data.status.capitalize()} page {data.current} of {data.total}"
-            elif in_flight:
-                # Per-file batch tick: show the next oldest file still working.
-                detail = f"Syncing {in_flight[0]}..."
-            else:
-                detail = f"Done {data.file}"
-            reporter.update(pct, detail, indeterminate=False)
+            reporter.update(pct, _detail_for_batch_progress(data, in_flight), indeterminate=False)
 
     return on_progress
 

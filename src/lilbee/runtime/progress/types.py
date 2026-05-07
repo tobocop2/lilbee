@@ -51,23 +51,20 @@ class FileDoneEvent(BaseModel):
     chunks: int
 
 
-# BatchProgressEvent.status values. Per-file ticks emitted from the ingest
-# pipeline use one of {INGESTED, SKIPPED, FAILED}; per-page rasterization
-# ticks emitted from the vision-OCR pump use RASTERIZING. Consumers
-# discriminate per-page from per-file ticks via this status field, since
-# the per-page producer carries an absolute path in `file` while per-file
-# carries the relative source name and the two never compare equal.
-BATCH_STATUS_INGESTED = "ingested"
-BATCH_STATUS_SKIPPED = "skipped"
-BATCH_STATUS_FAILED = "failed"
-BATCH_STATUS_RASTERIZING = "rasterizing"
+class BatchStatus(StrEnum):
+    """Status values for BatchProgressEvent.status."""
+
+    INGESTED = "ingested"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    RASTERIZING = "rasterizing"
 
 
 class BatchProgressEvent(BaseModel):
     """Emitted after each file completes during batch ingestion."""
 
     file: str
-    status: str
+    status: BatchStatus
     current: int
     total: int
 

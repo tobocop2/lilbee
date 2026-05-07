@@ -243,7 +243,7 @@ async def _pump_pdf_progress(
     path: Path,
 ) -> None:
     """Forward ``progress: page=N total=M`` lines from the subprocess to ``on_progress``."""
-    from lilbee.runtime.progress import BATCH_STATUS_RASTERIZING, BatchProgressEvent, EventType
+    from lilbee.runtime.progress import BatchProgressEvent, BatchStatus, EventType
 
     while True:
         line = await stream.readline()
@@ -261,7 +261,7 @@ async def _pump_pdf_progress(
         on_progress(
             EventType.BATCH_PROGRESS,
             BatchProgressEvent(
-                file=str(path), status=BATCH_STATUS_RASTERIZING, current=page, total=total
+                file=str(path), status=BatchStatus.RASTERIZING, current=page, total=total
             ),
         )
 
