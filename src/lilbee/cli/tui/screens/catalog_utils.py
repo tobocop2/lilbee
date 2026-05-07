@@ -51,6 +51,7 @@ TASK_TO_TAB_ID: dict[ModelTask, str] = {
     ModelTask.VISION: TAB_VISION,
     ModelTask.RERANK: TAB_RERANK,
 }
+TAB_ID_TO_TASK: dict[str, ModelTask] = {v: k for k, v in TASK_TO_TAB_ID.items()}
 
 
 def task_to_tab_id(task: ModelTask | str) -> str:

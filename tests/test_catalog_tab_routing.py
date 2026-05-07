@@ -14,10 +14,12 @@ from lilbee.cli.tui.screens.catalog_utils import (
     TAB_CHAT,
     TAB_DISCOVER,
     TAB_EMBED,
+    TAB_ID_TO_TASK,
     TAB_LIBRARY,
     TAB_RERANK,
     TAB_VISION,
     TASK_TAB_IDS,
+    TASK_TO_TAB_ID,
     task_to_tab_id,
 )
 from lilbee.modelhub.models import ModelTask
@@ -64,3 +66,12 @@ def test_task_to_tab_id_rejects_unknown_task() -> None:
 def test_every_modeltask_has_a_tab() -> None:
     for task in ModelTask:
         assert task_to_tab_id(task) in TASK_TAB_IDS
+
+
+def test_tab_id_to_task_is_inverse_of_task_to_tab_id() -> None:
+    for task, tab_id in TASK_TO_TAB_ID.items():
+        assert TAB_ID_TO_TASK[tab_id] is task
+
+
+def test_tab_id_to_task_covers_all_task_tabs() -> None:
+    assert set(TAB_ID_TO_TASK.keys()) == set(TASK_TAB_IDS)
