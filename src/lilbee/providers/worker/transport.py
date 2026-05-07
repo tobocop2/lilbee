@@ -8,7 +8,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+
+OcrBackend = Literal["vision", "tesseract"]
+"""Which OCR backend the pool worker should run.
+
+``"vision"`` rasterises the PDF via pdfium and runs the vision Llama
+loaded by ``_VisionSession`` against each page.
+``"tesseract"`` shells out to kreuzberg's Tesseract backend, which
+spawns its own per-document Tesseract process.
+"""
 
 WorkerEntrypoint = Callable[..., None]
 """Signature of a worker subprocess main function.
@@ -72,6 +81,26 @@ class VisionRequest:
     png_bytes: bytes
     prompt: str = ""
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class PdfOcrRequest:
+    """Pickle-friendly multi-page PDF-OCR request.
+
+    Replaces the per-call ``python -m lilbee.runtime.pdf_extract``
+    subprocess. ``path`` is a string because ``pathlib.Path``
+    pickles via a chained reducer; the worker re-wraps it. ``backend``
+    selects between vision-Llama OCR (uses the role's loaded model)
+    and Tesseract OCR (no model load). ``model`` overrides
+    ``cfg.vision_model`` for the call when set; ignored under
+    ``"tesseract"``.
+    """
+
+    path: str
+    backend: OcrBackend
+    model: str = ""
+    per_page_timeout_s: float | None = None
+    quiet: bool = True
 
 
 @dataclass(frozen=True)
@@ -207,6 +236,8 @@ def default_spawner() -> WorkerSpawner:
 
 __all__ = [
     "ChatRequest",
+    "OcrBackend",
+    "PdfOcrRequest",
     "RerankPayload",
     "RoleConfig",
     "VisionRequest",
