@@ -43,10 +43,12 @@ from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
+    SourceMode,
     catalog_to_row,
     family_to_size_variants,
     frontier_row_from_remote,
     matches_search,
+    next_source_mode,
     remote_to_row,
     row_delete_id,
     variant_to_row,
@@ -158,6 +160,7 @@ class CatalogScreen(Screen[None]):
         Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
         Binding("ctrl+b", "toggle_drawer", "Detail", show=False, group=_ACTION_GROUP),
+        Binding("c", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -208,6 +211,12 @@ class CatalogScreen(Screen[None]):
         # __init__ default through the race; user-driven tab switches after
         # mount flip the flag and re-arm normal cache updates.
         self._activation_settled: bool = False
+        # Per-tab source mode (local / cloud / both). Defaults to LOCAL on
+        # every task tab so the catalog opens on the same row set the
+        # mega-grid era surfaced; users opt into cloud-mixed views via `c`.
+        self._source_modes: dict[str, SourceMode] = {
+            tab_id: SourceMode.LOCAL for tab_id in TASK_TAB_IDS
+        }
         # Hardware-fit baseline. Captured once at construction so the
         # row-build path (cached, only re-runs when _data_version moves)
         # can stamp each row's fit chip without re-probing on every refresh.
@@ -953,19 +962,13 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows(search)
         hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
-        # Per-tab filter: each task tab renders only its own task's rows.
-        # Library/Discover skipped here (handled by their own refresh paths).
         active_tab = self._active_tab_id_cache
-        if active_tab in TASK_TAB_IDS:
-            active_task = TAB_ID_TO_TASK[active_tab]
-            tab_rows = [r for r in all_rows if r.task == active_task.value]
-        else:
-            tab_rows = list(all_rows)
+        tab_rows = self._rows_for_active_tab(all_rows, active_tab)
         # Keep self._rows in sync so the toolbar sort-label can render
         # "{n} loaded" whichever view (grid or list) is active.
         self._rows = list(tab_rows)
         row_key = (
-            tuple((r.name, r.installed) for r in tab_rows),
+            tuple(_row_cache_signature(r) for r in tab_rows),
             search,
         )
         # Per-tab cache key: switching back to an already-rendered tab
@@ -977,7 +980,15 @@ class CatalogScreen(Screen[None]):
         self._grid_cache_keys[active_tab] = row_key
         if active_tab in TASK_TAB_IDS:
             task_label = TAB_ID_TO_TASK[active_tab].value.capitalize()
-            sections = [s for s in _group_task_rows_with_picks(tab_rows, task_label) if s.rows]
+            # Split locals and frontier so the picks/installed grouping
+            # only sees LocalCatalogRow (it reads .featured / .installed
+            # which FrontierCatalogRow doesn't carry). Frontier rows land
+            # under their own "Cloud" section appended below.
+            local_only = [r for r in tab_rows if isinstance(r, LocalCatalogRow)]
+            frontier_only = [r for r in tab_rows if isinstance(r, FrontierCatalogRow)]
+            sections = [s for s in _group_task_rows_with_picks(local_only, task_label) if s.rows]
+            if frontier_only:
+                sections.append(GridSection(heading="Cloud", rows=list(frontier_only)))
         else:
             sections = [s for s in _group_rows_for_grid(tab_rows) if s.rows]
         if not sections:
@@ -1130,6 +1141,28 @@ class CatalogScreen(Screen[None]):
                 w.remove()
         self._mount_grid_ctas(hf_count=hf_count)
 
+    def _rows_for_active_tab(
+        self, all_rows: list[LocalCatalogRow], active_tab: str
+    ) -> list[CatalogRow]:
+        """Slice the source row list for what the active task tab should render.
+
+        Library/Discover bypass this (their refresh paths build their own
+        slices). For task tabs, returns rows for the matching ModelTask
+        further filtered by the per-tab SourceMode chip; CLOUD and BOTH
+        also union the matching frontier rows.
+        """
+        if active_tab not in TASK_TAB_IDS:
+            return list(all_rows)
+        active_task = TAB_ID_TO_TASK[active_tab]
+        mode = self._source_modes.get(active_tab, SourceMode.LOCAL)
+        local_for_task: list[CatalogRow] = []
+        if mode is not SourceMode.CLOUD:
+            local_for_task = [r for r in all_rows if r.task == active_task.value]
+        frontier_for_task: list[CatalogRow] = []
+        if mode is not SourceMode.LOCAL:
+            frontier_for_task = [r for r in self._frontier_rows if r.task == active_task.value]
+        return local_for_task + frontier_for_task
+
     def _filter_grid(self) -> None:
         """Re-render the grid with the current filter applied via _refresh_grid."""
         self._refresh_grid()
@@ -1156,6 +1189,25 @@ class CatalogScreen(Screen[None]):
         rows = grid.rows
         row = rows[index] if 0 <= index < len(rows) else None
         drawer.update_for_row(row)
+
+    def action_cycle_source(self) -> None:
+        """Cycle the active task tab's source mode: LOCAL -> CLOUD -> BOTH.
+
+        No-op outside the four task tabs (Discover/Library aren't filtered
+        by source). Per-tab mode means flipping Chat to BOTH doesn't drag
+        Embed along; users can keep different views per task.
+        """
+        if isinstance(self.focused, Input):
+            return
+        active = self._active_tab_id_cache
+        if active not in TASK_TAB_IDS:
+            return
+        self._source_modes[active] = next_source_mode(self._source_modes[active])
+        # Force a rebuild on this tab; cache key for this tab is now stale
+        # because the source filter changed but the upstream row data didn't.
+        self._grid_cache_keys.pop(active, None)
+        self._list_cache_keys.pop(active, None)
+        self._refresh_view()
 
     def action_toggle_drawer(self) -> None:
         """Toggle the detail drawer's visibility via the -collapsed class.
@@ -1865,6 +1917,18 @@ class GridSection:
 
 
 _TASK_BUCKET_ORDER = (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
+
+
+def _row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
+    """Pair (name, installed-flag) for the per-tab cache key.
+
+    Frontier rows don't carry an ``installed`` field; they're keyed as
+    if installed=False since each frontier entry is provider-managed
+    rather than on-disk.
+    """
+    if isinstance(row, FrontierCatalogRow):
+        return (row.name, False)
+    return (row.name, row.installed)
 
 
 def _for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:

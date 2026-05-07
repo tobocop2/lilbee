@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
@@ -52,6 +52,29 @@ TASK_TO_TAB_ID: dict[ModelTask, str] = {
     ModelTask.RERANK: TAB_RERANK,
 }
 TAB_ID_TO_TASK: dict[str, ModelTask] = {v: k for k, v in TASK_TO_TAB_ID.items()}
+
+
+class SourceMode(StrEnum):
+    """Per-task tab filter for which row source backs the visible cards.
+
+    LOCAL hides frontier rows (the default; mirrors the legacy mega-grid
+    behavior). CLOUD shows only frontier rows for the active task. BOTH
+    unions them so users can compare a local Llama with a cloud Llama
+    side by side. Cycled via the ``c`` keybinding.
+    """
+
+    LOCAL = "local"
+    CLOUD = "cloud"
+    BOTH = "both"
+
+
+_SOURCE_MODE_CYCLE: tuple[SourceMode, ...] = (SourceMode.LOCAL, SourceMode.CLOUD, SourceMode.BOTH)
+
+
+def next_source_mode(current: SourceMode) -> SourceMode:
+    """Return the next SourceMode in the LOCAL -> CLOUD -> BOTH -> LOCAL cycle."""
+    idx = _SOURCE_MODE_CYCLE.index(current)
+    return _SOURCE_MODE_CYCLE[(idx + 1) % len(_SOURCE_MODE_CYCLE)]
 
 
 def task_to_tab_id(task: ModelTask | str) -> str:
