@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -170,7 +170,7 @@ async def _tesseract_ocr_fallback(
 
 
 async def _chunk_and_embed_pages(
-    page_texts: list[Any],
+    page_texts: Sequence[tuple[int, str]],
     source_name: str,
     content_type: str,
     on_progress: DetailedProgressCallback,

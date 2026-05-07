@@ -194,7 +194,7 @@ class SdkLLMProvider(LLMProvider):
         """SDK backend cannot rasterise PDFs locally; ingest callers fall back."""
         del path, backend, model, per_page_timeout_s, quiet, on_progress
         raise NotImplementedError(
-            "Hosted SDK providers do not support scanned-PDF OCR. "
+            "Hosted models do not support scanned-PDF OCR. "
             "Set LILBEE_VISION_MODEL to a local GGUF vision model to enable it."
         )
 

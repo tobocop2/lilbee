@@ -163,6 +163,60 @@ def _build_add_progress_callback(
     return on_progress
 
 
+def _build_sync_progress_callback(
+    reporter: ProgressReporter,
+) -> Callable[[EventType, ProgressEvent], None]:
+    """Return the on_progress shim used by ``_do_sync``.
+
+    Hoisted out of ``_do_sync`` so the dispatch doesn't bloat the method's
+    cyclomatic complexity. EXTRACT mirrors the /add path: a 44MB scanned
+    PDF needs a per-page tick or the row reads as frozen.
+    """
+    from lilbee.runtime.progress import (
+        EmbedEvent,
+        ExtractEvent,
+        FileDoneEvent,
+        FileStartEvent,
+        SyncDoneEvent,
+    )
+
+    last_embed_update = 0.0
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        nonlocal last_embed_update
+        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+            pct = int((data.current_file - 1) * 100 / data.total_files)
+            status = msg.SYNC_FILE_PROGRESS.format(
+                current=data.current_file, total=data.total_files, file=data.file
+            )
+            reporter.update(pct, status, indeterminate=False)
+        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
+            reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
+        elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
+            reporter.update(
+                0,
+                msg.SYNC_FILE_PROGRESS.format(
+                    current=data.page, total=data.total_pages, file=data.file
+                ),
+                indeterminate=True,
+            )
+        elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+            now = time.monotonic()
+            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
+                return
+            last_embed_update = now
+            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+        elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
+            # Without this handler the task never ticks to 100% and the
+            # Task Center row never flashes "just-completed" (bb-7enj).
+            # "Synced (N docs)" means successfully synced, so failed is excluded.
+            total = data.added + data.updated + data.removed
+            reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
+
+    return on_progress
+
+
 class ChatWelcome(Static):
     """Empty-state welcome posted into the chat log; removed on first message."""
 
@@ -1192,36 +1246,9 @@ class ChatScreen(Screen[None]):
     def _do_sync(self, reporter: ProgressReporter) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import EmbedEvent, FileDoneEvent, FileStartEvent, SyncDoneEvent
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
-
-        last_embed_update = 0.0
-
-        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            nonlocal last_embed_update
-            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-                pct = int((data.current_file - 1) * 100 / data.total_files)
-                status = msg.SYNC_FILE_PROGRESS.format(
-                    current=data.current_file, total=data.total_files, file=data.file
-                )
-                reporter.update(pct, status, indeterminate=False)
-            elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
-                reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
-            elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-                now = time.monotonic()
-                if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                    return
-                last_embed_update = now
-                pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-                reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
-            elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
-                # Without this handler the task never ticks to 100% and the
-                # Task Center row never flashes "just-completed" (bb-7enj).
-                # "Synced (N docs)" means successfully synced, so failed is excluded.
-                total = data.added + data.updated + data.removed
-                reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
-
+        on_progress = _build_sync_progress_callback(reporter)
         try:
             result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:

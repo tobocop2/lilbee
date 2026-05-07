@@ -409,7 +409,8 @@ def test_handle_pdf_ocr_rejects_non_vision_backend() -> None:
     frames = _kinds_payloads(conn)
     assert frames[0][0] == "error"
     assert frames[0][1].type_name == "ValueError"
-    assert "vision" in frames[0][1].message
+    assert "Unsupported PDF OCR backend" in frames[0][1].message
+    assert "tesseract" in frames[0][1].message
 
 
 def test_handle_pdf_ocr_vision_streams_one_chunk_per_page(monkeypatch) -> None:
@@ -427,9 +428,15 @@ def test_handle_pdf_ocr_vision_streams_one_chunk_per_page(monkeypatch) -> None:
     vw._handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
     frames = _kinds_payloads(conn)
     # Three streamed chunks (1-based page, total=3, text) followed by stream_end.
-    assert frames[0] == ("stream_chunk", (1, 3, "OCR"))
-    assert frames[1] == ("stream_chunk", (2, 3, "OCR"))
-    assert frames[2] == ("stream_chunk", (3, 3, "OCR"))
+    # Frame must be a typed PdfOcrChunk: NamedTuple compares equal to a bare
+    # tuple, so a regression to a positional 3-tuple would not surface
+    # without the explicit type assertion below.
+    from lilbee.vision import PdfOcrChunk
+
+    assert isinstance(frames[0][1], PdfOcrChunk)
+    assert frames[0] == ("stream_chunk", PdfOcrChunk(page=1, total=3, text="OCR"))
+    assert frames[1] == ("stream_chunk", PdfOcrChunk(page=2, total=3, text="OCR"))
+    assert frames[2] == ("stream_chunk", PdfOcrChunk(page=3, total=3, text="OCR"))
     assert frames[3] == ("stream_end", None)
     # session.ocr was called once per page with the model override.
     assert len(session.calls) == 3

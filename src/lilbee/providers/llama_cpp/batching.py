@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from lilbee.providers.base import ProviderError
@@ -11,48 +12,44 @@ _RERANK_PAIR_SEPARATOR = "</s></s>"
 EMBED_N_SEQ_MAX = 64
 """Max parallel sequences per ``create_embedding`` call.
 
-The embed/rerank Llama contexts are loaded with
-``context_params.n_seq_max = EMBED_N_SEQ_MAX`` (see
-``lilbee.providers.llama_cpp.provider._llama_n_seq_max``). llama-cpp-
-python's inner ``Llama.embed`` flushes its accumulated batch when the
-TOKEN budget is exceeded, but never on sequence-count, so a caller
-that hands it more than ``n_seq_max`` short inputs in one call will
-trip the C-level ``invalid seq_id[N][0] = K >= K`` assertion and get
-``llama_decode returned -1`` (upstream issue #2051, PR #2058 still
-open as of May 2026). Both ``embed_batch`` and ``compute_rerank_scores``
-flush at this sequence count to avoid that.
+llama-cpp-python's inner ``Llama.embed`` flushes its batch on token
+budget but not on sequence count, so caller-side batches above the
+context's ``n_seq_max`` trip a C-level assertion. Workaround for
+upstream issue #2051 / PR #2058 (still open as of May 2026).
 """
+
+
+def _split_into_sub_batches(llm: Any, items: list[str]) -> Iterator[list[str]]:
+    """Yield sub-batches respecting both the token budget and ``EMBED_N_SEQ_MAX``."""
+    token_cap = max(1, int(llm.n_batch))
+    sub_batch: list[str] = []
+    sub_tokens = 0
+    for item in items:
+        token_count = max(1, len(llm.tokenize(item.encode("utf-8"))))
+        if sub_batch and (
+            sub_tokens + token_count > token_cap or len(sub_batch) >= EMBED_N_SEQ_MAX
+        ):
+            yield sub_batch
+            sub_batch = []
+            sub_tokens = 0
+        sub_batch.append(item)
+        sub_tokens += token_count
+    if sub_batch:
+        yield sub_batch
 
 
 def embed_batch(llm: Any, texts: list[str]) -> list[list[float]]:
     """Embed *texts* in as few llama-cpp calls as the model's batch budget allows.
 
     One ``llm.create_embedding(input=sub_batch)`` per sub-batch instead of
-    one per text. Sub-batches respect ``llm.n_batch`` (token budget,
-    already clamped to ``min(n_ctx, n_batch)`` at model load) AND
-    ``EMBED_N_SEQ_MAX`` (sequence-count cap; see the constant docstring
-    for the upstream bug we work around). Vectors come back in input
-    order. Caller must run inside a worker subprocess where
-    ``redirect_stdio_to_devnull()`` ran at startup so fd 2 is already
-    redirected.
+    one per text. Vectors come back in input order. Caller must run inside
+    a worker subprocess where ``redirect_stdio_to_devnull()`` ran at
+    startup so fd 2 is already redirected.
     """
     if not texts:
         return []
-    token_cap = max(1, int(llm.n_batch))
     vectors: list[list[float]] = []
-    sub_batch: list[str] = []
-    sub_tokens = 0
-    for text in texts:
-        token_count = max(1, len(llm.tokenize(text.encode("utf-8"))))
-        if sub_batch and (
-            sub_tokens + token_count > token_cap or len(sub_batch) >= EMBED_N_SEQ_MAX
-        ):
-            vectors.extend(_embed_one_call(llm, sub_batch))
-            sub_batch = []
-            sub_tokens = 0
-        sub_batch.append(text)
-        sub_tokens += token_count
-    if sub_batch:
+    for sub_batch in _split_into_sub_batches(llm, texts):
         vectors.extend(_embed_one_call(llm, sub_batch))
     return vectors
 
@@ -62,28 +59,14 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
 
     ``pooling_type=LLAMA_POOLING_TYPE_RANK`` requires the pair pre-joined
     as ``query</s></s>candidate``; passing them as two inputs makes
-    ``llama_decode`` fail with ``-1``. Pairs are batched together so one
-    rerank call decodes many candidates in a single ggml graph, capped
-    by both the token and sequence budgets ``embed_batch`` uses.
+    ``llama_decode`` fail with ``-1``. Pairs share ``embed_batch``'s
+    sub-batching so one rerank call decodes many candidates per graph.
     """
     if not candidates:
         return []
     pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
-    token_cap = max(1, int(llm.n_batch))
     scores: list[float] = []
-    sub_batch: list[str] = []
-    sub_tokens = 0
-    for pair in pairs:
-        token_count = max(1, len(llm.tokenize(pair.encode("utf-8"))))
-        if sub_batch and (
-            sub_tokens + token_count > token_cap or len(sub_batch) >= EMBED_N_SEQ_MAX
-        ):
-            scores.extend(_rerank_one_call(llm, sub_batch))
-            sub_batch = []
-            sub_tokens = 0
-        sub_batch.append(pair)
-        sub_tokens += token_count
-    if sub_batch:
+    for sub_batch in _split_into_sub_batches(llm, pairs):
         scores.extend(_rerank_one_call(llm, sub_batch))
     return scores
 

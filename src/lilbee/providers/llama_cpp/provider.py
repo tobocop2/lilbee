@@ -50,7 +50,7 @@ from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
 from lilbee.providers.worker.wire_kinds import PDF_OCR_KIND
 from lilbee.runtime.progress import EventType, ExtractEvent
-from lilbee.vision import PageText, PdfOcrChunk
+from lilbee.vision import PageText, PdfOcrChunk, pdf_page_count
 
 _EMBED_ROLE = "embed"
 _RERANK_ROLE = "rerank"
@@ -299,17 +299,22 @@ class LlamaCppProvider(LLMProvider):
         quiet: bool = True,
         on_progress: Callable[..., None] | None = None,
     ) -> list[PageText]:
-        """Run multi-page vision PDF OCR via the persistent vision worker."""
+        """Run multi-page vision PDF OCR via the persistent vision worker.
+
+        ``per_page_timeout_s`` is *per page*. The total wall-clock cap on
+        the streamed drain is ``pages * per_page + cfg.vision_load_budget_s``
+        (load grace), so a 100-page scan with a 60 s per-page budget gets
+        ~6000 s + load, not 60 s for the whole document.
+        """
         accessor = self._get_pool_accessor(
             _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
         )
         runtime = self._pool_runtime()
-        budget = self._vision_call_budget(per_page_timeout_s)
+        budget = self._pdf_drain_budget(path, per_page_timeout_s)
         request = PdfOcrRequest(
             path=str(path),
             backend=backend,
             model=model,
-            per_page_timeout_s=per_page_timeout_s,
             quiet=quiet,
         )
         progress = on_progress
@@ -318,12 +323,16 @@ class LlamaCppProvider(LLMProvider):
             pages: list[PageText] = []
             stream = cast(AsyncIterator[Any], accessor.stream(PDF_OCR_KIND, request))
             async for frame in stream:
-                chunk = PdfOcrChunk(*frame)
-                pages.append(PageText(chunk.page, chunk.text))
+                if not isinstance(frame, PdfOcrChunk):
+                    raise ProviderError(
+                        f"PDF OCR worker streamed unexpected frame type {type(frame).__name__}.",
+                        provider="llama-cpp",
+                    )
+                pages.append(PageText(frame.page, frame.text))
                 if progress is not None:
                     progress(
                         EventType.EXTRACT,
-                        ExtractEvent(file=path.name, page=chunk.page, total_pages=chunk.total),
+                        ExtractEvent(file=path.name, page=frame.page, total_pages=frame.total),
                     )
             return pages
 
@@ -339,6 +348,19 @@ class LlamaCppProvider(LLMProvider):
                 "PDF OCR worker timed out. Please try again.",
                 provider="llama-cpp",
             ) from exc
+
+    def _pdf_drain_budget(self, path: Path, per_page_timeout_s: float | None) -> float:
+        """Total drain timeout = page_count * per_page + vision_load_budget_s."""
+        if not per_page_timeout_s or per_page_timeout_s <= 0:
+            return _VISION_NO_CAP_TIMEOUT_S
+        try:
+            pages = pdf_page_count(path)
+        except Exception:
+            # If we can't probe pages upfront the worker will still try,
+            # but we lose the precise budget; fall back to no-cap so the
+            # parent doesn't kill a valid run on a probe failure.
+            return _VISION_NO_CAP_TIMEOUT_S
+        return float(pages) * per_page_timeout_s + cfg.vision_load_budget_s
 
     def chat(
         self,

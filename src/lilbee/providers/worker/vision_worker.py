@@ -173,9 +173,7 @@ def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         return
     if payload.backend != "vision":
         try:
-            raise ValueError(
-                f"vision worker only handles backend='vision', got {payload.backend!r}"
-            )
+            raise ValueError(f"Unsupported PDF OCR backend {payload.backend!r}.")
         except ValueError as exc:
             reply.send(ERROR_KIND, _serialize_exception(exc))
         return

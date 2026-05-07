@@ -83,13 +83,14 @@ class PdfOcrRequest:
 
     ``path`` is a string so it pickles cheaply across the parent->worker
     pipe; the worker re-wraps it as a :class:`pathlib.Path`. ``model``
-    overrides ``cfg.vision_model`` for the call when non-empty.
+    overrides ``cfg.vision_model`` for the call when non-empty. The
+    parent enforces wall-clock budgets via the stream-drain timeout;
+    the worker only validates the payload shape.
     """
 
     path: str
     backend: OcrBackend
     model: str = ""
-    per_page_timeout_s: float | None = None
     quiet: bool = True
 
 

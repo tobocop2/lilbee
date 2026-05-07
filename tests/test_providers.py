@@ -2986,9 +2986,13 @@ class TestLlamaCppPdfOcr:
 
     def test_pdf_ocr_aggregates_streamed_pages_in_order(self) -> None:
         from lilbee.providers.worker.transport import PdfOcrRequest
-        from lilbee.vision import PageText
+        from lilbee.vision import PageText, PdfOcrChunk
 
-        chunks = [(1, 3, "alpha"), (2, 3, "beta"), (3, 3, "gamma")]
+        chunks = [
+            PdfOcrChunk(1, 3, "alpha"),
+            PdfOcrChunk(2, 3, "beta"),
+            PdfOcrChunk(3, 3, "gamma"),
+        ]
         provider, captured = self._stub_provider(chunks)
         input_path = Path("/fake.pdf")
         try:
@@ -3008,8 +3012,9 @@ class TestLlamaCppPdfOcr:
 
     def test_pdf_ocr_propagates_per_page_progress(self) -> None:
         from lilbee.runtime.progress import EventType, ExtractEvent
+        from lilbee.vision import PdfOcrChunk
 
-        chunks = [(1, 2, "a"), (2, 2, "b")]
+        chunks = [PdfOcrChunk(1, 2, "a"), PdfOcrChunk(2, 2, "b")]
         provider, _ = self._stub_provider(chunks)
         events: list = []
         try:
