@@ -382,3 +382,101 @@ def test_vision_worker_main_routes_through_run_worker(monkeypatch) -> None:
     assert captured["data"] == "DATA"
     assert captured["health"] == "HEALTH"
     assert "vision_ocr" in captured["kwargs"]["kind_handlers"]
+    assert "pdf_ocr" in captured["kwargs"]["kind_handlers"]
+
+
+def test_handle_pdf_ocr_rejects_non_pdf_request_payload() -> None:
+    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
+
+    reply, conn = _make_reply()
+    session = _StubSession()
+    _handle_pdf_ocr(reply, "garbage", WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "TypeError"
+
+
+def test_handle_pdf_ocr_rejects_unknown_backend() -> None:
+    from lilbee.providers.worker.transport import PdfOcrRequest
+    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
+
+    reply, conn = _make_reply()
+    session = _StubSession()
+    payload = PdfOcrRequest(path="/nope.pdf", backend="bogus")  # type: ignore[arg-type]
+    _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    assert frames[0][0] == "error"
+    assert frames[0][1].type_name == "ValueError"
+    assert "bogus" in frames[0][1].message
+
+
+def test_handle_pdf_ocr_vision_streams_one_chunk_per_page(monkeypatch) -> None:
+    """Vision backend rasterises pages, calls session.ocr per page, streams chunks."""
+    from lilbee.providers.worker.transport import PdfOcrRequest
+    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
+
+    fake_pages = [(0, b"png0"), (1, b"png1"), (2, b"png2")]
+    monkeypatch.setattr("lilbee.vision.rasterize_pdf", lambda _path: iter(fake_pages))
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _path: 3)
+    reply, conn = _make_reply()
+    session = _StubSession(text="OCR")
+    payload = PdfOcrRequest(path="/fake.pdf", backend="vision", model="m")
+    _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    # Three streamed chunks (1-based page, total=3, text) followed by stream_end.
+    assert frames[0] == ("stream_chunk", (1, 3, "OCR"))
+    assert frames[1] == ("stream_chunk", (2, 3, "OCR"))
+    assert frames[2] == ("stream_chunk", (3, 3, "OCR"))
+    assert frames[3] == ("stream_end", None)
+    # session.ocr was called once per page with the model override.
+    assert len(session.calls) == 3
+    assert all(c.model == "m" for c in session.calls)
+
+
+def test_handle_pdf_ocr_tesseract_groups_chunks_by_page(monkeypatch) -> None:
+    """Tesseract backend groups kreuzberg chunks by first_page and streams one per page."""
+    from unittest.mock import MagicMock
+
+    from lilbee.providers.worker.transport import PdfOcrRequest
+    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
+
+    chunks = []
+    for page, body in [(1, "alpha"), (1, "beta"), (2, "gamma")]:
+        c = MagicMock()
+        c.metadata = {"first_page": page}
+        c.content = body
+        chunks.append(c)
+    fake_result = MagicMock()
+    fake_result.chunks = chunks
+    monkeypatch.setattr("kreuzberg.extract_file_sync", lambda *_a, **_kw: fake_result)
+    reply, conn = _make_reply()
+    session = _StubSession()
+    payload = PdfOcrRequest(path="/fake.pdf", backend="tesseract")
+    _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    # Two pages -> two stream_chunk frames carrying total=2 -> stream_end.
+    assert frames[0] == ("stream_chunk", (1, 2, "alpha\nbeta"))
+    assert frames[1] == ("stream_chunk", (2, 2, "gamma"))
+    assert frames[2] == ("stream_end", None)
+    # Tesseract path never touched the vision session.
+    assert session.calls == []
+
+
+def test_handle_pdf_ocr_emits_error_on_session_exception(monkeypatch) -> None:
+    from lilbee.providers.worker.transport import PdfOcrRequest
+    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
+    from lilbee.providers.worker.worker_runtime import WorkerLoopState
+
+    monkeypatch.setattr("lilbee.vision.rasterize_pdf", lambda _path: iter([(0, b"png")]))
+    reply, conn = _make_reply()
+    session = _StubSession(exc=RuntimeError("boom"))
+    payload = PdfOcrRequest(path="/fake.pdf", backend="vision")
+    _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
+    frames = _kinds_payloads(conn)
+    # No stream_end emitted on error; just the error frame.
+    assert frames[-1][0] == "error"
+    assert frames[-1][1].type_name == "RuntimeError"
