@@ -5221,15 +5221,21 @@ async def test_catalog_key_g_G_noop_in_input():
             assert inp.has_focus
 
 
-async def test_catalog_tab_bindings_removed():
-    """Number key tab-switching bindings removed from catalog."""
+async def test_catalog_numeric_tab_bindings_present():
+    """Number keys 1-6 jump to the corresponding tab in the 6-tab shell.
+
+    The earlier mega-grid catalog used numerics for sort cycle and
+    explicitly removed them. The 6-tab redesign restores them as tab
+    shortcuts (Discover / Chat / Embed / Vision / Rerank / Library)
+    with priority=True so they beat focused-widget grabs.
+    """
     from textual.binding import Binding as B
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, B)}
-    for k in ("1", "2", "3", "4"):
-        assert k not in keys
+    for k in ("1", "2", "3", "4", "5", "6"):
+        assert k in keys
 
 
 async def test_app_question_mark_opens_help():
