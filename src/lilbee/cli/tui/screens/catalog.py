@@ -12,7 +12,7 @@ from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, VerticalScroll
-from textual.events import Click, MouseScrollDown
+from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
@@ -1237,6 +1237,26 @@ class CatalogScreen(Screen[None]):
         rows = grid.rows
         row = rows[index] if 0 <= index < len(rows) else None
         drawer.update_for_row(row)
+
+    def on_key(self, event: Key) -> None:
+        """Intercept 1-6 to jump tabs even when a focused widget owns digits.
+
+        Bindings with priority=True should win against focused-widget
+        bindings, but Textual's TabbedContent's inner ContentTabs swallows
+        numeric keypresses before they reach screen-level bindings. An
+        explicit on_key handler intercepts the digit at the bubbling stage,
+        triggers ``action_select_tab``, and stops further dispatch so the
+        digit doesn't bleed into the search Input or another widget.
+        """
+        if isinstance(self.focused, Input):
+            return
+        digit_to_index = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5}
+        index = digit_to_index.get(event.key)
+        if index is None:
+            return
+        event.stop()
+        event.prevent_default()
+        self.action_select_tab(index)
 
     def action_select_tab(self, index: int) -> None:
         """Activate the tab at *index* in ALL_TAB_IDS (0..5).
