@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 from unittest import mock
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -113,7 +113,7 @@ def _make_empty_result():
     return result
 
 
-@mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
+@mock.patch("kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result())
 class TestSync:
     async def test_empty_documents_dir(self, mock_extract_file, isolated_env):
         from lilbee.data.ingest import SyncResult, sync
@@ -357,7 +357,7 @@ class TestSync:
         assert "qflaky.txt" not in result.updated
 
 
-@mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
+@mock.patch("kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result())
 class TestSyncCancellation:
     """Tests for cancel support and atomic per-file delete in sync."""
 
@@ -440,7 +440,7 @@ class TestSyncCancellation:
 class TestIngestHelpers:
     """Cover edge cases in ingest_document and ingest_code_sync."""
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_empty_result())
     async def testingest_document_empty_chunks(self, mock_extract_file, isolated_env):
         """Document that produces no chunks returns empty list."""
         from lilbee.data.ingest import ingest_document
@@ -462,7 +462,7 @@ class TestIngestHelpers:
             result = ingest_code_sync(f, "empty.py")
             assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def testingest_document_pdf_with_pages(self, mock_kf, isolated_env):
         """PDF document returns records with page metadata."""
         mock_kf.return_value = _make_kreuzberg_result(
@@ -482,7 +482,7 @@ class TestIngestHelpers:
 
 class TestCancellation:
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_cancelled_error_propagates(self, mock_extract_file, isolated_env):
         """CancelledError in _process_one is re-raised, not swallowed."""
@@ -906,7 +906,7 @@ class TestClassifyStructuredFormats:
         assert classify_file(Path(filename)) == expected
 
 
-@mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
+@mock.patch("kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result())
 class TestSyncStructuredFormats:
     async def test_xml_file_ingested(
         self,
@@ -978,7 +978,7 @@ class TestHasMeaningfulText:
 
 
 class TestVisionFallback:
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_called_for_empty_pdf(self, mock_kf, isolated_env):
         """When PDF extraction is empty and enable_ocr is True, fall back to vision."""
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -1009,7 +1009,7 @@ class TestVisionFallback:
         assert result[0]["content_type"] == "pdf"
         assert result[0]["page_start"] == 1
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_quiet_false_by_default(self, mock_kf, isolated_env):
         """Without quiet=True, vision fallback passes quiet=False."""
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -1037,7 +1037,7 @@ class TestVisionFallback:
             on_progress=mock.ANY,
         )
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_ingest_file_threads_quiet_to_vision(self, mock_kf, isolated_env):
         """quiet=True flows from _ingest_file through ingest_document to vision."""
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -1065,7 +1065,7 @@ class TestVisionFallback:
             on_progress=mock.ANY,
         )
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_not_called_when_ocr_disabled(self, mock_kf, isolated_env):
         """When enable_ocr is False, no vision fallback occurs."""
         mock_kf.return_value = _make_empty_result()
@@ -1082,7 +1082,7 @@ class TestVisionFallback:
         mock_vision.assert_not_called()
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_not_called_for_non_pdf(self, mock_kf, isolated_env):
         """Vision fallback only triggers for PDF content type."""
         mock_kf.return_value = _make_empty_result()
@@ -1099,7 +1099,7 @@ class TestVisionFallback:
         mock_vision.assert_not_called()
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_empty_vision_text_returns_empty(self, mock_kf, isolated_env):
         """When vision also returns empty text, return empty list."""
         cfg.enable_ocr = True
@@ -1119,7 +1119,7 @@ class TestVisionFallback:
             result = await ingest_document(f, "blank.pdf", "pdf")
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_no_vision_fallback_when_text_meaningful(self, mock_kf, isolated_env):
         """When kreuzberg produces meaningful text, no vision fallback."""
         mock_kf.return_value = _make_kreuzberg_result(
@@ -1138,7 +1138,7 @@ class TestVisionFallback:
         mock_vision.assert_not_called()
         assert len(result) > 0
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_no_chunks_returns_empty(self, mock_kf, isolated_env):
         """When vision text produces no chunks, return empty list."""
         cfg.enable_ocr = True
@@ -1161,7 +1161,7 @@ class TestVisionFallback:
             result = await ingest_document(f, "nochunks.pdf", "pdf")
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_fallback_bypasses_semantic_chunking(self, mock_kf, isolated_env):
         """Per-page vision OCR text is chunked with use_semantic=False.
 
@@ -1249,7 +1249,7 @@ class TestVisionFallbackEmptyVisionModel:
 
 
 class TestVisionFallbackException:
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_exception_returns_empty(self, mock_kf, isolated_env):
         """When extract_pdf_vision raises, _vision_fallback returns []."""
         cfg.enable_ocr = True
@@ -1273,7 +1273,7 @@ class TestVisionFallbackException:
 class TestTesseractOcrMiddleTier:
     """Tests for the Tesseract OCR tier between text extraction and vision fallback."""
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_ocr_succeeds_skips_vision(self, mock_kf, isolated_env):
         """When Tesseract OCR produces meaningful text, vision is not called."""
         cfg.enable_ocr = False
@@ -1296,7 +1296,7 @@ class TestTesseractOcrMiddleTier:
         assert len(result) > 0
         assert result[0]["content_type"] == "pdf"
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_ocr_fails_falls_through_to_vision(self, mock_kf, isolated_env):
         """When Tesseract OCR also yields < 50 chars, fall through to vision."""
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -1320,7 +1320,7 @@ class TestTesseractOcrMiddleTier:
         mock_vision.assert_called_once()
         assert len(result) > 0
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_exception_falls_through(self, mock_kf, isolated_env):
         """When Tesseract is not installed (raises exception), fall through gracefully."""
         cfg.enable_ocr = False
@@ -1335,7 +1335,7 @@ class TestTesseractOcrMiddleTier:
         result = await ingest_document(f, "scanned.pdf", "pdf")
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_non_pdf_skips_tesseract_ocr(self, mock_kf, isolated_env):
         """Non-PDF files never attempt Tesseract OCR retry."""
         mock_kf.return_value = _make_empty_result()
@@ -1350,7 +1350,7 @@ class TestTesseractOcrMiddleTier:
         # Only one call to extract_file (the initial extraction, no OCR retry)
         assert mock_kf.call_count == 1
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_vision_explicit_skips_tesseract(self, mock_kf, isolated_env):
         """When enable_ocr=True, Tesseract OCR tier is skipped entirely."""
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -1374,7 +1374,7 @@ class TestTesseractOcrMiddleTier:
         assert mock_kf.call_count == 1
         assert len(result) > 0
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_timeout_zero_disables_cap(self, mock_kf, isolated_env):
         """``cfg.tesseract_timeout == 0`` means "no limit": await without wait_for."""
         cfg.enable_ocr = False
@@ -1393,7 +1393,7 @@ class TestTesseractOcrMiddleTier:
         result = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
         assert len(result) > 0
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_timeout_returns_fallback(self, mock_kf, isolated_env):
         """Tesseract exceeding cfg.tesseract_timeout is caught; fallback returned.
 
@@ -1406,16 +1406,16 @@ class TestTesseractOcrMiddleTier:
 
         call_count = 0
 
-        async def _extract(*args, **kwargs):
+        def _extract(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return empty
             # Second call is the Tesseract retry; sleep past the timeout
-            # so asyncio.wait_for cancels the coroutine.
-            import asyncio as _asyncio
+            # so asyncio.wait_for cancels the to_thread future.
+            import time
 
-            await _asyncio.sleep(1.0)
+            time.sleep(1.0)
             return empty
 
         mock_kf.side_effect = _extract
@@ -1429,7 +1429,7 @@ class TestTesseractOcrMiddleTier:
         # Tesseract timed out; vision disabled; final chunk list is empty.
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_ocr_empty_no_vision_warns(self, mock_kf, isolated_env):
         """When Tesseract fails and OCR disabled, warning is emitted."""
         cfg.enable_ocr = False
@@ -1444,7 +1444,7 @@ class TestTesseractOcrMiddleTier:
         result = await ingest_document(f, "scanned.pdf", "pdf")
         assert result == []
 
-    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_enable_ocr_skips_tesseract(self, mock_kf, isolated_env):
         """With enable_ocr=True, Tesseract is skipped and vision takes precedence."""
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -1471,7 +1471,7 @@ class TestTesseractOcrMiddleTier:
 
 class TestSharedProgress:
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_contextvar_set_during_progress(self, mock_extract_file, isolated_env):
         """shared_progress contextvar is set inside _collect_results_with_progress."""
@@ -1496,7 +1496,7 @@ class TestSharedProgress:
         assert task_id is not None
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_contextvar_not_set_in_quiet_mode(self, mock_extract_file, isolated_env):
         """shared_progress contextvar is NOT set in quiet mode (no progress bar)."""
@@ -1517,7 +1517,7 @@ class TestSharedProgress:
         assert len(captured) == 0, "shared_progress should not be set in quiet mode"
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_contextvar_reset_after_progress(self, mock_extract_file, isolated_env):
         """shared_progress is reset to None after _collect_results_with_progress completes."""
@@ -1563,8 +1563,8 @@ class TestIngestDocumentEdgeCases:
         from lilbee.data.ingest import ingest_document
 
         empty_result = mock.MagicMock(chunks=[])
-        mock_extract = AsyncMock(return_value=empty_result)
-        with mock.patch("kreuzberg.extract_file", mock_extract):
+        mock_extract = Mock(return_value=empty_result)
+        with mock.patch("kreuzberg.extract_file_sync", mock_extract):
             result = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
@@ -1572,8 +1572,8 @@ class TestIngestDocumentEdgeCases:
         from lilbee.data.ingest import ingest_document
 
         no_chunks_result = mock.MagicMock(chunks=[])
-        mock_extract = AsyncMock(return_value=no_chunks_result)
-        with mock.patch("kreuzberg.extract_file", mock_extract):
+        mock_extract = Mock(return_value=no_chunks_result)
+        with mock.patch("kreuzberg.extract_file_sync", mock_extract):
             result = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
@@ -1598,7 +1598,7 @@ class TestConceptIndexing:
             yield
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_extraction_called_during_ingest(
         self, mock_extract_file, isolated_env, mock_svc
@@ -1615,7 +1615,7 @@ class TestConceptIndexing:
         mock_svc.concepts.extract_concepts_batch.assert_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_disabled_skips_extraction(
         self, mock_extract_file, isolated_env, mock_svc
@@ -1630,7 +1630,7 @@ class TestConceptIndexing:
         mock_svc.concepts.extract_concepts_batch.assert_not_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_failure_does_not_break_ingest(
         self, mock_extract_file, isolated_env, mock_svc
@@ -1647,7 +1647,7 @@ class TestConceptIndexing:
         assert "concept_test2.txt" in result.added
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_cluster_rebuild_called_after_sync(
         self, mock_extract_file, isolated_env, mock_svc
@@ -1664,7 +1664,7 @@ class TestConceptIndexing:
         mock_svc.concepts.rebuild_clusters.assert_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_cluster_rebuild_failure_does_not_break_sync(
         self, mock_extract_file, isolated_env, mock_svc
@@ -1682,7 +1682,7 @@ class TestConceptIndexing:
         assert "rebuild_test.txt" in result.added
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_graph_none_skips_indexing(self, mock_extract_file, isolated_env, mock_svc):
         """When get_graph() returns None, concept indexing is skipped gracefully."""
@@ -1696,7 +1696,7 @@ class TestConceptIndexing:
         assert "graph_none_test.txt" in result.added
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_concepts_unavailable_skips_rebuild(
         self, mock_extract_file, isolated_env, mock_svc
@@ -1713,7 +1713,7 @@ class TestConceptIndexing:
         mock_svc.concepts.rebuild_clusters.assert_not_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
     async def test_concepts_unavailable_skips_indexing(
         self, mock_extract_file, isolated_env, mock_svc

@@ -47,24 +47,32 @@ def content_type_to_mode(content_type: str) -> ExtractMode:
 
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
-    from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
+    from kreuzberg import ConcurrencyConfig, ExtractionConfig, OcrConfig, PageConfig
+
+    from lilbee.runtime.cpu import cpu_quota
 
     chunking = build_chunking_config()
     pages = PageConfig(extract_pages=True, insert_page_markers=False)
     ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    # Bound kreuzberg's internal pool to the same CPU budget as the
+    # pipeline semaphore so the two stop competing for cores.
+    concurrency = ConcurrencyConfig(max_threads=cpu_quota())
     builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
         ExtractMode.MARKDOWN: lambda: ExtractionConfig(
             chunking=chunking,
             output_format=_MARKDOWN_OUTPUT,
+            concurrency=concurrency,
         ),
         ExtractMode.PAGINATED: lambda: ExtractionConfig(
             chunking=chunking,
             pages=pages,
+            concurrency=concurrency,
         ),
         ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
             chunking=chunking,
             pages=pages,
             ocr=ocr,
+            concurrency=concurrency,
         ),
     }
     return builders[mode]()
@@ -100,11 +108,15 @@ async def _try_tesseract_ocr(
     configurable via ``LILBEE_TESSERACT_TIMEOUT``; 0 disables the cap.
     """
     try:
-        from kreuzberg import extract_file
+        from kreuzberg import extract_file_sync
 
         log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
         with suppress_fd_stderr():
-            coro = extract_file(str(path), config=extraction_config(ExtractMode.PAGINATED_OCR))
+            coro = asyncio.to_thread(
+                extract_file_sync,
+                str(path),
+                config=extraction_config(ExtractMode.PAGINATED_OCR),
+            )
             if cfg.tesseract_timeout > 0:
                 return await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
             return await coro
@@ -148,6 +160,34 @@ async def _cleanup_pdf_subprocess(
         await progress_task
 
 
+_VISION_SUBPROCESS_LOCK: asyncio.Lock | None = None
+"""Serialises ``_extract_pdf_vision_in_subprocess`` invocations.
+
+Once kreuzberg extraction moved off the asyncio loop into worker
+threads, the pipeline semaphore allowed multiple ``_process_one``
+tasks to run concurrently and each could land on the scanned-PDF
+fallback path at the same time. Two concurrent
+``asyncio.create_subprocess_exec`` setups in the same event loop
+collide on shared stream-reader state and raise
+``RuntimeError: read() called while another coroutine is already
+waiting for incoming data``. The underlying device is single-slot
+anyway (one Metal GPU, one vision model), so serialising matches
+the real constraint, not a workaround.
+
+Lazy because ``asyncio.Lock`` must bind to the running loop on
+first use; constructing it at module import time fails when no loop
+is running yet.
+"""
+
+
+def _vision_subprocess_lock() -> asyncio.Lock:
+    """Return the process-wide lock that serialises vision subprocesses."""
+    global _VISION_SUBPROCESS_LOCK
+    if _VISION_SUBPROCESS_LOCK is None:
+        _VISION_SUBPROCESS_LOCK = asyncio.Lock()
+    return _VISION_SUBPROCESS_LOCK
+
+
 async def _extract_pdf_vision_in_subprocess(
     path: Path,
     vision_model: str,
@@ -164,6 +204,9 @@ async def _extract_pdf_vision_in_subprocess(
     surface it via ``on_progress``. JSON args go in via stdin; the result
     (or an error string) comes back as JSON on stdout.
 
+    Serialised across concurrent ``_process_one`` callers via
+    ``_vision_subprocess_lock``: see the lock's docstring for why.
+
     NOTE: this per-PDF subprocess pre-dates the persistent worker pool.
     The vision pool worker (lilbee.providers.worker.vision_worker) only
     handles single-image OCR today; routing PDF rasterize + per-page
@@ -171,6 +214,21 @@ async def _extract_pdf_vision_in_subprocess(
     pdfium decoder still runs in its own process here. Until that
     lands, this path remains the canonical multi-page OCR entry point.
     """
+    async with _vision_subprocess_lock():
+        return await _extract_pdf_vision_in_subprocess_locked(
+            path, vision_model, timeout=timeout, quiet=quiet, on_progress=on_progress
+        )
+
+
+async def _extract_pdf_vision_in_subprocess_locked(
+    path: Path,
+    vision_model: str,
+    *,
+    timeout: float | None,
+    quiet: bool,
+    on_progress: DetailedProgressCallback,
+) -> list[PageText]:
+    """Body of ``_extract_pdf_vision_in_subprocess``; the caller holds the lock."""
     import json
     import sys
 
@@ -395,10 +453,10 @@ async def ingest_document(
 
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     """
-    from kreuzberg import extract_file
+    from kreuzberg import extract_file_sync
 
     config = extraction_config(content_type_to_mode(content_type))
-    result = await extract_file(str(path), config=config)
+    result = await asyncio.to_thread(extract_file_sync, str(path), config=config)
 
     if content_type == _PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         fallback = await _handle_scanned_pdf_fallback(
