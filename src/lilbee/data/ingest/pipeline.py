@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +24,7 @@ from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
+from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -42,7 +42,6 @@ log = logging.getLogger(__name__)
 
 # Limit concurrent ingestion. Sourced from cpu_quota() so worker storms
 # can't starve the TUI's asyncio main thread on macOS.
-from lilbee.runtime.cpu import cpu_quota
 
 _MAX_CONCURRENT = cpu_quota()
 
@@ -200,6 +199,40 @@ async def _ingest_file(
     return chunk_count
 
 
+def _plan_file_changes(
+    disk_files: dict[str, Path],
+    existing_sources: dict[str, str],
+    cancel: threading.Event | None,
+) -> tuple[list[FileToProcess], list[str], list[str], int]:
+    """Diff disk against the store. Returns (to_process, added, updated, unchanged_count)."""
+    files_to_process: list[FileToProcess] = []
+    added: list[str] = []
+    updated: list[str] = []
+    unchanged = 0
+    for name, path in sorted(disk_files.items()):
+        if cancel and cancel.is_set():
+            break
+        content_type = classify_file(path)
+        if content_type is None:
+            raise ValueError(f"Unsupported file slipped through discovery: {name}")
+        old_hash = existing_sources.get(name)
+        current_hash = file_hash(path)
+        if old_hash == current_hash:
+            unchanged += 1
+            continue
+        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
+        # and this closes the race where a prior ingest wrote chunks but died
+        # before upsert_source, leaving orphaned chunks that would duplicate.
+        files_to_process.append(
+            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
+        )
+        if old_hash is not None:
+            updated.append(name)
+        else:
+            added.append(name)
+    return files_to_process, added, updated, unchanged
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -222,10 +255,7 @@ async def sync(
     disk_files = discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
 
-    added: list[str] = []
-    updated: list[str] = []
     removed: list[str] = []
-    unchanged = 0
     failed: list[str] = []
     skipped: list[str] = []
 
@@ -236,34 +266,9 @@ async def sync(
             _store.delete_source(name)
             removed.append(name)
 
-    files_to_process: list[FileToProcess] = []
-
-    for name, path in sorted(disk_files.items()):
-        if cancel and cancel.is_set():
-            break
-
-        content_type = classify_file(path)
-        if content_type is None:
-            raise ValueError(f"Unsupported file slipped through discovery: {name}")
-
-        old_hash = existing_sources.get(name)
-
-        current_hash = file_hash(path)
-
-        if old_hash == current_hash:
-            unchanged += 1
-            continue
-
-        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
-        # and this closes the race where a prior ingest wrote chunks but died
-        # before upsert_source, leaving orphaned chunks that would duplicate.
-        files_to_process.append(
-            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
-        )
-        if old_hash is not None:
-            updated.append(name)
-        else:
-            added.append(name)
+    files_to_process, added, updated, unchanged = _plan_file_changes(
+        disk_files, existing_sources, cancel
+    )
 
     # Ingest files (with optional progress bar)
     if files_to_process:
