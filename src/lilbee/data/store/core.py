@@ -381,24 +381,31 @@ class Store:
             distances = [r.get("distance", 0) for r in rows[:5]]
             log.debug("Top 5 distances: %s", distances)
         results = [SearchChunk(**r) for r in rows]
+        return self._filter_and_rerank(results, query_vector, top_k, max_distance)
+
+    def _filter_and_rerank(
+        self,
+        results: list[SearchChunk],
+        query_vector: list[float],
+        top_k: int,
+        max_distance: float,
+    ) -> list[SearchChunk]:
+        """Apply the configured distance filter, then MMR-rerank down to top_k."""
         if max_distance > 0:
             before = len(results)
             if self._config.adaptive_threshold:
                 results = self._adaptive_filter(results, top_k, max_distance)
-                log.debug(
-                    "After adaptive filter: %d/%d results, threshold=%.2f",
-                    len(results),
-                    before,
-                    max_distance,
-                )
+                filter_name = "adaptive"
             else:
                 results = self._fixed_filter(results, max_distance)
-                log.debug(
-                    "After fixed filter: %d/%d results, threshold=%.2f",
-                    len(results),
-                    before,
-                    max_distance,
-                )
+                filter_name = "fixed"
+            log.debug(
+                "After %s filter: %d/%d results, threshold=%.2f",
+                filter_name,
+                len(results),
+                before,
+                max_distance,
+            )
         if len(results) > top_k:
             results = mmr_rerank(query_vector, results, top_k, self._config.mmr_lambda)
         return results
