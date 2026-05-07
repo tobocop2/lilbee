@@ -44,7 +44,8 @@ jobs:
 
   build:
     needs: [lint, test]
-    timeout-minutes: 180
+    # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
