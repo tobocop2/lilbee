@@ -426,7 +426,6 @@ def test_do_sync_raises_on_sync_failed() -> None:
     from lilbee.data.ingest import SyncResult
 
     screen = ChatScreen.__new__(ChatScreen)
-    screen._auto_sync = True  # type: ignore[attr-defined]
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(*, quiet, on_progress):
@@ -903,7 +902,6 @@ def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:
     from lilbee.data.ingest.types import SyncResult
 
     screen = ChatScreen.__new__(ChatScreen)
-    screen._auto_sync = False  # type: ignore[attr-defined]
     reporter = MagicMock(spec=ProgressReporter)
     screen.notify = lambda body, **kw: None  # type: ignore[assignment]
     notify_calls: list[tuple[str, ...]] = []

@@ -116,7 +116,7 @@ class LilbeeCommandProvider(Provider):
         self.screen.app.notify(f"Deleted {name}")
 
     def _action_sync(self) -> None:
-        self.screen.app.notify("Use /add <path> or auto-sync on launch")
+        self._app.action_run_sync()
 
     def _action_version(self) -> None:
         from lilbee.app.version import get_version

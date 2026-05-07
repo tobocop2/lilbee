@@ -10,7 +10,7 @@ from lilbee.data.ingest.extract import (
     ingest_document,
     ingest_markdown,
 )
-from lilbee.data.ingest.pipeline import ingest_batch, sync
+from lilbee.data.ingest.pipeline import detect_pending, ingest_batch, sync
 from lilbee.data.ingest.types import ExtractMode, SyncResult
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "SyncResult",
     "classify_file",
     "content_type_to_mode",
+    "detect_pending",
     "discover_files",
     "extraction_config",
     "file_hash",

@@ -4213,6 +4213,151 @@ class TestTaskBarAdditional:
             bar._refresh_display()
 
 
+class TestPendingSyncHint:
+    """Cover TaskBarController state for the pending-sync hint."""
+
+    async def test_set_and_clear_pending(self) -> None:
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.task_bar.pending_sync_count == 0
+            app.task_bar.set_pending_sync(5)
+            assert app.task_bar.pending_sync_count == 5
+            app.task_bar.clear_pending_sync()
+            assert app.task_bar.pending_sync_count == 0
+
+    async def test_set_negative_clamps_to_zero(self) -> None:
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.task_bar.set_pending_sync(-3)
+            assert app.task_bar.pending_sync_count == 0
+
+    async def test_singular_hint_for_one_pending(self) -> None:
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            app.task_bar.set_pending_sync(1)
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+            label = bar.query_one("#task-status-label", Label)
+            text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "1 doc to sync" in text
+
+    async def test_pending_hint_uses_input_copy_when_input_focused(self) -> None:
+        """When a chat Input has focus, the hint adds an Esc prefix to the keybind."""
+        from textual.widgets import Input, Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            with mock.patch.object(type(app), "focused", new=property(lambda self: Input())):
+                app.task_bar.set_pending_sync(2)
+                bar._refresh_display()
+                await pilot.pause()
+                label = bar.query_one("#task-status-label", Label)
+                text = str(label._Static__content)  # type: ignore[attr-defined]
+                assert "Esc then S to sync" in text
+
+    async def test_pending_sync_template_focused_lookup_failure_falls_back(self) -> None:
+        """If app.focused raises, the template falls back to the non-input copy."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+
+            def _raise(_self):
+                raise RuntimeError("boom")
+
+            with mock.patch.object(type(app), "focused", new=property(_raise)):
+                template = bar._pending_sync_template(3)
+                assert "Esc" not in template
+
+    async def test_active_task_overrides_pending_hint(self) -> None:
+        """A live task takes the bar; pending hint is suppressed."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            app.task_bar.set_pending_sync(2)
+            bar.add_task("Sync docs", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "Sync docs" in text
+            assert "docs to sync" not in text
+
+    async def test_start_detect_pending_writes_count(self) -> None:
+        """The daemon-thread detect job writes the result back to the controller."""
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.data.ingest.detect_pending", return_value=4):
+                app.task_bar.start_detect_pending()
+                # Daemon thread is fast but not synchronous; spin until it lands.
+                for _ in range(50):
+                    if app.task_bar.pending_sync_count == 4:
+                        break
+                    await pilot.pause()
+            assert app.task_bar.pending_sync_count == 4
+
+    async def test_start_detect_pending_no_op_if_already_running(self) -> None:
+        """A second call while a detect is in flight does not start a new thread."""
+        import threading as _threading
+
+        gate = _threading.Event()
+
+        def _slow_detect() -> int:
+            gate.wait(timeout=2)
+            return 7
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with mock.patch("lilbee.data.ingest.detect_pending", side_effect=_slow_detect):
+                app.task_bar.start_detect_pending()
+                first = app.task_bar._detect_thread
+                app.task_bar.start_detect_pending()
+                second = app.task_bar._detect_thread
+                assert first is second
+                gate.set()
+
+    async def test_start_detect_pending_swallows_errors(self) -> None:
+        """A detect_pending exception is logged but does not crash the worker."""
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.task_bar.set_pending_sync(2)
+            with mock.patch("lilbee.data.ingest.detect_pending", side_effect=RuntimeError("boom")):
+                app.task_bar.start_detect_pending()
+                for _ in range(50):
+                    if (
+                        app.task_bar._detect_thread is not None
+                        and not app.task_bar._detect_thread.is_alive()
+                    ):
+                        break
+                    await pilot.pause()
+            # Previous count is preserved; failure does not zero it out.
+            assert app.task_bar.pending_sync_count == 2
+
+
 class TestEnsureChromium:
     """bb-wq8g: TaskBarController.ensure_chromium short-circuits or spawns SETUP."""
 

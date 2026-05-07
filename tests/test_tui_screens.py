@@ -2131,13 +2131,6 @@ async def test_app_push_help():
         assert app.screen.query("HelpPanel")
 
 
-async def test_app_auto_sync_flag():
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp(auto_sync=True)
-    assert app._auto_sync is True
-
-
 class ChatTestApp(App[None]):
     CSS = ""
 
@@ -3066,6 +3059,7 @@ async def test_command_provider_delete_doc(mock_svc):
 
 
 async def test_command_provider_action_sync():
+    """Picking 'Sync documents' from the command palette routes to action_run_sync."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -3073,10 +3067,9 @@ async def test_command_provider_action_sync():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch.object(app, "notify") as mock_notify:
+        with patch.object(app, "action_run_sync") as mock_run_sync:
             provider._action_sync()
-            mock_notify.assert_called_once()
-            assert "/add" in mock_notify.call_args[0][0]
+            mock_run_sync.assert_called_once()
 
 
 async def test_command_provider_action_version():
@@ -4672,30 +4665,6 @@ async def test_chat_needs_setup_true_pushes_wizard():
             assert isinstance(app.screen, SetupWizard)
 
 
-async def test_chat_embedding_ready_false_no_sync():
-    """Verify _embedding_ready=False skips auto-sync."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    class NoSyncApp(App[None]):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen(auto_sync=True))
-
-    app = NoSyncApp()
-    with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False),
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as mock_sync,
-    ):
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            mock_sync.assert_not_called()
-
-
 async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
@@ -4727,26 +4696,6 @@ async def test_chat_on_input_changed_visible_overlay():
         # The on_input_changed handler should have hidden the overlay
 
 
-async def test_chat_auto_sync_triggers_sync():
-    """Cover the auto_sync branch (line 56)."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    class AutoSyncApp(App[None]):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen(auto_sync=True))
-
-    app = AutoSyncApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        # _run_sync would be called, but it's a @work decorator
-        # Just verify the screen was created with auto_sync=True
-        assert app.screen._auto_sync is True
-
-
 async def test_chat_on_setup_complete_skipped_refreshes_model_bar():
     """Cover _on_setup_complete with 'skipped' result; ensures model bar repaints."""
     app = ChatTestApp()
@@ -4755,20 +4704,6 @@ async def test_chat_on_setup_complete_skipped_refreshes_model_bar():
             app.screen._on_setup_complete("skipped")
             await _pilot.pause()
             mock_refresh.assert_called()
-
-
-async def test_chat_on_setup_complete_success():
-    """Cover _on_setup_complete with successful setup."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch.object(app.screen, "_embedding_ready", return_value=False),
-            patch.object(app.screen, "_run_sync") as mock_sync,
-        ):
-            app.screen._on_setup_complete("done")
-            await _pilot.pause()
-            # Embedding not ready, so sync should NOT be triggered
-            mock_sync.assert_not_called()
 
 
 async def test_chat_cancel_with_active_worker(mock_svc):
@@ -8566,19 +8501,6 @@ async def test_chat_on_show_calls_dismiss():
             mock_dismiss.assert_called_once()
 
 
-async def test_chat_on_setup_complete_completed_with_auto_sync():
-    """_on_setup_complete with 'completed' and embedding ready triggers sync."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)):
-        app.screen._auto_sync = True
-        with (
-            patch.object(app.screen, "_embedding_ready", return_value=True),
-            patch.object(app.screen, "_run_sync") as mock_sync,
-        ):
-            app.screen._on_setup_complete("completed")
-            mock_sync.assert_called_once()
-
-
 async def test_chat_on_setup_complete_refreshes_model_bar():
     """_on_setup_complete pings the ModelBar so the toggle picks up new state."""
     from lilbee.core.config import cfg
@@ -9660,36 +9582,6 @@ def test_chat_embedding_ready_false_when_no_model():
     with patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg:
         mock_cfg.embedding_model = ""
         assert _real_embedding_ready(sentinel) is False
-
-
-async def test_chat_auto_sync_on_mount_runs_sync():
-    """When auto_sync and embedding ready, _run_sync is called on mount."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    class SyncApp(App[None]):
-        CSS = ""
-
-        def __init__(self) -> None:
-            super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
-            self.task_bar = TaskBarController(self)
-
-        def compose(self) -> ComposeResult:
-            yield from ()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen(auto_sync=True))
-
-    app = SyncApp()
-    with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True),
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as mock_sync,
-    ):
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            mock_sync.assert_called_once()
 
 
 async def test_chat_on_key_non_key_event_returns():

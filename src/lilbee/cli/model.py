@@ -302,7 +302,6 @@ def browse_cmd(
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] model browse requires a terminal.")
         raise typer.Exit(1)
 
-    # Browsing the catalog does not depend on documents, so skip auto-sync.
     from lilbee.cli.tui import run_tui
 
-    run_tui(auto_sync=False, initial_view="Catalog")
+    run_tui(initial_view="Catalog")

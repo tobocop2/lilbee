@@ -752,3 +752,38 @@ def test_chat_worker_main_routes_through_run_worker(monkeypatch) -> None:
     assert captured["data"] == "DATA"
     assert captured["health"] == "HEALTH"
     assert "chat" in captured["kwargs"]["kind_handlers"]
+
+
+def test_abort_bridge_polls_flag_and_calls_request_abort(monkeypatch):
+    """_AbortBridge's poll thread observes the abort flag and calls request_abort.
+
+    The polling lives on a daemon thread polling at _ABORT_BRIDGE_POLL_S
+    intervals, so without an explicit test for the abort branch the
+    coverage hit is timing-sensitive (passes on some runners, fails on
+    others). This test deterministically: enters the bridge, sets the
+    flag from outside, waits long enough for the next poll iteration to
+    fire request_abort, then exits.
+    """
+    from lilbee.providers.worker import chat_worker as cw_mod
+    from lilbee.providers.worker.chat_worker import _AbortBridge
+
+    calls: list[None] = []
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.abort_signal.request_abort",
+        lambda: calls.append(None),
+    )
+    monkeypatch.setattr(cw_mod, "_ABORT_BRIDGE_POLL_S", 0.005)
+
+    class _Flag:
+        value = 0
+
+    flag = _Flag()
+    bridge = _AbortBridge(flag)
+    with bridge:
+        flag.value = 1
+        # Wait long enough for the poll to observe the flag (>> 0.005s).
+        for _ in range(50):
+            if calls:
+                break
+            time.sleep(0.01)
+    assert calls, "request_abort was not invoked by the poll thread"

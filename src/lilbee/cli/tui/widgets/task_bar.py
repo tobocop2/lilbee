@@ -153,6 +153,12 @@ class TaskBarController:
         # task_id -> (target, on_success). Worker looks up its target here
         # so we don't capture in a closure that outlives the task.
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
+        # Number of files in documents/ that are out of date with the store.
+        # Set by start_detect_pending; read by TaskBar to render the
+        # "N docs to sync · S to sync" hint when no live tasks are running.
+        # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
+        self.pending_sync_count: int = 0
+        self._detect_thread: threading.Thread | None = None
 
     def add_task(
         self,
@@ -218,6 +224,43 @@ class TaskBarController:
             self.queue.advance(task_type)
         while self.queue.advance() is not None:
             pass
+
+    def set_pending_sync(self, count: int) -> None:
+        """Update the pending-sync count surfaced in the TaskBar hint."""
+        self.pending_sync_count = max(count, 0)
+
+    def clear_pending_sync(self) -> None:
+        """Drop the pending hint. Called when sync starts so the bar shows live progress instead."""
+        self.pending_sync_count = 0
+
+    def start_detect_pending(self) -> None:
+        """Run the cheap sync-detection (filesystem walk + hash compare) on a daemon thread.
+
+        Writes the result via ``set_pending_sync``. No-op if a detect job
+        is already running. Errors are logged and silently swallowed: a
+        failed detect just leaves the previous count in place rather
+        than blocking the UI.
+        """
+        if self._detect_thread is not None and self._detect_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._run_detect_pending, daemon=True, name="detect-pending"
+        )
+        self._detect_thread = thread
+        thread.start()
+
+    def _run_detect_pending(self) -> None:
+        # Local import: lilbee.data.ingest pulls in lancedb + the embedder
+        # transitively; the TUI shouldn't pay for that just to import the
+        # task bar widget.
+        from lilbee.data.ingest import detect_pending
+
+        try:
+            count = detect_pending()
+        except Exception:
+            log.warning("detect_pending failed", exc_info=True)
+            return
+        self.set_pending_sync(count)
 
     def ensure_chromium(self, on_ready: Callable[[], None]) -> None:
         """Kick off a Chromium bootstrap if missing, then call ``on_ready``.
@@ -567,13 +610,20 @@ class TaskBar(Static):
                     )
                     self._flash_outcome = last.status
 
-        if not active and not queued and not in_flash and self._flash_outcome is None:
+        idle = not active and not queued and not in_flash and self._flash_outcome is None
+        pending = self._controller.pending_sync_count if idle else 0
+        if idle and pending == 0:
             self.display = False
             self._last_render_fingerprint = None
             return
 
         self.display = True
-        dot_color, summary = self._compose_segments(active, queued)
+        if idle and pending > 0:
+            dot_color = "$text-muted"
+            key = self._pending_sync_template(pending)
+            summary = key.format(count=pending)
+        else:
+            dot_color, summary = self._compose_segments(active, queued)
         hint_text = self._hint_copy()
         # Fingerprint captures every variable the label content depends
         # on. Recomputing it is essentially free; the win comes from
@@ -585,6 +635,7 @@ class TaskBar(Static):
             hint_text,
             in_flash,
             self._flash_outcome,
+            pending,
         )
         if fingerprint == self._last_render_fingerprint:
             return
@@ -594,6 +645,28 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _pending_sync_template(self, pending: int) -> str:
+        """Pick the singular/plural hint, swapping in the Esc-prefixed copy
+        when a chat ``Input`` swallows printable characters before bindings fire.
+        """
+        from textual.widgets import Input
+
+        try:
+            input_focused = isinstance(self.app.focused, Input)
+        except Exception:
+            input_focused = False
+        if pending == 1:
+            return (
+                msg.TASKBAR_SYNC_PENDING_ONE_INPUT
+                if input_focused
+                else msg.TASKBAR_SYNC_PENDING_ONE
+            )
+        return (
+            msg.TASKBAR_SYNC_PENDING_PLURAL_INPUT
+            if input_focused
+            else msg.TASKBAR_SYNC_PENDING_PLURAL
+        )
 
     def _hint_copy(self) -> str:
         """Return the right-aligned hint, context-aware.
