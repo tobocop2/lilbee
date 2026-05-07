@@ -158,7 +158,7 @@ class CatalogScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
-        Binding("escape", "go_back", "Back", show=True),
+        Binding("escape", "dismiss_filter", "", show=False),
         Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
         Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
@@ -1663,6 +1663,20 @@ class CatalogScreen(Screen[None]):
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()
+
+    def action_dismiss_filter(self) -> None:
+        """Esc: hide the filter Input + restore grid/list focus; never dismiss.
+
+        Heavy-interaction QA showed a stray Esc (from info-modal-then-Esc
+        cycles, drawer thrash, filter typing chains) would dismiss the
+        catalog mid-task and leak subsequent keystrokes into the chat
+        Input on the next screen. Esc now only handles the filter; the
+        dismiss path is `q` (action_go_back) which still does both.
+        """
+        if isinstance(self.focused, Input):
+            self._search_input.value = ""
+            self._search_input.add_class("-hidden")
+            self._focus_list_or_grid()
 
     def _focus_list_or_grid(self) -> None:
         """Move focus from the filter input to the active view's list/grid."""

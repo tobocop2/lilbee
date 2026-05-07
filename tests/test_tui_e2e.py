@@ -691,8 +691,13 @@ class TestScreenTransitions:
                 await pilot.pause()
                 assert isinstance(app.screen, ChatScreen)
 
-    async def test_escape_from_each_overlay_returns_to_chat(self, _mock_resolve):
-        """From each non-Chat view, pressing escape pops the screen."""
+    async def test_escape_or_quit_from_each_overlay_returns_to_chat(self, _mock_resolve):
+        """From each non-Chat view, pressing escape (or q for catalog) returns to chat.
+
+        Catalog escapes: q only. Esc on catalog only hides the filter (so
+        heavy interaction can't accidentally dismiss the screen). Other
+        screens still accept Esc as the back key.
+        """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -703,11 +708,12 @@ class TestScreenTransitions:
                 for view in ["Catalog", "Status", "Settings", "Tasks"]:
                     app.switch_view(view)
                     await pilot.pause()
-                    await pilot.press("escape")
+                    back_key = "q" if view == "Catalog" else "escape"
+                    await pilot.press(back_key)
                     await pilot.pause()
                     if not isinstance(app.screen, ChatScreen):
                         # Settings search input consumes the first escape (blur).
-                        await pilot.press("escape")
+                        await pilot.press(back_key)
                         await pilot.pause()
                     assert isinstance(app.screen, ChatScreen)
 
