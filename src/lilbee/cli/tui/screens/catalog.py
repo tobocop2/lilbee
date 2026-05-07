@@ -989,9 +989,14 @@ class CatalogScreen(Screen[None]):
         all_rows = family_rows + remote_rows + hf_rows
         active_tab = self._active_tab_id_cache
         tab_rows = self._rows_for_active_tab(all_rows, active_tab)
-        # Keep self._rows in sync so the toolbar sort-label can render
-        # "{n} loaded" whichever view (grid or list) is active.
-        self._rows = list(tab_rows)
+        # Keep self._rows in sync (locals-only) so the toolbar sort-label
+        # can render "{n} loaded" whichever view (grid or list) is active.
+        # Frontier rows render in their own Cloud section but don't count
+        # toward the local-row tally.
+        local_tab_rows: list[LocalCatalogRow] = [
+            r for r in tab_rows if isinstance(r, LocalCatalogRow)
+        ]
+        self._rows = local_tab_rows
         row_key = (
             tuple(_row_cache_signature(r) for r in tab_rows),
             search,
@@ -1009,13 +1014,14 @@ class CatalogScreen(Screen[None]):
             # only sees LocalCatalogRow (it reads .featured / .installed
             # which FrontierCatalogRow doesn't carry). Frontier rows land
             # under their own "Cloud" section appended below.
-            local_only = [r for r in tab_rows if isinstance(r, LocalCatalogRow)]
             frontier_only = [r for r in tab_rows if isinstance(r, FrontierCatalogRow)]
-            sections = [s for s in _group_task_rows_with_picks(local_only, task_label) if s.rows]
+            sections = [
+                s for s in _group_task_rows_with_picks(local_tab_rows, task_label) if s.rows
+            ]
             if frontier_only:
                 sections.append(GridSection(heading="Cloud", rows=list(frontier_only)))
         else:
-            sections = [s for s in _group_rows_for_grid(tab_rows) if s.rows]
+            sections = [s for s in _group_rows_for_grid(local_tab_rows) if s.rows]
         if not sections:
             container = self._grid_container
             container.remove_children()

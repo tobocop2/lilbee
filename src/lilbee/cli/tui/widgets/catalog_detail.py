@@ -14,6 +14,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import Static
 
 from lilbee.cli.tui.pill import pill
@@ -98,7 +99,7 @@ class CatalogDetailDrawer(Vertical):
         )
 
 
-def _render_fit_pill(fit: FitChip) -> object:
+def _render_fit_pill(fit: FitChip) -> Content:
     if fit.level is FitLevel.FITS:
         text = f"fits +{fit.headroom_gb:.1f} GB"
     elif fit.level is FitLevel.TIGHT:

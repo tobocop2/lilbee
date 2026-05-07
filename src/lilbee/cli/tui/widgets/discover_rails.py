@@ -10,13 +10,13 @@ behavior the per-task tabs already have.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+from lilbee.cli.tui.screens.catalog_utils import CatalogRow, LocalCatalogRow
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
 _CSS_FILE = Path(__file__).parent / "discover_rails.tcss"
@@ -62,4 +62,7 @@ class DiscoverRails(Vertical):
             grid = self.query_one(f"#discover-grid-{rail_id}", ModelGrid)
         except Exception:
             return
-        grid.set_rows(rows)
+        # ModelGrid.set_rows takes the CatalogRow union; LocalCatalogRow is
+        # a member but list invariance needs an explicit cast (mypy hint
+        # references stable/common_issues#variance).
+        grid.set_rows(cast(list[CatalogRow], rows))
