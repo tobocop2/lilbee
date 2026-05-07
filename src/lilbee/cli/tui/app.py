@@ -160,11 +160,11 @@ class LilbeeApp(App[None]):
             priority=True,
         ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
+        Binding("S", "run_sync", "Sync", show=False, priority=True),
     ]
 
-    def __init__(self, *, auto_sync: bool = False, initial_view: str | None = None) -> None:
+    def __init__(self, *, initial_view: str | None = None) -> None:
         super().__init__()
-        self._auto_sync = auto_sync
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
         self._switching = False
@@ -199,11 +199,14 @@ class LilbeeApp(App[None]):
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        chat = ChatScreen(auto_sync=self._auto_sync)
+        chat = ChatScreen()
         self.install_screen(chat, name=_CHAT_SCREEN_NAME)
         self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
+        # Cheap detection only: filesystem walk + hash compare. The user
+        # initiates sync explicitly via S or the command palette.
+        self.task_bar.start_detect_pending()
 
     def _wire_worker_pool_notifications(self) -> None:
         """Surface worker spawn lifecycle as Textual notifications.
@@ -419,6 +422,31 @@ class LilbeeApp(App[None]):
 
         if isinstance(self.screen, ChatScreen):
             self.screen.action_focus_commands()
+
+    def action_run_sync(self) -> None:
+        """Trigger an explicit document sync from any screen (S key).
+
+        The TaskBar hint is rendered globally, so the trigger must work
+        everywhere. Routes to the registered ChatScreen which owns the
+        ``_run_sync`` orchestration; switches to the Chat view first if
+        not already there so the user can watch progress.
+        """
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        if isinstance(self.screen, ChatScreen):
+            self.screen._run_sync()
+            return
+        try:
+            chat = self.get_screen(_CHAT_SCREEN_NAME, ChatScreen)
+        except KeyError:
+            return
+        self.switch_view("Chat")
+
+        def _start() -> None:
+            if isinstance(self.screen, ChatScreen):
+                chat._run_sync()
+
+        self.call_later(_start)
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""

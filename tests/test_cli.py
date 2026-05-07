@@ -712,7 +712,7 @@ class TestDefaultRequiresTerminal:
                 sys.stdout.isatty = orig_sout  # type: ignore[method-assign]
         finally:
             lilbee.cli.tui.run_tui = original_run_tui
-        assert called == [{"auto_sync": True}]
+        assert called == [{}]
 
 
 class TestChatLaunchesTui:
@@ -749,7 +749,7 @@ class TestChatLaunchesTui:
                 )
         finally:
             lilbee.cli.tui.run_tui = original_run_tui
-        assert called == [{"auto_sync": True}]
+        assert called == [{}]
 
 
 # ---------------------------------------------------------------------------
