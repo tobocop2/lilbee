@@ -513,6 +513,42 @@ class TestCancellation:
                 )
 
 
+class TestDetectPending:
+    """Cheap detection: filesystem walk + hash compare against the sources table."""
+
+    def test_returns_zero_when_documents_dir_missing(self, isolated_env, tmp_path):
+        cfg.documents_dir = tmp_path / "does_not_exist"
+        from lilbee.data.ingest import detect_pending
+
+        assert detect_pending() == 0
+
+    def test_counts_added_updated_and_removed(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import detect_pending, file_hash
+
+        new_file = isolated_env / "new.md"
+        new_file.write_text("brand new content")
+
+        existing = isolated_env / "existing.md"
+        existing.write_text("v1")
+        mock_svc.store.upsert_source("existing.md", file_hash(existing), 1, source_type="document")
+        existing.write_text("v2")  # hash now diverges from store
+
+        # A row in the store with no matching disk file = removed.
+        mock_svc.store.upsert_source("gone.md", "deadbeef", 1, source_type="document")
+
+        # 1 added (new.md) + 1 updated (existing.md) + 1 removed (gone.md) = 3
+        assert detect_pending() == 3
+
+    def test_returns_zero_when_in_sync(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import detect_pending, file_hash
+
+        f = isolated_env / "synced.md"
+        f.write_text("stable")
+        mock_svc.store.upsert_source("synced.md", file_hash(f), 1, source_type="document")
+
+        assert detect_pending() == 0
+
+
 class TestDiscoverFiles:
     def test_nonexistent_dir_returns_empty(self, isolated_env, tmp_path):
         cfg.documents_dir = tmp_path / "does_not_exist"

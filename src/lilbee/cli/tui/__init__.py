@@ -26,7 +26,7 @@ def _silence_stderr_log_handlers() -> None:
             root.removeHandler(handler)
 
 
-def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None:
+def run_tui(*, initial_view: str | None = None) -> None:
     """Launch the full-screen Textual TUI.
 
     *initial_view* deep-links to a named view (e.g. ``"Catalog"``) after
@@ -40,7 +40,7 @@ def run_tui(*, auto_sync: bool = False, initial_view: str | None = None) -> None
     setup_tui_log_file()
     _silence_stderr_log_handlers()
 
-    app = LilbeeApp(auto_sync=auto_sync, initial_view=initial_view)
+    app = LilbeeApp(initial_view=initial_view)
     try:
         app.run()
     except KeyboardInterrupt:

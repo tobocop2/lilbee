@@ -53,6 +53,8 @@ from lilbee.retrieval.query import ChatMessage
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
     BatchProgressEvent,
+    BatchStatus,
+    DetailedProgressCallback,
     EmbedEvent,
     EventType,
     ExtractEvent,
@@ -91,6 +93,24 @@ def _close_stream(stream: Any) -> None:
             stream.close()
 
 
+def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
+    """Pick the user-facing detail label for a BATCH_PROGRESS tick.
+
+    Per-page rasterization (vision OCR) is the only producer that uses
+    BatchStatus.RASTERIZING; it emits an absolute path in data.file
+    which never matches the relative source name kept in in_flight, so
+    identity-based detection would never fire. Status-based dispatch is
+    the reliable discriminator between per-page and per-file ticks.
+    """
+    if data.status == BatchStatus.RASTERIZING:
+        return msg.ADD_PAGE_PROGRESS.format(
+            status=data.status.capitalize(), current=data.current, total=data.total
+        )
+    if in_flight:
+        return msg.ADD_SYNCING_FILE.format(file=in_flight[0])
+    return msg.ADD_FILE_DONE.format(file=data.file)
+
+
 def _remove_copied_files(names: list[str]) -> None:
     """Delete files previously copied into documents/ by a /add invocation.
 
@@ -119,18 +139,16 @@ anyway, so we coalesce here at the same cadence.
 """
 
 
-def _build_add_progress_callback(
-    reporter: ProgressReporter,
-) -> Callable[[EventType, ProgressEvent], None]:
-    """Return the on_progress shim used by /add.
+def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
+    """Build the on_progress callback used by /add.
 
-    Hoisted out of ``_do_add`` so the dispatch table doesn't bloat
-    ``_do_add``'s cyclomatic complexity. Mirrors ``_do_sync``'s EMBED
-    branch so /add gets chunk-level visibility too; the EXTRACT branch
-    surfaces "extracted N pages" once per file before the embed phase
-    starts ticking.
+    Tracks files in flight in start order so the displayed filename pins
+    to the oldest unfinished file (the pipeline runs files concurrently;
+    without pinning the label flips around the queue). EXTRACT surfaces
+    "extracted N pages" once per file so a 44MB scanned PDF doesn't read
+    as a hang; EMBED ticks per chunk, throttled to a steady cadence.
     """
-
+    in_flight: list[str] = []
     last_embed_update = 0.0
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
@@ -139,14 +157,14 @@ def _build_add_progress_callback(
         nonlocal last_embed_update
         reporter.check_cancelled()
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-            reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
+            in_flight.append(data.file)
+            reporter.update(0, msg.ADD_SYNCING_FILE.format(file=in_flight[0]), indeterminate=True)
+        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
+            with contextlib.suppress(ValueError):
+                in_flight.remove(data.file)
         elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
             pct = (data.current / data.total * 100.0) if data.total else 0.0
-            reporter.update(
-                pct,
-                f"{data.status.capitalize()} page {data.current} of {data.total}",
-                indeterminate=False,
-            )
+            reporter.update(pct, _detail_for_batch_progress(data, in_flight), indeterminate=False)
         elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
             reporter.update(
                 0,
@@ -289,9 +307,8 @@ class ChatScreen(Screen[None]):
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
-    def __init__(self, *, auto_sync: bool = False) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._insert_mode: bool = True
@@ -334,8 +351,6 @@ class ChatScreen(Screen[None]):
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif self._auto_sync and self._embedding_ready():
-            self._run_sync()
         if isinstance(self.app, LilbeeApp):
             self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
@@ -384,8 +399,9 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if self._embedding_ready() and self._auto_sync:
-            self._run_sync()
+        # Re-detect after setup so a freshly-set-up vault gets the hint.
+        if isinstance(self.app, LilbeeApp):
+            self.app.task_bar.start_detect_pending()
         self.refresh_model_bar()
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
@@ -609,10 +625,10 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
-        on_progress = _build_add_progress_callback(reporter)
-
         try:
-            sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
+            sync_result = asyncio_loop.run(
+                sync(quiet=True, on_progress=_build_add_progress_callback(reporter))
+            )
         except BaseException:
             # On cancel or any failure, remove the files we copied into
             # documents/ so the next sync doesn't silently re-ingest the
@@ -1229,12 +1245,19 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
+        # Clear the pending hint so the bar shows live sync progress
+        # instead of the stale "N docs to sync" line.
+        self._task_bar.clear_pending_sync()
 
         def _target(reporter: ProgressReporter) -> None:
             try:
                 self._do_sync(reporter)
             finally:
                 self._sync_active = False
+                # Re-detect after every sync attempt: success drives the
+                # count to 0, failure or cancel leaves the still-pending
+                # files counted so the hint reappears.
+                self._task_bar.start_detect_pending()
 
         self._task_bar.start_task("Sync documents", TaskType.SYNC, _target, indeterminate=True)
 
@@ -1247,8 +1270,7 @@ class ChatScreen(Screen[None]):
         try:
             result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
-            self._auto_sync = False
-            raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
+            raise RuntimeError(msg.SYNC_CANCELLED_RESUME) from exc
         if result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
         if result.skipped:

@@ -30,6 +30,7 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     noop_callback,
 )
+from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
 

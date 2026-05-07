@@ -27,6 +27,7 @@ from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _In
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
+    BatchStatus,
     DetailedProgressCallback,
     EventType,
     FileDoneEvent,
@@ -196,6 +197,57 @@ async def _ingest_file(
     return chunk_count
 
 
+def _plan_file_changes(
+    disk_files: dict[str, Path],
+    existing_sources: dict[str, str],
+    cancel: threading.Event | None,
+) -> tuple[list[FileToProcess], list[str], list[str], int]:
+    """Diff disk against the store. Returns (to_process, added, updated, unchanged_count)."""
+    files_to_process: list[FileToProcess] = []
+    added: list[str] = []
+    updated: list[str] = []
+    unchanged = 0
+    for name, path in sorted(disk_files.items()):
+        if cancel and cancel.is_set():
+            break
+        content_type = classify_file(path)
+        if content_type is None:
+            raise ValueError(f"Unsupported file slipped through discovery: {name}")
+        old_hash = existing_sources.get(name)
+        current_hash = file_hash(path)
+        if old_hash == current_hash:
+            unchanged += 1
+            continue
+        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
+        # and this closes the race where a prior ingest wrote chunks but died
+        # before upsert_source, leaving orphaned chunks that would duplicate.
+        files_to_process.append(
+            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
+        )
+        if old_hash is not None:
+            updated.append(name)
+        else:
+            added.append(name)
+    return files_to_process, added, updated, unchanged
+
+
+def detect_pending() -> int:
+    """Count files in documents/ that are out of sync with the store.
+
+    Cheap operation: filesystem walk + SHA-256 hashing + a single
+    sources-table read. No embedding, no writes. Returns the total of
+    added + updated + removed, which is what the TaskBar hint surfaces.
+    Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
+    """
+    if not cfg.documents_dir.exists():
+        return 0
+    disk_files = discover_files()
+    existing_sources = {s["filename"]: s["file_hash"] for s in get_services().store.get_sources()}
+    removed = sum(1 for name in existing_sources if name not in disk_files)
+    files_to_process, _, _, _ = _plan_file_changes(disk_files, existing_sources, cancel=None)
+    return len(files_to_process) + removed
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -218,10 +270,7 @@ async def sync(
     disk_files = discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
 
-    added: list[str] = []
-    updated: list[str] = []
     removed: list[str] = []
-    unchanged = 0
     failed: list[str] = []
     skipped: list[str] = []
 
@@ -232,34 +281,9 @@ async def sync(
             _store.delete_source(name)
             removed.append(name)
 
-    files_to_process: list[FileToProcess] = []
-
-    for name, path in sorted(disk_files.items()):
-        if cancel and cancel.is_set():
-            break
-
-        content_type = classify_file(path)
-        if content_type is None:
-            raise ValueError(f"Unsupported file slipped through discovery: {name}")
-
-        old_hash = existing_sources.get(name)
-
-        current_hash = file_hash(path)
-
-        if old_hash == current_hash:
-            unchanged += 1
-            continue
-
-        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
-        # and this closes the race where a prior ingest wrote chunks but died
-        # before upsert_source, leaving orphaned chunks that would duplicate.
-        files_to_process.append(
-            FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
-        )
-        if old_hash is not None:
-            updated.append(name)
-        else:
-            added.append(name)
+    files_to_process, added, updated, unchanged = _plan_file_changes(
+        disk_files, existing_sources, cancel
+    )
 
     # Ingest files (with optional progress bar)
     if files_to_process:
@@ -423,11 +447,11 @@ async def _collect_results(
             progress.update(ptask, description=desc)
             progress.advance(ptask)
         if result.error is not None:
-            progress_status = "failed"
+            progress_status = BatchStatus.FAILED
         elif result.chunk_count == 0:
-            progress_status = "skipped"
+            progress_status = BatchStatus.SKIPPED
         else:
-            progress_status = "ingested"
+            progress_status = BatchStatus.INGESTED
         on_progress(
             EventType.BATCH_PROGRESS,
             BatchProgressEvent(

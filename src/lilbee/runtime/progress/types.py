@@ -51,11 +51,20 @@ class FileDoneEvent(BaseModel):
     chunks: int
 
 
+class BatchStatus(StrEnum):
+    """Status values for BatchProgressEvent.status."""
+
+    INGESTED = "ingested"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    RASTERIZING = "rasterizing"
+
+
 class BatchProgressEvent(BaseModel):
     """Emitted after each file completes during batch ingestion."""
 
     file: str
-    status: str
+    status: BatchStatus
     current: int
     total: int
 
