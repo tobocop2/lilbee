@@ -3264,7 +3264,6 @@ async def test_catalog_header_sort():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._activation_settled = True
             assert screen._sort_column == "Name"
             assert screen._sort_ascending is True
             await pilot.press("v")
@@ -4414,7 +4413,6 @@ async def test_catalog_input_changed_refreshes():
             app.push_screen(screen)
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._activation_settled = True
             screen._activation_settled = True
             from textual.widgets import Input
 
@@ -8331,7 +8329,6 @@ async def test_catalog_grid_leave_down_focuses_next():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._activation_settled = True
             screen._hf_has_more = False
             grids = list(screen.query(ModelGrid))
             if len(grids) < 2:
@@ -8355,7 +8352,6 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             app.push_screen(screen)
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._activation_settled = True
             screen._activation_settled = True
             screen._hf_has_more = False
             # Re-query grids right before exercising LeaveDown so a slow
@@ -8389,7 +8385,6 @@ async def test_catalog_grid_leave_up_focuses_previous():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._activation_settled = True
             grids = list(screen.query(ModelGrid))
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
@@ -8405,6 +8400,8 @@ async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
+    from textual.containers import VerticalScroll
+
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
@@ -8413,10 +8410,13 @@ async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._activation_settled = True
-            grids = list(screen.query(ModelGrid))
+            # Scope to the chat tab's grid container so the Discover rails
+            # (3 sibling ModelGrid instances at screen scope) don't shadow
+            # the test's idea of 'topmost'.
+            chat_container = screen.query_one("#grid-chat", VerticalScroll)
+            grids = list(chat_container.query(ModelGrid))
             if not grids:
-                pytest.skip("test requires at least one grid mounted")
+                pytest.skip("test requires at least one grid mounted in chat tab")
             grids[0].focus()
             await pilot.pause()
             grids[0].post_message(ModelGrid.LeaveUp(grids[0]))
@@ -8608,9 +8608,22 @@ async def test_catalog_get_highlighted_remote_name():
             items_count = list_container.option_count
             assert items_count
             screen._list_widget.highlighted = 0
-            screen._list_widget.focus()
             await _pilot.pause()
-            name = screen._get_highlighted_model_name()
+            # _highlighted_row gates on _list_widget.has_focus to
+            # disambiguate list vs grid view. Under run_test inside the
+            # 6-tab shell, ContentTabs/TabPane focus management can keep
+            # the OptionList from registering as focused even after
+            # set_focus. Patch has_focus to True so we exercise the
+            # list-row resolution path the test actually targets.
+            from unittest.mock import PropertyMock
+
+            with patch.object(
+                type(screen._list_widget),
+                "has_focus",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                name = screen._get_highlighted_model_name()
             assert name == "remote:latest"
 
 
@@ -8636,9 +8649,18 @@ async def test_catalog_get_highlighted_catalog_name():
             items_count = list_container.option_count
             assert items_count
             screen._list_widget.highlighted = 0
-            screen._list_widget.focus()
             await _pilot.pause()
-            name = screen._get_highlighted_model_name()
+            # has_focus patch: see test_catalog_get_highlighted_remote_name
+            # for rationale.
+            from unittest.mock import PropertyMock
+
+            with patch.object(
+                type(screen._list_widget),
+                "has_focus",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                name = screen._get_highlighted_model_name()
             assert name == "org/hf-model-GGUF"
 
 
@@ -10086,9 +10108,17 @@ async def test_catalog_get_highlighted_model_name_catalog():
             items_count = list_container.option_count
             assert items_count
             screen._list_widget.highlighted = 0
-            screen._list_widget.focus()
             await _pilot.pause()
-            result = screen._get_highlighted_model_name()
+            # has_focus patch: see test_catalog_get_highlighted_remote_name.
+            from unittest.mock import PropertyMock
+
+            with patch.object(
+                type(screen._list_widget),
+                "has_focus",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                result = screen._get_highlighted_model_name()
             assert result == "Qwen/Qwen3-8B-GGUF"
 
 
@@ -10621,7 +10651,6 @@ async def test_catalog_focused_list_index_returns_highlighted():
             app.push_screen(screen)
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._activation_settled = True
             screen._activation_settled = True
             screen._grid_view = False
             assert screen._focused_list_index() is None
