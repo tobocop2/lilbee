@@ -912,12 +912,19 @@ class TestMinimalFooter:
         # helpers (history, scope cycle, F-keys) stay show=False.
         assert len(visible) <= 5
 
-    def test_catalog_tab_bindings_removed(self) -> None:
+    def test_catalog_numeric_tab_bindings(self) -> None:
+        """1-6 jump to the corresponding tab in the 6-tab catalog shell.
+
+        Earlier versions of the catalog reused numeric keys for sort
+        cycling and explicitly removed them. The 6-tab redesign restores
+        them with priority=True so they jump to Discover/Chat/Embed/
+        Vision/Rerank/Library directly. show=False keeps the footer tidy.
+        """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, Binding)}
-        for k in ("1", "2", "3", "4"):
-            assert k not in keys
+        for k in ("1", "2", "3", "4", "5", "6"):
+            assert k in keys
 
     def test_catalog_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
