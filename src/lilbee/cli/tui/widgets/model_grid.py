@@ -29,6 +29,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
+from lilbee.runtime.hardware import FitChip, FitLevel
 
 _CSS_FILE = Path(__file__).parent / "model_grid.tcss"
 
@@ -394,6 +395,8 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     if row.featured:
         pills.append(pill("pick", "$warning", "$text"))
     pills.append(pill(row.task, bg, "$text"))
+    if row.fit is not None:
+        pills.append(_fit_pill(row.fit))
     if row.backend:
         pills.append(pill(row.backend, "$accent", "$text"))
     pill_line = Content(" ").join(pills)
@@ -415,6 +418,31 @@ def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
     )
     info = Content.styled(f"Cloud via {row.provider} API", "$text-muted")
     return [name, pill_line, info, Content(""), Content("")]
+
+
+_FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
+    FitLevel.FITS: "$success",
+    FitLevel.TIGHT: "$warning",
+    FitLevel.WONT_RUN: "$error",
+}
+
+
+def _fit_pill(fit: FitChip) -> Content:
+    """Render the hardware-fit chip: ``fits +N GB`` / ``tight +N GB`` / ``won't -N GB``.
+
+    Headroom is signed; negative values mean the model overflows the host's
+    available memory by that much. The chip's background tracks the level
+    so colour-blind users still get the qualitative signal from the label
+    itself.
+    """
+    headroom_gb = fit.headroom_gb
+    if fit.level is FitLevel.FITS:
+        text = f"fits +{headroom_gb:.1f} GB"
+    elif fit.level is FitLevel.TIGHT:
+        text = f"tight +{max(0.0, headroom_gb):.1f} GB"
+    else:
+        text = f"won't {headroom_gb:.1f} GB"
+    return pill(text, _FIT_LEVEL_BACKGROUND[fit.level], "$text")
 
 
 def _key_status_pill(status: KeyStatus) -> Content:

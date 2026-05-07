@@ -63,6 +63,7 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
+from lilbee.runtime.hardware import compute_fit
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +197,30 @@ class CatalogScreen(Screen[None]):
         self._active_tab_id_cache: str = TAB_CHAT
         self._tab_grid_cache: dict[str, VerticalScroll] = {}
         self._tab_list_cache: dict[str, ModelList] = {}
+        # Hardware-fit baseline. Captured once at construction so the
+        # row-build path (cached, only re-runs when _data_version moves)
+        # can stamp each row's fit chip without re-probing on every refresh.
+        # None when the probe failed or psutil is unavailable; rows render
+        # without a fit chip in that case.
+        self._available_memory_bytes: int | None = self._probe_available_memory()
+
+    @staticmethod
+    def _probe_available_memory() -> int | None:
+        """One-shot hardware probe used to compute per-row fit chips.
+
+        Wraps ``providers.model_cache.get_available_memory`` so test envs
+        without a usable psutil/pynvml install fall back to a chip-less
+        catalog instead of crashing. The fraction follows the configured
+        ``gpu_memory_fraction`` so the fit signal matches what the
+        runtime would actually leave for the model after KV cache + OS
+        overhead.
+        """
+        try:
+            from lilbee.providers.model_cache import get_available_memory
+
+            return get_available_memory(cfg.gpu_memory_fraction)
+        except Exception:
+            return None
 
     def _grid_for_tab(self, tab_id: str) -> VerticalScroll:
         """Return (and memoize) the VerticalScroll for *tab_id*.
@@ -727,6 +752,7 @@ class CatalogScreen(Screen[None]):
             for v in fam.variants:
                 installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
                 rows.append(variant_to_row(v, fam, installed))
+        self._stamp_fit(rows)
         self._family_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
 
@@ -739,6 +765,7 @@ class CatalogScreen(Screen[None]):
         for m in self._hf_models:
             installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
             rows.append(catalog_to_row(m, installed))
+        self._stamp_fit(rows)
         self._hf_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
 
@@ -748,8 +775,30 @@ class CatalogScreen(Screen[None]):
         if cached is not None and cached.key == key:
             return cached.rows
         rows = [remote_to_row(rm) for rm in self._remote_models]
+        # Remote rows don't carry a known size; _stamp_fit no-ops on those.
+        self._stamp_fit(rows)
         self._remote_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
+
+    def _stamp_fit(self, rows: list[LocalCatalogRow]) -> None:
+        """Stamp each row's hardware-fit chip in place.
+
+        Runs only inside the cached row builders, so this is one pass per
+        data refresh, not per render. Rows whose ``sort_size`` is zero
+        (remote / unknown size) leave ``fit`` as ``None`` and the card
+        renderer omits the chip. Available-memory probe is captured once
+        at __init__; if the probe failed, every row falls through chip-less.
+        """
+        if self._available_memory_bytes is None:
+            return
+        bytes_per_gb = 1024**3
+        for row in rows:
+            if row.sort_size <= 0:
+                continue
+            row.fit = compute_fit(
+                model_size_bytes=int(row.sort_size * bytes_per_gb),
+                available_bytes=self._available_memory_bytes,
+            )
 
     def _build_rows(self) -> list[LocalCatalogRow]:
         """Build filtered table rows from current data sources."""
