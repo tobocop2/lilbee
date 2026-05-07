@@ -54,6 +54,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
+from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -284,11 +285,7 @@ class CatalogScreen(Screen[None]):
                 TabbedContent(initial=TAB_CHAT, id="catalog-tabs"),
             ):
                 with TabPane(msg.CATALOG_TAB_DISCOVER, id=TAB_DISCOVER):
-                    yield Static(
-                        "Discover landing — coming soon",
-                        id="discover-placeholder",
-                        classes="catalog-placeholder",
-                    )
+                    yield DiscoverRails(id="discover-rails")
                 with TabPane(msg.CATALOG_TAB_CHAT, id=TAB_CHAT):
                     yield VerticalScroll(
                         id=f"{_GRID_ID_PREFIX}{TAB_CHAT}", classes="catalog-grid-pane"
@@ -1424,10 +1421,42 @@ class CatalogScreen(Screen[None]):
         self._update_sort_label()
         if new_tab == TAB_LIBRARY:
             self._populate_library_list()
+        elif new_tab == TAB_DISCOVER:
+            self._populate_discover_rails()
         elif new_tab in TASK_TAB_IDS:
             # Refresh the newly active task tab. Per-tab cache key skips
             # the rebuild when the row shape hasn't changed since last paint.
             self._refresh_view()
+
+    def _populate_discover_rails(self) -> None:
+        """Push three curated row slices into the Discover landing.
+
+        - For You: featured rows ranked by fit (FITS first, TIGHT, then
+          WONT_RUN), capped at 6 to keep the rail compact.
+        - Your Collection: every installed local row + every activated
+          cloud API. Mirrors the Library tab's spirit but capped to a
+          single rail-friendly slice.
+        - Fresh on the Hub: most-downloaded non-featured HF rows as a
+          recency-ish proxy (the API doesn't expose 'newly uploaded' as
+          a sort key today; downloads-desc surfaces buzzy recent uploads).
+        """
+        try:
+            rails = self.query_one("#discover-rails", DiscoverRails)
+        except Exception:
+            return
+        family_rows = self._all_family_rows()
+        hf_rows = self._all_hf_rows() if self._hf_fetched else []
+        remote_rows = self._all_remote_rows()
+        for_you = sorted(
+            (r for r in family_rows + hf_rows if r.featured),
+            key=_for_you_sort_key,
+        )[:6]
+        collection = [r for r in family_rows + remote_rows if r.installed][:6]
+        fresh = sorted(
+            (r for r in hf_rows if not r.featured),
+            key=lambda r: -r.sort_downloads,
+        )[:6]
+        rails.set_rails(for_you=for_you, collection=collection, fresh=fresh)
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
@@ -1806,6 +1835,25 @@ class GridSection:
 
 
 _TASK_BUCKET_ORDER = (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
+
+
+def _for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
+    """Rank Discover 'For You' rows: best fit first, then alphabetical.
+
+    Fit rank: FITS=0, TIGHT=1, WONT_RUN=2, no chip=3. Featured-only
+    callers already filtered, so featured isn't in the key.
+    """
+    from lilbee.runtime.hardware import FitLevel
+
+    if row.fit is None:
+        rank = 3
+    elif row.fit.level is FitLevel.FITS:
+        rank = 0
+    elif row.fit.level is FitLevel.TIGHT:
+        rank = 1
+    else:
+        rank = 2
+    return (rank, row.name.lower())
 
 
 def _group_frontier_rows(
