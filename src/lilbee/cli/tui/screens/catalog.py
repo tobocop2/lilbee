@@ -188,12 +188,15 @@ class CatalogScreen(Screen[None]):
         Binding("c", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
         # Numeric tab shortcuts; 1-6 jump to the corresponding tab in
         # ALL_TAB_IDS order (Discover, Chat, Embed, Vision, Rerank, Library).
-        Binding("1", "select_tab(0)", "", show=False),
-        Binding("2", "select_tab(1)", "", show=False),
-        Binding("3", "select_tab(2)", "", show=False),
-        Binding("4", "select_tab(3)", "", show=False),
-        Binding("5", "select_tab(4)", "", show=False),
-        Binding("6", "select_tab(5)", "", show=False),
+        # priority=True so they win against any focused-widget binding that
+        # might already grab digits (Textual's Tabs/ContentTabs has its own
+        # numeric handling), and over-the-air shortcut feel matches the plan.
+        Binding("1", "select_tab(0)", "Discover", show=False, priority=True),
+        Binding("2", "select_tab(1)", "Chat", show=False, priority=True),
+        Binding("3", "select_tab(2)", "Embed", show=False, priority=True),
+        Binding("4", "select_tab(3)", "Vision", show=False, priority=True),
+        Binding("5", "select_tab(4)", "Rerank", show=False, priority=True),
+        Binding("6", "select_tab(5)", "Library", show=False, priority=True),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
