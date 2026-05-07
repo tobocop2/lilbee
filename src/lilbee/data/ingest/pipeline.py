@@ -233,6 +233,23 @@ def _plan_file_changes(
     return files_to_process, added, updated, unchanged
 
 
+def detect_pending() -> int:
+    """Count files in documents/ that are out of sync with the store.
+
+    Cheap operation: filesystem walk + SHA-256 hashing + a single
+    sources-table read. No embedding, no writes. Returns the total of
+    added + updated + removed, which is what the TaskBar hint surfaces.
+    Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
+    """
+    if not cfg.documents_dir.exists():
+        return 0
+    disk_files = discover_files()
+    existing_sources = {s["filename"]: s["file_hash"] for s in get_services().store.get_sources()}
+    removed = sum(1 for name in existing_sources if name not in disk_files)
+    files_to_process, _, _, _ = _plan_file_changes(disk_files, existing_sources, cancel=None)
+    return len(files_to_process) + removed
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,

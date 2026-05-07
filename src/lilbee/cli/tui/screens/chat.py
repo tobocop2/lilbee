@@ -233,9 +233,8 @@ class ChatScreen(Screen[None]):
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
-    def __init__(self, *, auto_sync: bool = False) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._insert_mode: bool = True
@@ -278,8 +277,6 @@ class ChatScreen(Screen[None]):
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif self._auto_sync and self._embedding_ready():
-            self._run_sync()
         if isinstance(self.app, LilbeeApp):
             self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
@@ -328,8 +325,9 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if self._embedding_ready() and self._auto_sync:
-            self._run_sync()
+        # Re-detect after setup so a freshly-set-up vault gets the hint.
+        if isinstance(self.app, LilbeeApp):
+            self.app.task_bar.start_detect_pending()
         self.refresh_model_bar()
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
@@ -1173,12 +1171,19 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
+        # Clear the pending hint so the bar shows live sync progress
+        # instead of the stale "N docs to sync" line.
+        self._task_bar.clear_pending_sync()
 
         def _target(reporter: ProgressReporter) -> None:
             try:
                 self._do_sync(reporter)
             finally:
                 self._sync_active = False
+                # Re-detect after every sync attempt: success drives the
+                # count to 0, failure or cancel leaves the still-pending
+                # files counted so the hint reappears.
+                self._task_bar.start_detect_pending()
 
         self._task_bar.start_task("Sync documents", TaskType.SYNC, _target, indeterminate=True)
 
@@ -1219,8 +1224,7 @@ class ChatScreen(Screen[None]):
         try:
             result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
-            self._auto_sync = False
-            raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
+            raise RuntimeError(msg.SYNC_CANCELLED_RESUME) from exc
         if result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
         if result.skipped:
