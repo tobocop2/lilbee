@@ -186,6 +186,14 @@ class CatalogScreen(Screen[None]):
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
         Binding("ctrl+b", "toggle_drawer", "Detail", show=False, group=_ACTION_GROUP),
         Binding("c", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
+        # Numeric tab shortcuts; 1-6 jump to the corresponding tab in
+        # ALL_TAB_IDS order (Discover, Chat, Embed, Vision, Rerank, Library).
+        Binding("1", "select_tab(0)", "", show=False),
+        Binding("2", "select_tab(1)", "", show=False),
+        Binding("3", "select_tab(2)", "", show=False),
+        Binding("4", "select_tab(3)", "", show=False),
+        Binding("5", "select_tab(4)", "", show=False),
+        Binding("6", "select_tab(5)", "", show=False),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -1220,6 +1228,28 @@ class CatalogScreen(Screen[None]):
         rows = grid.rows
         row = rows[index] if 0 <= index < len(rows) else None
         drawer.update_for_row(row)
+
+    def action_select_tab(self, index: int) -> None:
+        """Activate the tab at *index* in ALL_TAB_IDS (0..5).
+
+        Bound to numeric keys 1-6. Out-of-range index is a no-op so a
+        future shortcut press doesn't crash if ALL_TAB_IDS shrinks.
+        Skipped if focus is in the search Input so digits typed into the
+        filter aren't swallowed as tab jumps.
+        """
+        from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
+
+        if isinstance(self.focused, Input):
+            return
+        if not 0 <= index < len(ALL_TAB_IDS):
+            return
+        target = ALL_TAB_IDS[index]
+        try:
+            tabs = self.query_one("#catalog-tabs", TabbedContent)
+        except Exception:
+            return
+        if tabs.active != target:
+            tabs.active = target
 
     def action_cycle_source(self) -> None:
         """Cycle the active task tab's source mode: LOCAL -> CLOUD -> BOTH.
