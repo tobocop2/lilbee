@@ -70,7 +70,13 @@ class BatchProgressEvent(BaseModel):
 
 
 class ExtractEvent(BaseModel):
-    """Emitted per page during vision OCR extraction."""
+    """Emitted with page-level extraction progress.
+
+    Vision PDF OCR fires one event per page (``page < total_pages``);
+    plain (non-OCR) extraction fires once per file with
+    ``page == total_pages`` so subscribers see "extracted N pages"
+    before the embed phase ticks.
+    """
 
     file: str
     page: int

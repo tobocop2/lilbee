@@ -39,10 +39,8 @@ from lilbee.runtime.progress import (
 
 log = logging.getLogger(__name__)
 
-
 # Limit concurrent ingestion. Sourced from cpu_quota() so worker storms
 # can't starve the TUI's asyncio main thread on macOS.
-
 _MAX_CONCURRENT = cpu_quota()
 
 # Concurrent.futures raises this exact RuntimeError message when submitting to

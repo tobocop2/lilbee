@@ -31,6 +31,7 @@ EMBED_KIND = "embed"
 CHAT_KIND = "chat"
 RERANK_KIND = "rerank"
 VISION_KIND = "vision_ocr"
+PDF_OCR_KIND = "pdf_ocr"
 
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "CHAT_KIND",
     "EMBED_KIND",
     "ERROR_KIND",
+    "PDF_OCR_KIND",
     "PING_KIND",
     "PONG_KIND",
     "RERANK_KIND",
