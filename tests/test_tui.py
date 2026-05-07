@@ -456,6 +456,11 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
+            # Pin active tab to Chat: the 6-tab shell's TabbedContent can
+            # briefly land on the first-defined pane (Discover) under
+            # run_test before the call_after_refresh setter runs. Sorting
+            # is gated on a task tab being active.
+            catalog._active_tab_id_cache = "chat"
             # Switch to list view so sort is available.
             catalog._grid_view = False
             catalog._sort_column = "Name"

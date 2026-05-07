@@ -3262,6 +3262,9 @@ async def test_catalog_header_sort():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             assert screen._sort_column == "Name"
             assert screen._sort_ascending is True
             await pilot.press("v")
@@ -3290,6 +3293,7 @@ async def test_catalog_pop_screen():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             screen.action_go_back()
             await _pilot.pause()
             # action_go_back on non-LilbeeApp calls pop_screen
@@ -3307,6 +3311,7 @@ async def test_catalog_vim_keys():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             screen.action_cursor_down()
             screen.action_cursor_up()
             assert isinstance(app.screen, CatalogScreen)
@@ -3342,6 +3347,7 @@ async def test_catalog_page_down_up():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             screen.action_page_down()
             screen.action_page_up()
             assert isinstance(app.screen, CatalogScreen)
@@ -3377,6 +3383,7 @@ async def test_catalog_install_already_installed(tmp_path):
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             m = _make_catalog_model(name="installed-model")
             cfg.models_dir = tmp_path
             dest = tmp_path / "resolved.gguf"
@@ -3401,6 +3408,7 @@ async def test_catalog_install_new_model():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             m = _make_catalog_model(name="new-model")
             mock_mgr = MagicMock()
             mock_mgr.is_installed.return_value = False
@@ -3426,6 +3434,7 @@ async def test_catalog_select_remote_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             om = _make_remote_model(name="ollama/remote-chat:latest")
             row = remote_to_row(om)
             screen._select_row(row)
@@ -3447,6 +3456,7 @@ async def test_catalog_select_ollama_remote_row_stores_prefix():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             om = _make_remote_model(name="qwen3:0.6b", provider="Ollama")
             row = remote_to_row(om)
             screen._select_row(row)
@@ -3462,6 +3472,7 @@ async def test_catalog_load_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             # Auto-fetch on mount may have flipped these; reset to the
             # exhausted-not state this test exercises.
             screen._hf_has_more = True
@@ -3483,6 +3494,8 @@ async def test_catalog_action_load_more_triggers_fetch():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_has_more = True
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen.action_load_more()
@@ -3559,6 +3572,8 @@ async def test_catalog_load_more_noop_when_exhausted():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_has_more = False
             old_offset = screen._hf_offset
             with patch.object(screen, "_fetch_more_hf") as fetch:
@@ -3577,6 +3592,8 @@ async def test_catalog_append_more_hf_to_list_extends_rows_and_options():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._families = []
             screen._hf_models = []
@@ -3603,6 +3620,7 @@ async def test_catalog_append_more_hf_to_list_noop_when_no_new_rows():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             initial = screen._list_widget.option_count
             screen._append_more_hf_to_list([])
             await _pilot.pause()
@@ -3618,6 +3636,7 @@ async def test_catalog_list_count_uses_row_count():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             assert screen._list_count() == screen._list_widget.row_count
 
 
@@ -3630,6 +3649,8 @@ async def test_catalog_scroll_prefetch_fires_load_more_near_bottom():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3663,6 +3684,8 @@ async def test_catalog_list_scroll_prefetch_skipped_when_no_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = False
             with patch.object(screen, "_load_more") as load_more:
@@ -3680,6 +3703,8 @@ async def test_catalog_grid_scroll_prefetch_skipped_in_list_view():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             with patch.object(screen, "_load_more") as load_more:
@@ -3698,6 +3723,8 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_fetched = True
             screen._hf_has_more = False
             screen._mount_grid_ctas(hf_count=12)
@@ -3718,6 +3745,8 @@ async def test_catalog_grid_scroll_fires_load_more_near_bottom():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3753,6 +3782,8 @@ async def test_catalog_scroll_prefetch_skipped_during_cooldown():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3771,6 +3802,8 @@ async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3801,6 +3834,8 @@ async def test_catalog_mouse_scroll_at_max_y_unsticks_pagination():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3839,6 +3874,8 @@ async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3876,6 +3913,8 @@ async def test_catalog_mouse_scroll_skipped_in_list_view():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3899,6 +3938,8 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3936,6 +3977,8 @@ async def test_catalog_mouse_scroll_in_list_view_is_ignored():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3957,6 +4000,8 @@ async def test_catalog_grid_leave_down_at_last_section_loads_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             screen._loading_more = False
@@ -3988,6 +4033,8 @@ async def test_catalog_grid_leave_down_in_middle_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             screen._loading_more = False
@@ -4018,6 +4065,8 @@ async def test_catalog_load_more_deduplicated_while_in_flight():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_has_more = True
             screen._loading_more = False
             old_offset = screen._hf_offset
@@ -4038,6 +4087,8 @@ async def test_catalog_row_highlighted_prefetches_near_bottom():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             # Wipe featured families so the list is exactly the HF models.
@@ -4074,6 +4125,8 @@ async def test_catalog_row_highlighted_ignored_in_grid_view():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = True
             screen._hf_has_more = True
             with patch.object(screen, "_fetch_more_hf") as fetch:
@@ -4093,6 +4146,7 @@ async def test_catalog_sort_label_covers_every_pagination_state():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             label = screen.query_one("#sort-label", Static)
 
             # In-flight fetch: "loading more…" branch.
@@ -4137,6 +4191,7 @@ async def test_catalog_update_sort_label_swallows_missing_widget():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             # Remove the sort-label widget so the next call hits NoMatches.
             screen.query_one("#sort-label", Static).remove()
             await _pilot.pause()
@@ -4156,6 +4211,7 @@ async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             screen.query_one("#catalog-search", Input).focus()
             await _pilot.pause()
             with patch.object(screen, "_focus_first_grid") as fall_through:
@@ -4172,6 +4228,7 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             # Clear all models
             screen._families = []
             screen._hf_models = []
@@ -4195,6 +4252,8 @@ async def test_catalog_get_highlighted_with_rows():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_models = [_make_catalog_model(name="test-7B")]
             screen._grid_view = False
             screen._refresh_list()
@@ -4219,6 +4278,7 @@ async def test_catalog_worker_hf_success():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             from textual.worker import WorkerState
 
@@ -4241,6 +4301,7 @@ async def test_catalog_worker_remote_success():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             from textual.worker import WorkerState
 
@@ -4263,6 +4324,8 @@ async def test_catalog_worker_more_hf_success():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_models = [_make_catalog_model(name="existing-7B")]
 
             from textual.worker import WorkerState
@@ -4286,6 +4349,7 @@ async def test_catalog_worker_non_success_ignored():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             from textual.worker import WorkerState
 
@@ -4306,6 +4370,7 @@ async def test_catalog_worker_more_hf_error_releases_latch():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             from textual.worker import WorkerState
 
@@ -4329,6 +4394,7 @@ async def test_catalog_select_catalog_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             m = _make_catalog_model(name="test-7B")
             row = catalog_to_row(m, installed=False)
             with patch.object(screen, "_install_model") as mock_install:
@@ -4347,6 +4413,9 @@ async def test_catalog_input_changed_refreshes():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
@@ -4387,6 +4456,7 @@ async def test_catalog_fetch_more_hf_worker():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             with patch(
                 "lilbee.cli.tui.screens.catalog.get_catalog",
@@ -4410,6 +4480,7 @@ async def test_catalog_grid_cache_skips_rebuild():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._refresh_grid()
             first_key = screen._grid_cache_keys.get("chat")
@@ -4757,6 +4828,7 @@ async def test_catalog_refresh_list_empty():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._families = []
             screen._hf_models = []
@@ -4776,6 +4848,7 @@ async def test_catalog_refresh_list_with_models():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._hf_models = [
                 _make_catalog_model(name=f"model-{i}B", hf_repo=f"org/model-{i}", downloads=100 - i)
@@ -4797,6 +4870,7 @@ async def test_catalog_page_down_with_focused_table():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._hf_models = [
                 _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(15)
@@ -4822,6 +4896,7 @@ async def test_catalog_action_cursor_with_focused_table():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._hf_models = [
                 _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(5)
@@ -4846,6 +4921,7 @@ async def test_catalog_jump_top_bottom():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._hf_models = [
                 _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(5)
@@ -4878,6 +4954,7 @@ async def test_catalog_grid_actions_drive_focused_grid():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             assert screen._grid_view is True
             fake_grid = MagicMock()
             with patch.object(screen, "_focused_grid", return_value=fake_grid):
@@ -5118,6 +5195,7 @@ async def test_catalog_key_g_G():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             screen.action_jump_top()
             screen.action_jump_bottom()
             assert isinstance(app.screen, CatalogScreen)
@@ -5193,6 +5271,7 @@ async def test_catalog_delete_installed_model_confirmation():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
@@ -5224,6 +5303,7 @@ async def test_catalog_action_show_info_toasts_with_no_highlight():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
             with (
                 patch.object(screen, "_highlighted_row", return_value=None),
@@ -5247,6 +5327,7 @@ async def test_catalog_action_show_info_pushes_modal_for_local_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
             row = LocalCatalogRow(
                 name="Acme 1B",
@@ -5284,6 +5365,7 @@ async def test_catalog_delete_with_no_highlight_warns():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
             with (
                 patch.object(screen, "_get_highlighted_model_name", return_value=None),
@@ -5327,6 +5409,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
             screen._hf_fetched = True
             screen._families = []
@@ -5361,6 +5444,7 @@ async def test_catalog_delete_second_press_confirms():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
@@ -5398,6 +5482,7 @@ async def test_catalog_delete_not_installed():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
@@ -5425,6 +5510,7 @@ async def test_catalog_delete_no_highlighted_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             screen._families = []
             screen._hf_models = []
@@ -5446,6 +5532,7 @@ async def test_catalog_delete_in_input_ignored():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             from textual.widgets import Input
 
@@ -8197,6 +8284,8 @@ async def test_fetch_installed_names_exception():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._installed_names = set()
             services = MagicMock()
             services.model_manager.list_native_identities.side_effect = Exception("fail")
@@ -8218,6 +8307,7 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             assert screen._grid_view is True
             # These should all run without error (forwarding to GridSelect or no-op)
             screen.action_page_down()
@@ -8239,6 +8329,9 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             screen._hf_has_more = False
             grids = list(screen.query(ModelGrid))
             if len(grids) < 2:
@@ -8261,6 +8354,9 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             screen._hf_has_more = False
             # Re-query grids right before exercising LeaveDown so a slow
             # Windows worker that mounts more grids between push and pause
@@ -8291,6 +8387,9 @@ async def test_catalog_grid_leave_up_focuses_previous():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             grids = list(screen.query(ModelGrid))
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
@@ -8312,6 +8411,9 @@ async def test_catalog_grid_leave_up_at_first_grid_keeps_focus():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             grids = list(screen.query(ModelGrid))
             if not grids:
                 pytest.skip("test requires at least one grid mounted")
@@ -8334,6 +8436,7 @@ async def test_catalog_select_variant_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             variant = ModelVariant(
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
@@ -8366,6 +8469,7 @@ async def test_catalog_install_variant_creates_catalog_model():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             variant = ModelVariant(
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
@@ -8399,6 +8503,7 @@ async def test_catalog_install_model_already_exists(tmp_path):
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             m = _make_catalog_model(name="existing-model")
             # Create the dest file so it exists
             cfg.models_dir = tmp_path
@@ -8423,6 +8528,7 @@ async def test_catalog_enqueue_download_non_lilbee_app():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             m = _make_catalog_model(name="dl-model")
             # CatalogTestApp is not LilbeeApp, so this should show error
             with patch.object(screen, "notify") as mock_notify:
@@ -8443,6 +8549,7 @@ async def test_catalog_get_highlighted_variant_name():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             variant = ModelVariant(
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
@@ -8490,6 +8597,7 @@ async def test_catalog_get_highlighted_remote_name():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             rm = _make_remote_model(name="remote:latest")
             row = remote_to_row(rm)
             screen._rows = [row]
@@ -8517,6 +8625,7 @@ async def test_catalog_get_highlighted_catalog_name():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             m = _make_catalog_model(hf_repo="org/hf-model-GGUF")
             row = catalog_to_row(m, installed=False)
             screen._rows = [row]
@@ -8543,6 +8652,7 @@ async def test_catalog_run_delete_success():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             mock_mgr = MagicMock()
             mock_mgr.remove.return_value = True
             with patch(
@@ -8566,6 +8676,7 @@ async def test_catalog_run_delete_failure():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             mock_mgr = MagicMock()
             mock_mgr.remove.return_value = False
             with patch(
@@ -8589,6 +8700,7 @@ async def test_catalog_run_delete_exception():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             mock_mgr = MagicMock()
             mock_mgr.remove.side_effect = OSError("disk full")
             with patch(
@@ -9835,6 +9947,7 @@ async def test_catalog_fetch_installed_names():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             services = MagicMock()
             services.model_manager.list_native_identities.return_value = frozenset(
@@ -9859,6 +9972,7 @@ async def test_catalog_worker_state_unknown_worker():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             event = MagicMock()
             event.state = MagicMock()
@@ -9883,6 +9997,8 @@ async def test_catalog_is_installed_by_repo():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._installed_names = {"org/model-GGUF/test.gguf"}
             assert screen._is_installed("x", repo="org/model-GGUF", filename="test.gguf") is True
             assert screen._is_installed("x", repo="org/other", filename="other.gguf") is False
@@ -9898,6 +10014,7 @@ async def test_catalog_install_model_resolve_exception():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             cm = _make_catalog_model(name="fail-resolve")
             with (
@@ -9944,6 +10061,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             cm = _make_catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
             row = LocalCatalogRow(
@@ -9985,6 +10103,7 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             row = LocalCatalogRow(
                 name="orphan",
@@ -10039,6 +10158,7 @@ async def test_catalog_grid_selected_delegates_to_select_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             row = LocalCatalogRow(
                 name="card-model",
@@ -10072,6 +10192,7 @@ async def test_catalog_grid_select_selected_with_model_card():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
 
             row = LocalCatalogRow(
                 name="grid-select-row",
@@ -10280,6 +10401,8 @@ async def test_catalog_update_sort_label_loading_more():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._loading_more = True
             screen._update_sort_label()
             label = screen.query_one("#sort-label", Static)
@@ -10320,6 +10443,7 @@ async def test_catalog_cycle_sort_in_grid_view_notifies():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             assert screen._grid_view is True
             before = screen._sort_column
             with patch.object(screen, "notify") as mock_notify:
@@ -10338,6 +10462,8 @@ async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._sort_column = "NotInCycle"
             screen.action_cycle_sort()
@@ -10364,6 +10490,8 @@ async def test_catalog_search_submit_installs_first_visible_match():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             grids = list(screen.query(ModelGrid))
             assert grids, "catalog should mount at least one ModelGrid"
             grid = grids[0]
@@ -10395,6 +10523,8 @@ async def test_catalog_select_first_visible_list_item_installs_match():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._refresh_list()
             await _pilot.pause()
@@ -10417,6 +10547,8 @@ async def test_catalog_focus_list_item_empty_is_noop():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._families = []
             screen._hf_models = []
@@ -10438,6 +10570,7 @@ async def test_catalog_focused_list_index_none_when_no_focus():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             # screen.focused is None at this point
             assert screen._focused_list_index() is None
 
@@ -10452,6 +10585,8 @@ async def test_catalog_maybe_prefetch_returns_when_no_focus():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
@@ -10485,6 +10620,9 @@ async def test_catalog_focused_list_index_returns_highlighted():
             screen = CatalogScreen()
             app.push_screen(screen)
             await pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._activation_settled = True
             screen._grid_view = False
             assert screen._focused_list_index() is None
             screen._families = []
@@ -10593,6 +10731,7 @@ async def test_catalog_get_highlighted_model_name_model_grid_branch():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             grid = ModelGrid(rows, id="vg-name-test")
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
@@ -10841,6 +10980,7 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
             # Highlight an index past the end of the dataset.
@@ -10919,6 +11059,7 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             grid = GridSelect(min_column_width=20)
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
@@ -10941,6 +11082,7 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             # Mount a scroll-hint inside the grid container so the second
             # contextlib.suppress block successfully resolves the query.
             await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
@@ -11022,6 +11164,7 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
             # Hand the screen one extra section to mount; the iteration
             # is the previously-uncovered branch.
             sections = [GridSection(heading="Extras", rows=[row])]

@@ -201,6 +201,13 @@ class CatalogScreen(Screen[None]):
         self._active_tab_id_cache: str = TAB_CHAT
         self._tab_grid_cache: dict[str, VerticalScroll] = {}
         self._tab_list_cache: dict[str, ModelList] = {}
+        # During initial mount Textual fires TabActivated for whichever pane
+        # ends up first in compose order (Discover) before our explicit
+        # call_after_refresh setter activates Chat. Suppressing cache writes
+        # while this flag is False keeps the cache pinned to its TAB_CHAT
+        # __init__ default through the race; user-driven tab switches after
+        # mount flip the flag and re-arm normal cache updates.
+        self._activation_settled: bool = False
         # Hardware-fit baseline. Captured once at construction so the
         # row-build path (cached, only re-runs when _data_version moves)
         # can stamp each row's fit chip without re-probing on every refresh.
@@ -318,7 +325,26 @@ class CatalogScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
+        # Force Chat as the initial active tab. `TabbedContent(initial=...)`
+        # doesn't take effect when panes are added via `with TabPane(...)`
+        # (Textual resolves initial at construction time but the panes mount
+        # after), so we set active explicitly via call_after_refresh so the
+        # TabActivated cascade has already settled before our setter runs.
+        # Chat is the most common landing destination; users opt into
+        # Discover via keyboard shortcut.
+        self.call_after_refresh(self._activate_initial_tab)
         self.add_class("-grid-view")
+
+    def _activate_initial_tab(self) -> None:
+        try:
+            tabs = self.query_one("#catalog-tabs", TabbedContent)
+        except Exception:
+            self._activation_settled = True
+            return
+        if tabs.active != TAB_CHAT:
+            tabs.active = TAB_CHAT
+        self._active_tab_id_cache = TAB_CHAT
+        self._activation_settled = True
         # Defer the card mount so the catalog frame paints first, then the
         # cards stream in on the next refresh tick. With ~30 ModelCards the
         # synchronous mount adds ~600 ms of stylesheet work; deferring drops
@@ -1413,6 +1439,10 @@ class CatalogScreen(Screen[None]):
         per-render overhead stays constant regardless of tab count.
         """
         new_tab = event.pane.id or TAB_CHAT
+        # Suppress cache updates from the initial-mount race so the cache
+        # stays at its TAB_CHAT default until _activate_initial_tab settles.
+        if not self._activation_settled:
+            return
         self._active_tab_id_cache = new_tab
         # Stale per-tab widget caches survive across tab activations,
         # but if the user switched after a remount, the cached handle
