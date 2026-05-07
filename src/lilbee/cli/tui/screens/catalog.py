@@ -374,7 +374,6 @@ class CatalogScreen(Screen[None]):
             return
         if self._grid_view:
             self._filter_grid()
-            self._sync_grid_search_cta()
         else:
             self._filter_list()
 
@@ -931,23 +930,6 @@ class CatalogScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 w.remove()
         self._mount_grid_ctas(hf_count=hf_count)
-
-    def _sync_grid_search_cta(self) -> None:
-        """Mount/remove/update the grid-view search-HF CTA in response to typing."""
-        search = self._get_search_text()
-        existing = self.query("#catalog-grid > .search-hf-cta")
-        if not search:
-            for w in existing:
-                w.remove()
-            return
-        cta_text = msg.CATALOG_SEARCH_HF_CTA.format(query=search)
-        if existing:
-            for w in existing:
-                if isinstance(w, Static):
-                    w.update(cta_text)
-            return
-        container = self._grid_container
-        container.mount(Static(cta_text, classes="grid-cta search-hf-cta"))
 
     def _filter_grid(self) -> None:
         """Re-render the grid with the current filter applied via _refresh_grid."""
