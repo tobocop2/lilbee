@@ -60,8 +60,20 @@ def models_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def mock_llama_cpp() -> mock.MagicMock:
-    """Inject a mock llama_cpp module into sys.modules."""
+    """Inject a mock llama_cpp module into sys.modules.
+
+    ``internals.LlamaContext`` is a real class (not a Mock) so the
+    ``_llama_n_seq_max`` context manager's monkey-patch of its
+    ``__init__`` succeeds. The class is otherwise inert; tests that
+    care about Llama kwargs assert against ``mod.Llama.call_args``.
+    """
     mod = mock.MagicMock()
+
+    class _StubLlamaContext:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+    mod.internals.LlamaContext = _StubLlamaContext
     sys.modules["llama_cpp"] = mod
     yield mod
     sys.modules.pop("llama_cpp", None)
@@ -314,6 +326,14 @@ class TestLlamaCppProvider:
         fake_module = mock.MagicMock()
         fake_module.Llama = fake_llama
         fake_module.LLAMA_POOLING_TYPE_RANK = 4
+
+        # _llama_n_seq_max patches LlamaContext.__init__; provide a real
+        # class so the monkey-patch assignment succeeds.
+        class _StubCtx:
+            def __init__(self, *_a, **_kw) -> None:
+                pass
+
+        fake_module.internals.LlamaContext = _StubCtx
         with (
             patch(
                 "lilbee.providers.llama_cpp.provider.import_llama_cpp",
@@ -2725,46 +2745,54 @@ class TestIsRerankModel:
 
 
 class TestExtractRerankScore:
-    def test_raises_when_data_empty(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
-
-        with pytest.raises(ProviderError, match="no data"):
-            _extract_rerank_score({"data": []})
+    """``_extract_rerank_score`` operates on one ``data`` item (post-batched refactor)."""
 
     def test_flat_list_embedding_returns_first_element(self) -> None:
         """llama-cpp-python 0.3.x returns ``list[float]`` with length n_embd=1."""
         from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
-        assert _extract_rerank_score({"data": [{"embedding": [0.73]}]}) == 0.73
+        assert _extract_rerank_score({"embedding": [0.73]}) == 0.73
 
     def test_scalar_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match=r"unexpected score shape.*float"):
-            _extract_rerank_score({"data": [{"embedding": 0.73}]})
+            _extract_rerank_score({"embedding": 0.73})
 
     def test_nested_list_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match=r"unexpected score shape.*list"):
-            _extract_rerank_score({"data": [{"embedding": [[0.42]]}]})
+            _extract_rerank_score({"embedding": [[0.42]]})
 
     def test_empty_embedding_list_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match=r"unexpected score shape.*list: \[\]"):
-            _extract_rerank_score({"data": [{"embedding": []}]})
+            _extract_rerank_score({"embedding": []})
 
     def test_non_numeric_embedding_is_unexpected(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp.batching import _extract_rerank_score
 
         with pytest.raises(ProviderError, match="unexpected score shape"):
-            _extract_rerank_score({"data": [{"embedding": "not-a-number"}]})
+            _extract_rerank_score({"embedding": "not-a-number"})
+
+    def test_size_mismatch_at_batch_level_raises(self) -> None:
+        """``_rerank_one_call`` (the batch wrapper) catches data-length mismatches."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp.batching import _rerank_one_call
+
+        class _StubLlama:
+            def create_embedding(self, *, input):
+                # Return one entry for two pairs (mismatch).
+                return {"data": [{"embedding": [0.5]}]}
+
+        with pytest.raises(ProviderError, match="returned 1 entries for 2 pairs"):
+            _rerank_one_call(_StubLlama(), ["q</s></s>a", "q</s></s>b"])
 
 
 class TestRoutingProviderRerank:

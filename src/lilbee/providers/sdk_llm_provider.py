@@ -179,6 +179,23 @@ class SdkLLMProvider(LLMProvider):
             )
         return result
 
+    def pdf_ocr(
+        self,
+        path: Path,
+        *,
+        backend: str,
+        model: str = "",
+        per_page_timeout_s: float | None = None,
+        quiet: bool = True,
+        on_progress: Callable[..., None] | None = None,
+    ) -> list[Any]:
+        """SDK backend cannot rasterise PDFs locally; ingest callers fall back."""
+        del path, backend, model, per_page_timeout_s, quiet, on_progress
+        raise NotImplementedError(
+            "SDK provider does not support multi-page PDF OCR; "
+            "configure a llama-cpp vision worker for scanned PDFs."
+        )
+
     def list_models(self) -> list[str]:
         """List models from the backend (empty list on SDK errors)."""
         try:

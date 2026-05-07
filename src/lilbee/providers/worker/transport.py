@@ -8,16 +8,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
-
-OcrBackend = Literal["vision", "tesseract"]
-"""Which OCR backend the pool worker should run.
-
-``"vision"`` rasterises the PDF via pdfium and runs the vision Llama
-loaded by ``_VisionSession`` against each page.
-``"tesseract"`` shells out to kreuzberg's Tesseract backend, which
-spawns its own per-document Tesseract process.
-"""
+from typing import Any, Protocol, runtime_checkable
 
 WorkerEntrypoint = Callable[..., None]
 """Signature of a worker subprocess main function.
@@ -88,16 +79,17 @@ class PdfOcrRequest:
     """Pickle-friendly multi-page PDF-OCR request.
 
     Replaces the per-call ``python -m lilbee.runtime.pdf_extract``
-    subprocess. ``path`` is a string because ``pathlib.Path``
-    pickles via a chained reducer; the worker re-wraps it. ``backend``
-    selects between vision-Llama OCR (uses the role's loaded model)
-    and Tesseract OCR (no model load). ``model`` overrides
-    ``cfg.vision_model`` for the call when set; ignored under
-    ``"tesseract"``.
+    subprocess. ``path`` is a string because ``pathlib.Path`` pickles
+    via a chained reducer; the worker re-wraps it. ``backend`` is one
+    of ``"vision"`` (uses the role's loaded vision Llama) or
+    ``"tesseract"`` (no model load, runs kreuzberg). The worker
+    validates the value and raises ``ValueError`` for anything else.
+    ``model`` overrides ``cfg.vision_model`` for the call when set;
+    ignored when ``backend == "tesseract"``.
     """
 
     path: str
-    backend: OcrBackend
+    backend: str
     model: str = ""
     per_page_timeout_s: float | None = None
     quiet: bool = True
@@ -236,7 +228,6 @@ def default_spawner() -> WorkerSpawner:
 
 __all__ = [
     "ChatRequest",
-    "OcrBackend",
     "PdfOcrRequest",
     "RerankPayload",
     "RoleConfig",

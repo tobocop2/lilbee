@@ -40,7 +40,6 @@ from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
-    OcrBackend,
     PdfOcrRequest,
     RerankPayload,
     RoleConfig,
@@ -291,7 +290,7 @@ class LlamaCppProvider(LLMProvider):
         self,
         path: Path,
         *,
-        backend: OcrBackend,
+        backend: str,
         model: str = "",
         per_page_timeout_s: float | None = None,
         quiet: bool = True,

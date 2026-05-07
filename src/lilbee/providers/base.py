@@ -88,6 +88,25 @@ class LLMProvider(Protocol):
         """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap."""
         ...
 
+    def pdf_ocr(
+        self,
+        path: Path,
+        *,
+        backend: str,
+        model: str = "",
+        per_page_timeout_s: float | None = None,
+        quiet: bool = True,
+        on_progress: Callable[..., None] | None = None,
+    ) -> list[Any]:
+        """OCR every page of a PDF, returning ``list[PageText]`` in input order.
+
+        ``backend`` is ``"vision"`` (uses ``model``) or ``"tesseract"``
+        (no model load, runs kreuzberg). Backends that don't support
+        multi-page PDF OCR raise :class:`NotImplementedError`; ingest
+        callers catch and log this.
+        """
+        ...
+
     def list_models(self) -> list[str]:
         """List available model identifiers."""
         ...

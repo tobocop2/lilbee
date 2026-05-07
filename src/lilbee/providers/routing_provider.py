@@ -84,6 +84,26 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(model)
         return self._pick_backend(ref).vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
+    def pdf_ocr(
+        self,
+        path: Path,
+        *,
+        backend: str,
+        model: str = "",
+        per_page_timeout_s: float | None = None,
+        quiet: bool = True,
+        on_progress: Callable[..., None] | None = None,
+    ) -> list[Any]:
+        """Forward to the native llama-cpp backend; the SDK side cannot OCR PDFs."""
+        return self._get_llama_cpp().pdf_ocr(
+            path,
+            backend=backend,
+            model=model,
+            per_page_timeout_s=per_page_timeout_s,
+            quiet=quiet,
+            on_progress=on_progress,
+        )
+
     def list_models(self) -> list[str]:
         """Return the union of native and SDK-visible models.
 
