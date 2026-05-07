@@ -50,6 +50,7 @@ _EXPECTED_VALUES = {
     "CHAT_KIND": "chat",
     "RERANK_KIND": "rerank",
     "VISION_KIND": "vision_ocr",
+    "PDF_OCR_KIND": "pdf_ocr",
 }
 
 

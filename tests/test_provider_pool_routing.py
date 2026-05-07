@@ -21,6 +21,13 @@ pytestmark = [pytest.mark.xdist_group("worker_pool_routing")]
 
 def _stub_load(_self: _EmbedSession) -> Any:
     class _StubLlama:
+        n_batch = 8192
+
+        def tokenize(
+            self, text: bytes, *, add_bos: bool = True, special: bool = False
+        ) -> list[int]:
+            return [0] * max(1, len(text))
+
         def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
             return {"data": [{"embedding": [float(len(t)), 0.5, 0.5, 0.5]} for t in input]}
 
@@ -320,11 +327,21 @@ def _patched_rerank_worker_main(
 
     def _load(_self) -> Any:
         class _StubLlama:
-            def create_embedding(self, *, input: str) -> dict[str, Any]:
-                # Length of the candidate substring after the </s></s> sep.
+            n_batch = 8192
+
+            def tokenize(
+                self, text: bytes, *, add_bos: bool = True, special: bool = False
+            ) -> list[int]:
+                return [0] * max(1, len(text))
+
+            def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
+                # Pair-batched rerank: llama-cpp returns one embedding per pair.
                 sep = "</s></s>"
-                candidate = input.split(sep, 1)[-1] if sep in input else input
-                return {"data": [{"embedding": [float(len(candidate))]}]}
+                data = []
+                for pair in input:
+                    candidate = pair.split(sep, 1)[-1] if sep in pair else pair
+                    data.append({"embedding": [float(len(candidate))]})
+                return {"data": data}
 
         return _StubLlama()
 

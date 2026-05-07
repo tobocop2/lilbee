@@ -76,17 +76,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Ingest",
         help_text=(
-            "Wall-clock seconds reserved for the PDF-extract subprocess to load"
-            " the vision model. Total budget = load_budget + per_page * pages."
-        ),
-    ),
-    "vision_per_page_budget_s": SettingDef(
-        float,
-        nullable=False,
-        group="Ingest",
-        help_text=(
-            "Wall-clock seconds budgeted per page in the PDF-extract subprocess."
-            " Bump up for slow hardware (M1 Pro vision OCR is ~5min/page)."
+            "Wall-clock seconds reserved for the vision worker to load the"
+            " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
         ),
     ),
     "semantic_chunking": SettingDef(
@@ -496,12 +487,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Ingest",
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
-    ),
-    "vision_concurrency": SettingDef(
-        int,
-        nullable=False,
-        group="Ingest",
-        help_text="Concurrent vision-OCR pages per document (1 keeps memory predictable)",
     ),
     "worker_pool_call_timeout_s": SettingDef(
         float,
