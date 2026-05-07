@@ -32,6 +32,9 @@ class _RerankSession:
 
     @staticmethod
     def _compute(llm: Any, query: str, candidates: list[str]) -> list[float]:
+        # circular: lilbee.providers.llama_cpp.__init__ eagerly imports
+        # provider.py, which imports this worker module. Function-local
+        # import keeps that cycle from firing at module-load time.
         from lilbee.providers.llama_cpp.batching import compute_rerank_scores
 
         return compute_rerank_scores(llm, query, candidates)
