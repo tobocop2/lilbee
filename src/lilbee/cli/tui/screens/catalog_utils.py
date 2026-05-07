@@ -17,8 +17,56 @@ from enum import Enum
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
+
+# Tab IDs for the 6-tab catalog shell. Discover is the curated landing,
+# the four task tabs each render a single per-task grid, Library is the
+# personal-encyclopedia view of installed local + activated cloud APIs.
+TAB_DISCOVER = "discover"
+TAB_CHAT = "chat"
+TAB_EMBED = "embed"
+TAB_VISION = "vision"
+TAB_RERANK = "rerank"
+TAB_LIBRARY = "library"
+
+# Order matters: numbered shortcuts 1-6 follow this sequence.
+ALL_TAB_IDS: tuple[str, ...] = (
+    TAB_DISCOVER,
+    TAB_CHAT,
+    TAB_EMBED,
+    TAB_VISION,
+    TAB_RERANK,
+    TAB_LIBRARY,
+)
+TASK_TAB_IDS: tuple[str, ...] = (TAB_CHAT, TAB_EMBED, TAB_VISION, TAB_RERANK)
+
+# Maps ModelTask -> the per-task tab id that renders its rows. Featured
+# items still appear pinned at the top of their task tab; cross-task
+# discovery happens on the Discover landing.
+TASK_TO_TAB_ID: dict[ModelTask, str] = {
+    ModelTask.CHAT: TAB_CHAT,
+    ModelTask.EMBEDDING: TAB_EMBED,
+    ModelTask.VISION: TAB_VISION,
+    ModelTask.RERANK: TAB_RERANK,
+}
+
+
+def task_to_tab_id(task: ModelTask | str) -> str:
+    """Return the per-task tab id for a ModelTask or its string value.
+
+    Accepts the string form because catalog rows carry ``task`` as a
+    raw string (matching how HF API and the row builders return it),
+    while the routing tables are keyed on the enum.
+    """
+    if isinstance(task, ModelTask):
+        return TASK_TO_TAB_ID[task]
+    try:
+        return TASK_TO_TAB_ID[ModelTask(task)]
+    except (KeyError, ValueError) as exc:
+        raise KeyError(f"unknown task: {task!r}") from exc
+
 
 # SI thresholds for short download counts ("12.3M" / "456K") and binary
 # thresholds for sizes ("4.2 GB" / "768 MB").
