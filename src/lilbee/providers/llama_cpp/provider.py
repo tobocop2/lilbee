@@ -58,6 +58,41 @@ log = logging.getLogger(__name__)
 # is set. 24h is effectively "no cap" for the round-trip wait loop.
 _VISION_NO_CAP_TIMEOUT_S = 86_400.0
 
+# Number of parallel sequences the embed and rerank context's KV cache must
+# host. Each call to ``llm.create_embedding(input=list[str])`` adds one
+# sequence per input; with ``n_seq_max=1`` (llama-cpp-python's default)
+# ``llama_decode`` returns -1 the moment a second sequence is added. Sized
+# to ``embedder.MAX_BATCH_CHARS // ~250 chars-per-chunk * 2`` for headroom.
+# Cheap memory-wise for embedding contexts (no autoregressive KV state).
+_EMBED_N_SEQ_MAX = 64
+
+
+@contextlib.contextmanager
+def _llama_n_seq_max(n_seq_max: int) -> Any:
+    """Set ``context_params.n_seq_max`` on the next ``LlamaContext`` constructed.
+
+    llama-cpp-python's ``Llama()`` does not expose ``n_seq_max`` as a
+    kwarg, so the only way to influence it is to mutate the params right
+    before the C-level context is constructed. Patches
+    ``internals.LlamaContext.__init__`` for the scope of the with-block,
+    restoring the original on exit. Remove this shim if/when llama-cpp-python
+    accepts ``n_seq_max`` as a Llama kwarg.
+    """
+    from llama_cpp import internals
+
+    original = internals.LlamaContext.__init__
+
+    def patched(self: Any, *, model: Any, params: Any, verbose: bool) -> None:
+        params.n_seq_max = n_seq_max
+        original(self, model=model, params=params, verbose=verbose)
+
+    internals.LlamaContext.__init__ = patched  # type: ignore[method-assign,assignment]
+    try:
+        yield
+    finally:
+        internals.LlamaContext.__init__ = original  # type: ignore[method-assign]
+
+
 # Cap on tokens drained during ``_PoolChatStreamIterator.close()`` after a
 # mid-stream cancel. A runaway model (Qwen3-0.6B stuck in a never-closing
 # ``<think>`` loop) would otherwise block close() indefinitely.
@@ -657,6 +692,9 @@ def load_llama(
     if abort_callback_override is not None:
         kwargs["abort_callback"] = abort_callback_override
 
+    if embedding:
+        with _llama_n_seq_max(_EMBED_N_SEQ_MAX):
+            return _construct_llama(Llama, model_path, kwargs)
     return _construct_llama(Llama, model_path, kwargs)
 
 
