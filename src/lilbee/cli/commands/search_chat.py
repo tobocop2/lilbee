@@ -175,7 +175,7 @@ def chat(
     num_ctx: int | None = num_ctx_option,
     seed: int | None = seed_option,
 ) -> None:
-    """Interactive chat loop (auto-syncs first)."""
+    """Interactive chat loop. Press S in the TUI to sync pending documents."""
     apply_overrides(
         data_dir=data_dir,
         model=model,
@@ -196,7 +196,7 @@ def chat(
         raise SystemExit(1)
     from lilbee.cli.tui import run_tui
 
-    run_tui(auto_sync=True)
+    run_tui()
 
 
 def topics(

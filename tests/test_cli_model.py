@@ -534,7 +534,7 @@ class TestBrowseCmd:
         ):
             result = runner.invoke(app, ["model", "browse"])
         assert result.exit_code == 0, result.output
-        run_tui.assert_called_once_with(auto_sync=False, initial_view="Catalog")
+        run_tui.assert_called_once_with(initial_view="Catalog")
 
 
 class TestCatalogEntryDataFactory:
