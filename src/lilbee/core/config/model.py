@@ -93,7 +93,6 @@ class Config(BaseSettings):
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
     # per-page expectation that drives the total budget.
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
-    vision_per_page_budget_s: float = ConfigField(default=600.0, ge=0.0, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)

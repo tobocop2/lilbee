@@ -5599,6 +5599,31 @@ def test_build_add_progress_callback_throttles_embed_updates() -> None:
     assert reporter.update.call_count == 1
 
 
+def test_build_sync_progress_callback_routes_extract_event() -> None:
+    """``_build_sync_progress_callback`` ticks per-page on EXTRACT events.
+
+    Vision PDF OCR fires one EXTRACT event per page. Without the EXTRACT
+    branch in this callback the periodic + manual sync TaskBar would
+    sit at "syncing..." until the first EMBED event, which on a 44MB
+    scanned PDF can be many minutes after the first page is parsed.
+    """
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import _build_sync_progress_callback
+    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.runtime.progress import EventType, ExtractEvent
+
+    reporter = MagicMock(spec=ProgressReporter)
+    callback = _build_sync_progress_callback(reporter)
+    callback(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=2, total_pages=5))
+    reporter.update.assert_called_once()
+    args, kwargs = reporter.update.call_args
+    # Second positional is the status string; assert page-progress shape.
+    assert "scan.pdf" in args[1]
+    assert "2" in args[1] and "5" in args[1]
+    assert kwargs.get("indeterminate") is True
+
+
 async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
     """_do_add must surface EMBED chunk progress and EXTRACT page totals.
 

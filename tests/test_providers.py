@@ -3061,6 +3061,24 @@ class TestLlamaCppPdfOcr:
             provider._rerank_thread = mock.MagicMock()
             provider.shutdown()
 
+    def test_pdf_ocr_rejects_unexpected_frame_type(self) -> None:
+        """A non-``PdfOcrChunk`` frame surfaces as ProviderError, not a silent unpack."""
+        from lilbee.providers.base import ProviderError
+
+        # Wire-format guard: if the worker contract regresses to a bare
+        # tuple or anything else, the provider must surface a typed error
+        # instead of unpacking it via positional access (which would let
+        # the bug land silently in production).
+        chunks = [("not", "a", "PdfOcrChunk")]
+        provider, _ = self._stub_provider(chunks)
+        try:
+            with pytest.raises(ProviderError, match="unexpected frame type"):
+                provider.pdf_ocr(Path("/x.pdf"), backend="vision")
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+
     def test_pdf_ocr_wraps_timeout_as_provider_error(self) -> None:
         """A pool TimeoutError surfaces as a friendly ProviderError, not the raw timeout."""
         import asyncio
@@ -3085,6 +3103,60 @@ class TestLlamaCppPdfOcr:
         try:
             with pytest.raises(ProviderError, match="PDF OCR worker timed out"):
                 provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+
+
+class TestPdfDrainBudget:
+    """``LlamaCppProvider._pdf_drain_budget`` sizes the streamed-drain timeout."""
+
+    @staticmethod
+    def _provider() -> Any:
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+
+        with mock.patch("threading.Thread.start"):
+            return LlamaCppProvider()
+
+    def test_returns_no_cap_when_per_page_is_none(self) -> None:
+        from lilbee.providers.llama_cpp.provider import _VISION_NO_CAP_TIMEOUT_S
+
+        provider = self._provider()
+        try:
+            assert provider._pdf_drain_budget(Path("/x.pdf"), None) == _VISION_NO_CAP_TIMEOUT_S
+            assert provider._pdf_drain_budget(Path("/x.pdf"), 0) == _VISION_NO_CAP_TIMEOUT_S
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+
+    def test_returns_pages_times_per_page_plus_load_grace(self, monkeypatch) -> None:
+        """Total budget = page_count * per_page + ``cfg.vision_load_budget_s``."""
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.provider.pdf_page_count",
+            lambda _path: 8,
+        )
+        cfg.vision_load_budget_s = 100.0
+        provider = self._provider()
+        try:
+            assert provider._pdf_drain_budget(Path("/x.pdf"), 30.0) == 8 * 30.0 + 100.0
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+
+    def test_falls_back_to_no_cap_when_page_probe_fails(self, monkeypatch) -> None:
+        """A pdfium probe failure mustn't kill an otherwise-valid run."""
+        from lilbee.providers.llama_cpp.provider import _VISION_NO_CAP_TIMEOUT_S
+
+        def _raise(_path):
+            raise RuntimeError("pdfium probe boom")
+
+        monkeypatch.setattr("lilbee.providers.llama_cpp.provider.pdf_page_count", _raise)
+        provider = self._provider()
+        try:
+            assert provider._pdf_drain_budget(Path("/x.pdf"), 30.0) == _VISION_NO_CAP_TIMEOUT_S
         finally:
             provider._embed_thread = mock.MagicMock()
             provider._rerank_thread = mock.MagicMock()
