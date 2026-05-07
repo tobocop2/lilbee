@@ -374,7 +374,6 @@ class CatalogScreen(Screen[None]):
             return
         if self._grid_view:
             self._filter_grid()
-            self._sync_grid_search_cta()
         else:
             self._filter_list()
 
