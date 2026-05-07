@@ -31,6 +31,14 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
+    TAB_CHAT,
+    TAB_DISCOVER,
+    TAB_EMBED,
+    TAB_ID_TO_TASK,
+    TAB_LIBRARY,
+    TAB_RERANK,
+    TAB_VISION,
+    TASK_TAB_IDS,
     CatalogRow,
     FrontierCatalogRow,
     KeyStatus,
@@ -77,9 +85,10 @@ _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
 
-_LOCAL_TAB_ID = "local"
-_FRONTIER_TAB_ID = "frontier"
-_FRONTIER_LIST_ID = "frontier-list"
+# Per-tab DOM ids: f"grid-{tab_id}" / f"list-{tab_id}". Memoized on the
+# screen so each access is one dict lookup, not a DOM walk.
+_GRID_ID_PREFIX = "grid-"
+_LIST_ID_PREFIX = "list-"
 
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
@@ -147,8 +156,6 @@ class CatalogScreen(Screen[None]):
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
-    _grid_container = getters.query_one("#catalog-grid", VerticalScroll)
-    _list_widget = getters.query_one("#catalog-list", ModelList)
 
     def __init__(self) -> None:
         super().__init__()
@@ -165,8 +172,10 @@ class CatalogScreen(Screen[None]):
         self._grid_view: bool = True
         self._hf_fetched: bool = False
         self._loading_more: bool = False
-        self._grid_cache_key: tuple = ()
-        self._list_cache_key: tuple = ()
+        # Per-tab grid/list cache keys. Each tab tracks its own last-rendered
+        # shape; switching between already-populated tabs is a no-op refresh.
+        self._grid_cache_keys: dict[str, tuple] = {}
+        self._list_cache_keys: dict[str, tuple] = {}
         self._search_in_flight: bool = False
         self._frontier_rows: list[FrontierCatalogRow] = []
         # Bumped on every worker callback so the _all_*_rows caches
@@ -181,6 +190,46 @@ class CatalogScreen(Screen[None]):
         self._scroll_prefetch_armed_at: float = 0.0
         self._spinner_timer: Timer | None = None
         self._spinner_frame: int = 0
+        # Active-tab cache + per-tab widget memoization. Avoids a second
+        # query_one on every _grid_container / _list_widget access. Default
+        # matches the TabbedContent's initial= value below.
+        self._active_tab_id_cache: str = TAB_CHAT
+        self._tab_grid_cache: dict[str, VerticalScroll] = {}
+        self._tab_list_cache: dict[str, ModelList] = {}
+
+    def _grid_for_tab(self, tab_id: str) -> VerticalScroll:
+        """Return (and memoize) the VerticalScroll for *tab_id*.
+
+        Discover has no grid; falls through to TAB_CHAT so callers that
+        access ``_grid_container`` while Discover is active never crash.
+        Cached references are validated via ``is_running`` so a stale
+        post-remount handle gets refreshed transparently.
+        """
+        target = TAB_CHAT if tab_id == TAB_DISCOVER else tab_id
+        cached = self._tab_grid_cache.get(target)
+        if cached is not None and cached.is_running:
+            return cached
+        container = self.query_one(f"#{_GRID_ID_PREFIX}{target}", VerticalScroll)
+        self._tab_grid_cache[target] = container
+        return container
+
+    def _list_for_tab(self, tab_id: str) -> ModelList:
+        """Return (and memoize) the ModelList for *tab_id*. Same fallthrough as _grid_for_tab."""
+        target = TAB_CHAT if tab_id == TAB_DISCOVER else tab_id
+        cached = self._tab_list_cache.get(target)
+        if cached is not None and cached.is_running:
+            return cached
+        widget = self.query_one(f"#{_LIST_ID_PREFIX}{target}", ModelList)
+        self._tab_list_cache[target] = widget
+        return widget
+
+    @property
+    def _grid_container(self) -> VerticalScroll:
+        return self._grid_for_tab(self._active_tab_id_cache)
+
+    @property
+    def _list_widget(self) -> ModelList:
+        return self._list_for_tab(self._active_tab_id_cache)
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
@@ -198,14 +247,39 @@ class CatalogScreen(Screen[None]):
             yield Static("", id="catalog-loading-spinner")
         # Wrap TabbedContent in a Container with strict 1fr / overflow:hidden
         # so its inner TabPane / VerticalScroll cascade respects the screen
-        # height bound.
-        with (
-            Container(id="catalog-tabs-wrap"),
-            TabbedContent(initial=_LOCAL_TAB_ID, id="catalog-tabs"),
-            TabPane(msg.CATALOG_TAB_LOCAL, id=_LOCAL_TAB_ID),
-        ):
-            yield VerticalScroll(id="catalog-grid")
-            yield ModelList(id="catalog-list")
+        # height bound. Each per-task tab has its own VerticalScroll + ModelList
+        # so prefetch only extends the active tab's grid; the single mega-grid
+        # was the source of cross-section viewport jumps on pagination.
+        with Container(id="catalog-tabs-wrap"), TabbedContent(initial=TAB_CHAT, id="catalog-tabs"):
+            with TabPane(msg.CATALOG_TAB_DISCOVER, id=TAB_DISCOVER):
+                yield Static(
+                    "Discover landing — coming soon",
+                    id="discover-placeholder",
+                    classes="catalog-placeholder",
+                )
+            with TabPane(msg.CATALOG_TAB_CHAT, id=TAB_CHAT):
+                yield VerticalScroll(id=f"{_GRID_ID_PREFIX}{TAB_CHAT}", classes="catalog-grid-pane")
+                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_CHAT}")
+            with TabPane(msg.CATALOG_TAB_EMBED, id=TAB_EMBED):
+                yield VerticalScroll(
+                    id=f"{_GRID_ID_PREFIX}{TAB_EMBED}", classes="catalog-grid-pane"
+                )
+                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_EMBED}")
+            with TabPane(msg.CATALOG_TAB_VISION, id=TAB_VISION):
+                yield VerticalScroll(
+                    id=f"{_GRID_ID_PREFIX}{TAB_VISION}", classes="catalog-grid-pane"
+                )
+                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_VISION}")
+            with TabPane(msg.CATALOG_TAB_RERANK, id=TAB_RERANK):
+                yield VerticalScroll(
+                    id=f"{_GRID_ID_PREFIX}{TAB_RERANK}", classes="catalog-grid-pane"
+                )
+                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_RERANK}")
+            with TabPane(msg.CATALOG_TAB_LIBRARY, id=TAB_LIBRARY):
+                yield VerticalScroll(
+                    id=f"{_GRID_ID_PREFIX}{TAB_LIBRARY}", classes="catalog-grid-pane"
+                )
+                yield ModelList(id=f"{_LIST_ID_PREFIX}{TAB_LIBRARY}")
         with BottomBars():
             yield TaskBar()
             yield Footer()
@@ -232,8 +306,18 @@ class CatalogScreen(Screen[None]):
                 self, self._on_provider_availability_changed
             )
         # Auto-load more HF rows when scrolled near the bottom in either view.
-        self.watch(self._list_widget, "scroll_y", self._on_list_scrolled, init=False)
-        self.watch(self._grid_container, "scroll_y", self._on_grid_scrolled, init=False)
+        # Watch every per-task tab's container plus the Library container.
+        # Inactive tabs never scroll, so the handler runs only for the active
+        # tab; this is cheaper than tearing down and re-installing the watch
+        # on every tab activation.
+        for tab_id in (*TASK_TAB_IDS, TAB_LIBRARY):
+            with contextlib.suppress(Exception):
+                self.watch(
+                    self._list_for_tab(tab_id), "scroll_y", self._on_list_scrolled, init=False
+                )
+                self.watch(
+                    self._grid_for_tab(tab_id), "scroll_y", self._on_grid_scrolled, init=False
+                )
 
     def on_unmount(self) -> None:
         if isinstance(self.app, LilbeeApp):
@@ -298,20 +382,23 @@ class CatalogScreen(Screen[None]):
             self._data_version += 1
 
     def _active_tab_id(self) -> str:
-        """Return the active TabbedContent pane id, or Local when not yet mounted."""
-        try:
-            return self.query_one("#catalog-tabs", TabbedContent).active or _LOCAL_TAB_ID
-        except Exception:
-            return _LOCAL_TAB_ID
+        """Return the cached active tab id; falls back to TAB_CHAT pre-mount.
+
+        The cache is updated by ``_on_catalog_tab_activated`` so this is a
+        bare attribute read, not a DOM walk. Prefer this over a fresh
+        ``TabbedContent.active`` lookup on every check.
+        """
+        return self._active_tab_id_cache
 
     def action_toggle_view(self) -> None:
-        """Toggle between grid and list view (Local tab only).
+        """Toggle between grid and list view on the active task tab.
 
         Mid-toggle re-entry would tear the DOM (one toggle's mount_all
         running while the previous toggle's remove_children is still in
         flight). The _view_switching gate makes the toggle atomic.
+        Discover and Library tabs don't expose the toggle.
         """
-        if self._active_tab_id() != _LOCAL_TAB_ID:
+        if self._active_tab_id() not in TASK_TAB_IDS:
             return
         if self._view_switching:
             return
@@ -334,7 +421,7 @@ class CatalogScreen(Screen[None]):
                 with self.app.batch_update():
                     self._refresh_grid()
                 with contextlib.suppress(Exception):
-                    self.query_one("#catalog-grid ModelGrid", ModelGrid).focus()
+                    self._grid_container.query_one(ModelGrid).focus()
         finally:
             self._view_switching = False
         self._sync_grid_list_toggle()
@@ -369,8 +456,10 @@ class CatalogScreen(Screen[None]):
         )
 
     def _apply_search_filter(self) -> None:
-        if self._active_tab_id() == _FRONTIER_TAB_ID:
-            self._populate_frontier_list()
+        if self._active_tab_id() == TAB_LIBRARY:
+            self._populate_library_list()
+            return
+        if self._active_tab_id() == TAB_DISCOVER:
             return
         if self._grid_view:
             self._filter_grid()
@@ -584,45 +673,22 @@ class CatalogScreen(Screen[None]):
             self._remote_models = result
         elif name == _WORKER_FETCH_FRONTIER:
             self._frontier_rows = result
-            self._sync_frontier_tab()
+            self._populate_library_list()
         else:
             return False
         self._data_version += 1
         self._sync_loading_spinner()
         return True
 
-    def _sync_frontier_tab(self) -> None:
-        """Mount the Frontier tab when rows exist; unmount it when none."""
-        try:
-            tabs = self.query_one("#catalog-tabs", TabbedContent)
-        except Exception:
-            return
-        existing = tabs.query(f"#{_FRONTIER_TAB_ID}")
-        if not self._frontier_rows:
-            for pane in existing:
-                pane.remove()
-            return
-        if existing:
-            self._populate_frontier_list()
-            return
-        pane = TabPane(
-            msg.CATALOG_TAB_FRONTIER,
-            ModelList(id=_FRONTIER_LIST_ID),
-            id=_FRONTIER_TAB_ID,
-        )
-        # add_pane returns AwaitComplete; awaiting it via a worker
-        # guarantees the pane is in the DOM before _populate_frontier_list
-        # runs. Without this, downstream queries on slower runners can
-        # land before the mount completes.
-        self.run_worker(self._mount_frontier_pane(tabs, pane), exclusive=False)
+    def _populate_library_list(self) -> None:
+        """Render the Library tab list: frontier rows now; installed local later.
 
-    async def _mount_frontier_pane(self, tabs: TabbedContent, pane: TabPane) -> None:
-        await tabs.add_pane(pane)
-        self._populate_frontier_list()
-
-    def _populate_frontier_list(self) -> None:
+        Library is statically mounted in compose, so this is a pure data
+        render — no dynamic add_pane choreography. The ModelList lookup
+        is memoized via ``_list_for_tab``.
+        """
         try:
-            ml = self.query_one(f"#{_FRONTIER_LIST_ID}", ModelList)
+            ml = self._list_for_tab(TAB_LIBRARY)
         except Exception:
             return
         ml.set_rows(_group_frontier_rows(self._build_frontier_rows(self._get_search_text())))
@@ -769,18 +835,29 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows(search)
         hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
+        # Per-tab filter: each task tab renders only its own task's rows.
+        # Library/Discover skipped here (handled by their own refresh paths).
+        active_tab = self._active_tab_id_cache
+        if active_tab in TASK_TAB_IDS:
+            active_task = TAB_ID_TO_TASK[active_tab]
+            tab_rows = [r for r in all_rows if r.task == active_task.value]
+        else:
+            tab_rows = list(all_rows)
         # Keep self._rows in sync so the toolbar sort-label can render
         # "{n} loaded" whichever view (grid or list) is active.
-        self._rows = list(all_rows)
+        self._rows = list(tab_rows)
         row_key = (
-            tuple((r.name, r.installed) for r in all_rows),
-            self._get_search_text(),
+            tuple((r.name, r.installed) for r in tab_rows),
+            search,
         )
-        if self._grid_cache_key == row_key:
+        # Per-tab cache key: switching back to an already-rendered tab
+        # is a no-op refresh; only sort-label refreshes. Keyed by
+        # active_tab so other tabs' caches survive in-place.
+        if self._grid_cache_keys.get(active_tab) == row_key:
             self._update_sort_label()
             return
-        self._grid_cache_key = row_key
-        sections = [s for s in _group_rows_for_grid(all_rows) if s.rows]
+        self._grid_cache_keys[active_tab] = row_key
+        sections = [s for s in _group_rows_for_grid(tab_rows) if s.rows]
         if not sections:
             container = self._grid_container
             container.remove_children()
@@ -1019,17 +1096,23 @@ class CatalogScreen(Screen[None]):
         self._select_row(event.row)
 
     def _refresh_list(self) -> None:
-        """Rebuild the list view with local rows only (frontier lives in its own tab)."""
-        self._rows = self._sort_rows(self._build_rows())
+        """Rebuild the list view for the active tab; per-tab cache key skips no-op rebuilds."""
+        active_tab = self._active_tab_id_cache
+        all_rows = self._sort_rows(self._build_rows())
+        if active_tab in TASK_TAB_IDS:
+            active_task = TAB_ID_TO_TASK[active_tab]
+            self._rows = [r for r in all_rows if r.task == active_task.value]
+        else:
+            self._rows = list(all_rows)
         search = self._get_search_text()
         list_key = (
             tuple((r.name, r.installed) for r in self._rows),
             search,
         )
-        if self._list_cache_key == list_key:
+        if self._list_cache_keys.get(active_tab) == list_key:
             self._update_sort_label()
             return
-        self._list_cache_key = list_key
+        self._list_cache_keys[active_tab] = list_key
         visible = [r for r in self._rows if not search or matches_search(r, search)]
         self._list_widget.set_rows([ModelListSection(heading=None, rows=list(visible))])
         self._update_sort_label()
@@ -1041,7 +1124,7 @@ class CatalogScreen(Screen[None]):
         self._list_widget.set_rows([ModelListSection(heading=None, rows=list(visible))])
         # Cache key reflects the filtered shape so a no-op _refresh_list
         # immediately after a filter pass does not double-render.
-        self._list_cache_key = (
+        self._list_cache_keys[self._active_tab_id_cache] = (
             tuple((r.name, r.installed) for r in self._rows),
             search,
         )
@@ -1072,7 +1155,7 @@ class CatalogScreen(Screen[None]):
             # same place mouse scroll surfaces it.
             if self._loading_more:
                 with contextlib.suppress(Exception):
-                    hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                    hint = self._grid_container.query_one(".scroll-hint", Static)
                     hint.update(
                         msg.CATALOG_GRID_LOADING_MORE.format(
                             frame=_SPINNER_FRAMES[self._spinner_frame]
@@ -1097,7 +1180,7 @@ class CatalogScreen(Screen[None]):
             spinner.update(f"{_SPINNER_FRAMES[self._spinner_frame]} loading…")
         if self._loading_more:
             with contextlib.suppress(Exception):
-                hint = self.query_one("#catalog-grid > .scroll-hint", Static)
+                hint = self._grid_container.query_one(".scroll-hint", Static)
                 hint.update(
                     msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
                 )
@@ -1117,7 +1200,7 @@ class CatalogScreen(Screen[None]):
             label = self.query_one("#sort-label", Static)
         except NoMatches:
             return
-        if self._active_tab_id() == _FRONTIER_TAB_ID:
+        if self._active_tab_id() == TAB_LIBRARY:
             label.update(self._frontier_label_text())
             return
         direction = "asc" if self._sort_ascending else "desc"
@@ -1141,7 +1224,7 @@ class CatalogScreen(Screen[None]):
         """Cycle the list-view sort column ascending: Name, Downloads, Size, Params."""
         if isinstance(self.focused, Input):
             return
-        if self._active_tab_id() != _LOCAL_TAB_ID:
+        if self._active_tab_id() not in TASK_TAB_IDS:
             return
         if self._grid_view:
             self.notify(msg.CATALOG_SORT_LIST_ONLY)
@@ -1196,16 +1279,31 @@ class CatalogScreen(Screen[None]):
 
     def action_load_more(self) -> None:
         """Keyboard trigger (``n``) so users can page without scrolling."""
-        if self._active_tab_id() != _LOCAL_TAB_ID:
+        if self._active_tab_id() not in TASK_TAB_IDS:
             return
         self._load_more()
 
     @on(TabbedContent.TabActivated, "#catalog-tabs")
     def _on_catalog_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        """Refresh sort label and re-populate the active pane."""
+        """Update active-tab cache, refresh sort label, populate the active pane.
+
+        Cache update is the load-bearing line: every later check that asks
+        ``_active_tab_id()`` reads this cache, not a fresh DOM query, so
+        per-render overhead stays constant regardless of tab count.
+        """
+        new_tab = event.pane.id or TAB_CHAT
+        self._active_tab_id_cache = new_tab
+        # Stale per-tab widget caches survive across tab activations,
+        # but if the user switched after a remount, the cached handle
+        # may be detached. _grid_for_tab/_list_for_tab validate via
+        # is_running and refetch as needed.
         self._update_sort_label()
-        if event.pane.id == _FRONTIER_TAB_ID:
-            self._populate_frontier_list()
+        if new_tab == TAB_LIBRARY:
+            self._populate_library_list()
+        elif new_tab in TASK_TAB_IDS:
+            # Refresh the newly active task tab. Per-tab cache key skips
+            # the rebuild when the row shape hasn't changed since last paint.
+            self._refresh_view()
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
