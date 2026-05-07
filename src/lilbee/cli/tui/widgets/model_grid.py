@@ -400,7 +400,13 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     if row.backend:
         pills.append(pill(row.backend, "$accent", "$text"))
     pill_line = Content(" ").join(pills)
-    specs = _build_specs(row.params, row.quant, row.size)
+    # Family card with multiple quants: replace the simple specs line
+    # with an inline chip strip so the user sees every available size
+    # at a glance without expanding into the drawer.
+    if len(row.size_variants) > 1:
+        specs = _build_size_variant_strip(row.size_variants)
+    else:
+        specs = _build_specs(row.params, row.quant, row.size)
     status = _build_local_status(row)
     lines: list[Content] = [name, pill_line, specs]
     lines.append(status if status is not None else Content(""))
@@ -409,6 +415,18 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     else:
         lines.append(Content(""))
     return lines
+
+
+def _build_size_variant_strip(variants: list) -> Content:
+    """Inline chip strip showing every quant for a family-aggregated card.
+
+    Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
+    available sizes at a glance. Per-variant fit colors aren't applied
+    here; the drawer (right pane) carries the full fit-per-size detail
+    when a card is highlighted.
+    """
+    labels = [v.quant if v.quant != "--" else v.label for v in variants]
+    return Content.styled(f" {MIDDLE_DOT} ".join(labels), "$text-muted")
 
 
 def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:

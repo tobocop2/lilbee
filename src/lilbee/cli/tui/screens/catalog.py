@@ -44,6 +44,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     KeyStatus,
     LocalCatalogRow,
     catalog_to_row,
+    family_to_size_variants,
     frontier_row_from_remote,
     matches_search,
     remote_to_row,
@@ -743,15 +744,35 @@ class CatalogScreen(Screen[None]):
         )
 
     def _all_family_rows(self) -> list[LocalCatalogRow]:
+        """One row per featured family, aggregating its quants into size_variants.
+
+        The mega-grid era emitted one row per ``ModelVariant``; the same
+        family showed up three or four times stacked next to each other,
+        once per quant. The redesign collapses each family into a single
+        card whose ``size_variants`` strip carries every quant. Primary
+        variant (recommended; otherwise the smallest) drives the card's
+        primary metadata + fit chip; the strip lets users pick a
+        non-primary size without leaving the grid.
+        """
         key = self._local_rows_data_key()
         cached = self._family_rows_cache
         if cached is not None and cached.key == key:
             return cached.rows
         rows: list[LocalCatalogRow] = []
         for fam in self._families:
-            for v in fam.variants:
-                installed = self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
-                rows.append(variant_to_row(v, fam, installed))
+            if not fam.variants:
+                continue
+            primary = next(
+                (v for v in fam.variants if v.recommended),
+                min(fam.variants, key=lambda v: v.size_mb),
+            )
+            family_installed = any(
+                self._is_installed(v.hf_repo, repo=v.hf_repo, filename=v.filename)
+                for v in fam.variants
+            )
+            row = variant_to_row(primary, fam, family_installed)
+            row.size_variants = family_to_size_variants(fam)
+            rows.append(row)
         self._stamp_fit(rows)
         self._family_rows_cache = _RowCacheEntry(key=key, rows=rows)
         return rows
