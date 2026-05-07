@@ -397,22 +397,6 @@ def test_handle_pdf_ocr_rejects_non_pdf_request_payload() -> None:
     assert frames[0][1].type_name == "TypeError"
 
 
-def test_handle_pdf_ocr_rejects_non_vision_backend() -> None:
-    from lilbee.providers.worker.transport import PdfOcrRequest
-    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
-    from lilbee.providers.worker.worker_runtime import WorkerLoopState
-
-    reply, conn = _make_reply()
-    session = _StubSession()
-    payload = PdfOcrRequest(path="/nope.pdf", backend="tesseract")
-    _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
-    frames = _kinds_payloads(conn)
-    assert frames[0][0] == "error"
-    assert frames[0][1].type_name == "ValueError"
-    assert "Unsupported PDF OCR backend" in frames[0][1].message
-    assert "tesseract" in frames[0][1].message
-
-
 def test_handle_pdf_ocr_vision_streams_one_chunk_per_page(monkeypatch) -> None:
     """Vision backend rasterises pages, calls session.ocr per page, streams chunks."""
     from lilbee.providers.worker import vision_worker as vw

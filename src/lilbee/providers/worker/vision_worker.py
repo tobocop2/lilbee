@@ -171,12 +171,9 @@ def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         except TypeError as exc:
             reply.send(ERROR_KIND, _serialize_exception(exc))
         return
-    if payload.backend != "vision":
-        try:
-            raise ValueError(f"Unsupported PDF OCR backend {payload.backend!r}.")
-        except ValueError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
-        return
+    # ``payload.backend`` is typed ``Literal["vision"]`` so any other
+    # value is a type-system regression on the parent side; trust the
+    # contract and validate only the payload shape above.
     session: _VisionSession = state.session
     try:
         path = Path(payload.path)

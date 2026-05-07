@@ -91,7 +91,6 @@ class PdfOcrRequest:
     path: str
     backend: OcrBackend
     model: str = ""
-    quiet: bool = True
 
 
 @dataclass(frozen=True)

@@ -2745,7 +2745,7 @@ class TestIsRerankModel:
 
 
 class TestExtractRerankScore:
-    """``_extract_rerank_score`` operates on one ``data`` item (post-batched refactor)."""
+    """``_extract_rerank_score`` operates on one ``data`` item from a batch response."""
 
     def test_flat_list_embedding_returns_first_element(self) -> None:
         """llama-cpp-python 0.3.x returns ``list[float]`` with length n_embd=1."""

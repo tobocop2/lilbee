@@ -311,11 +311,11 @@ class LlamaCppProvider(LLMProvider):
         )
         runtime = self._pool_runtime()
         budget = self._pdf_drain_budget(path, per_page_timeout_s)
+        del quiet  # accepted for Protocol parity; worker has no Rich progress to suppress.
         request = PdfOcrRequest(
             path=str(path),
             backend=backend,
             model=model,
-            quiet=quiet,
         )
         progress = on_progress
 

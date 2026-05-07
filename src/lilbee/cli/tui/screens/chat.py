@@ -51,7 +51,16 @@ from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.progress import EventType, ProgressEvent
+from lilbee.runtime.progress import (
+    BatchProgressEvent,
+    EmbedEvent,
+    EventType,
+    ExtractEvent,
+    FileDoneEvent,
+    FileStartEvent,
+    ProgressEvent,
+    SyncDoneEvent,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -117,16 +126,10 @@ def _build_add_progress_callback(
 
     Hoisted out of ``_do_add`` so the dispatch table doesn't bloat
     ``_do_add``'s cyclomatic complexity. Mirrors ``_do_sync``'s EMBED
-    branch so /add gets chunk-level visibility too. ExtractEvent is
-    new in this commit and surfaces "extracted N pages" once per file
-    before the embed phase starts ticking.
+    branch so /add gets chunk-level visibility too; the EXTRACT branch
+    surfaces "extracted N pages" once per file before the embed phase
+    starts ticking.
     """
-    from lilbee.runtime.progress import (
-        BatchProgressEvent,
-        EmbedEvent,
-        ExtractEvent,
-        FileStartEvent,
-    )
 
     last_embed_update = 0.0
 
@@ -172,14 +175,6 @@ def _build_sync_progress_callback(
     cyclomatic complexity. EXTRACT mirrors the /add path: a 44MB scanned
     PDF needs a per-page tick or the row reads as frozen.
     """
-    from lilbee.runtime.progress import (
-        EmbedEvent,
-        ExtractEvent,
-        FileDoneEvent,
-        FileStartEvent,
-        SyncDoneEvent,
-    )
-
     last_embed_update = 0.0
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
