@@ -1044,23 +1044,22 @@ class TestVisionFallback:
         )
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
-    async def test_vision_fallback_not_called_when_ocr_disabled(
-        self, mock_kf, isolated_env, mock_svc
-    ):
+    async def test_vision_pool_not_called_when_ocr_disabled(self, mock_kf, isolated_env, mock_svc):
+        """``cfg.enable_ocr=False`` skips the vision pool path entirely.
+
+        Tesseract OCR runs inline (via the patched ``extract_file_sync``)
+        rather than through ``provider.pdf_ocr``, so the assertion is
+        that the pool was never reached.
+        """
         mock_kf.return_value = _make_empty_result()
         cfg.enable_ocr = False
-        # Tesseract path also fires when ocr disabled with no vision_model.
-        # Stub it to return empty so the test specifically asserts vision was bypassed.
-        mock_svc.provider.pdf_ocr.return_value = []
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
         from lilbee.data.ingest import ingest_document
 
         result = await ingest_document(f, "scanned.pdf", "pdf")
-        # Vision backend never requested; only tesseract fallback.
-        for call in mock_svc.provider.pdf_ocr.call_args_list:
-            assert call.kwargs["backend"] == "tesseract"
+        mock_svc.provider.pdf_ocr.assert_not_called()
         assert result == []
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)

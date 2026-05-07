@@ -335,7 +335,7 @@ def _patched_rerank_worker_main(
                 return [0] * max(1, len(text))
 
             def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
-                # Pair-batched: kreuzberg returns one entry per pair after our refactor.
+                # Pair-batched rerank: llama-cpp returns one embedding per pair.
                 sep = "</s></s>"
                 data = []
                 for pair in input:

@@ -14,6 +14,8 @@ from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+from lilbee.providers.worker.transport import OcrBackend
+from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
 
@@ -88,14 +90,21 @@ class RoutingProvider(LLMProvider):
         self,
         path: Path,
         *,
-        backend: str,
+        backend: OcrBackend,
         model: str = "",
         per_page_timeout_s: float | None = None,
         quiet: bool = True,
         on_progress: Callable[..., None] | None = None,
-    ) -> list[Any]:
-        """Forward to the native llama-cpp backend; the SDK side cannot OCR PDFs."""
-        return self._get_llama_cpp().pdf_ocr(
+    ) -> list[PageText]:
+        """Dispatch by ``model``'s ref prefix, same rules as :meth:`vision_ocr`.
+
+        Hosted refs reach :class:`SdkLLMProvider`, which raises
+        ``NotImplementedError`` for PDF OCR; native refs reach the
+        llama-cpp pool worker. ``model`` is empty when the caller wants
+        the configured ``cfg.vision_model`` to drive the dispatch.
+        """
+        ref = parse_model_ref(model or cfg.vision_model)
+        return self._pick_backend(ref).pdf_ocr(
             path,
             backend=backend,
             model=model,

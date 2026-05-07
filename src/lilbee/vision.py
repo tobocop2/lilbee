@@ -33,6 +33,14 @@ class PageText(NamedTuple):
     text: str
 
 
+class PdfOcrChunk(NamedTuple):
+    """One streaming PDF-OCR worker frame: page index, total pages, page text."""
+
+    page: int
+    total: int
+    text: str
+
+
 OCR_PROMPT = (
     "Extract ALL text from this page as clean markdown. "
     "Preserve table structure using markdown table syntax. "

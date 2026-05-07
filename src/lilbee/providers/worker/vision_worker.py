@@ -27,6 +27,13 @@ from lilbee.providers.worker.wire_kinds import (
     VISION_KIND,
 )
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
+from lilbee.vision import (
+    OCR_PROMPT,
+    PdfOcrChunk,
+    build_vision_messages,
+    pdf_page_count,
+    rasterize_pdf,
+)
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +59,6 @@ class _VisionSession:
     def ocr(self, *, png_bytes: bytes, prompt: str, model: str | None) -> str:
         """Run OCR on one image, loading the model on first use."""
         llm = self._ensure_loaded(model)
-        from lilbee.vision import OCR_PROMPT, build_vision_messages
-
         messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
         start = time.monotonic()
         response = llm.create_chat_completion(messages=messages, stream=False)
@@ -176,8 +181,6 @@ def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         return
     session: _VisionSession = state.session
     try:
-        from lilbee.vision import OCR_PROMPT, pdf_page_count, rasterize_pdf
-
         path = Path(payload.path)
         total = pdf_page_count(path)
         model_override = payload.model or None
@@ -190,7 +193,7 @@ def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             # 1-based page index matches how the rest of lilbee numbers
             # pages (PageText, ExtractEvent, etc.). Total ships in every
             # chunk so consumers don't need a separate header frame.
-            reply.send(STREAM_CHUNK_KIND, (idx + 1, total, text))
+            reply.send(STREAM_CHUNK_KIND, PdfOcrChunk(page=idx + 1, total=total, text=text))
     except Exception as exc:
         reply.send(ERROR_KIND, _serialize_exception(exc))
         return

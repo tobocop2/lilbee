@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from lilbee.providers.worker.transport import OcrBackend
+    from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -92,18 +96,16 @@ class LLMProvider(Protocol):
         self,
         path: Path,
         *,
-        backend: str,
+        backend: OcrBackend,
         model: str = "",
         per_page_timeout_s: float | None = None,
         quiet: bool = True,
         on_progress: Callable[..., None] | None = None,
-    ) -> list[Any]:
-        """OCR every page of a PDF, returning ``list[PageText]`` in input order.
+    ) -> list[PageText]:
+        """OCR every page of a PDF, returning per-page text in input order.
 
-        ``backend`` is ``"vision"`` (uses ``model``) or ``"tesseract"``
-        (no model load, runs kreuzberg). Backends that don't support
-        multi-page PDF OCR raise :class:`NotImplementedError`; ingest
-        callers catch and log this.
+        Backends that cannot OCR scanned PDFs locally raise
+        :class:`NotImplementedError`; ingest callers catch and log this.
         """
         ...
 

@@ -5,10 +5,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
@@ -40,6 +40,7 @@ from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
+    OcrBackend,
     PdfOcrRequest,
     RerankPayload,
     RoleConfig,
@@ -47,6 +48,9 @@ from lilbee.providers.worker.transport import (
 )
 from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
+from lilbee.providers.worker.wire_kinds import PDF_OCR_KIND
+from lilbee.runtime.progress import EventType, ExtractEvent
+from lilbee.vision import PageText, PdfOcrChunk
 
 _EMBED_ROLE = "embed"
 _RERANK_ROLE = "rerank"
@@ -59,39 +63,38 @@ log = logging.getLogger(__name__)
 # is set. 24h is effectively "no cap" for the round-trip wait loop.
 _VISION_NO_CAP_TIMEOUT_S = 86_400.0
 
+_LLAMA_CONTEXT_PATCH_LOCK = threading.Lock()
+"""Serialises overlapping ``_llama_n_seq_max`` callers inside one process.
+
+The shim mutates ``llama_cpp.internals.LlamaContext.__init__`` globally
+while the with-block is open. Worker subprocesses each load one model
+serially today, but the lock keeps the contract safe if a future caller
+loads two models concurrently.
+"""
+
 
 @contextlib.contextmanager
 def _llama_n_seq_max(n_seq_max: int) -> Any:
     """Set ``context_params.n_seq_max`` on the next ``LlamaContext`` constructed.
 
-    llama-cpp-python's ``Llama()`` does not expose ``n_seq_max`` as a
-    kwarg (upstream issue #2051, PR #2058 still open as of May 2026),
-    so the only way to influence it is to mutate the params right
-    before the C-level context is constructed. Patches
-    ``internals.LlamaContext.__init__`` for the scope of the with-block,
-    restoring the original on exit. Remove this shim if/when llama-cpp-
-    python accepts ``n_seq_max`` as a Llama kwarg.
-
-    Not thread-safe. The patch is global to the
-    ``llama_cpp.internals`` module while the with-block is open, so
-    overlapping calls in the same process can race. lilbee's worker
-    subprocesses each load exactly one model from a single thread, so
-    this is safe in practice; if the load discipline ever changes, wrap
-    callers with a lock.
+    Workaround for llama-cpp-python upstream issue #2051 (``n_seq_max``
+    not exposed as a Llama kwarg). See ``docs/architecture.md`` for the
+    full rationale and the upstream-fix removal hint.
     """
     from llama_cpp import internals
 
-    original = internals.LlamaContext.__init__
+    with _LLAMA_CONTEXT_PATCH_LOCK:
+        original = internals.LlamaContext.__init__
 
-    def patched(self: Any, *, model: Any, params: Any, verbose: bool) -> None:
-        params.n_seq_max = n_seq_max
-        original(self, model=model, params=params, verbose=verbose)
+        def patched(self: Any, *, model: Any, params: Any, verbose: bool) -> None:
+            params.n_seq_max = n_seq_max
+            original(self, model=model, params=params, verbose=verbose)
 
-    internals.LlamaContext.__init__ = patched  # type: ignore[method-assign,assignment]
-    try:
-        yield
-    finally:
-        internals.LlamaContext.__init__ = original  # type: ignore[method-assign]
+        internals.LlamaContext.__init__ = patched  # type: ignore[method-assign,assignment]
+        try:
+            yield
+        finally:
+            internals.LlamaContext.__init__ = original  # type: ignore[method-assign]
 
 
 # Cap on tokens drained during ``_PoolChatStreamIterator.close()`` after a
@@ -290,25 +293,13 @@ class LlamaCppProvider(LLMProvider):
         self,
         path: Path,
         *,
-        backend: str,
+        backend: OcrBackend,
         model: str = "",
         per_page_timeout_s: float | None = None,
         quiet: bool = True,
         on_progress: Callable[..., None] | None = None,
-    ) -> list[Any]:
-        """Run multi-page vision PDF OCR via the persistent vision worker.
-
-        Routes through the same pool accessor as ``vision_ocr`` so the
-        vision Llama loaded for single-image OCR is reused across PDFs.
-        ``backend`` must be ``"vision"``; Tesseract OCR has no shared
-        model state and is run inline by the ingest caller, not pooled.
-        Returns ``list[PageText]`` aggregated from the streamed per-page
-        results, in input order. ``on_progress`` (if supplied) receives
-        one ``EventType.EXTRACT`` event per page.
-        """
-        from lilbee.runtime.progress import EventType, ExtractEvent
-        from lilbee.vision import PageText
-
+    ) -> list[PageText]:
+        """Run multi-page vision PDF OCR via the persistent vision worker."""
         accessor = self._get_pool_accessor(
             _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
         )
@@ -323,21 +314,16 @@ class LlamaCppProvider(LLMProvider):
         )
         progress = on_progress
 
-        async def _drain() -> list[Any]:
-            from collections.abc import AsyncIterator
-            from typing import cast
-
-            from lilbee.providers.worker.wire_kinds import PDF_OCR_KIND
-
-            pages: list[Any] = []
+        async def _drain() -> list[PageText]:
+            pages: list[PageText] = []
             stream = cast(AsyncIterator[Any], accessor.stream(PDF_OCR_KIND, request))
-            async for chunk in stream:
-                page, total, text = chunk
-                pages.append(PageText(page, text))
+            async for frame in stream:
+                chunk = PdfOcrChunk(*frame)
+                pages.append(PageText(chunk.page, chunk.text))
                 if progress is not None:
                     progress(
                         EventType.EXTRACT,
-                        ExtractEvent(file=path.name, page=page, total_pages=total),
+                        ExtractEvent(file=path.name, page=chunk.page, total_pages=chunk.total),
                     )
             return pages
 

@@ -23,7 +23,13 @@ from lilbee.data.ingest.types import (
     ExtractMode,
 )
 from lilbee.data.store import CHUNK_TYPE_RAW
-from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
+from lilbee.runtime.cpu import cpu_quota
+from lilbee.runtime.progress import (
+    DetailedProgressCallback,
+    EventType,
+    ExtractEvent,
+    noop_callback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +51,6 @@ def content_type_to_mode(content_type: str) -> ExtractMode:
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
     from kreuzberg import ConcurrencyConfig, ExtractionConfig, OcrConfig, PageConfig
-
-    from lilbee.runtime.cpu import cpu_quota
 
     chunking = build_chunking_config()
     pages = PageConfig(extract_pages=True, insert_page_markers=False)
@@ -267,8 +271,6 @@ async def ingest_document(
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     """
     from kreuzberg import extract_file_sync
-
-    from lilbee.runtime.progress import EventType, ExtractEvent
 
     config = extraction_config(content_type_to_mode(content_type))
     result = await asyncio.to_thread(extract_file_sync, str(path), config=config)

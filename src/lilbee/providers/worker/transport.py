@@ -8,7 +8,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+
+OcrBackend = Literal["vision"]
+"""Backends supported by the PDF-OCR worker. Tesseract runs inline, not pooled."""
 
 WorkerEntrypoint = Callable[..., None]
 """Signature of a worker subprocess main function.
@@ -78,17 +81,13 @@ class VisionRequest:
 class PdfOcrRequest:
     """Pickle-friendly multi-page PDF-OCR request.
 
-    Replaces the per-call ``python -m lilbee.runtime.pdf_extract``
-    subprocess. ``path`` is a string because ``pathlib.Path`` pickles
-    via a chained reducer; the worker re-wraps it. ``backend`` must be
-    ``"vision"``: the request uses the role's loaded vision Llama. The
-    worker validates the value and raises ``ValueError`` for anything
-    else. ``model`` overrides ``cfg.vision_model`` for the call when
-    set.
+    ``path`` is a string so it pickles cheaply across the parent->worker
+    pipe; the worker re-wraps it as a :class:`pathlib.Path`. ``model``
+    overrides ``cfg.vision_model`` for the call when non-empty.
     """
 
     path: str
-    backend: str
+    backend: OcrBackend
     model: str = ""
     per_page_timeout_s: float | None = None
     quiet: bool = True
@@ -227,6 +226,7 @@ def default_spawner() -> WorkerSpawner:
 
 __all__ = [
     "ChatRequest",
+    "OcrBackend",
     "PdfOcrRequest",
     "RerankPayload",
     "RoleConfig",

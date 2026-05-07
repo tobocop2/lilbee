@@ -1197,7 +1197,6 @@ class ChatScreen(Screen[None]):
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
 
         last_embed_update = 0.0
-        _throttle_seconds = 0.15
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
             nonlocal last_embed_update
@@ -1211,7 +1210,7 @@ class ChatScreen(Screen[None]):
                 reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
             elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
                 now = time.monotonic()
-                if now - last_embed_update < _throttle_seconds:
+                if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
                     return
                 last_embed_update = now
                 pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0

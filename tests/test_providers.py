@@ -3122,9 +3122,9 @@ class TestLlamaNSeqMaxContextManager:
 
 
 class TestRoutingProviderPdfOcr:
-    """``RoutingProvider.pdf_ocr`` forwards to the llama-cpp backend unchanged."""
+    """``RoutingProvider.pdf_ocr`` dispatches by ref prefix, like ``vision_ocr``."""
 
-    def test_forwards_all_kwargs_to_llama_cpp(self) -> None:
+    def test_native_ref_routes_to_llama_cpp(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
         rp = RoutingProvider()
@@ -3132,11 +3132,12 @@ class TestRoutingProviderPdfOcr:
         mock_native.pdf_ocr.return_value = ["p1", "p2"]
         rp._llama_cpp = mock_native
         progress = mock.MagicMock()
+        native_ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
         result = rp.pdf_ocr(
             Path("/x.pdf"),
             backend="vision",
-            model="m",
+            model=native_ref,
             per_page_timeout_s=12.5,
             quiet=False,
             on_progress=progress,
@@ -3146,11 +3147,25 @@ class TestRoutingProviderPdfOcr:
         mock_native.pdf_ocr.assert_called_once_with(
             Path("/x.pdf"),
             backend="vision",
-            model="m",
+            model=native_ref,
             per_page_timeout_s=12.5,
             quiet=False,
             on_progress=progress,
         )
+
+    def test_hosted_ref_routes_to_sdk_which_raises(self) -> None:
+        """A hosted ``cfg.vision_model`` reaches the SDK side, which raises."""
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.pdf_ocr.side_effect = NotImplementedError("hosted PDF OCR not supported")
+        rp._sdk_provider = mock_sdk
+        cfg.vision_model = ""
+
+        with pytest.raises(NotImplementedError):
+            rp.pdf_ocr(Path("/x.pdf"), backend="vision", model="openai/gpt-4-vision")
+        mock_sdk.pdf_ocr.assert_called_once()
 
 
 class TestSdkLLMProviderPdfOcr:
@@ -3161,5 +3176,5 @@ class TestSdkLLMProviderPdfOcr:
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         provider = SdkLLMProvider(LitellmSdkBackend())
-        with pytest.raises(NotImplementedError, match="multi-page PDF OCR"):
+        with pytest.raises(NotImplementedError, match="LILBEE_VISION_MODEL"):
             provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
