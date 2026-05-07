@@ -781,6 +781,12 @@ class CatalogScreen(Screen[None]):
             return False
         self._data_version += 1
         self._sync_loading_spinner()
+        # If the user is parked on Discover, re-populate the rails so the
+        # Fresh-on-the-Hub strip fills as HF rows arrive. Without this the
+        # rail stays empty for the lifetime of the Discover view because
+        # _populate_discover_rails fires only on tab activation.
+        if self._active_tab_id_cache == TAB_DISCOVER:
+            self._populate_discover_rails()
         return True
 
     def _populate_library_list(self) -> None:
