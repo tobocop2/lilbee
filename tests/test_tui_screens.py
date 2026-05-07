@@ -5578,6 +5578,27 @@ async def test_cmd_add_error_in_background(tmp_path):
             assert app.screen._sync_active is False
 
 
+def test_build_add_progress_callback_throttles_embed_updates() -> None:
+    """Two EMBED events within ``_ADD_EMBED_THROTTLE_SECONDS`` collapse to one update.
+
+    Without this the chat /add reporter would repaint hundreds of times a
+    second on a fast embed worker, saturating Textual's message queue.
+    """
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import _build_add_progress_callback
+    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.runtime.progress import EmbedEvent, EventType
+
+    reporter = MagicMock(spec=ProgressReporter)
+    callback = _build_add_progress_callback(reporter)
+    callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=1, total_chunks=10))
+    # Second event arrives immediately; throttle returns early before reporter.update.
+    callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=2, total_chunks=10))
+    # Only one update from the EMBED branch (the first call).
+    assert reporter.update.call_count == 1
+
+
 async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
     """_do_add must surface EMBED chunk progress and EXTRACT page totals.
 

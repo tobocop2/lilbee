@@ -722,3 +722,34 @@ def test_chat_worker_main_routes_through_run_worker(monkeypatch) -> None:
     assert captured["data"] == "DATA"
     assert captured["health"] == "HEALTH"
     assert "chat" in captured["kwargs"]["kind_handlers"]
+
+
+def test_abort_bridge_poll_calls_request_abort_when_flag_flips(monkeypatch) -> None:
+    """The poll thread observes the parent-set flag and forwards to ``request_abort``.
+
+    Drives the bridge inline (no thread spawn) so the test isn't gated
+    on the polling interval. The ggml-side abort plumbing is what makes
+    long-token cancel responsive; this test pins down the contract that
+    flipping ``abort_flag.value`` reaches ``request_abort``.
+    """
+    from lilbee.providers.llama_cpp import abort_signal
+    from lilbee.providers.worker import chat_worker as cw
+
+    bridge = cw._AbortBridge(abort_flag=multiprocessing.Value("i", 1))
+    called = {"count": 0}
+    monkeypatch.setattr(
+        abort_signal,
+        "request_abort",
+        lambda: called.__setitem__("count", called["count"] + 1),
+    )
+    waits = iter([False])
+
+    def _wait(_t: float) -> bool:
+        try:
+            return next(waits)
+        except StopIteration:
+            return True
+
+    bridge._stop.wait = _wait  # type: ignore[method-assign]
+    bridge._poll()
+    assert called["count"] == 1

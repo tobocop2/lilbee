@@ -40,6 +40,8 @@ from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
+    OcrBackend,
+    PdfOcrRequest,
     RerankPayload,
     RoleConfig,
     VisionRequest,
@@ -284,6 +286,74 @@ class LlamaCppProvider(LLMProvider):
         """Wall-clock budget for one vision_ocr call (per-call > cfg.ocr_timeout > no cap)."""
         effective = timeout if timeout is not None else cfg.ocr_timeout
         return float(effective) if effective and effective > 0 else _VISION_NO_CAP_TIMEOUT_S
+
+    def pdf_ocr(
+        self,
+        path: Path,
+        *,
+        backend: OcrBackend,
+        model: str = "",
+        per_page_timeout_s: float | None = None,
+        quiet: bool = True,
+        on_progress: Callable[..., None] | None = None,
+    ) -> list[Any]:
+        """Run multi-page PDF OCR via the persistent vision worker.
+
+        Routes through the same pool accessor as ``vision_ocr`` so the
+        vision Llama loaded for single-image OCR is reused. ``backend``
+        selects between the vision-Llama path and Tesseract; the
+        latter ignores ``model`` and skips the model load entirely.
+        Returns ``list[PageText]`` aggregated from the streamed
+        per-page results, in input order. ``on_progress`` (if supplied)
+        receives one ``EventType.EXTRACT`` event per page.
+        """
+        from lilbee.runtime.progress import EventType, ExtractEvent
+        from lilbee.vision import PageText
+
+        accessor = self._get_pool_accessor(
+            _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
+        )
+        runtime = self._pool_runtime()
+        budget = self._vision_call_budget(per_page_timeout_s)
+        request = PdfOcrRequest(
+            path=str(path),
+            backend=backend,
+            model=model,
+            per_page_timeout_s=per_page_timeout_s,
+            quiet=quiet,
+        )
+        progress = on_progress
+
+        async def _drain() -> list[Any]:
+            from collections.abc import AsyncIterator
+            from typing import cast
+
+            from lilbee.providers.worker.wire_kinds import PDF_OCR_KIND
+
+            pages: list[Any] = []
+            stream = cast(AsyncIterator[Any], accessor.stream(PDF_OCR_KIND, request))
+            async for chunk in stream:
+                page, total, text = chunk
+                pages.append(PageText(page, text))
+                if progress is not None:
+                    progress(
+                        EventType.EXTRACT,
+                        ExtractEvent(file=path.name, page=page, total_pages=total),
+                    )
+            return pages
+
+        try:
+            return runtime.run_sync(_drain(), timeout=budget)
+        except WorkerError as exc:
+            raise ProviderError(
+                self._worker_error_message("PDF OCR", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "PDF OCR worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
 
     def chat(
         self,

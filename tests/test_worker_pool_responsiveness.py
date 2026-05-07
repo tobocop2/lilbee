@@ -45,6 +45,13 @@ def _slow_stub_load(_self) -> Any:
     """Stub Llama load that simulates real embed-call wall time."""
 
     class _SlowLlama:
+        n_batch = 8192
+
+        def tokenize(
+            self, text: bytes, *, add_bos: bool = True, special: bool = False
+        ) -> list[int]:
+            return [0] * max(1, len(text))
+
         def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
             # Simulate ~30 ms of CPU-bound inference per call. Real
             # llama-cpp embed runs much longer; this is just enough to

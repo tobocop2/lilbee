@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import httpx
@@ -2915,3 +2915,223 @@ class TestLlamaCppHasRankPooling:
             provider._embed_thread = mock.MagicMock()
             provider._rerank_thread = mock.MagicMock()
             provider.shutdown()
+
+
+class TestLlamaCppPdfOcr:
+    """``LlamaCppProvider.pdf_ocr`` aggregates streamed pages into a list."""
+
+    @staticmethod
+    def _stub_provider(stream_chunks):
+        """Build a provider whose pool accessor yields *stream_chunks* per stream call.
+
+        Returns ``(provider, captured)`` where ``captured["payload"]`` is
+        the second positional arg passed to the stub accessor's
+        ``stream`` method.
+        """
+        import asyncio
+
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+
+        captured: dict = {}
+
+        async def _aiter():
+            for c in stream_chunks:
+                yield c
+
+        accessor = mock.MagicMock()
+
+        def _stream(_kind, payload):
+            captured["payload"] = payload
+            return _aiter()
+
+        accessor.stream = _stream
+        runtime = mock.MagicMock()
+        runtime.run_sync = lambda coro, *, timeout: asyncio.new_event_loop().run_until_complete(
+            coro
+        )
+
+        with mock.patch("threading.Thread.start"):
+            provider = LlamaCppProvider()
+        provider._get_pool_accessor = lambda *_a, **_kw: accessor
+        provider._pool_runtime = lambda: runtime
+        return provider, captured
+
+    def test_pdf_ocr_aggregates_streamed_pages_in_order(self) -> None:
+        from lilbee.providers.worker.transport import PdfOcrRequest
+        from lilbee.vision import PageText
+
+        chunks = [(1, 3, "alpha"), (2, 3, "beta"), (3, 3, "gamma")]
+        provider, captured = self._stub_provider(chunks)
+        input_path = Path("/fake.pdf")
+        try:
+            pages = provider.pdf_ocr(input_path, backend="vision", model="m")
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+        assert pages == [PageText(1, "alpha"), PageText(2, "beta"), PageText(3, "gamma")]
+        assert isinstance(captured["payload"], PdfOcrRequest)
+        assert captured["payload"].backend == "vision"
+        # PdfOcrRequest.path is str(Path), which renders with the host
+        # separator. Compare against the same str() conversion so the
+        # assertion is platform-independent.
+        assert captured["payload"].path == str(input_path)
+        assert captured["payload"].model == "m"
+
+    def test_pdf_ocr_propagates_per_page_progress(self) -> None:
+        from lilbee.runtime.progress import EventType, ExtractEvent
+
+        chunks = [(1, 2, "a"), (2, 2, "b")]
+        provider, _ = self._stub_provider(chunks)
+        events: list = []
+        try:
+            provider.pdf_ocr(
+                Path("/scan.pdf"),
+                backend="tesseract",
+                on_progress=lambda et, ev: events.append((et, ev)),
+            )
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+        # Two streamed pages -> two EXTRACT events with matching page+total.
+        assert [e[0] for e in events] == [EventType.EXTRACT, EventType.EXTRACT]
+        assert events[0][1] == ExtractEvent(file="scan.pdf", page=1, total_pages=2)
+        assert events[1][1] == ExtractEvent(file="scan.pdf", page=2, total_pages=2)
+
+    def test_pdf_ocr_wraps_worker_error_as_provider_error(self) -> None:
+        import asyncio
+
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.worker.transport_pipe import WorkerError
+
+        async def _aiter():
+            raise WorkerError("RuntimeError", "boom", "")
+            yield  # pragma: no cover
+
+        accessor = mock.MagicMock()
+        accessor.stream = lambda _kind, _payload: _aiter()
+        runtime = mock.MagicMock()
+        runtime.run_sync = lambda coro, *, timeout: asyncio.new_event_loop().run_until_complete(
+            coro
+        )
+        with mock.patch("threading.Thread.start"):
+            provider = LlamaCppProvider()
+        provider._get_pool_accessor = lambda *_a, **_kw: accessor
+        provider._pool_runtime = lambda: runtime
+        try:
+            with pytest.raises(ProviderError, match="PDF OCR worker"):
+                provider.pdf_ocr(Path("/x.pdf"), backend="vision")
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+
+    def test_pdf_ocr_wraps_timeout_as_provider_error(self) -> None:
+        """A pool TimeoutError surfaces as a friendly ProviderError, not the raw timeout."""
+        import asyncio
+
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+
+        async def _aiter():
+            raise TimeoutError("worker stalled")
+            yield  # pragma: no cover
+
+        accessor = mock.MagicMock()
+        accessor.stream = lambda _kind, _payload: _aiter()
+        runtime = mock.MagicMock()
+        runtime.run_sync = lambda coro, *, timeout: asyncio.new_event_loop().run_until_complete(
+            coro
+        )
+        with mock.patch("threading.Thread.start"):
+            provider = LlamaCppProvider()
+        provider._get_pool_accessor = lambda *_a, **_kw: accessor
+        provider._pool_runtime = lambda: runtime
+        try:
+            with pytest.raises(ProviderError, match="PDF OCR worker timed out"):
+                provider.pdf_ocr(Path("/scan.pdf"), backend="tesseract")
+        finally:
+            provider._embed_thread = mock.MagicMock()
+            provider._rerank_thread = mock.MagicMock()
+            provider.shutdown()
+
+
+class TestLlamaNSeqMaxContextManager:
+    """``_llama_n_seq_max`` patches ``internals.LlamaContext.__init__``."""
+
+    def test_patched_init_sets_n_seq_max_then_calls_original(self) -> None:
+        """Constructing a LlamaContext inside the with-block forces ``params.n_seq_max``.
+
+        Outside the with-block, the original ``__init__`` is restored
+        unchanged so non-embed loads (chat, vision) keep their default
+        single-sequence behaviour.
+        """
+        from lilbee.providers.llama_cpp.provider import _llama_n_seq_max
+
+        captured: list[Any] = []
+
+        class _StubLlamaContext:
+            def __init__(self, *, model: Any, params: Any, verbose: bool) -> None:
+                captured.append((model, params, verbose, params.n_seq_max))
+
+        fake_internals = mock.MagicMock()
+        fake_internals.LlamaContext = _StubLlamaContext
+        fake_module = mock.MagicMock()
+        fake_module.internals = fake_internals
+
+        with mock.patch.dict(sys.modules, {"llama_cpp": fake_module}):
+            original_init = _StubLlamaContext.__init__
+            with _llama_n_seq_max(7):
+                params = mock.MagicMock()
+                params.n_seq_max = 1  # initial value the patched body must overwrite.
+                _StubLlamaContext(model="m", params=params, verbose=False)
+            # Original is restored after the with-block exits.
+            assert _StubLlamaContext.__init__ is original_init
+
+        assert captured == [("m", mock.ANY, False, 7)]
+
+
+class TestRoutingProviderPdfOcr:
+    """``RoutingProvider.pdf_ocr`` forwards to the llama-cpp backend unchanged."""
+
+    def test_forwards_all_kwargs_to_llama_cpp(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        mock_native = mock.MagicMock()
+        mock_native.pdf_ocr.return_value = ["p1", "p2"]
+        rp._llama_cpp = mock_native
+        progress = mock.MagicMock()
+
+        result = rp.pdf_ocr(
+            Path("/x.pdf"),
+            backend="vision",
+            model="m",
+            per_page_timeout_s=12.5,
+            quiet=False,
+            on_progress=progress,
+        )
+
+        assert result == ["p1", "p2"]
+        mock_native.pdf_ocr.assert_called_once_with(
+            Path("/x.pdf"),
+            backend="vision",
+            model="m",
+            per_page_timeout_s=12.5,
+            quiet=False,
+            on_progress=progress,
+        )
+
+
+class TestSdkLLMProviderPdfOcr:
+    """``SdkLLMProvider.pdf_ocr`` cannot rasterise PDFs and must raise."""
+
+    def test_raises_not_implemented_with_user_facing_message(self) -> None:
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        provider = SdkLLMProvider(LitellmSdkBackend())
+        with pytest.raises(NotImplementedError, match="multi-page PDF OCR"):
+            provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
