@@ -98,6 +98,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - Type hints on all public functions
 - Dataclasses for structured return types (not raw dicts)
 - **Named constants for magic numbers AND magic strings** — never use raw string literals when a constant exists. Grep globally for the raw value of any new constant to ensure no duplicates remain.
+- **Closed value sets use `StrEnum` / `IntEnum`, not parallel module constants.** Two or more named values for the same field (status, mode, role, kind, event tag) is a sign of an enum. Define `class FooStatus(StrEnum)` so the field type can be `FooStatus` (Pydantic validates, mypy narrows, IDEs autocomplete) and the variants live in one namespace. Examples already in repo: `EventType`, `SseEvent`, `BatchStatus`, `WikiEntityMode`, `ChatMode`. A bare module-level constant is only correct when the value stands alone (sentinel like `CRAWL_TOTAL_UNKNOWN = -1`) — not when it's one of a small fixed set.
 - **No positional array indexes** — use named constants or membership checks, not `array[0]`
 - Descriptive variable names — `pending_segments` not `current`, `chunk_size` not `n`
 - Logging with `logging.getLogger(__name__)` — no bare `except: pass`

@@ -703,6 +703,36 @@ def test_chat_session_ensure_loaded_swaps_on_per_call_model(monkeypatch, tmp_pat
     assert load_calls == [tmp_path / "default.gguf", tmp_path / "override.gguf"]
 
 
+def test_abort_bridge_forwards_parent_flag_to_request_abort(monkeypatch) -> None:
+    """The bridge thread polls the parent's mp.Value and calls request_abort.
+
+    Real chat-worker tests stub the loaded Llama and check the flag inline,
+    which bypasses the bridge thread; this exercises the bridge directly so
+    the poll loop's flag-detection branch is covered.
+    """
+    from lilbee.providers.worker import chat_worker
+
+    abort_flag = multiprocessing.Value("i", 0)
+    aborted: list[int] = []
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.abort_signal.request_abort",
+        lambda: aborted.append(1),
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.abort_signal.clear_abort",
+        lambda: None,
+    )
+
+    with chat_worker._AbortBridge(abort_flag):
+        abort_flag.value = 1
+        deadline = time.monotonic() + 1.0
+        while not aborted and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert aborted, "abort bridge poll thread did not forward the parent flag"
+
+
 def test_chat_worker_main_routes_through_run_worker(monkeypatch) -> None:
     """``chat_worker_main`` passes both pipes + the chat handler to run_worker."""
     from lilbee.providers.worker import chat_worker
