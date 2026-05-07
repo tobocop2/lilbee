@@ -87,11 +87,21 @@ jobs:
           #   click==8.1.8 while typer (a direct dep) requires click>=8.2.1,
           #   so the bump is blocked. Revisit when litellm loosens its click
           #   pin or typer relaxes its click floor.
+          # - GHSA-r75f-5x8p-qvmc: SQL injection in the LiteLLM Proxy's
+          #   API-key verification path. Reachable only via the proxy's HTTP
+          #   endpoints; lilbee never starts the proxy. Same 1.83.7 click
+          #   pin issue blocks the bump.
+          # - GHSA-v4p8-mg3p-g94g: Authenticated command execution via the
+          #   LiteLLM Proxy MCP stdio test endpoints. Requires a valid proxy
+          #   API key and a running proxy; lilbee uses the SDK only. Same
+          #   1.83.7 click pin issue blocks the bump.
           ignore-vulns: |
             CVE-2025-69872
             PYSEC-2022-42969
             GHSA-vfmq-68hx-4jfw
             GHSA-xqmj-j6mv-4862
+            GHSA-r75f-5x8p-qvmc
+            GHSA-v4p8-mg3p-g94g
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)

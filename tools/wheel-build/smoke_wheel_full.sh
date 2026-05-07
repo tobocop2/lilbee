@@ -22,7 +22,10 @@ print(f'typer {typer.__version__} OK')
 python -c "
 import lilbee
 from lilbee.cli import app
-from lilbee import code_chunker, ingest, embedder, store, query, config, chunk
+from lilbee.data import chunk, code_chunker, ingest, store
+from lilbee.retrieval import embedder
+from lilbee.catalog import query
+from lilbee.core import config
 import llama_cpp
 print('llama_cpp loaded from:', llama_cpp.__file__)
 print('lilbee imports OK')
