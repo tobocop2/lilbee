@@ -80,12 +80,11 @@ class PdfOcrRequest:
 
     Replaces the per-call ``python -m lilbee.runtime.pdf_extract``
     subprocess. ``path`` is a string because ``pathlib.Path`` pickles
-    via a chained reducer; the worker re-wraps it. ``backend`` is one
-    of ``"vision"`` (uses the role's loaded vision Llama) or
-    ``"tesseract"`` (no model load, runs kreuzberg). The worker
-    validates the value and raises ``ValueError`` for anything else.
-    ``model`` overrides ``cfg.vision_model`` for the call when set;
-    ignored when ``backend == "tesseract"``.
+    via a chained reducer; the worker re-wraps it. ``backend`` must be
+    ``"vision"``: the request uses the role's loaded vision Llama. The
+    worker validates the value and raises ``ValueError`` for anything
+    else. ``model`` overrides ``cfg.vision_model`` for the call when
+    set.
     """
 
     path: str

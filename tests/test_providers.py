@@ -3015,7 +3015,7 @@ class TestLlamaCppPdfOcr:
         try:
             provider.pdf_ocr(
                 Path("/scan.pdf"),
-                backend="tesseract",
+                backend="vision",
                 on_progress=lambda et, ev: events.append((et, ev)),
             )
         finally:
@@ -3079,7 +3079,7 @@ class TestLlamaCppPdfOcr:
         provider._pool_runtime = lambda: runtime
         try:
             with pytest.raises(ProviderError, match="PDF OCR worker timed out"):
-                provider.pdf_ocr(Path("/scan.pdf"), backend="tesseract")
+                provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
         finally:
             provider._embed_thread = mock.MagicMock()
             provider._rerank_thread = mock.MagicMock()

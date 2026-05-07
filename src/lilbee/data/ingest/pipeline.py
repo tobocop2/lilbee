@@ -24,6 +24,7 @@ from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
+from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
@@ -37,11 +38,8 @@ from lilbee.runtime.progress import (
 
 log = logging.getLogger(__name__)
 
-
 # Limit concurrent ingestion. Sourced from cpu_quota() so worker storms
 # can't starve the TUI's asyncio main thread on macOS.
-from lilbee.runtime.cpu import cpu_quota
-
 _MAX_CONCURRENT = cpu_quota()
 
 # Concurrent.futures raises this exact RuntimeError message when submitting to

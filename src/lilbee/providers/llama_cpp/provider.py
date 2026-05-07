@@ -296,15 +296,15 @@ class LlamaCppProvider(LLMProvider):
         quiet: bool = True,
         on_progress: Callable[..., None] | None = None,
     ) -> list[Any]:
-        """Run multi-page PDF OCR via the persistent vision worker.
+        """Run multi-page vision PDF OCR via the persistent vision worker.
 
         Routes through the same pool accessor as ``vision_ocr`` so the
-        vision Llama loaded for single-image OCR is reused. ``backend``
-        selects between the vision-Llama path and Tesseract; the
-        latter ignores ``model`` and skips the model load entirely.
-        Returns ``list[PageText]`` aggregated from the streamed
-        per-page results, in input order. ``on_progress`` (if supplied)
-        receives one ``EventType.EXTRACT`` event per page.
+        vision Llama loaded for single-image OCR is reused across PDFs.
+        ``backend`` must be ``"vision"``; Tesseract OCR has no shared
+        model state and is run inline by the ingest caller, not pooled.
+        Returns ``list[PageText]`` aggregated from the streamed per-page
+        results, in input order. ``on_progress`` (if supplied) receives
+        one ``EventType.EXTRACT`` event per page.
         """
         from lilbee.runtime.progress import EventType, ExtractEvent
         from lilbee.vision import PageText

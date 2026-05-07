@@ -91,41 +91,87 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
-async def _ocr_fallback_via_pool(
+async def _vision_ocr_fallback(
     path: Path,
     source_name: str,
     content_type: str,
     *,
-    backend: str,
     on_progress: DetailedProgressCallback,
     quiet: bool,
 ) -> list[ChunkRecord]:
-    """Run OCR through the persistent vision worker, chunk + embed the pages.
+    """Vision OCR via the persistent worker pool, chunk + embed the pages.
 
-    Both the vision-Llama and Tesseract paths flow through this single
-    function: the worker decides which backend to invoke based on
-    ``backend``. Any failure is logged and surfaces as an empty list so
-    the caller can decide whether a different fallback (or skipping the
-    file entirely) is appropriate.
+    Pool routing is what amortises the multi-second vision-Llama load
+    cost across PDFs. Tesseract has no shared model state and is run
+    inline by ``_tesseract_ocr_fallback``; this helper is vision-only.
     """
     try:
         page_texts = await asyncio.to_thread(
             get_services().provider.pdf_ocr,
             path,
-            backend=backend,
-            model=cfg.vision_model if backend == "vision" else "",
-            per_page_timeout_s=cfg.ocr_timeout if backend == "vision" else cfg.tesseract_timeout,
+            backend="vision",
+            model=cfg.vision_model,
+            per_page_timeout_s=cfg.ocr_timeout,
             quiet=quiet,
             on_progress=on_progress,
         )
     except Exception:
+        log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
+        return []
+    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+
+
+async def _tesseract_ocr_fallback(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback,
+) -> list[ChunkRecord]:
+    """Tesseract OCR via ``asyncio.to_thread`` (no model load = no pool).
+
+    ``cfg.tesseract_timeout`` caps the whole-document extract; 0 means
+    unlimited. Failures (including timeout) log a warning and return an
+    empty list so the caller can skip the file.
+    """
+    from kreuzberg import extract_file_sync
+
+    coro = asyncio.to_thread(
+        extract_file_sync,
+        str(path),
+        config=extraction_config(ExtractMode.PAGINATED_OCR),
+    )
+    try:
+        if cfg.tesseract_timeout > 0:
+            result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+        else:
+            result = await coro
+    except TimeoutError:
         log.warning(
-            "OCR via %s backend failed for %s.",
-            backend,
+            "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
+            cfg.tesseract_timeout,
             source_name,
-            exc_info=True,
         )
         return []
+    except Exception:
+        log.warning("OCR via tesseract backend failed for %s.", source_name, exc_info=True)
+        return []
+
+    by_page: dict[int, list[str]] = {}
+    for chunk in result.chunks or []:
+        page = int(chunk.metadata.get("first_page") or 1)
+        by_page.setdefault(page, []).append(chunk.content)
+    page_texts = [(page, "\n".join(by_page[page])) for page in sorted(by_page)]
+    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+
+
+async def _chunk_and_embed_pages(
+    page_texts: list[Any],
+    source_name: str,
+    content_type: str,
+    on_progress: DetailedProgressCallback,
+) -> list[ChunkRecord]:
+    """Chunk OCR per-page text and embed every chunk through the embedder."""
     if not page_texts:
         return []
 
@@ -169,13 +215,13 @@ async def _handle_scanned_pdf_fallback(
 ) -> list[ChunkRecord]:
     """Route a scanned PDF through the configured OCR backend.
 
-    Vision OCR runs when ``_should_run_ocr()`` is True and a vision
-    model is configured; otherwise we fall back to Tesseract via the
-    same pool worker. Both paths return chunk records; an empty list
+    Vision OCR (pool-routed) runs when ``_should_run_ocr()`` is True
+    and a vision model is configured; otherwise the file falls back to
+    inline Tesseract. Both paths return chunk records; an empty list
     means OCR found no usable text and the caller should skip the
     file.
     """
-    del result  # The pool path re-extracts; the kreuzberg result is not reused.
+    del result  # Both backends re-extract; the kreuzberg result is not reused.
     use_ocr = _should_run_ocr()
     if use_ocr and cfg.vision_model:
         log.info(
@@ -183,23 +229,20 @@ async def _handle_scanned_pdf_fallback(
             source_name,
             cfg.vision_model,
         )
-        return await _ocr_fallback_via_pool(
+        return await _vision_ocr_fallback(
             path,
             source_name,
             content_type,
-            backend="vision",
             on_progress=on_progress,
             quiet=quiet,
         )
 
     log.info("Scanned PDF: falling back to Tesseract OCR for %s", source_name)
-    chunks = await _ocr_fallback_via_pool(
+    chunks = await _tesseract_ocr_fallback(
         path,
         source_name,
         content_type,
-        backend="tesseract",
         on_progress=on_progress,
-        quiet=quiet,
     )
     if not chunks:
         log.warning(

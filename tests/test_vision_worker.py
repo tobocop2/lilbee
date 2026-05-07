@@ -397,19 +397,19 @@ def test_handle_pdf_ocr_rejects_non_pdf_request_payload() -> None:
     assert frames[0][1].type_name == "TypeError"
 
 
-def test_handle_pdf_ocr_rejects_unknown_backend() -> None:
+def test_handle_pdf_ocr_rejects_non_vision_backend() -> None:
     from lilbee.providers.worker.transport import PdfOcrRequest
     from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     reply, conn = _make_reply()
     session = _StubSession()
-    payload = PdfOcrRequest(path="/nope.pdf", backend="bogus")  # type: ignore[arg-type]
+    payload = PdfOcrRequest(path="/nope.pdf", backend="tesseract")
     _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
     frames = _kinds_payloads(conn)
     assert frames[0][0] == "error"
     assert frames[0][1].type_name == "ValueError"
-    assert "bogus" in frames[0][1].message
+    assert "vision" in frames[0][1].message
 
 
 def test_handle_pdf_ocr_vision_streams_one_chunk_per_page(monkeypatch) -> None:
@@ -434,36 +434,6 @@ def test_handle_pdf_ocr_vision_streams_one_chunk_per_page(monkeypatch) -> None:
     # session.ocr was called once per page with the model override.
     assert len(session.calls) == 3
     assert all(c.model == "m" for c in session.calls)
-
-
-def test_handle_pdf_ocr_tesseract_groups_chunks_by_page(monkeypatch) -> None:
-    """Tesseract backend groups kreuzberg chunks by first_page and streams one per page."""
-    from unittest.mock import MagicMock
-
-    from lilbee.providers.worker.transport import PdfOcrRequest
-    from lilbee.providers.worker.vision_worker import _handle_pdf_ocr
-    from lilbee.providers.worker.worker_runtime import WorkerLoopState
-
-    chunks = []
-    for page, body in [(1, "alpha"), (1, "beta"), (2, "gamma")]:
-        c = MagicMock()
-        c.metadata = {"first_page": page}
-        c.content = body
-        chunks.append(c)
-    fake_result = MagicMock()
-    fake_result.chunks = chunks
-    monkeypatch.setattr("kreuzberg.extract_file_sync", lambda *_a, **_kw: fake_result)
-    reply, conn = _make_reply()
-    session = _StubSession()
-    payload = PdfOcrRequest(path="/fake.pdf", backend="tesseract")
-    _handle_pdf_ocr(reply, payload, WorkerLoopState(session=session))
-    frames = _kinds_payloads(conn)
-    # Two pages -> two stream_chunk frames carrying total=2 -> stream_end.
-    assert frames[0] == ("stream_chunk", (1, 2, "alpha\nbeta"))
-    assert frames[1] == ("stream_chunk", (2, 2, "gamma"))
-    assert frames[2] == ("stream_end", None)
-    # Tesseract path never touched the vision session.
-    assert session.calls == []
 
 
 def test_handle_pdf_ocr_emits_error_on_session_exception(monkeypatch) -> None:

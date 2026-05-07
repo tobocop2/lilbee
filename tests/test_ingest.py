@@ -1211,11 +1211,16 @@ class TestOcrFallbackBackendDispatch:
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_backend_when_no_vision_model(self, mock_kf, isolated_env, mock_svc):
+        """Without a vision model the scanned PDF runs Tesseract inline (no pool)."""
         cfg.enable_ocr = True
         cfg.vision_model = ""
         cfg.tesseract_timeout = 30.0
-        mock_kf.return_value = _make_empty_result()
-        mock_svc.provider.pdf_ocr.return_value = _vision_pages((1, "Tesseract OCR text. " * 10))
+        # First call: pre-extract that flags the PDF as scanned. Second
+        # call: the inline Tesseract fallback that produces real chunks.
+        mock_kf.side_effect = [
+            _make_empty_result(),
+            _make_kreuzberg_result(text="Tesseract OCR text. " * 10, num_chunks=1, has_pages=True),
+        ]
 
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
@@ -1223,8 +1228,9 @@ class TestOcrFallbackBackendDispatch:
         from lilbee.data.ingest import ingest_document
 
         result = await ingest_document(f, "scanned.pdf", "pdf")
-        assert mock_svc.provider.pdf_ocr.call_args.kwargs["backend"] == "tesseract"
-        assert mock_svc.provider.pdf_ocr.call_args.kwargs["per_page_timeout_s"] == 30.0
+        # Pool pdf_ocr is not used for tesseract.
+        mock_svc.provider.pdf_ocr.assert_not_called()
+        assert mock_kf.call_count == 2
         assert len(result) > 0
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
@@ -1234,8 +1240,8 @@ class TestOcrFallbackBackendDispatch:
         """Tesseract returning no pages produces a user-facing skip warning."""
         cfg.enable_ocr = False
         cfg.vision_model = ""
-        mock_kf.return_value = _make_empty_result()
-        mock_svc.provider.pdf_ocr.return_value = []
+        # Both pre-extract and tesseract fallback return empty.
+        mock_kf.side_effect = [_make_empty_result(), _make_empty_result()]
 
         f = isolated_env / "blank.pdf"
         f.write_bytes(b"fake pdf")
@@ -1262,6 +1268,73 @@ class TestOcrFallbackBackendDispatch:
 
         result = await ingest_document(f, "broken.pdf", "pdf", quiet=True)
         assert result == []
+
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_tesseract_no_timeout_runs_uncapped(self, mock_kf, isolated_env, mock_svc):
+        """``cfg.tesseract_timeout == 0`` skips ``asyncio.wait_for`` and runs uncapped."""
+        cfg.enable_ocr = False
+        cfg.vision_model = ""
+        cfg.tesseract_timeout = 0
+        mock_kf.side_effect = [
+            _make_empty_result(),
+            _make_kreuzberg_result(text="Tesseract OCR text. " * 10, num_chunks=1, has_pages=True),
+        ]
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.data.ingest import ingest_document
+
+        result = await ingest_document(f, "scanned.pdf", "pdf")
+        assert mock_kf.call_count == 2
+        assert len(result) > 0
+
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_tesseract_timeout_logs_and_returns_empty(
+        self, mock_kf, isolated_env, mock_svc, caplog
+    ):
+        """Tesseract exceeding the wall-clock cap logs a warning and skips the file."""
+        cfg.enable_ocr = False
+        cfg.vision_model = ""
+        cfg.tesseract_timeout = 30.0
+        # Pre-extract returns empty; tesseract fallback's wait_for fires.
+        mock_kf.side_effect = [_make_empty_result(), _make_kreuzberg_result()]
+
+        async def _instant_timeout(coro, *, timeout):
+            coro.close()
+            raise TimeoutError
+
+        with mock.patch("asyncio.wait_for", side_effect=_instant_timeout):
+            f = isolated_env / "scanned.pdf"
+            f.write_bytes(b"fake pdf")
+
+            from lilbee.data.ingest import ingest_document
+
+            with caplog.at_level("WARNING", logger="lilbee.data.ingest.extract"):
+                result = await ingest_document(f, "scanned.pdf", "pdf")
+        assert result == []
+        assert "Tesseract OCR exceeded" in caplog.text
+
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_tesseract_extract_exception_logs_and_returns_empty(
+        self, mock_kf, isolated_env, mock_svc, caplog
+    ):
+        """A kreuzberg backend crash logs a warning and returns no chunks."""
+        cfg.enable_ocr = False
+        cfg.vision_model = ""
+        cfg.tesseract_timeout = 30.0
+        # Pre-extract OK; tesseract fallback raises.
+        mock_kf.side_effect = [_make_empty_result(), RuntimeError("tesseract binary missing")]
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.data.ingest import ingest_document
+
+        with caplog.at_level("WARNING", logger="lilbee.data.ingest.extract"):
+            result = await ingest_document(f, "scanned.pdf", "pdf")
+        assert result == []
+        assert "OCR via tesseract backend failed" in caplog.text
 
 
 class TestSharedProgress:
