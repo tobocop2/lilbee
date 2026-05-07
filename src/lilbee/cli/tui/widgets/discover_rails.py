@@ -5,6 +5,10 @@ screen passes in via ``set_rails``. The widget owns layout (heading +
 ModelGrid stack) and nothing else; row construction stays in the
 catalog screen so the rails inherit every cache, fit-stamp, and routing
 behavior the per-task tabs already have.
+
+Rail headings are focusable so Tab cycles through them as named
+landmarks; pressing Enter on a focused heading jumps focus down to
+that rail's grid.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.widgets import Static
 
@@ -20,6 +25,35 @@ from lilbee.cli.tui.screens.catalog_utils import CatalogRow, LocalCatalogRow
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
 _CSS_FILE = Path(__file__).parent / "discover_rails.tcss"
+
+
+class _RailHeading(Static, can_focus=True):
+    """Focusable Static used as a rail heading.
+
+    Tab cycles through these so keyboard users have a quick way to land
+    on a category instead of arrow-walking through every card. Enter
+    drops focus into the rail's grid so the user can immediately move
+    the card cursor.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "focus_grid", "Open", show=False),
+        Binding("space", "focus_grid", "Open", show=False),
+    ]
+
+    def __init__(self, label: str, *, rail_id: str, **kwargs: object) -> None:
+        super().__init__(label, classes="discover-rail-heading", id=f"heading-{rail_id}", **kwargs)  # type: ignore[arg-type]
+        self._rail_id = rail_id
+
+    def action_focus_grid(self) -> None:
+        parent = self.parent
+        if parent is None:
+            return
+        try:
+            grid = parent.query_one(f"#discover-grid-{self._rail_id}", ModelGrid)
+        except Exception:
+            return
+        grid.focus()
 
 
 class DiscoverRails(Vertical):
@@ -37,7 +71,7 @@ class DiscoverRails(Vertical):
             ("collection", self._RAIL_COLLECTION),
             ("fresh", self._RAIL_FRESH),
         ):
-            yield Static(label, classes="discover-rail-heading", id=f"heading-{rail_id}")
+            yield _RailHeading(label, rail_id=rail_id)
             yield ModelGrid(id=f"discover-grid-{rail_id}", classes="discover-rail-grid")
 
     def set_rails(

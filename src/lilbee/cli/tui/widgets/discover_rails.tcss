@@ -8,6 +8,12 @@ DiscoverRails {
     margin: 1 0 0 0;
 }
 
+.discover-rail-heading:focus {
+    background: $accent 10%;
+    color: $text;
+    text-style: bold reverse;
+}
+
 .discover-rail-grid {
     height: auto;
     max-height: 14;
