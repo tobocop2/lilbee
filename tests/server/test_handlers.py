@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 from pathlib import Path
 from unittest import mock
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
 import pytest
 from litestar.testing import AsyncTestClient
@@ -79,7 +79,7 @@ def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks:
     return result
 
 
-@mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
+@mock.patch("kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result())
 class TestAddEndpoint:
     async def test_add_single_file(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add with a valid file streams SSE events and adds it."""
@@ -259,8 +259,8 @@ class TestAddValidation:
 
         paths = [f"/fake/file_{i}.txt" for i in range(MAX_ADD_FILES)]
         with mock.patch(
-            "kreuzberg.extract_file",
-            new_callable=AsyncMock,
+            "kreuzberg.extract_file_sync",
+            new_callable=Mock,
             return_value=_make_kreuzberg_result(),
         ):
             async with AsyncTestClient(create_app()) as client:
@@ -449,8 +449,8 @@ class TestAddIngestMutex:
         assert lock is not None
         try:
             with mock.patch(
-                "kreuzberg.extract_file",
-                new_callable=AsyncMock,
+                "kreuzberg.extract_file_sync",
+                new_callable=Mock,
                 return_value=_make_kreuzberg_result(),
             ):
                 events = await self._collect(add_files_stream({"paths": [str(held), str(free)]}))
@@ -474,8 +474,8 @@ class TestAddIngestMutex:
         async def _run(path: Path):
             text = ""
             with mock.patch(
-                "kreuzberg.extract_file",
-                new_callable=AsyncMock,
+                "kreuzberg.extract_file_sync",
+                new_callable=Mock,
                 return_value=_make_kreuzberg_result(),
             ):
                 async for frame in add_files_stream({"paths": [str(path)]}):
@@ -549,8 +549,8 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "kreuzberg.extract_file",
-            new_callable=AsyncMock,
+            "kreuzberg.extract_file_sync",
+            new_callable=Mock,
             return_value=_make_kreuzberg_result(),
         ):
             await sync(quiet=True)
@@ -573,8 +573,8 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "kreuzberg.extract_file",
-            new_callable=AsyncMock,
+            "kreuzberg.extract_file_sync",
+            new_callable=Mock,
             return_value=_make_kreuzberg_result(),
         ):
             await sync(quiet=True)

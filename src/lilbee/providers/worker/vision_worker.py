@@ -1,16 +1,39 @@
-"""Long-lived vision-OCR worker subprocess body."""
+"""Long-lived vision-OCR worker subprocess body.
+
+Hosts both single-image OCR (``VISION_KIND``, used by the live wiki /
+catalog flows) and multi-page PDF vision OCR (``PDF_OCR_KIND``, used by
+the ingest pipeline). The PDF path streams one chunk per page so
+subscribers see incremental progress. Tesseract OCR has no shared model
+state and runs inline via ``asyncio.to_thread`` in the ingest caller,
+not through this worker.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
-from lilbee.providers.worker.transport import RoleConfig, VisionRequest
+from lilbee.providers.worker.transport import PdfOcrRequest, RoleConfig, VisionRequest
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import ERROR_KIND, RESULT_KIND, VISION_KIND
+from lilbee.providers.worker.wire_kinds import (
+    ERROR_KIND,
+    PDF_OCR_KIND,
+    RESULT_KIND,
+    STREAM_CHUNK_KIND,
+    STREAM_END_KIND,
+    VISION_KIND,
+)
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
+from lilbee.vision import (
+    OCR_PROMPT,
+    PdfOcrChunk,
+    build_vision_messages,
+    pdf_page_count,
+    rasterize_pdf,
+)
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +59,6 @@ class _VisionSession:
     def ocr(self, *, png_bytes: bytes, prompt: str, model: str | None) -> str:
         """Run OCR on one image, loading the model on first use."""
         llm = self._ensure_loaded(model)
-        from lilbee.vision import OCR_PROMPT, build_vision_messages
-
         messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
         start = time.monotonic()
         response = llm.create_chat_completion(messages=messages, stream=False)
@@ -136,6 +157,44 @@ def _handle_vision(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
     reply.send(RESULT_KIND, text)
 
 
+def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
+    """Stream multi-page vision PDF OCR results, one chunk per page, then stream_end.
+
+    Iterates rasterised PDF pages and OCRs each via the loaded vision
+    Llama. ``payload.backend`` must be ``"vision"``; tesseract is run
+    inline by the ingest caller, not here, because tesseract has no
+    shared model state and pool routing buys it nothing.
+    """
+    if not isinstance(payload, PdfOcrRequest):
+        try:
+            raise TypeError(f"pdf_ocr payload must be PdfOcrRequest, got {type(payload).__name__}")
+        except TypeError as exc:
+            reply.send(ERROR_KIND, _serialize_exception(exc))
+        return
+    # ``payload.backend`` is typed ``Literal["vision"]`` so any other
+    # value is a type-system regression on the parent side; trust the
+    # contract and validate only the payload shape above.
+    session: _VisionSession = state.session
+    try:
+        path = Path(payload.path)
+        total = pdf_page_count(path)
+        model_override = payload.model or None
+        for idx, png_bytes in rasterize_pdf(path):
+            text = session.ocr(
+                png_bytes=bytes(png_bytes),
+                prompt=OCR_PROMPT,
+                model=model_override,
+            )
+            # 1-based page index matches how the rest of lilbee numbers
+            # pages (PageText, ExtractEvent, etc.). Total ships in every
+            # chunk so consumers don't need a separate header frame.
+            reply.send(STREAM_CHUNK_KIND, PdfOcrChunk(page=idx + 1, total=total, text=text))
+    except Exception as exc:
+        reply.send(ERROR_KIND, _serialize_exception(exc))
+        return
+    reply.send(STREAM_END_KIND, None)
+
+
 def vision_worker_main(
     data_conn: Any, health_conn: Any, abort_flag: Any, role_config: RoleConfig
 ) -> None:
@@ -146,7 +205,10 @@ def vision_worker_main(
         abort_flag,
         role_config,
         session_factory=_VisionSession,
-        kind_handlers={VISION_KIND: _handle_vision},
+        kind_handlers={
+            VISION_KIND: _handle_vision,
+            PDF_OCR_KIND: _handle_pdf_ocr,
+        },
     )
 
 

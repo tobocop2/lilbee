@@ -5,10 +5,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
@@ -40,12 +40,17 @@ from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
+    OcrBackend,
+    PdfOcrRequest,
     RerankPayload,
     RoleConfig,
     VisionRequest,
 )
 from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
+from lilbee.providers.worker.wire_kinds import PDF_OCR_KIND
+from lilbee.runtime.progress import EventType, ExtractEvent
+from lilbee.vision import PageText, PdfOcrChunk, pdf_page_count
 
 _EMBED_ROLE = "embed"
 _RERANK_ROLE = "rerank"
@@ -57,6 +62,40 @@ log = logging.getLogger(__name__)
 # Vision OCR sentinel used when no per-call timeout and no ``cfg.ocr_timeout``
 # is set. 24h is effectively "no cap" for the round-trip wait loop.
 _VISION_NO_CAP_TIMEOUT_S = 86_400.0
+
+_LLAMA_CONTEXT_PATCH_LOCK = threading.Lock()
+"""Serialises overlapping ``_llama_n_seq_max`` callers inside one process.
+
+The shim mutates ``llama_cpp.internals.LlamaContext.__init__`` globally
+while the with-block is open. Worker subprocesses each load one model
+serially today, but the lock keeps the contract safe if a future caller
+loads two models concurrently.
+"""
+
+
+@contextlib.contextmanager
+def _llama_n_seq_max(n_seq_max: int) -> Any:
+    """Set ``context_params.n_seq_max`` on the next ``LlamaContext`` constructed.
+
+    Workaround for llama-cpp-python upstream issue #2051 (``n_seq_max``
+    not exposed as a Llama kwarg). See ``docs/architecture.md`` for the
+    full rationale and the upstream-fix removal hint.
+    """
+    from llama_cpp import internals
+
+    with _LLAMA_CONTEXT_PATCH_LOCK:
+        original = internals.LlamaContext.__init__
+
+        def patched(self: Any, *, model: Any, params: Any, verbose: bool) -> None:
+            params.n_seq_max = n_seq_max
+            original(self, model=model, params=params, verbose=verbose)
+
+        internals.LlamaContext.__init__ = patched  # type: ignore[method-assign,assignment]
+        try:
+            yield
+        finally:
+            internals.LlamaContext.__init__ = original  # type: ignore[method-assign]
+
 
 # Cap on tokens drained during ``_PoolChatStreamIterator.close()`` after a
 # mid-stream cancel. A runaway model (Qwen3-0.6B stuck in a never-closing
@@ -249,6 +288,79 @@ class LlamaCppProvider(LLMProvider):
         """Wall-clock budget for one vision_ocr call (per-call > cfg.ocr_timeout > no cap)."""
         effective = timeout if timeout is not None else cfg.ocr_timeout
         return float(effective) if effective and effective > 0 else _VISION_NO_CAP_TIMEOUT_S
+
+    def pdf_ocr(
+        self,
+        path: Path,
+        *,
+        backend: OcrBackend,
+        model: str = "",
+        per_page_timeout_s: float | None = None,
+        quiet: bool = True,
+        on_progress: Callable[..., None] | None = None,
+    ) -> list[PageText]:
+        """Run multi-page vision PDF OCR via the persistent vision worker.
+
+        ``per_page_timeout_s`` is *per page*. The total wall-clock cap on
+        the streamed drain is ``pages * per_page + cfg.vision_load_budget_s``
+        (load grace), so a 100-page scan with a 60 s per-page budget gets
+        ~6000 s + load, not 60 s for the whole document.
+        """
+        accessor = self._get_pool_accessor(
+            _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
+        )
+        runtime = self._pool_runtime()
+        budget = self._pdf_drain_budget(path, per_page_timeout_s)
+        del quiet  # accepted for Protocol parity; worker has no Rich progress to suppress.
+        request = PdfOcrRequest(
+            path=str(path),
+            backend=backend,
+            model=model,
+        )
+        progress = on_progress
+
+        async def _drain() -> list[PageText]:
+            pages: list[PageText] = []
+            stream = cast(AsyncIterator[Any], accessor.stream(PDF_OCR_KIND, request))
+            async for frame in stream:
+                if not isinstance(frame, PdfOcrChunk):
+                    raise ProviderError(
+                        f"PDF OCR worker streamed unexpected frame type {type(frame).__name__}.",
+                        provider="llama-cpp",
+                    )
+                pages.append(PageText(frame.page, frame.text))
+                if progress is not None:
+                    progress(
+                        EventType.EXTRACT,
+                        ExtractEvent(file=path.name, page=frame.page, total_pages=frame.total),
+                    )
+            return pages
+
+        try:
+            return runtime.run_sync(_drain(), timeout=budget)
+        except WorkerError as exc:
+            raise ProviderError(
+                self._worker_error_message("PDF OCR", exc),
+                provider="llama-cpp",
+            ) from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                "PDF OCR worker timed out. Please try again.",
+                provider="llama-cpp",
+            ) from exc
+
+    def _pdf_drain_budget(self, path: Path, per_page_timeout_s: float | None) -> float:
+        """Total drain timeout = page_count * per_page + vision_load_budget_s."""
+        if not per_page_timeout_s or per_page_timeout_s <= 0:
+            return _VISION_NO_CAP_TIMEOUT_S
+        try:
+            pages = pdf_page_count(path)
+        except Exception:
+            # If we can't probe pages upfront the worker will still try,
+            # but we lose the precise budget; fall back to no-cap so the
+            # parent doesn't kill a valid run on a probe failure.
+            return _VISION_NO_CAP_TIMEOUT_S
+        return float(pages) * per_page_timeout_s + cfg.vision_load_budget_s
 
     def chat(
         self,
@@ -657,6 +769,11 @@ def load_llama(
     if abort_callback_override is not None:
         kwargs["abort_callback"] = abort_callback_override
 
+    if embedding:
+        from lilbee.providers.llama_cpp.batching import EMBED_N_SEQ_MAX
+
+        with _llama_n_seq_max(EMBED_N_SEQ_MAX):
+            return _construct_llama(Llama, model_path, kwargs)
     return _construct_llama(Llama, model_path, kwargs)
 
 

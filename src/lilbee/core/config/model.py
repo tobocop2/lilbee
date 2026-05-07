@@ -88,17 +88,11 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
-    # Max concurrent vision-OCR requests per PDF. Default 1 (serial): raise
-    # only when the vision model is network-hosted with meaningful latency
-    # (remote API, separate Ollama host). Local GPU models contend on a
-    # single device and get slower with concurrency > 1.
-    vision_concurrency: int = ConfigField(default=1, ge=1, writable=True)
-    # Outer wall-clock budget for the PDF-extract subprocess: load buffer
-    # plus per_page_budget * pages. Tune up for slow hardware (M1 Pro vision
-    # is ~5min/page) or down for fast hardware. ocr_timeout still governs
-    # the per-page timeout inside the subprocess.
+    # Outer wall-clock budget for the streamed pool drain: load grace plus
+    # per_page * pages. Tune up for slow hardware (M1 Pro vision is
+    # ~5min/page) or down for fast hardware. ocr_timeout still governs the
+    # per-page expectation that drives the total budget.
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
-    vision_per_page_budget_s: float = ConfigField(default=600.0, ge=0.0, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
