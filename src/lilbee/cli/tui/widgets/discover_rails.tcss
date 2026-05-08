@@ -1,0 +1,21 @@
+DiscoverRails {
+    padding: 1 1 0 1;
+}
+
+.discover-rail-heading {
+    color: $accent;
+    text-style: bold;
+    margin: 1 0 0 0;
+}
+
+.discover-rail-heading:focus {
+    background: $accent 10%;
+    color: $text;
+    text-style: bold reverse;
+}
+
+.discover-rail-grid {
+    height: auto;
+    max-height: 14;
+    margin-bottom: 1;
+}

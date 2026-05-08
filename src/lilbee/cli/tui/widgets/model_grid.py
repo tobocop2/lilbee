@@ -7,6 +7,7 @@ strings (``"on $panel"`` / ``"$primary"``) so themes own their contrast.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -29,6 +30,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
+from lilbee.runtime.hardware import FitChip, FitLevel
 
 _CSS_FILE = Path(__file__).parent / "model_grid.tcss"
 
@@ -117,6 +119,11 @@ class ModelGrid(Widget, can_focus=True):
         grid: ModelGrid
         index: int
 
+    # Window inside which a second click on the same card counts as a
+    # double-click and posts Selected. Single click outside this window only
+    # highlights so users can't accidentally trigger an install with one mis-tap.
+    _DOUBLE_CLICK_WINDOW_S: ClassVar[float] = 0.5
+
     def __init__(
         self,
         rows: list[CatalogRow] | None = None,
@@ -128,6 +135,8 @@ class ModelGrid(Widget, can_focus=True):
         super().__init__(name=name, id=id, classes=classes)
         self._rows: list[CatalogRow] = list(rows or [])
         self._cards_per_row: int = _DEFAULT_COLUMNS
+        self._last_click_index: int | None = None
+        self._last_click_at: float = 0.0
 
     @property
     def rows(self) -> list[CatalogRow]:
@@ -280,14 +289,30 @@ class ModelGrid(Widget, can_focus=True):
         return index
 
     def on_click(self, event: events.Click) -> None:
-        """First click highlights, second click on the highlight posts Selected."""
+        """Single click only highlights; double-click on the same card posts Selected.
+
+        The 'second click on a highlighted card installs' rule the previous
+        catalog used was unsafe under the new auto-highlight-on-focus path:
+        a fresh focus pre-highlights index 0, so a single mouse click on
+        card 0 immediately fired Selected and started an install. Now we
+        require two clicks on the same card within ``_DOUBLE_CLICK_WINDOW_S``
+        to install; a stray click only highlights, matching the toad gesture
+        users expect.
+        """
         index = self._cell_at(event.x, event.y)
         if index is None:
             return
-        if self.highlighted == index:
+        now = time.monotonic()
+        is_double_click = (
+            self._last_click_index == index
+            and now - self._last_click_at <= self._DOUBLE_CLICK_WINDOW_S
+        )
+        self._last_click_index = index
+        self._last_click_at = now
+        if is_double_click:
             self.post_message(self.Selected(self, self._rows[index]))
-        else:
-            self.highlighted = index
+            return
+        self.highlighted = index
         self.focus()
 
     def render_line(self, y: int) -> Strip:
@@ -394,10 +419,24 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     if row.featured:
         pills.append(pill("pick", "$warning", "$text"))
     pills.append(pill(row.task, bg, "$text"))
-    if row.backend:
+    if row.fit is not None:
+        # Card uses the compact 'fits' / 'tight' / "won't run" label only;
+        # the headroom GB lives in the detail drawer where the wider pane
+        # can render it without competing for card width.
+        pills.append(_fit_pill_compact(row.fit))
+    # Drop the 'native' backend pill on cards to free horizontal space; the
+    # backend is implied for local models. Remote backends (ollama, etc.)
+    # still surface their pill since that's a meaningful distinction.
+    if row.backend and row.backend != "native":
         pills.append(pill(row.backend, "$accent", "$text"))
     pill_line = Content(" ").join(pills)
-    specs = _build_specs(row.params, row.quant, row.size)
+    # Family card with multiple quants: replace the simple specs line
+    # with an inline chip strip so the user sees every available size
+    # at a glance without expanding into the drawer.
+    if len(row.size_variants) > 1:
+        specs = _build_size_variant_strip(row.size_variants)
+    else:
+        specs = _build_specs(row.params, row.quant, row.size)
     status = _build_local_status(row)
     lines: list[Content] = [name, pill_line, specs]
     lines.append(status if status is not None else Content(""))
@@ -408,6 +447,18 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     return lines
 
 
+def _build_size_variant_strip(variants: list) -> Content:
+    """Inline chip strip showing every quant for a family-aggregated card.
+
+    Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
+    available sizes at a glance. Per-variant fit colors aren't applied
+    here; the drawer (right pane) carries the full fit-per-size detail
+    when a card is highlighted.
+    """
+    labels = [v.quant if v.quant != "--" else v.label for v in variants]
+    return Content.styled(f" {MIDDLE_DOT} ".join(labels), "$text-muted")
+
+
 def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
     name = Content.styled(_truncate_name(row.name), "bold")
     pill_line = Content(" ").join(
@@ -415,6 +466,45 @@ def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
     )
     info = Content.styled(f"Cloud via {row.provider} API", "$text-muted")
     return [name, pill_line, info, Content(""), Content("")]
+
+
+_FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
+    FitLevel.FITS: "$success",
+    FitLevel.TIGHT: "$warning",
+    FitLevel.WONT_RUN: "$error",
+}
+
+
+_FIT_LEVEL_LABEL_COMPACT: dict[FitLevel, str] = {
+    FitLevel.FITS: "fits",
+    FitLevel.TIGHT: "tight",
+    FitLevel.WONT_RUN: "won't run",
+}
+
+
+def _fit_pill(fit: FitChip) -> Content:
+    """Verbose fit chip with headroom GB, used by the detail drawer.
+
+    Headroom is signed; negative values mean the model overflows the host's
+    available memory by that much. The chip's background tracks the level so
+    colour-blind users still get the qualitative signal from the label itself.
+    Cards render the compact form (``fits`` / ``tight`` / ``won't run``)
+    via :func:`_fit_pill_compact` so the pill row fits the card width; the
+    headroom GB belongs in the wider drawer where it has room to breathe.
+    """
+    headroom_gb = fit.headroom_gb
+    if fit.level is FitLevel.FITS:
+        text = f"fits +{headroom_gb:.1f} GB"
+    elif fit.level is FitLevel.TIGHT:
+        text = f"tight +{max(0.0, headroom_gb):.1f} GB"
+    else:
+        text = f"won't {headroom_gb:.1f} GB"
+    return pill(text, _FIT_LEVEL_BACKGROUND[fit.level], "$text")
+
+
+def _fit_pill_compact(fit: FitChip) -> Content:
+    """Card-side compact fit chip: just ``fits`` / ``tight`` / ``won't run``."""
+    return pill(_FIT_LEVEL_LABEL_COMPACT[fit.level], _FIT_LEVEL_BACKGROUND[fit.level], "$text")
 
 
 def _key_status_pill(status: KeyStatus) -> Content:
