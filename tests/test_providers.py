@@ -1048,6 +1048,10 @@ class TestRoutingProvider:
         result = rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
+        # Default stream=False path resolves to the str overload in
+        # RoutingProvider.chat; the call must reach the backend with stream=False.
+        kwargs = mock_litellm.chat.call_args.kwargs
+        assert kwargs["stream"] is False
 
     def test_routes_chat_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
@@ -1058,6 +1062,23 @@ class TestRoutingProvider:
         result = rp.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:8b")
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
+
+    def test_routes_chat_with_stream_true_resolves_iterator_overload(self) -> None:
+        """stream=True hits the Literal[True] overload and forwards stream=True."""
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+
+        def _stream_chunks() -> object:
+            yield "hello"
+            yield " world"
+
+        mock_litellm.chat.return_value = _stream_chunks()
+        rp._sdk_provider = mock_litellm
+
+        result = rp.chat([{"role": "user", "content": "hi"}], stream=True, model="openai/gpt-4o")
+        assert list(result) == ["hello", " world"]  # type: ignore[arg-type]
+        kwargs = mock_litellm.chat.call_args.kwargs
+        assert kwargs["stream"] is True
 
     def test_routes_vision_ocr_to_llama_cpp_for_native_ref(self) -> None:
         """Native GGUF vision refs reach the llama-cpp vision worker pool."""
@@ -1343,6 +1364,48 @@ class TestRoutingProvider:
 # ---------------------------------------------------------------------------
 # litellm_available guard
 # ---------------------------------------------------------------------------
+
+
+class TestLitellmResponseView:
+    """The shape adapter that owns getattr-default extraction over litellm responses."""
+
+    def test_message_content_handles_missing_message(self) -> None:
+        """A choice without a .message attribute (or message=None) yields ''."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        choice = mock.MagicMock(spec=[])  # spec=[] -> no attrs at all
+        response = mock.MagicMock(choices=[choice])
+        view = _LitellmResponseView(response)
+        assert view.message_content == ""
+
+    def test_message_content_handles_no_choices(self) -> None:
+        """A response with an empty choices list yields '' for both shapes."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        response = mock.MagicMock(choices=[])
+        view = _LitellmResponseView(response)
+        assert view.message_content == ""
+        assert view.delta_content == ""
+        assert view.finish_reason is None
+
+    def test_delta_content_handles_missing_delta(self) -> None:
+        """A streaming chunk whose first choice has no .delta attribute yields ''."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        choice = mock.MagicMock(spec=[])
+        response = mock.MagicMock(choices=[choice])
+        view = _LitellmResponseView(response)
+        assert view.delta_content == ""
+
+    def test_delta_content_with_nonempty_delta(self) -> None:
+        """The happy stream-path: delta.content carries the chunk text."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        choice = mock.MagicMock()
+        choice.delta = mock.MagicMock(content="hello world")
+        response = mock.MagicMock(choices=[choice])
+        view = _LitellmResponseView(response)
+        assert view.delta_content == "hello world"
 
 
 class TestLitellmAvailable:

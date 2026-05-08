@@ -139,6 +139,13 @@ def test_validate_unknown_provider_classifies_unknown():
         )
 
 
+def test_get_provider_api_key_unknown_provider_returns_none():
+    """get_provider_api_key returns None for providers outside the dispatch map."""
+    from lilbee.providers.sdk_backend import get_provider_api_key
+
+    assert get_provider_api_key("nonexistent_provider") is None
+
+
 def test_validate_known_provider_no_key_returns_no_key():
     """A recognized provider whose key is empty returns NO_KEY."""
     cfg.openai_api_key = ""

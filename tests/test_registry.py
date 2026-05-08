@@ -225,6 +225,21 @@ class TestModelRegistryResolve:
         with pytest.raises(KeyError, match="Blob file missing"):
             registry.resolve(_REF)
 
+    def test_resolve_no_blob_hash_in_manifest(self, tmp_path: Path) -> None:
+        """A manifest written before install computes the digest fails with a
+        clear 'install incomplete' error rather than building cache_path / 'blobs' / ''."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        # Write a manifest with blob=None directly to mimic the "download wrote
+        # the manifest but install never set the digest" race.
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        manifest_file = tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
+        data = json.loads(manifest_file.read_text())
+        data["blob"] = None
+        manifest_file.write_text(json.dumps(data))
+        with pytest.raises(KeyError, match="install incomplete"):
+            registry.resolve(_REF)
+
 
 class TestModelRegistryIsInstalled:
     def test_is_installed_true(self, tmp_path: Path) -> None:
