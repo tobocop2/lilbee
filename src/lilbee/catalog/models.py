@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
+from lilbee.modelhub.models import ModelTask
+
 
 class HfGgufMeta(BaseModel):
     """GGUF metadata returned by the HF API when expand=gguf is requested.
@@ -41,7 +43,7 @@ class CatalogModel:
     description: str
     featured: bool
     downloads: int
-    task: str
+    task: ModelTask
     recommended: bool = False
 
     @property
@@ -96,6 +98,6 @@ class ModelFamily:
 
     slug: str  # family slug for building refs: "qwen3"
     name: str  # display name: "Qwen3"
-    task: str
+    task: ModelTask
     description: str
     variants: tuple[ModelVariant, ...]

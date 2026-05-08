@@ -47,7 +47,7 @@ def _family_slug(display_name: str) -> str:
     return _extract_family_name(display_name).lower().replace(" ", "-")
 
 
-def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFamily]:
+def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[ModelFamily]:
     """Group CatalogModels into families by display-derived family name."""
     groups: dict[str, list[CatalogModel]] = {}
     order: list[str] = []

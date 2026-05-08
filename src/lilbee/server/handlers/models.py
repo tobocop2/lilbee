@@ -265,8 +265,12 @@ async def models_catalog(
     offset: int = 0,
 ) -> ModelsCatalogResponse:
     """Return paginated model catalog with installed status."""
+    # task arrives as a raw query-string; validate against the closed enum
+    # at the HTTP boundary instead of letting an unknown value silently
+    # short-circuit the catalog filter inside.
+    parsed_task = ModelTask(task) if task else None
     result = get_catalog(
-        task=task,
+        task=parsed_task,
         search=search,
         size=size,
         installed=installed,
