@@ -1021,7 +1021,7 @@ async def test_settings_effective_value_shows_model_default():
     """When user hasn't set a value, model default is shown with suffix."""
     from dataclasses import dataclass
 
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     @dataclass(frozen=True)
     class FakeDefaults:
@@ -1037,15 +1037,15 @@ async def test_settings_effective_value_shows_model_default():
     try:
         cfg.apply_model_defaults(FakeDefaults())
         cfg.temperature = None
-        result = _effective_value("temperature")
+        result = effective_value("temperature")
         assert "0.7" in result
         assert "(model default)" in result
         cfg.num_ctx = None
-        result = _effective_value("num_ctx")
+        result = effective_value("num_ctx")
         assert "4096" in result
         assert "(model default)" in result
         cfg.top_p = None
-        result = _effective_value("top_p")
+        result = effective_value("top_p")
         assert result == "None"
     finally:
         cfg.temperature = old_temp
@@ -1054,10 +1054,10 @@ async def test_settings_effective_value_shows_model_default():
 
 def test_settings_effective_value_summarizes_list():
     """List values are shown as a line count, not Python repr, on the help line."""
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     cfg.crawl_exclude_patterns = ["a", "b", "c"]
-    result = _effective_value("crawl_exclude_patterns")
+    result = effective_value("crawl_exclude_patterns")
     assert result == "3 lines"
     # Specifically guards against the "current: ['a', 'b', 'c']" regression.
     assert "[" not in result
@@ -1066,14 +1066,14 @@ def test_settings_effective_value_summarizes_list():
     # Empty list must still be rendered as a count, not fall through to
     # "None" or model defaults. Guards off-by-one refactors of len().
     cfg.crawl_exclude_patterns = []
-    assert _effective_value("crawl_exclude_patterns") == "0 lines"
+    assert effective_value("crawl_exclude_patterns") == "0 lines"
 
 
 async def test_settings_effective_value_user_overrides_default():
     """When user has set a value, it takes precedence over model default."""
     from dataclasses import dataclass
 
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     @dataclass(frozen=True)
     class FakeDefaults:
@@ -1089,7 +1089,7 @@ async def test_settings_effective_value_user_overrides_default():
     try:
         cfg.apply_model_defaults(FakeDefaults())
         cfg.temperature = 0.9
-        result = _effective_value("temperature")
+        result = effective_value("temperature")
         assert result == "0.9"
         assert "(model default)" not in result
     finally:
@@ -1099,14 +1099,14 @@ async def test_settings_effective_value_user_overrides_default():
 
 async def test_settings_effective_value_no_defaults():
     """When no model defaults are loaded, None values show as 'None'."""
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     old_defaults = cfg._model_defaults
     old_temp = cfg.temperature
     try:
         cfg.clear_model_defaults()
         cfg.temperature = None
-        result = _effective_value("temperature")
+        result = effective_value("temperature")
         assert result == "None"
     finally:
         cfg.temperature = old_temp
@@ -1114,14 +1114,14 @@ async def test_settings_effective_value_no_defaults():
 
 
 async def test_settings_is_writable():
-    """_is_writable correctly identifies writable vs read-only fields."""
-    from lilbee.cli.tui.screens.settings import _is_writable
+    """is_writable correctly identifies writable vs read-only fields."""
+    from lilbee.cli.tui.screens.settings_widgets import is_writable
 
-    assert _is_writable("top_k")
-    assert _is_writable("temperature")
-    assert not _is_writable("chat_model")
-    assert not _is_writable("embedding_model")
-    assert not _is_writable("nonexistent_key_xyz")
+    assert is_writable("top_k")
+    assert is_writable("temperature")
+    assert not is_writable("chat_model")
+    assert not is_writable("embedding_model")
+    assert not is_writable("nonexistent_key_xyz")
 
 
 async def test_settings_persist_invalid_int():
@@ -8949,24 +8949,24 @@ async def test_chat_on_chat_input_changed_completing():
 
 
 def test_settings_make_select_value_matches_choice():
-    """_make_select returns Select with value preset when it matches choices."""
+    """make_select returns Select with value preset when it matches choices."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _make_select
+    from lilbee.cli.tui.screens.settings_widgets import make_select
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
-    sel = _make_select("test_key", defn, "auto")
+    sel = make_select("test_key", defn, "auto")
     # When value matches, the Select is created with value= kwarg
     assert sel.name == "test_key"
     assert sel.id == "ed-test_key"
 
 
 def test_settings_make_select_value_no_match():
-    """_make_select returns Select without preset value when no match."""
+    """make_select returns Select without preset value when no match."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _make_select
+    from lilbee.cli.tui.screens.settings_widgets import make_select
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
-    sel = _make_select("test_key", defn, "unknown")
+    sel = make_select("test_key", defn, "unknown")
     assert sel.name == "test_key"
     assert sel.id == "ed-test_key"
 
@@ -9996,28 +9996,28 @@ def test_is_installed_no_match():
 
 
 def test_type_pill_with_choices():
-    """_type_pill returns 'select' pill when defn has choices."""
+    """type_pill returns 'select' pill when defn has choices."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _type_pill
+    from lilbee.cli.tui.screens.settings_widgets import type_pill
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("a", "b"))
-    result = _type_pill(defn)
+    result = type_pill(defn)
     assert "select" in str(result).lower()
 
 
 def test_make_editor_with_choices():
-    """_make_editor returns a Select widget when defn has choices."""
+    """make_editor returns a Select widget when defn has choices."""
     from textual.widgets import Select
 
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _make_editor
+    from lilbee.cli.tui.screens.settings_widgets import make_editor
 
     with patch(
-        "lilbee.cli.tui.screens.settings._effective_value",
+        "lilbee.cli.tui.screens.settings_widgets.effective_value",
         return_value="auto",
     ):
         defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
-        widget = _make_editor("test_key", defn)
+        widget = make_editor("test_key", defn)
     assert isinstance(widget, Select)
 
 
@@ -10756,42 +10756,42 @@ async def test_catalog_focused_list_index_returns_highlighted():
 
 
 def test_settings_env_pill_when_env_set(monkeypatch):
-    """_env_pill returns a pill when the LILBEE_* env var is exported."""
-    from lilbee.cli.tui.screens.settings import _env_pill
+    """env_pill returns a pill when the LILBEE_* env var is exported."""
+    from lilbee.cli.tui.screens.settings_widgets import env_pill
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
-    pill_content = _env_pill("chat_model")
+    pill_content = env_pill("chat_model")
     assert pill_content is not None
     assert "LILBEE_CHAT_MODEL" in pill_content.plain
 
 
 def test_settings_help_content_blank_when_no_help_text():
-    """_help_content returns empty Content when the setting has no help text."""
+    """help_content returns empty Content when the setting has no help text."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _help_content
+    from lilbee.cli.tui.screens.settings_widgets import help_content
 
     defn = SettingDef(type=str, nullable=False, group="Test", help_text="")
-    content = _help_content("anon", defn)
+    content = help_content("anon", defn)
     assert content.plain == ""
 
 
 def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
-    """_title_content carries the env var name when LILBEE_* is exported."""
+    """title_content carries the env var name when LILBEE_* is exported."""
     from lilbee.cli.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import _title_content
+    from lilbee.cli.tui.screens.settings_widgets import title_content
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
-    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    content = title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" in content.plain
 
 
 def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
-    """_title_content omits the env pill when the LILBEE_* var is not set."""
+    """title_content omits the env pill when the LILBEE_* var is not set."""
     from lilbee.cli.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import _title_content
+    from lilbee.cli.tui.screens.settings_widgets import title_content
 
     monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
-    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    content = title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" not in content.plain
 
 
@@ -10873,7 +10873,7 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
 
     from textual.widgets import Button
 
-    from lilbee.cli.tui.screens.settings import _MODEL_PICKER_BUTTON_PREFIX
+    from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -10881,8 +10881,8 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
             mock_apply.assert_called_once()
-        button = app.screen.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
-        # Label was repainted via _model_picker_label; the chat_model field
+        button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
+        # Label was repainted via model_picker_label; the chat_model field
         # is still bound to whatever cfg currently holds, so the button
         # label is non-empty regardless of the picker outcome.
         assert str(button.label).strip() != ""
@@ -10963,23 +10963,23 @@ async def test_status_mount_remaining_sections_bails_when_not_mounted(monkeypatc
 
 
 def test_settings_model_field_to_picker_scope_returns_all_four():
-    """_model_field_to_picker_scope returns the canonical 4-key map."""
-    from lilbee.cli.tui.screens.settings import _model_field_to_picker_scope
+    """model_field_to_picker_scope returns the canonical 4-key map."""
+    from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
 
-    mapping = _model_field_to_picker_scope()
+    mapping = model_field_to_picker_scope()
     assert set(mapping) == {"chat_model", "embedding_model", "vision_model", "reranker_model"}
     assert set(mapping.values()) == {"chat", "embed", "vision", "rerank"}
 
 
 def test_settings_picker_scope_to_task_covers_all_branches():
-    """_picker_scope_to_task maps every PickerScope to the right ModelTask."""
+    """picker_scope_to_task maps every PickerScope to the right ModelTask."""
     from lilbee.catalog.types import ModelTask
-    from lilbee.cli.tui.screens.settings import _picker_scope_to_task
+    from lilbee.cli.tui.screens.settings_widgets import picker_scope_to_task
 
-    assert _picker_scope_to_task("chat") is ModelTask.CHAT
-    assert _picker_scope_to_task("embed") is ModelTask.EMBEDDING
-    assert _picker_scope_to_task("vision") is ModelTask.VISION
-    assert _picker_scope_to_task("rerank") is ModelTask.RERANK
+    assert picker_scope_to_task("chat") is ModelTask.CHAT
+    assert picker_scope_to_task("embed") is ModelTask.EMBEDDING
+    assert picker_scope_to_task("vision") is ModelTask.VISION
+    assert picker_scope_to_task("rerank") is ModelTask.RERANK
 
 
 async def test_settings_push_model_picker_bails_when_unmounted(monkeypatch):
@@ -11054,16 +11054,14 @@ def test_settings_on_model_picker_pressed_ignores_unknown_key():
     """A button id that isn't in the scope map is ignored."""
     from unittest.mock import MagicMock
 
-    from lilbee.cli.tui.screens.settings import (
-        _MODEL_PICKER_BUTTON_PREFIX,
-        SettingsScreen,
-    )
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     screen = SettingsScreen.__new__(SettingsScreen)
     discover_calls: list[tuple] = []
     screen._discover_then_open_picker = lambda *a: discover_calls.append(a)
     event = MagicMock()
-    event.button.id = f"{_MODEL_PICKER_BUTTON_PREFIX}not_a_known_field"
+    event.button.id = f"{MODEL_PICKER_BUTTON_PREFIX}not_a_known_field"
     screen._on_model_picker_pressed(event)
     assert discover_calls == []
 

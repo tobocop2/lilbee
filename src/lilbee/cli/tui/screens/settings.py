@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
@@ -14,7 +12,6 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
-from textual.content import Content
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import (
@@ -26,108 +23,42 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
-    TextArea,
 )
 
-from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, get_default
+from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.screens.settings_widgets import (
+    API_KEYS_GROUP,
+    API_KEYS_WARNING_CLASS,
+    EDITOR_ID_PREFIX,
+    LIST_ERROR_ID_PREFIX,
+    LIST_ERROR_VISIBLE_CLASS,
+    LIST_RESTORE_PREFIX,
+    MODEL_PICKER_BUTTON_PREFIX,
+    RESET_BUTTON_ID_PREFIX,
+    RESET_BUTTON_LABEL,
+    ROW_ID_PREFIX,
+    config_toml_path,
+    group_settings,
+    help_content,
+    make_editor,
+    model_field_to_picker_scope,
+    model_picker_label,
+    picker_scope_to_task,
+    set_widget_value,
+    stringify_default,
+    title_content,
+)
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
 if TYPE_CHECKING:
-    from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.model_picker import PickerScope
     from lilbee.cli.tui.widgets.model_bar import ModelOption
 
-_ROW_ID_PREFIX = "row-"
-_EDITOR_ID_PREFIX = "ed-"
-_RESET_BUTTON_ID_PREFIX = "reset-"
-_RESET_BUTTON_LABEL = "↺"
-
 log = logging.getLogger(__name__)
-
-_TYPE_COLORS: dict[str, tuple[str, str]] = {
-    "str": ("$secondary", "$text"),
-    "int": ("$primary", "$text"),
-    "float": ("$primary", "$text"),
-    "bool": ("$success", "$text"),
-    "select": ("$warning", "$text"),
-}
-
-
-_DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
-
-_LIST_RESTORE_PREFIX = "list-restore-"
-_LIST_ERROR_ID_PREFIX = "err-"
-_LIST_ERROR_VISIBLE_CLASS = "-visible"
-
-_API_KEYS_GROUP = "API-Keys"
-_API_KEYS_WARNING_CLASS = "api-keys-warning"
-_CONFIG_TOML_FILENAME = "config.toml"
-
-
-def _model_field_to_picker_scope() -> dict[str, PickerScope]:
-    """Single source of truth for the picker scope each model field uses.
-
-    Lazy-built so the ``PickerScope`` import doesn't drag the modal
-    module into every import path that hits ``settings.py``.
-    """
-    mapping: dict[str, PickerScope] = {
-        "chat_model": "chat",
-        "embedding_model": "embed",
-        "vision_model": "vision",
-        "reranker_model": "rerank",
-    }
-    return mapping
-
-
-def _picker_scope_to_task(scope: PickerScope) -> ModelTask:
-    """Map a picker scope to the ``ModelTask`` bucket it discovers from."""
-    from lilbee.catalog.types import ModelTask as _ModelTask
-
-    return {
-        "chat": _ModelTask.CHAT,
-        "embed": _ModelTask.EMBEDDING,
-        "vision": _ModelTask.VISION,
-        "rerank": _ModelTask.RERANK,
-    }[scope]
-
-
-_MODEL_PICKER_BUTTON_PREFIX = "model-pick-"
-
-
-def _set_widget_value(widget: Widget, value: object) -> None:
-    """Push *value* into a settings-row editor widget.
-
-    One isinstance ladder owned here means callers (`_refresh_editor`,
-    future bulk reset) don't redo the per-widget-type dispatch.
-    """
-    if isinstance(widget, Input):
-        widget.value = "" if value is None else str(value)
-    elif isinstance(widget, Checkbox):
-        widget.value = bool(value)
-    elif isinstance(widget, Select):
-        if value is None:
-            widget.clear()
-        else:
-            widget.value = str(value)
-    elif isinstance(widget, TextArea):  # future-proofing: list/multiline defaults
-        if isinstance(value, list):
-            widget.load_text("\n".join(value))
-        else:
-            widget.load_text("" if value is None else str(value))
-
-
-def _model_picker_label(key: str) -> str:
-    """Render the picker button label as the human-friendly model name."""
-    from lilbee.catalog.formatting import display_label_for_ref
-
-    ref = getattr(cfg, key, None) or ""
-    label = display_label_for_ref(str(ref))
-    return label or msg.MODEL_VALUE_NONE
 
 
 @dataclass(frozen=True)
@@ -158,202 +89,6 @@ class _LazyGroupBody(VerticalScroll, can_focus=False):
         widgets = build()
         if widgets:
             self.mount_all(widgets)
-
-
-def _config_toml_path() -> str:
-    """Effective path to the config.toml lilbee reads and writes."""
-    return str(cfg.data_dir / _CONFIG_TOML_FILENAME)
-
-
-def _effective_value(key: str) -> str:
-    """Return the effective value for a setting, including model defaults."""
-    user_value = getattr(cfg, key, None)
-    if user_value is not None:
-        if isinstance(user_value, list):
-            return f"{len(user_value)} lines"
-        return str(user_value)
-    defaults = cfg.model_defaults
-    if defaults is None:
-        return "None"
-    defaults_key = _DEFAULTS_REMAP.get(key, key)
-    default_val = getattr(defaults, defaults_key, None)
-    if default_val is not None:
-        return f"{default_val} (model default)"
-    return "None"
-
-
-def _is_writable(key: str) -> bool:
-    """Check if a setting key is writable (derived from SETTINGS_MAP)."""
-    defn = SETTINGS_MAP.get(key)
-    return defn is not None and defn.writable
-
-
-def _type_pill(defn: SettingDef) -> Content:
-    """Create a colored pill badge for a setting's type."""
-    type_name = defn.type.__name__
-    if defn.choices:
-        type_name = "select"
-    bg, fg = _TYPE_COLORS.get(type_name, ("$surface", "$text"))
-    return pill(type_name, bg, fg)
-
-
-def _env_var_name(key: str) -> str:
-    """Return the LILBEE_* env var name for a config key."""
-    return f"LILBEE_{key.upper()}"
-
-
-def _env_pill(key: str) -> Content | None:
-    """Pill warning that an env var is overriding TUI edits, or None."""
-    env_name = _env_var_name(key)
-    if os.environ.get(env_name) is None:
-        return None
-    return pill(env_name, "$warning", "$text")
-
-
-def _help_content(key: str, defn: SettingDef) -> Content:
-    """Build help text; the editor widget already shows the current value."""
-    if defn.help_text:
-        return Content(defn.help_text)
-    return Content("")
-
-
-def _title_content(key: str, defn: SettingDef) -> Content:
-    """Assemble the setting-row title: key name, type pill, and env pill when set."""
-    parts: list[Content] = [Content(key + "  "), _type_pill(defn)]
-    env_badge = _env_pill(key)
-    if env_badge is not None:
-        parts.append(Content("  "))
-        parts.append(env_badge)
-    return Content.assemble(*parts)
-
-
-def _stringify_default(default: object) -> str:
-    """Serialize a default for the TOML settings store."""
-    if default is None:
-        return ""
-    if isinstance(default, list):
-        return "\n".join(default)
-    return str(default)
-
-
-def _litellm_installed() -> bool:
-    from lilbee.providers.litellm_sdk import litellm_available
-
-    return litellm_available()
-
-
-def _crawler_installed() -> bool:
-    from lilbee.crawler import crawler_available
-
-    return crawler_available()
-
-
-def _wiki_enabled() -> bool:
-    return bool(cfg.wiki)
-
-
-_FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
-    "API-Keys": _litellm_installed,
-    "Crawling": _crawler_installed,
-    "Wiki": _wiki_enabled,
-}
-
-
-def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
-    """Group settings by group field, hiding entries gated by unavailable features."""
-    groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
-    for key, defn in SETTINGS_MAP.items():
-        gate = _FEATURE_GATED_GROUPS.get(defn.group)
-        if gate is not None and not gate():
-            continue
-        groups[defn.group].append((key, defn))
-    return dict(groups)
-
-
-def _make_editor(key: str, defn: SettingDef) -> Widget:
-    """Create the appropriate editor widget for a setting."""
-    if defn.render is RenderStyle.LIST_COLLAPSED:
-        return _make_list_editor(key)
-    value = _effective_value(key)
-    if defn.choices:
-        return _make_select(key, defn, value)
-    if defn.type is bool:
-        return _make_checkbox(key, value)
-    if defn.render is RenderStyle.MULTILINE:
-        return _make_multiline_editor(key, value)
-    return _make_input(key, value)
-
-
-def _make_multiline_editor(key: str, value: str) -> ListTextArea:
-    """Create a multi-line editor for string settings (system prompts, etc.).
-
-    Reuses ListTextArea so we get the same blur-saves-on-focus-out behavior
-    as list-of-strings settings without re-implementing the message bridge.
-    """
-    display = "" if value == "None" else value
-    return ListTextArea(
-        text=display,
-        show_line_numbers=False,
-        name=key,
-        id=f"{_EDITOR_ID_PREFIX}{key}",
-        classes="setting-editor setting-multiline-editor",
-        soft_wrap=True,
-    )
-
-
-def _make_list_editor(key: str) -> Collapsible:
-    """Create a Collapsible with a line-numbered TextArea for list[str] settings."""
-    current = getattr(cfg, key, None) or []
-    title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
-    editor = ListTextArea(
-        text="\n".join(current),
-        show_line_numbers=True,
-        name=key,
-        id=f"ed-{key}",
-        classes="setting-list-editor",
-    )
-    error = Static("", id=f"{_LIST_ERROR_ID_PREFIX}{key}", classes="setting-list-error")
-    reset = Button(
-        msg.SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS,
-        id=f"{_LIST_RESTORE_PREFIX}{key}",
-        classes="setting-list-restore",
-    )
-    return Collapsible(
-        editor,
-        error,
-        reset,
-        title=title,
-        collapsed=True,
-        id=f"collapsible-{key}",
-    )
-
-
-def _make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
-    """Create a Select widget for choice-based settings."""
-    choices = [(c, c) for c in (defn.choices or ())]
-    if value in {c[1] for c in choices}:
-        return Select(
-            choices,
-            value=value,
-            name=key,
-            classes="setting-editor",
-            id=f"{_EDITOR_ID_PREFIX}{key}",
-        )
-    return Select(choices, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}")
-
-
-def _make_checkbox(key: str, value: str) -> Checkbox:
-    """Create a Checkbox widget for boolean settings."""
-    checked = value.lower() in ("true", "1", "yes", "on")
-    return Checkbox(
-        value=checked, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}"
-    )
-
-
-def _make_input(key: str, value: str) -> Input:
-    """Create an Input widget for string/number settings."""
-    display = "" if value == "None" else value.replace(" (model default)", "")
-    return Input(value=display, name=key, classes="setting-editor", id=f"{_EDITOR_ID_PREFIX}{key}")
 
 
 class SettingsScreen(Screen[None]):
@@ -414,7 +149,7 @@ class SettingsScreen(Screen[None]):
     def _compose_group_tabs(self) -> ComposeResult:
         """Yield one TabPane per setting group; bodies populate on activation."""
         first = True
-        for group_name, items in _group_settings().items():
+        for group_name, items in group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
             self._pane_groups[pane_id] = _PaneGroup(
                 pane_id=pane_id, group_name=group_name, items=items
@@ -465,11 +200,11 @@ class SettingsScreen(Screen[None]):
     def _build_pane_widgets(self, group: _PaneGroup) -> list[Widget]:
         """Return the body widgets for one settings tab."""
         widgets: list[Widget] = []
-        if group.group_name == _API_KEYS_GROUP:
+        if group.group_name == API_KEYS_GROUP:
             widgets.append(
                 Static(
-                    msg.SETTINGS_API_KEYS_WARNING.format(path=_config_toml_path()),
-                    classes=_API_KEYS_WARNING_CLASS,
+                    msg.SETTINGS_API_KEYS_WARNING.format(path=config_toml_path()),
+                    classes=API_KEYS_WARNING_CLASS,
                 )
             )
         for key, defn in group.items:
@@ -478,17 +213,17 @@ class SettingsScreen(Screen[None]):
 
     def _build_setting_row(self, key: str, defn: SettingDef) -> VerticalGroup:
         """Construct one setting row with its title, help, editor, and reset."""
-        title = Static(_title_content(key, defn), classes="setting-title")
-        help_widget = Static(_help_content(key, defn), classes="setting-help")
+        title = Static(title_content(key, defn), classes="setting-title")
+        help_widget = Static(help_content(key, defn), classes="setting-help")
         children: list[Widget] = [title, help_widget]
-        if key in _model_field_to_picker_scope():
+        if key in model_field_to_picker_scope():
             children.append(self._build_model_picker_row(key))
         elif defn.writable:
             editor_row = Horizontal(
-                _make_editor(key, defn),
+                make_editor(key, defn),
                 Button(
-                    _RESET_BUTTON_LABEL,
-                    id=f"{_RESET_BUTTON_ID_PREFIX}{key}",
+                    RESET_BUTTON_LABEL,
+                    id=f"{RESET_BUTTON_ID_PREFIX}{key}",
                     classes="setting-reset-button",
                     tooltip=msg.SETTINGS_RESET_TO_DEFAULT_TOOLTIP,
                 ),
@@ -498,15 +233,15 @@ class SettingsScreen(Screen[None]):
         return VerticalGroup(
             *children,
             classes="setting-row",
-            id=f"{_ROW_ID_PREFIX}{key}",
+            id=f"{ROW_ID_PREFIX}{key}",
         )
 
     def _build_model_picker_row(self, key: str) -> Horizontal:
         """A button-style row that opens the same ModelPickerModal as the chat bar."""
         return Horizontal(
             Button(
-                _model_picker_label(key),
-                id=f"{_MODEL_PICKER_BUTTON_PREFIX}{key}",
+                model_picker_label(key),
+                id=f"{MODEL_PICKER_BUTTON_PREFIX}{key}",
                 classes="setting-model-picker-button",
             ),
             classes="setting-editor-row",
@@ -616,15 +351,15 @@ class SettingsScreen(Screen[None]):
         parsed = self._parse_value(defn, raw)
         assert isinstance(parsed, list)  # noqa: S101 -- mypy narrowing, defn.type is list above
         err = self._validate_regex_list(parsed)
-        error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
+        error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
             line_no, err_text = err
             error_widget.update(
                 msg.SETTINGS_LIST_EDITOR_INVALID_REGEX.format(n=line_no, error=err_text)
             )
-            error_widget.add_class(_LIST_ERROR_VISIBLE_CLASS)
+            error_widget.add_class(LIST_ERROR_VISIBLE_CLASS)
             return
-        error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
+        error_widget.remove_class(LIST_ERROR_VISIBLE_CLASS)
         self._persist_value(key, defn, raw)
         self._refresh_list_title(key, len(parsed))
 
@@ -632,9 +367,9 @@ class SettingsScreen(Screen[None]):
     def _on_list_restore(self, event: Button.Pressed) -> None:
         """Restore defaults for a LIST_COLLAPSED setting."""
         btn_id = event.button.id
-        if btn_id is None or not btn_id.startswith(_LIST_RESTORE_PREFIX):
+        if btn_id is None or not btn_id.startswith(LIST_RESTORE_PREFIX):
             return
-        key = btn_id.removeprefix(_LIST_RESTORE_PREFIX)
+        key = btn_id.removeprefix(LIST_RESTORE_PREFIX)
         defn = SETTINGS_MAP.get(key)
         if defn is None:
             return
@@ -643,8 +378,8 @@ class SettingsScreen(Screen[None]):
         ta = self.query_one(f"#ed-{key}", ListTextArea)
         ta.load_text(text)
         self._persist_value(key, defn, text)
-        error_widget = self.query_one(f"#{_LIST_ERROR_ID_PREFIX}{key}", Static)
-        error_widget.remove_class(_LIST_ERROR_VISIBLE_CLASS)
+        error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
+        error_widget.remove_class(LIST_ERROR_VISIBLE_CLASS)
         self._refresh_list_title(key, len(defaults))
 
     def _refresh_list_title(self, key: str, count: int) -> None:
@@ -658,9 +393,9 @@ class SettingsScreen(Screen[None]):
     def _refresh_help(self, key: str, defn: SettingDef) -> None:
         """Update the help text after a value change."""
         try:
-            row = self.query_one(f"#{_ROW_ID_PREFIX}{key}", VerticalGroup)
+            row = self.query_one(f"#{ROW_ID_PREFIX}{key}", VerticalGroup)
             help_widget = row.query_one(".setting-help", Static)
-            help_widget.update(_help_content(key, defn))
+            help_widget.update(help_content(key, defn))
         except Exception:
             log.debug("Failed to refresh help for %s", key, exc_info=True)
 
@@ -668,19 +403,19 @@ class SettingsScreen(Screen[None]):
     def _on_reset_pressed(self, event: Button.Pressed) -> None:
         """Handle the small reset button embedded in each writable row."""
         button_id = event.button.id
-        if button_id is None or not button_id.startswith(_RESET_BUTTON_ID_PREFIX):
+        if button_id is None or not button_id.startswith(RESET_BUTTON_ID_PREFIX):
             return
-        key = button_id[len(_RESET_BUTTON_ID_PREFIX) :]
+        key = button_id[len(RESET_BUTTON_ID_PREFIX) :]
         self._reset_to_default(key)
 
     @on(Button.Pressed, ".setting-model-picker-button")
     def _on_model_picker_pressed(self, event: Button.Pressed) -> None:
         """Open ModelPickerModal for the model field this button represents."""
         button_id = event.button.id
-        if button_id is None or not button_id.startswith(_MODEL_PICKER_BUTTON_PREFIX):
+        if button_id is None or not button_id.startswith(MODEL_PICKER_BUTTON_PREFIX):
             return
-        key = button_id[len(_MODEL_PICKER_BUTTON_PREFIX) :]
-        scope = _model_field_to_picker_scope().get(key)
+        key = button_id[len(MODEL_PICKER_BUTTON_PREFIX) :]
+        scope = model_field_to_picker_scope().get(key)
         if scope is None:
             return
         self._discover_then_open_picker(key, scope)
@@ -697,7 +432,7 @@ class SettingsScreen(Screen[None]):
         from lilbee.cli.tui.thread_safe import call_from_thread
         from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
 
-        task = _picker_scope_to_task(scope)
+        task = picker_scope_to_task(scope)
         buckets = classify_installed_models_full()
         options = list(buckets.get(task, []))
         call_from_thread(self, self._push_model_picker, key, scope, options)
@@ -746,8 +481,8 @@ class SettingsScreen(Screen[None]):
 
         apply_active_model(self.app, key, ref)
         try:
-            button = self.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}{key}", Button)
-            button.label = _model_picker_label(key)
+            button = self.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}{key}", Button)
+            button.label = model_picker_label(key)
         except Exception:
             log.debug("Failed to refresh model picker label for %s", key, exc_info=True)
 
@@ -791,7 +526,7 @@ class SettingsScreen(Screen[None]):
                 log.warning("Default for %s rejected by cfg (%s); skipping", key, exc)
                 skipped.append(key)
                 continue
-            updates[key] = _stringify_default(default)
+            updates[key] = stringify_default(default)
             signal_payload.append((key, default))
         return updates, signal_payload, skipped
 
@@ -854,8 +589,8 @@ class SettingsScreen(Screen[None]):
             return
         for ancestor in focused.ancestors_with_self:
             ancestor_id = getattr(ancestor, "id", None)
-            if ancestor_id and ancestor_id.startswith(_ROW_ID_PREFIX):
-                key = ancestor_id[len(_ROW_ID_PREFIX) :]
+            if ancestor_id and ancestor_id.startswith(ROW_ID_PREFIX):
+                key = ancestor_id[len(ROW_ID_PREFIX) :]
                 self._reset_to_default(key)
                 return
 
@@ -865,18 +600,18 @@ class SettingsScreen(Screen[None]):
         if defn is None or not defn.writable:
             return
         default = get_default(key)
-        stringified = _stringify_default(default)
+        stringified = stringify_default(default)
         self._persist_value(key, defn, stringified)
         self._refresh_editor(key, defn, default)
 
     def _refresh_editor(self, key: str, defn: SettingDef, value: object) -> None:
         """Update the editor widget to reflect a new value (e.g. after reset)."""
         try:
-            widget = self.query_one(f"#{_EDITOR_ID_PREFIX}{key}")
+            widget = self.query_one(f"#{EDITOR_ID_PREFIX}{key}")
         except Exception:
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
-        _set_widget_value(widget, value)
+        set_widget_value(widget, value)
 
     def action_go_back(self) -> None:
         self.app.switch_view("Chat")
