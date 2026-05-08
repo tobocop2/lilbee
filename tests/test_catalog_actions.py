@@ -204,6 +204,37 @@ def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
     assert _row_cache_signature(local) == ("Llama", True)
 
 
+async def test_handle_worker_more_hf_in_list_view_appends_to_list() -> None:
+    """When the more-HF fetch worker resolves in list view, the rows are
+    appended via _append_more_hf_to_list rather than triggering a full refresh."""
+    from unittest.mock import MagicMock, patch
+
+    from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_MORE_HF
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "chat"
+        screen._grid_view = False
+        # Build a synthetic worker.event for the FETCH_MORE_HF branch.
+        from textual.worker import WorkerState
+
+        worker = MagicMock()
+        worker.name = _WORKER_FETCH_MORE_HF
+        worker.state = WorkerState.SUCCESS
+        worker.result = []
+        event = MagicMock()
+        event.worker = worker
+        event.state = WorkerState.SUCCESS
+        with (
+            patch.object(screen, "_apply_worker_result", return_value=True),
+            patch.object(screen, "_append_more_hf_to_list") as mock_append,
+        ):
+            screen.on_worker_state_changed(event)
+            mock_append.assert_called_once()
+
+
 async def test_search_submit_falls_through_to_hf_search_when_no_matches() -> None:
     """Empty grid result + Enter submits a remote HF search via _trigger_remote_search.
 
