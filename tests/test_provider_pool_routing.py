@@ -554,6 +554,17 @@ def test_chat_streaming_iterator_stops_after_exhaustion(chat_pool_provider) -> N
         next(iter(iterator))
 
 
+def test_chat_streaming_close_drains_remaining_chunks(chat_pool_provider) -> None:
+    """close() iterates through queued chunks (the drained += 1 path)."""
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    next(iter(iterator))
+    iterator.close()
+    assert iterator._exhausted is True
+
+
 def test_chat_streaming_close_swallows_drain_exceptions(chat_pool_provider) -> None:
     """Mid-stream close handles exceptions raised by next() during drain.
 
