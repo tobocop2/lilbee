@@ -372,6 +372,9 @@ class TestCatalogScreenAsync:
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_quit(self, mock_catalog: mock.MagicMock) -> None:
+        """`q` dismisses the catalog (Escape no longer dismisses; see
+        action_dismiss_filter).
+        """
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -382,7 +385,7 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
-            await pilot.press("escape")
+            await pilot.press("q")
             await pilot.pause()
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
@@ -456,6 +459,11 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
+            # Pin active tab to Chat: the 6-tab shell's TabbedContent can
+            # briefly land on the first-defined pane (Discover) under
+            # run_test before the call_after_refresh setter runs. Sorting
+            # is gated on a task tab being active.
+            catalog._active_tab_id_cache = "chat"
             # Switch to list view so sort is available.
             catalog._grid_view = False
             catalog._sort_column = "Name"
@@ -907,12 +915,19 @@ class TestMinimalFooter:
         # helpers (history, scope cycle, F-keys) stay show=False.
         assert len(visible) <= 5
 
-    def test_catalog_tab_bindings_removed(self) -> None:
+    def test_catalog_numeric_tab_bindings(self) -> None:
+        """1-6 jump to the corresponding tab in the 6-tab catalog shell.
+
+        Earlier versions of the catalog reused numeric keys for sort
+        cycling and explicitly removed them. The 6-tab redesign restores
+        them with priority=True so they jump to Discover/Chat/Embed/
+        Vision/Rerank/Library directly. show=False keeps the footer tidy.
+        """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, Binding)}
-        for k in ("1", "2", "3", "4"):
-            assert k not in keys
+        for k in ("1", "2", "3", "4", "5", "6"):
+            assert k in keys
 
     def test_catalog_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
