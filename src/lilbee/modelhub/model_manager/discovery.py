@@ -27,7 +27,7 @@ _RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 _CLASSIFY_DEFAULT_TIMEOUT_S = 5.0
 
 
-def _classify_remote_task(name: str, family: str) -> str:
+def _classify_remote_task(name: str, family: str) -> ModelTask:
     """Classify a remote model as chat, embedding, vision, or rerank.
 
     Reranker detection runs first so ``bge-reranker-base`` (family

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.backend_names import BackendName
 
 
@@ -41,7 +42,7 @@ class RemoteModel:
     """A model from the SDK backend with inferred task classification."""
 
     name: str
-    task: str  # "chat", "embedding", "vision", "rerank"
+    task: ModelTask
     family: str
     parameter_size: str
     provider: str = BackendName.REMOTE
