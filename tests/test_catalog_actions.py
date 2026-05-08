@@ -59,23 +59,20 @@ async def test_action_select_tab_switches_active_tab() -> None:
 
 async def test_action_select_tab_no_op_when_focused_input() -> None:
     """Digits inside the search Input must not jump tabs."""
+    from unittest.mock import PropertyMock, patch
+
+    from textual.screen import Screen
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         inp = screen.query_one("#catalog-search", Input)
-        # set_focus is synchronous; inp.focus() schedules a message that
-        # may not flush in time on slower CI runners (ubuntu 3.13 in CI).
-        screen.set_focus(inp)
-        await pilot.pause()
-        if screen.focused is not inp:
-            # CI environment couldn't pin focus; skip rather than asserting
-            # against a precondition that the test harness can't guarantee.
-            import pytest
-
-            pytest.skip("test environment couldn't pin focus to the filter Input")
         before = screen.query_one("#catalog-tabs", TabbedContent).active
-        screen.action_select_tab(3)
+        # Stub Screen.focused to point at the Input so the action's
+        # isinstance(self.focused, Input) gate hits the early-return.
+        with patch.object(Screen, "focused", new_callable=PropertyMock, return_value=inp):
+            screen.action_select_tab(3)
         after = screen.query_one("#catalog-tabs", TabbedContent).active
         assert before == after
 
@@ -153,20 +150,19 @@ async def test_action_cycle_source_noop_outside_task_tabs() -> None:
 
 
 async def test_action_cycle_source_noop_when_focused_input() -> None:
+    from unittest.mock import PropertyMock, patch
+
+    from textual.screen import Screen
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         inp = screen.query_one("#catalog-search", Input)
-        screen.set_focus(inp)
-        await pilot.pause()
-        if screen.focused is not inp:
-            import pytest
-
-            pytest.skip("test environment couldn't pin focus to the filter Input")
         before = screen._source_modes["chat"]
-        screen.action_cycle_source()
+        with patch.object(Screen, "focused", new_callable=PropertyMock, return_value=inp):
+            screen.action_cycle_source()
         assert screen._source_modes["chat"] == before
 
 
@@ -313,16 +309,26 @@ async def test_action_select_tab_reactivation_idempotent() -> None:
 
 
 async def test_action_dismiss_filter_clears_input_value() -> None:
-    """Esc with focus inside the filter Input clears it and hides the box."""
+    """Esc with focus inside the filter Input clears it and hides the box.
+
+    Uses a focus-state property override rather than driving real focus
+    so the test passes on CI runners where set_focus doesn't pin reliably.
+    """
+    from unittest.mock import PropertyMock, patch
+
+    from textual.screen import Screen
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         inp = screen.query_one("#catalog-search", Input)
         inp.value = "qwen"
-        inp.focus()
-        await pilot.pause()
-        screen.action_dismiss_filter()
+        # Stub Screen.focused to point at the Input regardless of CI focus
+        # quirks. The action's isinstance(self.focused, Input) gate fires
+        # the filter-clear branch we want to exercise.
+        with patch.object(Screen, "focused", new_callable=PropertyMock, return_value=inp):
+            screen.action_dismiss_filter()
         await pilot.pause()
         assert inp.value == ""
         assert inp.has_class("-hidden")
