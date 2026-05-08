@@ -465,12 +465,17 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     """
     from lilbee.app.models import list_models_data
     from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.modelhub.models import ModelTask
 
     try:
         src = ModelSource.parse(source)
     except ValueError as exc:
         return {"error": str(exc)}
-    return list_models_data(source=src, task=task or None).model_dump()
+    try:
+        parsed_task = ModelTask(task) if task else None
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return list_models_data(source=src, task=parsed_task).model_dump()
 
 
 @mcp.tool()

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
+from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelRegistry
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ class ModelEntry(BaseModel):
 
     name: str
     source: str
-    task: str | None = None
+    task: ModelTask | None = None
     size_gb: float | None = None
     display_name: str = ""
 
@@ -99,7 +100,7 @@ class CatalogEntryData(BaseModel):
     size_gb: float
     min_ram_gb: float
     description: str
-    task: str
+    task: ModelTask
     featured: bool
     recommended: bool
 
@@ -122,7 +123,7 @@ class CatalogEntryData(BaseModel):
 class ManifestData(BaseModel):
     ref: str
     display_name: str
-    task: str
+    task: ModelTask
     size_gb: float
     size_bytes: int
     hf_repo: str
@@ -159,7 +160,7 @@ class PullResult(BaseModel):
     command: str = ModelCommand.PULL
     model: str
     source: str
-    status: str
+    status: PullStatus
     path: str | None = None
 
 
@@ -218,7 +219,7 @@ def _collect_backend_entries() -> list[ModelEntry]:
 
 def list_models_data(
     source: ModelSource | None = None,
-    task: str | None = None,
+    task: ModelTask | None = None,
 ) -> ListModelsResult:
     """Build the list of installed models with source and task metadata.
 

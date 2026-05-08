@@ -126,8 +126,14 @@ def list_cmd(
     use_global: bool = global_option,
 ) -> None:
     """List installed models across all sources."""
+    from lilbee.modelhub.models import ModelTask
+
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    data = list_models_data(source=_parse_source_or_bad_param(source), task=task)
+    try:
+        parsed_task = ModelTask(task) if task else None
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    data = list_models_data(source=_parse_source_or_bad_param(source), task=parsed_task)
     if cfg.json_mode:
         json_output(data.model_dump())
         return
