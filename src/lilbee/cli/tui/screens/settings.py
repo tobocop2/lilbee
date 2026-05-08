@@ -213,13 +213,6 @@ def _stringify_default(default: object) -> str:
     return str(default)
 
 
-_FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
-    "API-Keys": lambda: _litellm_installed(),
-    "Crawling": lambda: _crawler_installed(),
-    "Wiki": lambda: bool(cfg.wiki),
-}
-
-
 def _litellm_installed() -> bool:
     from lilbee.providers.litellm_sdk import litellm_available
 
@@ -230,6 +223,13 @@ def _crawler_installed() -> bool:
     from lilbee.crawler import crawler_available
 
     return crawler_available()
+
+
+_FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
+    "API-Keys": _litellm_installed,
+    "Crawling": _crawler_installed,
+    "Wiki": lambda: bool(cfg.wiki),
+}
 
 
 def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:

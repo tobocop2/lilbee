@@ -84,9 +84,7 @@ class TestEagerStartBranch:
         # Imports inside get_services() resolve to the source modules; patch at those
         # source paths so the lazy bindings inside the function pick up the stubs.
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
-        monkeypatch.setattr(
-            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
-        )
+        monkeypatch.setattr("lilbee.providers.worker.transport.default_spawner", MagicMock)
 
         called: list[str] = []
 
@@ -143,9 +141,7 @@ class TestEagerStartBranch:
 
         services_mod.set_services(None)
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
-        monkeypatch.setattr(
-            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
-        )
+        monkeypatch.setattr("lilbee.providers.worker.transport.default_spawner", MagicMock)
 
         class _BoomRuntime:
             def start(self):

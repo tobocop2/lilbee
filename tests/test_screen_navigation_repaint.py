@@ -41,7 +41,7 @@ def _mock_services():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
     set_services(make_mock_services(store=store))
     yield
     set_services(None)

@@ -78,7 +78,7 @@ def mock_svc():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
     store.delete_by_source.return_value = None
     store.delete_source.return_value = None
     services = make_mock_services(store=store)
