@@ -1204,6 +1204,10 @@ class CatalogScreen(Screen[None]):
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
+        try:
+            container = self._grid_container
+        except Exception:
+            return
         ctas: list[Static] = [
             Static(
                 self._grid_scroll_hint_text(hf_count),
@@ -1218,11 +1222,15 @@ class CatalogScreen(Screen[None]):
                     classes="grid-cta search-hf-cta",
                 )
             )
-        self._grid_container.mount_all(ctas)
+        container.mount_all(ctas)
 
     def _refresh_grid_ctas(self, *, hf_count: int) -> None:
         """Update the bottom CTA strip in place; remount when class changes."""
-        existing = list(self._grid_container.query(".grid-cta"))
+        try:
+            container = self._grid_container
+        except Exception:
+            return
+        existing = list(container.query(".grid-cta"))
         for w in existing:
             with contextlib.suppress(Exception):
                 w.remove()
@@ -1310,10 +1318,10 @@ class CatalogScreen(Screen[None]):
             tabs = self.query_one("#catalog-tabs", TabbedContent)
         except Exception:
             return
+        self.set_focus(None)
         if tabs.active != target:
             tabs.active = target
         self._active_tab_id_cache = target
-        self.set_focus(None)
 
     def action_cycle_source(self) -> None:
         """Cycle the active task tab's source mode: LOCAL -> CLOUD -> BOTH.

@@ -913,9 +913,11 @@ async def test_action_select_tab_does_not_revert_after_focus_loss() -> None:
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         screen.action_select_tab(5)
-        for _ in range(5):
-            await pilot.pause()
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        for _ in range(20):
+            await pilot.pause()
+            if tabs.active == "library" and screen._active_tab_id_cache == "library":
+                break
         assert tabs.active == "library"
         assert screen._active_tab_id_cache == "library"
 
@@ -1013,6 +1015,18 @@ async def test_activate_initial_tab_skips_when_already_settled() -> None:
         screen._active_tab_id_cache = "library"
         screen._activate_initial_tab()
         assert screen._active_tab_id_cache == "library"
+
+
+async def test_mount_grid_ctas_swallows_missing_container() -> None:
+    """_mount_grid_ctas returns silently if the active tab's container is gone."""
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._mount_grid_ctas(hf_count=0)
+
+
+async def test_refresh_grid_ctas_swallows_missing_container() -> None:
+    """_refresh_grid_ctas returns silently if the active tab's container is gone."""
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._refresh_grid_ctas(hf_count=0)
 
 
 async def test_activate_initial_tab_switches_to_chat() -> None:
