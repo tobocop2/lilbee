@@ -3,6 +3,8 @@ on_key digit intercept, dismiss_filter, discover-rail population edges."""
 
 from __future__ import annotations
 
+import contextlib
+
 from textual.app import App, ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
@@ -531,19 +533,16 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
         ]
         from lilbee.cli.tui.widgets.model_list import ModelList
 
-        for _ in range(20):
-            try:
-                ml = screen.query_one("#list-library", ModelList)
-                break
-            except Exception:
-                await pilot.pause()
+        ml: ModelList | None = None
         for _ in range(20):
             screen._tab_list_cache = {}
             screen._populate_library_list()
             await pilot.pause()
-            if ml.option_count >= 1:
+            with contextlib.suppress(Exception):
+                ml = screen.query_one("#list-library", ModelList)
+            if ml is not None and ml.option_count >= 1:
                 break
-        assert ml.option_count >= 1
+        assert ml is not None and ml.option_count >= 1
 
 
 async def test_refresh_grid_non_task_tab_uses_legacy_grouping() -> None:

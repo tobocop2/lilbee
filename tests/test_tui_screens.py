@@ -8400,13 +8400,20 @@ async def test_catalog_grid_leave_down_focuses_next():
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
             screen._hf_has_more = False
-            grids = list(screen.query(ModelGrid))
+            for _ in range(20):
+                grids = list(screen.query(ModelGrid))
+                if len(grids) >= 2:
+                    break
+                await pilot.pause()
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[0].focus()
             await pilot.pause()
             grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
-            await pilot.pause()
+            for _ in range(10):
+                await pilot.pause()
+                if screen.focused is not grids[0]:
+                    break
             assert screen.focused is not grids[0]
 
 
@@ -11219,15 +11226,21 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
-            await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
-            await _pilot.pause()
-            screen._loading_more = True
-            screen._tick_loading_spinner()
-            await _pilot.pause()
-            hint = screen.query_one("#grid-chat > .scroll-hint", Static)
-            assert "loading" in str(hint.render()).lower()
+            from unittest.mock import patch as mock_patch
+
+            with (
+                mock_patch.object(CatalogScreen, "_refresh_view", lambda self: None),
+                mock_patch.object(CatalogScreen, "_refresh_grid", lambda self: None),
+            ):
+                await screen._grid_container.mount(
+                    Static("seed", classes="grid-cta scroll-hint")
+                )
+                await _pilot.pause()
+                screen._loading_more = True
+                screen._tick_loading_spinner()
+                await _pilot.pause()
+                hint = screen.query_one("#grid-chat > .scroll-hint", Static)
+                assert "loading" in str(hint.render()).lower()
 
 
 def test_status_worker_state_changed_dispatches_when_sections_mounted():
