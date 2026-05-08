@@ -11207,8 +11207,7 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            # Mount a scroll-hint inside the grid container so the second
-            # contextlib.suppress block successfully resolves the query.
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
             await _pilot.pause()
             screen._loading_more = True

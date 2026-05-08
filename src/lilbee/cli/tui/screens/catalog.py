@@ -381,6 +381,8 @@ class CatalogScreen(Screen[None]):
         self.add_class("-grid-view")
 
     def _activate_initial_tab(self) -> None:
+        if self._activation_settled:
+            return
         try:
             tabs = self.query_one("#catalog-tabs", TabbedContent)
         except Exception:
@@ -791,16 +793,16 @@ class CatalogScreen(Screen[None]):
 
     def _populate_library_list(self) -> None:
         """Render the Library tab: installed local + activated cloud APIs in both views."""
-        try:
-            search = self._get_search_text()
-            installed_rows = [r for r in self._all_family_rows() if r.installed]
-            installed_rows.extend(r for r in self._all_hf_rows() if r.installed)
-            installed_rows.extend(r for r in self._all_remote_rows() if r.installed)
-            if search:
-                installed_rows = [r for r in installed_rows if matches_search(r, search)]
+        search = self._get_search_text()
+        installed_rows: list[LocalCatalogRow] = []
+        for source in (self._all_family_rows, self._all_hf_rows, self._all_remote_rows):
+            with contextlib.suppress(AttributeError):
+                installed_rows.extend(r for r in source() if r.installed)
+        if search:
+            installed_rows = [r for r in installed_rows if matches_search(r, search)]
+        frontier: list[FrontierCatalogRow] = []
+        with contextlib.suppress(AttributeError):
             frontier = self._build_frontier_rows(search)
-        except Exception:
-            return
         self._render_library_list(installed_rows, frontier)
         self._render_library_grid(installed_rows, frontier)
 
