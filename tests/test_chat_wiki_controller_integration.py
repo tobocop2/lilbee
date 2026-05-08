@@ -931,7 +931,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
                     "lilbee.runtime.asyncio_loop.run",
                     new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
                 ),
-                patch("lilbee.cli.tui.screens.chat._remove_copied_files"),
+                patch("lilbee.cli.tui.screens.chat.remove_copied_files"),
             ):
                 screen._do_add(src, reporter)
         except Exception as e:

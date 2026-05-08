@@ -33,10 +33,10 @@ from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.chat_helpers import (
-    _build_add_progress_callback,
-    _build_sync_progress_callback,
-    _close_stream,
-    _remove_copied_files,
+    build_add_progress_callback,
+    build_sync_progress_callback,
+    close_stream,
+    remove_copied_files,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
@@ -495,7 +495,7 @@ class ChatScreen(Screen[None]):
 
         try:
             sync_result = asyncio_loop.run(
-                sync(quiet=True, on_progress=_build_add_progress_callback(reporter))
+                sync(quiet=True, on_progress=build_add_progress_callback(reporter))
             )
         except BaseException:
             # On cancel or any failure, remove the files we copied into
@@ -503,13 +503,13 @@ class ChatScreen(Screen[None]):
             # file the user just cancelled. Only files copied by
             # this /add invocation are removed; pre-existing files the user
             # put in documents/ themselves are never touched.
-            _remove_copied_files(copied)
+            remove_copied_files(copied)
             raise
         if sync_result.failed:
-            _remove_copied_files(copied)
+            remove_copied_files(copied)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
-            _remove_copied_files(copied)
+            remove_copied_files(copied)
             raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
@@ -928,7 +928,7 @@ class ChatScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
-            _close_stream(stream)
+            close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
 
     def _consume_stream(
@@ -1121,7 +1121,7 @@ class ChatScreen(Screen[None]):
         from lilbee.data.ingest import sync
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
-        on_progress = _build_sync_progress_callback(reporter)
+        on_progress = build_sync_progress_callback(reporter)
         try:
             result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:

@@ -37,14 +37,14 @@ anyway, so we coalesce here at the same cadence.
 """
 
 
-def _close_stream(stream: Any) -> None:
+def close_stream(stream: Any) -> None:
     """Close a streaming iterator if it satisfies the ClosableIterator protocol."""
     if isinstance(stream, ClosableIterator):
         with contextlib.suppress(Exception):
             stream.close()
 
 
-def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
+def detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
     """Pick the user-facing detail label for a BATCH_PROGRESS tick.
 
     Per-page rasterization (vision OCR) is the only producer that uses
@@ -62,7 +62,7 @@ def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -
     return msg.ADD_FILE_DONE.format(file=data.file)
 
 
-def _remove_copied_files(names: list[str]) -> None:
+def remove_copied_files(names: list[str]) -> None:
     """Delete files previously copied into documents/ by a /add invocation.
 
     Called on cancel or failure of the add task so a cancelled file does not
@@ -81,7 +81,7 @@ def _remove_copied_files(names: list[str]) -> None:
             log.debug("Could not remove copied file %s", target, exc_info=True)
 
 
-def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
+def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
     """Build the on_progress callback used by /add.
 
     Tracks files in flight in start order so the displayed filename pins
@@ -104,7 +104,7 @@ def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgress
                 in_flight.remove(data.file)
         elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
             pct = (data.current / data.total * 100.0) if data.total else 0.0
-            reporter.update(pct, _detail_for_batch_progress(data, in_flight), indeterminate=False)
+            reporter.update(pct, detail_for_batch_progress(data, in_flight), indeterminate=False)
         elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
             reporter.update(
                 0,
@@ -124,7 +124,7 @@ def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgress
     return on_progress
 
 
-def _build_sync_progress_callback(
+def build_sync_progress_callback(
     reporter: ProgressReporter,
 ) -> Callable[[EventType, ProgressEvent], None]:
     """Return the on_progress shim used by ``_do_sync``.

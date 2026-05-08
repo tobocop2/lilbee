@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.cli.tui.screens.chat import _remove_copied_files
+from lilbee.cli.tui.screens.chat import remove_copied_files
 from lilbee.core.config import cfg
 
 
@@ -28,19 +28,19 @@ class TestRemoveCopiedFiles:
     def test_removes_copied_file(self, isolated_documents):
         target = isolated_documents / "qa-big.md"
         target.write_text("hello")
-        _remove_copied_files(["qa-big.md"])
+        remove_copied_files(["qa-big.md"])
         assert not target.exists()
 
     def test_removes_copied_directory(self, isolated_documents):
         nested = isolated_documents / "_web" / "example.com"
         nested.mkdir(parents=True)
         (nested / "index.md").write_text("data")
-        _remove_copied_files(["_web/example.com"])
+        remove_copied_files(["_web/example.com"])
         assert not nested.exists()
 
     def test_tolerates_missing_file(self, isolated_documents):
         # User may have deleted the file concurrently; do not raise.
-        _remove_copied_files(["never-existed.md"])
+        remove_copied_files(["never-existed.md"])
         assert isolated_documents.exists()
 
     def test_leaves_untouched_siblings_alone(self, isolated_documents):
@@ -48,7 +48,7 @@ class TestRemoveCopiedFiles:
         keep.write_text("pre-existing")
         drop = isolated_documents / "drop.md"
         drop.write_text("copied")
-        _remove_copied_files(["drop.md"])
+        remove_copied_files(["drop.md"])
         assert keep.exists()
         assert not drop.exists()
 
@@ -70,7 +70,7 @@ class TestRemoveCopiedFiles:
 
         monkeypatch.setattr(Path, "unlink", _raise)
         with caplog.at_level(logging.DEBUG, logger="lilbee.cli.tui.screens.chat"):
-            _remove_copied_files(["locked.md"])
+            remove_copied_files(["locked.md"])
         # Target still exists since unlink was monkeypatched; that's fine --
         # the contract is only that the helper didn't raise.
         assert target.exists()
