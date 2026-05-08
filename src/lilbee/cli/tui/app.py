@@ -184,7 +184,15 @@ class LilbeeApp(App[None]):
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
 
+    # Test seam: the TUI test fixtures subclass LilbeeApp and set this to True
+    # so on_mount short-circuits before the heavyweight setup (model
+    # canonicalization, ChatScreen install, signal subscriptions, sync probe).
+    # Production never sets it. See tests/_lilbee_app_test_host.py.
+    _test_skip_auto_init: ClassVar[bool] = False
+
     def on_mount(self) -> None:
+        if self._test_skip_auto_init:
+            return
         self._canonicalize_persisted_models()
         self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
